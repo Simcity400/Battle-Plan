@@ -2,6 +2,7 @@
 mod assets;
 mod battle_name;
 mod binding;
+mod border_marker;
 mod commander_tooltips;
 mod defines;
 mod details;
@@ -421,7 +422,7 @@ impl Window {
         drawn: Option<&Drawn>,
         assets: &Assets,
         point: Option<[f32; 2]>,
-        map: Option<(&str, Option<&str>, [f32; 4])>,
+        map: Option<(&str, Option<&str>, [f32; 4], Option<u32>)>,
     ) -> Option<(&str, [f32; 2])> {
         let defines = assets.tooltip_defines.as_ref().ok()?;
         let hit = point
@@ -437,11 +438,18 @@ impl Window {
                     hit.text.as_deref().unwrap_or_default(),
                     hit.description.as_deref(),
                     hit.rect,
+                    None,
                 )
             })
             .or(map);
         self.hover
-            .shown(hit, point, std::time::Instant::now(), defines.timing)
+            .bind_province(hit.and_then(|(_, _, _, province)| province));
+        self.hover.shown(
+            hit.map(|(text, delayed, rect, _)| (text, delayed, rect)),
+            point,
+            std::time::Instant::now(),
+            defines.timing,
+        )
     }
     /// When the tooltip next changes with a still pointer, for a repaint.
     pub fn tooltip_repaint_after(&self, assets: &Assets) -> Option<std::time::Duration> {
@@ -679,6 +687,8 @@ pub struct Widget {
     pub offset: [f32; 2],
     /// Repeated authored entries, used by reserve, trait and modifier grids.
     pub entry_template: Option<String>,
+    /// Sparse per-entry template overrides, such as the native exile badge.
+    pub entry_templates: BTreeMap<usize, String>,
     pub entries: Vec<Values>,
 }
 pub type Values = BTreeMap<String, Widget>;

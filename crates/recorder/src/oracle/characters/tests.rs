@@ -133,6 +133,7 @@ fn fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
                     }],
                     timed_traits: Vec::new(),
                     captured: false,
+                    government_in_exile_tag: None,
                 },
             )]),
         }),
@@ -646,6 +647,55 @@ fn leader_owner_and_captured_byte_compare_with_the_save() {
         .unwrap();
     leader.captured = true;
     assert!(run(&captured, &pack).is_empty());
+}
+
+#[test]
+fn exile_country_tag_compares_exactly_and_nonpositive_omission_is_limited() {
+    let (mut frame, mut pack, country) = fixture();
+    let links = BTreeMap::from([(102, &country)]);
+    let set = |frame: &mut DecodedFrame, exile_country| {
+        let TableView::Complete(TableRows::UnitLeaders(rows)) =
+            &mut *frame.tables[TableId::UnitLeaders.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].exile_country = exile_country;
+    };
+    let run = |frame: &DecodedFrame, pack: &saved::Pack| {
+        let mut report = Report::default();
+        compare_leaders(frame, pack.manager.as_ref().unwrap(), &links, &mut report).unwrap();
+        report
+    };
+    set(&mut frame, 102);
+    let report = run(&frame, &pack);
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    assert!(report.differences[0].contains("government_in_exile_tag"));
+    pack.manager
+        .as_mut()
+        .unwrap()
+        .unit_leaders
+        .values_mut()
+        .next()
+        .unwrap()
+        .government_in_exile_tag = Some(b"GER".to_vec());
+    assert!(run(&frame, &pack).differences.is_empty());
+    set(&mut frame, -1);
+    pack.manager
+        .as_mut()
+        .unwrap()
+        .unit_leaders
+        .values_mut()
+        .next()
+        .unwrap()
+        .government_in_exile_tag = None;
+    let report = run(&frame, &pack);
+    assert!(report.differences.is_empty());
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|line| line.contains("nonpositive exile-country"))
+    );
 }
 
 #[test]

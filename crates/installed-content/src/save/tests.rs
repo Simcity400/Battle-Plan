@@ -1,5 +1,27 @@
 use super::*;
 
+#[test]
+fn state_border_flag_preserves_absence_and_strict_boolean_witness() {
+    let header = "HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 countries={} provinces={} ";
+    for (token, expected) in [("yes", Some(true)), ("no", Some(false))] {
+        let source = format!("{header}states={{1={{is_border_conflict={token}}}}}");
+        assert_eq!(
+            parse(source.as_bytes()).unwrap().states[&1].is_border_conflict,
+            expected
+        );
+    }
+    assert_eq!(
+        parse(format!("{header}states={{1={{}}}}").as_bytes())
+            .unwrap()
+            .states[&1]
+            .is_border_conflict,
+        None
+    );
+    assert!(
+        parse(format!("{header}states={{1={{is_border_conflict=maybe}}}}").as_bytes()).is_err()
+    );
+}
+
 /// The live #63 save's GER line; an omitted list is empty.
 #[test]
 fn faction_advisor_slots_keep_slot_order_and_empty_slots() {
@@ -471,6 +493,7 @@ countries={ GER={} } states={1={owner=GER}} provinces={}
     unexpected.states.insert(
         2,
         State {
+            is_border_conflict: None,
             id: 2,
             owner: Some(b"GER".to_vec()),
             controller: None,
@@ -1156,6 +1179,22 @@ fn land_combat_keeps_typed_participants_and_does_not_substitute_front_units() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn border_war_class_comes_from_the_enclosing_key_and_gates_side_fields() {
+    let body =
+        "id={type=62 id=3} location=42 day=0 duration=0 attacker={state={flag=yes}} defender={}";
+    let ordinary = diplomacy_save("", &format!("combat={{land_combat={{{body}}}}}")).unwrap();
+    let details = &ordinary.land_combats[&((3_u64 << 32) | 62)].details;
+    assert!(!details.border_war);
+    assert!(details.sides[0].border_state.is_none());
+    let body = body.replace("state={flag=yes}", "state=11");
+    let border = diplomacy_save("", &format!("combat={{border_war_combat={{{body}}}}}")).unwrap();
+    let details = &border.land_combats[&((3_u64 << 32) | 62)].details;
+    assert!(details.border_war);
+    assert!(details.transfer_state.is_none());
+    assert_eq!(details.sides[0].border_state, Some(11));
 }
 
 #[test]

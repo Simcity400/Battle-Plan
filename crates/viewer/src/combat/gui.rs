@@ -596,6 +596,18 @@ fn laid(
     }
 }
 
+/// 141C5EF70 / 141C60E40 select each assigned-trait entry's template.
+pub(super) fn entry_template<'a>(
+    widget: &'a super::Widget,
+    index: usize,
+    default: &'a str,
+) -> &'a str {
+    widget
+        .entry_templates
+        .get(&index)
+        .map_or(default, String::as_str)
+}
+
 fn repeated(values: &Values) -> Vec<Group<'_>> {
     values
         .iter()
@@ -609,7 +621,7 @@ fn repeated(values: &Values) -> Vec<Group<'_>> {
                     .enumerate()
                     .map(|(index, values)| Row {
                         key: index.to_string(),
-                        template: name,
+                        template: entry_template(widget, index, name),
                         values,
                         explicit: None,
                     })

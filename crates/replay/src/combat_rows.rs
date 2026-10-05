@@ -646,6 +646,28 @@ pub struct NavalResultSideDetails {
 }
 value_struct!(NavalResultSideDetails { leader: u64, hq_leader: u64, hq_influences: Vec<u64>, ships: Vec<NavalResultShip>, planes: Vec<NavalResultPlane>, hq_modifiers: Vec<NavalShipModifierSource>, commander_context: Option<NavalCommanderInputs>, hq_commander_context: Option<NavalCommanderInputs> });
 
+/// Stored operands of 1413D69D0, sampled only for border-war combats.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct LandBorderWarSide {
+    pub country: i32,
+    pub state: i32,
+    /// Exact MSVC identifier bytes at +0x4E0/+0x500. Their lengths at
+    /// +0x4F0/+0x510 are the native presence tests, not event pointers.
+    pub win_event: Vec<u8>,
+    pub lose_event: Vec<u8>,
+}
+value_struct!(LandBorderWarSide { country: i32, state: i32, win_event: Vec<u8>, lose_event: Vec<u8> });
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct LandBorderWarInputs {
+    /// CLandBorderWarCombat+0xF0, exact byte; any nonzero transfers the state.
+    pub transfer_state: u8,
+    pub sides: [LandBorderWarSide; 2],
+}
+value_struct!(LandBorderWarInputs {
+    transfer_state: u8,
+    sides: [LandBorderWarSide; 2]
+});
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LandCombatDetailsRow {
     pub combat: u64,
@@ -658,11 +680,12 @@ pub struct LandCombatDetailsRow {
     pub stored_terrain_name: Vec<u8>,
     pub sides: [LandCombatSideDetails; 2],
     pub tactic_inputs: LandCombatTacticInputs,
+    pub border_war: Option<LandBorderWarInputs>,
 }
 typed_codec!(LandCombatDetailsRow, 64, |row| row.combat as u128,
  |key| Self { combat: key as u64, ..Default::default() },
- |key, input| Ok(Self { combat: key as u64, province: read_value(Kind::U32, input)?, phase: read_value(Kind::I32, input)?, width_factor: read_value(Kind::I64, input)?, attacker_bonus: read_value(Kind::I64, input)?, defender_bonus: read_value(Kind::I64, input)?, stored_terrain_valid: read_value(Kind::U8, input)?, stored_terrain_name: read_value(Kind::Bytes, input)?, sides: read_value(Kind::Opaque, input)?, tactic_inputs: read_value(Kind::Opaque, input)? }),
-  { 0 => (province): U32, 1 => (phase): I32, 2 => (width_factor): I64, 3 => (attacker_bonus): I64, 4 => (defender_bonus): I64, 5 => (stored_terrain_valid): U8, 6 => (stored_terrain_name): Bytes, 7 => (sides): Opaque, 8 => (tactic_inputs): Opaque }, |row| { let _ = row; Ok(()) });
+ |key, input| Ok(Self { combat: key as u64, province: read_value(Kind::U32, input)?, phase: read_value(Kind::I32, input)?, width_factor: read_value(Kind::I64, input)?, attacker_bonus: read_value(Kind::I64, input)?, defender_bonus: read_value(Kind::I64, input)?, stored_terrain_valid: read_value(Kind::U8, input)?, stored_terrain_name: read_value(Kind::Bytes, input)?, sides: read_value(Kind::Opaque, input)?, tactic_inputs: read_value(Kind::Opaque, input)?, border_war: read_value(Kind::Opaque, input)? }),
+  { 0 => (province): U32, 1 => (phase): I32, 2 => (width_factor): I64, 3 => (attacker_bonus): I64, 4 => (defender_bonus): I64, 5 => (stored_terrain_valid): U8, 6 => (stored_terrain_name): Bytes, 7 => (sides): Opaque, 8 => (tactic_inputs): Opaque, 9 => (border_war): Opaque }, |row| { let _ = row; Ok(()) });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LandCombatDivisionRow {
@@ -839,6 +862,7 @@ typed_codec!(NavalCombatResultDetailsRow, 64, |row| row.result as u128,
  { 0 => (sides): Opaque }, |row| { let _ = row; Ok(()) });
 
 opaque_value!(LandCombatTacticInputs);
+opaque_value!(Option<LandBorderWarInputs>);
 opaque_value!(LandDivisionContext);
 opaque_value!(LandReinforcementInputs);
 opaque_value!(NavalCombatLastTarget);

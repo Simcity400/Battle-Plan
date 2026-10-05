@@ -31,6 +31,7 @@ fn compare_sharing_fixture(
 
 fn fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
     let country = CountryRow {
+        border_land_doctrine_level: None,
         id: 11,
         canonical_slot: 7,
         tag: b"AAA".to_vec(),

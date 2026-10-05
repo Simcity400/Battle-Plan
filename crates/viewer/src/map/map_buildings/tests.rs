@@ -1035,6 +1035,45 @@ fn assets_of(ordered: Vec<BuildingType>) -> MapBuildingAssets {
     )
 }
 
+#[test]
+fn province_sites_are_indexed_and_ambiguous_facility_tokens_are_refused() {
+    let mut types = types();
+    let factory = types.types.get_mut("arms_factory").unwrap();
+    factory.air_base = true;
+    factory.rocket_launch_capacity = 1;
+    factory.gun_emplacement = true;
+    let assets = one_slot_assets(&types, BTreeMap::new());
+    assert_eq!(assets.province_sites(ONE_STATE, ONE_PROVINCE), [true; 3]);
+    assert_eq!(
+        assets.province_sites(ONE_STATE, ONE_PROVINCE + 1),
+        [false; 3]
+    );
+
+    let assets = assets_of(vec![
+        BuildingType {
+            name: "Facility".into(),
+            specialization: vec!["science".into()],
+            ..Default::default()
+        },
+        BuildingType {
+            name: "facility".into(),
+            ..Default::default()
+        },
+    ]);
+    assert!(
+        assets
+            .is_facility("Facility")
+            .unwrap_err()
+            .contains("names several content keys")
+    );
+    let assets = assets_of(vec![BuildingType {
+        name: "Facility".into(),
+        specialization: vec!["science".into()],
+        ..Default::default()
+    }]);
+    assert_eq!(assets.is_facility("FACILITY"), Ok(true));
+}
+
 /// A frame of `StateBuildings` rows of one country, the recorded player,
 /// over `tokens` as the hour's `LexicalTokens`.
 fn buildings_frame(tokens: TableView, types: &[u32]) -> (DecodedFrame, Vision) {

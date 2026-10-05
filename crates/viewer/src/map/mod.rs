@@ -66,7 +66,9 @@ pub mod naval_count_approx;
 pub mod perspective;
 pub mod presentation;
 mod province_admission;
+pub mod province_pick;
 pub mod province_schedule;
+pub mod province_tooltips;
 // orders: the recorded player's battle plan
 pub mod orders;
 // political fill

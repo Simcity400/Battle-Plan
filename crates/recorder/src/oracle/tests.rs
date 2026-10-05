@@ -61,7 +61,7 @@ pub(super) fn fixture() -> (
 ) {
     let save = save::parse(br#"HOI4txt
 player="GER" date="1936.1.1.1" game_unique_id="campaign" game_unique_seed=7 debug_current_ref_id=65580 unit=4008 order_index=7484 front_index=8230 theatre_index=112 theater_group_index=910 military_deployment_line_index=7783 military_deployment_conveyor_index=736 equipment_variant_index=6284 country_leader_index=1 navy_id=8184 land_combat_id=15224 multiplayer_random_count=-1334833904 version="build"
-states={1={owner="GER" demilitarized=no}} provinces={2={controller="GER"}}
+states={1={owner="GER" demilitarized=no is_border_conflict=no}} provinces={2={controller="GER"}}
 countries={GER={politics={political_power=10.00001} command_power=2 stability=0.7 war_support=0.3 convoys={equipment={}}}}
 "#).unwrap();
     let hour = save.date.engine_hour().unwrap();
@@ -89,6 +89,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                     id: b"campaign".to_vec(),
                 }])),
                 TableView::Complete(TableRows::Countries(vec![CountryRow {
+                    border_land_doctrine_level: None,
                     id: 101,
                     canonical_slot: 7,
                     tag: b"GER".to_vec(),
@@ -156,6 +157,8 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             ]));
             tables[TableId::StateFlags.index()] =
                 TableView::Complete(TableRows::StateFlags(vec![replay::rows::StateFlagRow {
+                    border_conflict_active: 0,
+                    border_conflict_countries: Vec::new(),
                     state: 1,
                     demilitarized: 0,
                 }]));
@@ -294,6 +297,8 @@ fn state_flags_compare_boolean_and_full_census_without_missing_field_defaults() 
     use replay::rows::StateFlagRow;
     let (mut frame, mut saved, _, _) = fixture();
     let row = StateFlagRow {
+        border_conflict_active: 0,
+        border_conflict_countries: Vec::new(),
         state: 1,
         demilitarized: 0,
     };
@@ -329,6 +334,8 @@ fn state_flags_compare_boolean_and_full_census_without_missing_field_defaults() 
         vec![
             row.clone(),
             StateFlagRow {
+                border_conflict_active: 0,
+                border_conflict_countries: Vec::new(),
                 state: 978,
                 demilitarized: 1,
             },
@@ -357,6 +364,34 @@ fn state_flags_compare_boolean_and_full_census_without_missing_field_defaults() 
         reason: "state source fault".into(),
     };
     assert!(compare_state_flags(&frame, &saved, &mut Report::default()).is_err());
+}
+
+#[test]
+fn state_border_flag_compares_saved_boolean_and_rejects_missing_witness() {
+    use replay::rows::StateFlagRow;
+    let (mut frame, mut saved, _, _) = fixture();
+    saved.states.get_mut(&1).unwrap().is_border_conflict = Some(true);
+    let mut report = Report::default();
+    compare_state_flags(&frame, &saved, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1);
+    for byte in [1, 2, 255] {
+        *frame.tables[TableId::StateFlags.index()] =
+            TableView::Complete(TableRows::StateFlags(vec![StateFlagRow {
+                state: 1,
+                border_conflict_active: byte,
+                ..Default::default()
+            }]));
+        let mut report = Report::default();
+        compare_state_flags(&frame, &saved, &mut report).unwrap();
+        assert!(report.difference_lines().is_empty());
+    }
+    saved.states.get_mut(&1).unwrap().is_border_conflict = None;
+    assert!(
+        compare_state_flags(&frame, &saved, &mut Report::default())
+            .unwrap_err()
+            .to_string()
+            .contains("lacks its is_border_conflict")
+    );
 }
 
 #[test]

@@ -59,6 +59,8 @@ pub struct Assets {
         BTreeMap<String, Result<installed_content::modifiers::Modifiers, String>>,
     pub(super) naval_terrain: Result<super::naval_terrain::Content, String>,
     pub(super) land_terrain: Result<Arc<installed_content::terrain::TerrainDefinitions>, String>,
+    pub(crate) temperature: Result<installed_content::weather::TemperatureRanges, String>,
+    pub(super) border_events: installed_content::events::LazyEvents,
     /// The land window's defines, or why the content lacks them.
     pub(crate) land_defines: Result<super::defines::LandDefines, String>,
     /// `NNavy.BATTLE_NAME_VP_FACTOR` and `BATTLE_NAME_VP_CUTOFF` (1415B06C0),
@@ -78,6 +80,9 @@ pub struct Assets {
     pub warnings: Vec<String>,
 }
 impl Assets {
+    pub(crate) fn sub_units(&self) -> Result<&installed_content::unit_leader::SubUnits, &str> {
+        self.commander_tooltips.sub_units()
+    }
     /// ReloadGui@1415C5900 / 1417D7450 resolve combat templates in the global registry.
     pub(crate) fn native_templates(&self) -> impl Iterator<Item = &gui::native::Element> {
         native_templates(&self.native_windows)
@@ -105,15 +110,11 @@ impl Assets {
         &mut self,
         layers: &ResolvedLayers,
         localisation: &installed_content::localisation::Localisation,
+        extra: &native_gui::Assets,
         images: &mut Vec<dds::Texture>,
     ) -> io::Result<Vec<String>> {
         let mut assets = native_window_assets(&self.native_windows, localisation);
-        assets.extend(super::tooltip_assets(self.native_templates(), localisation));
-        if let Ok(terrain) = &self.land_terrain {
-            for category in &terrain.categories {
-                assets.add_localised(localisation, &category.name);
-            }
-        }
+        assets.extend(extra.clone());
         self.window_sprites.extend(assets.sprites.iter().cloned());
         assets.sprites.retain(|name| {
             std::str::from_utf8(name)
@@ -165,6 +166,46 @@ impl Assets {
             }
         }
         Ok(warnings)
+    }
+
+    /// Exact producer artwork shared by counter and combat ToolTip resources.
+    pub(crate) fn localisation_assets(
+        &self,
+        localisation: &installed_content::localisation::Localisation,
+    ) -> (native_gui::Assets, Vec<String>) {
+        let mut assets = super::tooltip_assets(self.native_templates(), localisation);
+        let mut warnings = Vec::new();
+        if let Ok(terrain) = &self.land_terrain {
+            for category in &terrain.categories {
+                assets.add_localised(localisation, &category.name);
+            }
+        }
+        // Event text is resolved on demand. Inventory its possible inline
+        // artwork from the already-loaded localisation, without event reads.
+        for (_, text) in localisation.iter() {
+            assets.add_text(text);
+        }
+        match self.commander_tooltips.sub_units() {
+            Ok(subunits) => {
+                let (unit_assets, unit_warnings) =
+                    crate::map::province_tooltips::unit_assets(subunits);
+                assets.extend(unit_assets);
+                warnings.extend(unit_warnings);
+            }
+            Err(reason) => warnings.push(format!(
+                "Province hover: sub-unit icon content unavailable: {reason} (1 subunit_icon)."
+            )),
+        }
+        // 140F04F70 resolves each thermal slot's effective modifier identifier.
+        match &self.temperature {
+            Ok(ranges) => {
+                for key in ranges.ranges.iter().filter_map(|range| range.modifier.as_deref()) {
+                    assets.add_localised(localisation, key.as_bytes());
+                }
+            }
+            Err(reason) => warnings.push(format!("Province hover: thermal modifier icon content unavailable: {reason} (1 temperature_icon).")),
+        }
+        (assets, warnings)
     }
 
     pub(crate) fn native_sprite(&self, name: &[u8]) -> Option<native_gui::SpriteInfo> {
@@ -414,6 +455,7 @@ const WINDOW_TEMPLATES: &[&[u8]] = &[
     b"naval_combat_results_attacker_lost_air_entry",
     b"naval_combat_results_defender_lost_air_entry",
     b"unit_leader_trait_entry",
+    b"unit_leader_exile_trait_entry",
 ];
 
 fn native_templates(windows: &NativeWindows) -> impl Iterator<Item = &gui::native::Element> {
@@ -961,6 +1003,9 @@ impl Assets {
             naval_custom_sea_modifiers,
             naval_terrain,
             land_terrain,
+            temperature: installed_content::weather::temperature_ranges(layers)
+                .map_err(|error| error.to_string()),
+            border_events: installed_content::events::LazyEvents::new(Arc::clone(shared)),
             land_defines: super::defines::LandDefines::read(defines)
                 .map_err(|error| error.to_string()),
             naval_name_defines: ["BATTLE_NAME_VP_FACTOR", "BATTLE_NAME_VP_CUTOFF"]

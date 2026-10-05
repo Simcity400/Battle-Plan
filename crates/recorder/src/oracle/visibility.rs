@@ -524,11 +524,15 @@ fn compare_local_player(
 
 /// Inputs the text save does not carry: they decode, but nothing certifies them.
 fn record_inputs(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
+    report.limitation(
+        "CWeatherManager+0x349/+0x34A gate the hourly weather/day-night update (140F07550); the manager serializer 140F0D8E0 does not write these bytes or the held local-hour/night outputs, so a text save cannot certify suspension or recover their held history",
+        "SimulationFeatures.weather_suspend: runtime-only census, no exact text-save comparison",
+    );
     for (table, rows, why) in [
         (
             "SimulationFeatures",
             complete::<tables::SimulationFeatures>(frame)?.len(),
-            "the DLC feature mask and human_ai byte are the running session's, not saved fields",
+            "the DLC feature mask, human_ai byte and weather-suspension bytes are running-session inputs with no established text-save join",
         ),
         (
             "CountryVisibility",

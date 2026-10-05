@@ -293,7 +293,7 @@ fixture!(CountryCollaborationRow, |key| {source: (key >> 32) as u32, target: key
 fixture!(CharacterRow, |key| {id: key as u32}, {country: u32, name_token_id: i32, roster: u8, ordinal: u32, name: Vec<u8>, token: Vec<u8>, template_present: u8, template_tag: u32, template_file: Vec<u8>, template_line: i32, template_generated: u8, gender: u32});
 fixture!(CountryLeaderRoleRow, |key| {character: (key >> 32) as u32, ideology: key as u32 as i32}, {country: u32});
 fixture!(AdvisorRoleRow, |key| {character: (key >> 32) as u32, ordinal: key as u32}, {country: u32, key: Vec<u8>, idea: Vec<u8>, slot: Vec<u8>});
-fixture!(UnitLeaderRow, |key| {id: (key >> 32) as u32, reference_type: key as u32}, {character_type: u32, character_id: u32, category: i32, experience: i64, kind: u8, skill_status: u8, skill_valid: u8, skill_level: i32, skill_required_experience: i32, skill_category: i32, components: [i32;4], inherited_text_a: Vec<u8>, inherited_text_b: Vec<u8>, owner: u32, captured: u8, visibility_choice: u8, template_visibility: u8});
+fixture!(UnitLeaderRow, |key| {id: (key >> 32) as u32, reference_type: key as u32}, {character_type: u32, character_id: u32, category: i32, experience: i64, kind: u8, skill_status: u8, skill_valid: u8, skill_level: i32, skill_required_experience: i32, skill_category: i32, components: [i32;4], inherited_text_a: Vec<u8>, inherited_text_b: Vec<u8>, owner: u32, captured: u8, visibility_choice: u8, template_visibility: u8, exile_country: i32});
 fixture!(UnitLeaderTraitRow, |key| {leader_reference: (key >> 32) as u64, ordinal: key as u32}, {token_id: i32, definition_ordinal: i32, token: Vec<u8>});
 fixture!(UnitLeaderTraitExperienceRow, |key| {leader_reference: (key >> 32) as u64, ordinal: key as u32}, {token_id: i32, definition_ordinal: i32, token: Vec<u8>, experience: i64});
 fixture!(ActiveAbilityRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {scope_country: u32, token: Vec<u8>, caster: Option<u64>, strategic_region: Option<u32>, division_count: i32, activation_hour: i32, phase: u8, allocate_cost: u8, allocated_command_power: i64, duration_hours: i32, cooldown_hours: i32, target_kind: i32});
@@ -472,7 +472,7 @@ fixture!(RaidTargetRow, |key| {id: (key >> 32) as u32, reference_type: key as u3
 fixture!(NavalBaseRow, |key| {province: key as u32}, {country: u32, level: i32, healthy_level: i32, countries: Vec<u32>, countries_unreadable: bool});
 fixture!(PeaceConferenceRow, |key| {id: key as u64}, {ordinal: u32, current_turn: i32, finalized: u8});
 fixture!(WeatherRegionRow, |key| {id: key as u32}, {max_snow: i64, light_rain: u8, heavy_rain: u8, snow: u8, blizzard: u8, sandstorm: u8, arctic_water: u8});
-fixture!(WeatherProvinceRow, |key| {id: key as u32}, {snow: i64, permanent_snow: i64, display_snow: u8, display_mud: u8});
+fixture!(WeatherProvinceRow, |key| {id: key as u32}, {snow: i64, permanent_snow: i64, display_snow: u8, display_mud: u8, temperature: i64, raw_mud: u8});
 fixture!(OperationTokensRow, |key| {owner: (key >> 32) as u32, target: key as u32}, {tokens: Vec<u32>});
 fixture!(LexicalTokenRow, |key| {token: key as u32}, {literal: Vec<u8>});
 fixture!(HiredAdvisorRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {character: u32, idea: Vec<u8>, slot: Vec<u8>});
@@ -501,7 +501,7 @@ fixture!(DeploymentManpowerRow, |key| {line: (key >> 33) as u64, side: ((key >> 
 fixture!(DeploymentEquipmentRow, |key| {line: (key >> 32) as u64, ordinal: key as u32}, {variant_handle: u64, amount_raw: i64});
 fixture!(WorldTensionRow, |_key| {}, {total_raw: i64, source_count: i32, country_aggregate_count: i32});
 fixture!(ProvinceNameRow, |key| {province: key as u32}, {name: Vec<u8>});
-fixture!(StateFlagRow, |key| {state: key as u32}, {demilitarized: u8});
+fixture!(StateFlagRow, |key| {state: key as u32}, {demilitarized: u8, border_conflict_active: u8, border_conflict_countries: Vec<[i32; 2]>});
 fixture!(ArmyOrderPlanRow, |key| {owner_group: (key >> 32) as u64, instance: key as u32}, {front: u64, front_valid: u8, section: u32, segment_start: i32, segment_end: i32, blitz: u8, withdraw: u8, fallback: u8, virtual_order: u8, has_child: u8, owner_override: u64, assigned_divisions: Vec<u64>, predecessors: Vec<u32>, successors: Vec<u32>, name_prefix: Vec<u8>, name: Vec<u8>, name_first: Vec<u8>, name_second: Vec<u8>, name_unique: Vec<u8>, name_postfix: Vec<u8>});
 fixture!(OrdersGroupPlanRow, |key| {group: key as u64}, {red: u32, green: u32, blue: u32, alpha: u32, primary_orders: Vec<u32>, fallback_orders: Vec<u32>, name: Vec<u8>});
 impl Fixture for FrontRow {
@@ -692,7 +692,12 @@ sample_struct!(NavalShipWeaponContext { task_force: u64, country: u32, commander
 sample_struct!(NavalResultShip { member: u64, owner: u32, subunit_index: i32, formation_type: i32, build_cost_ic: i64, strength_ratio: i64, pride: u8, is_convoy: u8, name: Vec<u8>, type_name: Vec<u8>, sprite: Vec<u8>, sunk_by: Vec<u8>, variant: u64, convoy_client: u64, convoy_index: i32, naval_hits: Vec<NavalCombatHit>, air_hits: [Vec<NavalCombatAirHit>;2] });
 sample_struct!(NavalResultPlane { variant: u64, variant_summary_inputs: [i64; 2], initial_planes: i32, current_planes: i32, lost_planes: i32, country: u32, name: Vec<u8>, naval_hits: Vec<NavalCombatHit>, air_hits: [Vec<NavalCombatAirHit>;2] });
 sample_struct!(NavalResultSideDetails { leader: u64, hq_leader: u64, hq_influences: Vec<u64>, ships: Vec<NavalResultShip>, planes: Vec<NavalResultPlane>, hq_modifiers: Vec<NavalShipModifierSource>, commander_context: Option<NavalCommanderInputs>, hq_commander_context: Option<NavalCommanderInputs> });
-fixture!(LandCombatDetailsRow, |key| { combat: key as u64 }, { province: u32, phase: i32, width_factor: i64, attacker_bonus: i64, defender_bonus: i64, stored_terrain_valid: u8, stored_terrain_name: Vec<u8>, sides: [LandCombatSideDetails;2], tactic_inputs: LandCombatTacticInputs });
+sample_struct!(LandBorderWarSide { country: i32, state: i32, win_event: Vec<u8>, lose_event: Vec<u8> });
+sample_struct!(LandBorderWarInputs {
+    transfer_state: u8,
+    sides: [LandBorderWarSide; 2]
+});
+fixture!(LandCombatDetailsRow, |key| { combat: key as u64 }, { province: u32, phase: i32, width_factor: i64, attacker_bonus: i64, defender_bonus: i64, stored_terrain_valid: u8, stored_terrain_name: Vec<u8>, sides: [LandCombatSideDetails;2], tactic_inputs: LandCombatTacticInputs, border_war: Option<LandBorderWarInputs> });
 fixture!(LandCombatDivisionRow, |key| { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, ordinal: key as u32 }, { role: u8, province: u32, division: u64, name_type: i32, name_order: i32, name_ordered: u8, name_programmatic: u8, name_custom: Vec<u8>, name_group: Vec<u8>, strength_combat_factor: i64, fuel_inputs: [i64; 2], stat_values: [i64; 5], armour: i64, piercing: i64, air_attack: i64, reconnaissance: i64, initiative: i64, commander: u64, scales: [i64; 4], context: LandDivisionContext, width_terms: Vec<LandDivisionWidthTerm>, commander_inputs: Option<LandCombatDivisionCommander>, reinforcement: LandReinforcementInputs, reinforcement_modifiers: Vec<LandReinforcementModifier>, reinforcement_supply: Vec<LandReinforcementSupplyTerm>, reinforcement_acclimatization: Vec<LandReinforcementAcclimatization>, reinforcement_transport: Vec<LandReinforcementTransportTerm>, direction_group: i32, exile: Option<LandCombatExileInputs>, categories: u64 });
 fixture!(LandCombatModifierRow, |key| { combat: (key >> 1) as u64, side: (key & 1) as u8 }, { border_values: Option<[i64;3]>, divisions: Vec<DivisionCombatModifiers> });
 impl Fixture for LandCombatSideRow {
@@ -783,7 +788,7 @@ impl Fixture for ShipModelRow {
     }
 }
 fixture!(LocalPlayerRow, |_key| {}, {country: u32, observer_country: u32});
-fixture!(SimulationFeatureRow, |_key| {}, {dlc_mask: u32, human_ai: u8});
+fixture!(SimulationFeatureRow, |_key| {}, {dlc_mask: u32, human_ai: u8, weather_suspend: Option<[u8; 2]>});
 fixture!(RaidPlayerAllowedTypeRow, |key| {country: key as u32}, {allowed: Vec<u32>});
 impl Fixture for ModifierDefinitionRow {
     fn fixture(key: u128, tick: usize) -> Self {
@@ -884,7 +889,7 @@ sample_struct!(DivisionAcclimatization {
     category: u32,
     weight: i64
 });
-fixture!(DivisionStatusRow, |key| {division: key as u64}, {maximum_hit_points: i64, maximum_organisation: i64, entrenchment: i64, entrenchment_cap: i64, supply_ratio: i64, attrition_value: i64, attrition_threshold: i64, attrition: u8, exercising: u8, has_order: u8, invalid_orders: u8, strength_factor: i64, model_number: i32, acclimatization_maximum: Option<i64>, acclimatization: Vec<DivisionAcclimatization>, move_flags: u8});
+fixture!(DivisionStatusRow, |key| {division: key as u64}, {maximum_hit_points: i64, maximum_organisation: i64, entrenchment: i64, entrenchment_cap: i64, supply_ratio: i64, attrition_value: i64, attrition_threshold: i64, attrition: u8, exercising: u8, has_order: u8, invalid_orders: u8, strength_factor: i64, model_number: i32, acclimatization_maximum: Option<i64>, acclimatization: Vec<DivisionAcclimatization>, move_flags: u8, border_combat_stats: Option<[i64; 3]>});
 impl Fixture for DivisionEtaInputsRow {
     fn fixture(key: u128, tick: usize) -> Self {
         // Leg vectors must stay aligned, so they cannot be sampled apart.
@@ -2355,19 +2360,25 @@ fn nested_allocations_move_unchanged_and_absence_differs_from_empty() {
 }
 
 #[test]
-fn state_flag_payload_is_one_lossless_byte_and_unchanged_emits_no_delta() {
+fn state_flag_payload_keeps_lossless_bytes_and_unchanged_emits_no_delta() {
     let mut previous = StateFlagRow {
+        border_conflict_active: 0,
+        border_conflict_countries: Vec::new(),
         state: 978,
         demilitarized: 0,
+        ..Default::default()
     };
     for byte in [0, 1, 255, 2, 0] {
         let row = StateFlagRow {
+            border_conflict_active: 0,
+            border_conflict_countries: Vec::new(),
             state: 978,
             demilitarized: byte,
+            ..Default::default()
         };
         let mut payload = Vec::new();
         row.encode_fields(&mut payload).unwrap();
-        assert_eq!(payload, [byte]);
+        assert_eq!(payload, [byte, 0, 4, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(
             StateFlagRow::decode_fields(978, &mut Decoder::new(&payload)).unwrap(),
             row

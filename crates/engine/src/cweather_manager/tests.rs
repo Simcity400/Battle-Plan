@@ -2,6 +2,28 @@ use super::*;
 use crate::memory::SliceMemory;
 
 #[test]
+fn suspension_flags_keep_raw_bytes_and_refuse_short_reads() {
+    let mut bytes = vec![0; SUSPEND_FLAGS + 2];
+    bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+    bytes[SUSPEND_FLAGS..].copy_from_slice(&[3, 255]);
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    let reader = Reader::with_manager(&memory, 0, 0x1000).unwrap();
+    assert_eq!(reader.suspend_flags(), Ok([3, 255]));
+    let short = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes[..SUSPEND_FLAGS + 1],
+    };
+    let reader = Reader::with_manager(&short, 0, 0x1000).unwrap();
+    assert_eq!(
+        reader.suspend_flags(),
+        Err("weather suspension flags unreadable")
+    );
+}
+
+#[test]
 fn custom_sea_reads_only_the_live_regions_ordered_active_words() {
     const IMAGE: usize = 0x1400_0000;
     const START: usize = 0x1000;

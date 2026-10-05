@@ -1550,6 +1550,8 @@ struct Statistics {
     /// Cumulative torn memo copies and refused raid rows.
     raid_torn_memo_reads: u64,
     raid_refused_leaders: u64,
+    weather_suspend_failures: u64,
+    weather_suspend_last_failure: Option<&'static str>,
 }
 
 impl Default for Statistics {
@@ -1592,6 +1594,8 @@ impl Default for Statistics {
             slices: std::array::from_fn(|_| SliceWork::default()),
             raid_torn_memo_reads: 0,
             raid_refused_leaders: 0,
+            weather_suspend_failures: 0,
+            weather_suspend_last_failure: None,
         }
     }
 }
@@ -1655,6 +1659,7 @@ struct CapturedStatistics {
     country_cache_entries: usize,
     country_cache_ns: u64,
     raid_reads: crate::extended::RaidReadCounts,
+    weather_suspend_failure: Option<&'static str>,
 }
 
 impl CapturedStatistics {
@@ -1697,6 +1702,7 @@ impl CapturedStatistics {
             country_cache_entries: captured.country_cache_entries,
             country_cache_ns: captured.country_cache_ns,
             raid_reads,
+            weather_suspend_failure: captured.extended.weather_suspend_failure(),
         })
     }
 
@@ -1715,6 +1721,10 @@ impl CapturedStatistics {
         stats.country_cache_status = self.country_cache_status;
         stats.country_cache_cost.record_ns(self.country_cache_ns);
         stats.truncated_tables = self.truncated_tables;
+        if let Some(reason) = self.weather_suspend_failure {
+            stats.weather_suspend_failures = stats.weather_suspend_failures.saturating_add(1);
+            stats.weather_suspend_last_failure = Some(reason);
+        }
         stats.raid_torn_memo_reads = stats
             .raid_torn_memo_reads
             .saturating_add(u64::from(self.raid_reads.torn_memo_reads));
@@ -2502,6 +2512,11 @@ impl Processor {
             },
             "dropped_frames": stats.dropped_frames,
             "truncated_tables": stats.truncated_tables,
+            "weather_suspend_reads": {
+                "failures": stats.weather_suspend_failures,
+                "last_failure": stats.weather_suspend_last_failure,
+                "scope": "cumulative over processed frames: independent weather-manager suspension reads failed; other SimulationFeatures operands remain available and weather_suspend is absent",
+            },
             "raid_reads": {
                 "torn_memo_reads": stats.raid_torn_memo_reads,
                 "refused_leader_rows": stats.raid_refused_leaders,
@@ -2876,6 +2891,7 @@ fn decoded_with_costs(
                         && country.war_support_raw == previous.war_support_raw
                         && country.convoys_raw == previous.convoys_raw
                         && country.manpower_residual == previous.manpower_residual
+                        && country.border_land_doctrine_level == previous.border_land_doctrine_level
                         && country.peace_conference_participant
                             == previous.peace_conference_participant
                 },
@@ -2892,6 +2908,7 @@ fn decoded_with_costs(
                     convoys_raw: country.convoys_raw,
                     peace_conference_participant: country.peace_conference_participant,
                     manpower_residual: country.manpower_residual,
+                    border_land_doctrine_level: country.border_land_doctrine_level,
                 },
             ),
             scalar_table::<tables::CountryLinks, _>(
@@ -4101,6 +4118,7 @@ mod tests {
             convoys_raw: Some(i64::MAX),
             peace_conference_participant: 1,
             manpower_residual: -19,
+            border_land_doctrine_level: None,
         };
         captured.countries_result = Outcome::Rows { len: 1 };
         captured.links[0] = engine::ccountry::LinkRow {
@@ -4147,6 +4165,7 @@ mod tests {
         assert_eq!(
             frame.tables[2],
             TableView::Complete(TableRows::Countries(vec![CountryRow {
+                border_land_doctrine_level: None,
                 id: 7,
                 canonical_slot: 1,
                 tag: b"GER".to_vec(),

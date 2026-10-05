@@ -1277,6 +1277,7 @@ fn leader_row(row: &LeaderRow, bytes: &[u8]) -> UnitLeaderRow {
         captured: native.captured,
         visibility_choice: native.visibility_choice,
         template_visibility: native.template_visibility,
+        exile_country: native.exile_country,
     }
 }
 

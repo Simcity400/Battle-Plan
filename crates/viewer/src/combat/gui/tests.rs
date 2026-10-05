@@ -12,6 +12,32 @@ impl CombatResources for Fixture {
 }
 
 #[test]
+fn exile_template_override_belongs_to_its_grid_entry() {
+    let values = Values::from([(
+        "traits".into(),
+        super::super::Widget {
+            entry_template: Some("unit_leader_trait_entry".into()),
+            entry_templates: [(1, "unit_leader_exile_trait_entry".into())]
+                .into_iter()
+                .collect(),
+            entries: vec![Values::new(), Values::new()],
+            ..Default::default()
+        },
+    )]);
+    let groups = repeated(&values);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].path, "traits");
+    assert_eq!(groups[0].rows[0].template, "unit_leader_trait_entry");
+    assert_eq!(groups[0].rows[1].template, "unit_leader_exile_trait_entry");
+    assert!(
+        groups[0]
+            .rows
+            .iter()
+            .all(|row| !row.values.contains_key(""))
+    );
+}
+
+#[test]
 fn hover_geometry_uses_native_container_clip() {
     let region = Region {
         path: "window.box.text".into(),

@@ -591,3 +591,35 @@ fn trait_faults_never_certify_prefixes_and_empty_vectors_are_available() {
         Outcome::Unavailable { .. }
     ));
 }
+
+#[test]
+fn stored_exile_country_is_signed_and_fresh_with_existing_leader_capture() {
+    let mut bytes = fixture(carmy_leader::VTABLE_RVA);
+    u32_at(&mut bytes, EXILE_COUNTRY, (-17_i32) as u32);
+    let row = read(
+        &SliceMemory {
+            base: ADDRESS,
+            bytes: &bytes,
+        },
+        IMAGE,
+        ADDRESS,
+        0xf000_0001,
+    )
+    .unwrap();
+    assert_eq!(row.exile_country, -17);
+    u32_at(&mut bytes, EXILE_COUNTRY, 5101);
+    assert_eq!(
+        read(
+            &SliceMemory {
+                base: ADDRESS,
+                bytes: &bytes
+            },
+            IMAGE,
+            ADDRESS,
+            0xf000_0001
+        )
+        .unwrap()
+        .exile_country,
+        5101
+    );
+}

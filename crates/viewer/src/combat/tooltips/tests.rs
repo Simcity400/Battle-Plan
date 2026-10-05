@@ -147,6 +147,27 @@ fn authored_tooltip_icons_follow_the_bound_nodes() {
     assert!(!assets.sprites.contains(b"GFX_unused".as_slice()));
 }
 
+#[test]
+fn political_province_hover_keys_preload_native_inline_icons() {
+    let localisation = loc(&[
+        ("PROV_TOOLTIP_LOCATION_HEADER", "£pin"),
+        ("PROV_TOOLTIP_WEATHER_MODIFIER", "£weather|$FRAME$ $TEXT$"),
+        ("PROVINCE_VP_TOOLTIP", "£victory $VALUE$"),
+        ("SUB_UNIT_RANGED_VALUE", "£estimate $MIN$-$MAX$"),
+    ]);
+    let assets = authored_assets([], &localisation);
+    for sprite in ["GFX_pin", "GFX_weather", "GFX_victory", "GFX_estimate"] {
+        assert!(assets.sprites.contains(sprite.as_bytes()), "{sprite}");
+    }
+    for key in [
+        "PROV_TOOLTIP_LOCATION_HEADER",
+        "BORDER_WAR_HINT",
+        "SUB_UNIT_RANGED_VALUE",
+    ] {
+        assert!(keys().any(|candidate| candidate == key), "{key}");
+    }
+}
+
 /// The tactic registry read through the real parse
 /// (installed_content::combat_tactics), as the land hovers use it.
 fn tactics(text: &[u8]) -> Tactics {

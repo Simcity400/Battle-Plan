@@ -501,6 +501,51 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
             continue;
         };
         let label = format!("LandCombatDetails {}", row.combat);
+        equal(
+            r,
+            format!("{label} border-war class"),
+            row.border_war.is_some(),
+            saved.details.border_war,
+        );
+        if let Some(border) = &row.border_war {
+            let countries = country_context(frame)?;
+            if border.transfer_state > 1 {
+                r.limitation("1413DAC80 saves change_state_after_war as boolean; the magnitude of an unusual nonzero byte is unsaved", format!("{label} border transfer byte"));
+            }
+            equal(
+                r,
+                format!("{label} change_state_after_war"),
+                Some(border.transfer_state != 0),
+                saved.details.transfer_state,
+            );
+            for (index, (actual, side)) in border.sides.iter().zip(&saved.details.sides).enumerate()
+            {
+                equal(
+                    r,
+                    format!("{label}:{index} border tag"),
+                    country_tag(actual.country as u32, &countries.links)?,
+                    side.border_country.as_deref(),
+                );
+                equal(
+                    r,
+                    format!("{label}:{index} border state"),
+                    Some(actual.state),
+                    side.border_state,
+                );
+                equal(
+                    r,
+                    format!("{label}:{index} on_win"),
+                    (!actual.win_event.is_empty()).then_some(actual.win_event.as_slice()),
+                    side.border_win_event.as_deref(),
+                );
+                equal(
+                    r,
+                    format!("{label}:{index} on_lose"),
+                    (!actual.lose_event.is_empty()).then_some(actual.lose_event.as_slice()),
+                    side.border_lose_event.as_deref(),
+                );
+            }
+        }
         equal(r, format!("{label} province"), row.province, saved.province);
         let terrain = text_projection(r, &label, &row.stored_terrain_name);
         equal(

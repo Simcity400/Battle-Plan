@@ -344,3 +344,14 @@ fn ability_optional_operands_follow_serializer_predicates() {
         assert!(fixture(invalid).is_err());
     }
 }
+
+#[test]
+fn exile_country_save_tag_is_preserved_with_native_leader_omission() {
+    let pack = fixture(br#"countries={} character_manager={historical={character={id={id=3 type=73} token=synthetic field_marshal={id={id=7 type=4713} skill=1 experience=0 attack_skill=0 defense_skill=0 planning_skill=0 logistics_skill=0 government_in_exile_tag=OTHER}}}}"#).unwrap();
+    assert_eq!(
+        pack.manager.unwrap().unit_leaders[&((7_u64 << 32) | 4713)]
+            .government_in_exile_tag
+            .as_deref(),
+        Some(b"OTHER".as_slice())
+    );
+}

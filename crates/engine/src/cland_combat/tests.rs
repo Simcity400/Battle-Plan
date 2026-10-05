@@ -147,6 +147,9 @@ fn scalar_details(
         defender_bonus: reader.field(source.pointer, DEFENDER_BONUS)?,
         ..DetailsRow::default()
     };
+    if border {
+        row.border_war = Some(super::details::read_border_war(&reader, source, arenas)?);
+    }
     let stored_terrain = reader.pointer(source.pointer, STORED_TERRAIN)?;
     let stored_vtable = reader.field::<u64>(stored_terrain, 0)?;
     if ![
@@ -341,6 +344,12 @@ fn details_leaf_batches_match_scalar_values_every_fault_and_changed_read() {
                     i64::MAX as u64,
                 );
                 fixture.u64(side + cland_combatant::BORDER_TERRAIN_FACTOR, u64::MAX);
+                fixture.u32(side + 0x4a0, if side == ATTACK { 4 } else { 7 });
+                fixture.u64(side + 0x4a8, 0x8a00);
+                fixture.u64(side + 0x4e0 + 24, 15);
+                fixture.u64(side + 0x500 + 24, 15);
+                fixture.u64(0x8a00, (BASE + crate::cstate::VTABLE_RVA) as u64);
+                fixture.u32(0x8a00 + crate::cstate::ID, 19);
             }
         }
         let overrides = Vec::new();
@@ -1663,4 +1672,119 @@ fn bad_objects_fail_the_table_instead_of_producing_a_partial_census() {
         walk(&fixture.memory(), BASE, usize::MAX, &mut [], &mut []).outcome,
         Outcome::Unavailable { .. }
     ));
+}
+
+#[test]
+fn border_marker_inputs_keep_stored_country_state_event_bytes_and_inactive_skip() {
+    let mut fixture = commander_fixture();
+    // Subclass strings occupy the ordinary fixture's list storage at +0x500.
+    let mut source = detail_source();
+    source.attackers.data = 0x10100;
+    source.defenders.data = 0x10120;
+    fixture.array(ATTACK + cland_combatant::UNITS, source.attackers.data, 2);
+    fixture.array(DEFEND + cland_combatant::UNITS, source.defenders.data, 1);
+    fixture.array(
+        ATTACK + cland_combatant::COMMITTED,
+        source.attackers.data,
+        1,
+    );
+    fixture.array(
+        ATTACK + cland_combatant::RESERVES,
+        source.attackers.data + 8,
+        1,
+    );
+    fixture.array(
+        DEFEND + cland_combatant::COMMITTED,
+        source.defenders.data,
+        1,
+    );
+    fixture.u64(source.attackers.data, UNIT_B as u64);
+    fixture.u64(source.attackers.data + 8, UNIT_A as u64);
+    fixture.u64(source.defenders.data, UNIT_C as u64);
+    let mut arenas = Arenas::new();
+    let row = read_details(
+        &fixture.memory(),
+        BASE,
+        source,
+        &Members::none(),
+        &mut Commanders::default(),
+        &mut arenas.view(),
+    )
+    .unwrap();
+    assert!(row.border_war.is_none()); // ordinary side extensions are all invalid here.
+    fixture.u64(COMBAT, (BASE + cland_border_war_combat::VTABLE_RVA) as u64);
+    fixture.u64(
+        COMBAT + BODY,
+        (BASE + cland_border_war_combat::BODY_VTABLE_RVA) as u64,
+    );
+    fixture.0[COMBAT + 0xf0 - STATE] = 9;
+    for (side, country, state) in [(ATTACK, -7_i32, 19), (DEFEND, 11, 21)] {
+        fixture.u64(side, (BASE + cland_border_war_combatant::VTABLE_RVA) as u64);
+        fixture.u32(side + 0x4a0, country as u32);
+        let pointer = 0x10300 + if side == ATTACK { 0 } else { 0x100 };
+        fixture.u64(side + 0x4a8, pointer as u64);
+        fixture.u64(pointer, (BASE + crate::cstate::VTABLE_RVA) as u64);
+        fixture.u32(pointer + crate::cstate::ID, state);
+        for (offset, id) in [
+            (0x4e0, b"event.1".as_slice()),
+            (0x500, b"event.2".as_slice()),
+        ] {
+            let start = side + offset - STATE;
+            fixture.0[start..start + 32].fill(0);
+            fixture.0[start..start + id.len()].copy_from_slice(id);
+            fixture.u64(side + offset + 16, id.len() as u64);
+            fixture.u64(side + offset + 24, 15);
+        }
+    }
+    let mut arenas = Arenas::new();
+    let row = read_details(
+        &fixture.memory(),
+        BASE,
+        source,
+        &Members::none(),
+        &mut Commanders::default(),
+        &mut arenas.view(),
+    )
+    .unwrap();
+    let border = row.border_war.unwrap();
+    assert_eq!(border.transfer_state, 9);
+    assert_eq!(border.sides[0].country, -7);
+    assert_eq!(border.sides[1].state, 21);
+    assert_eq!(&arenas.text[border.sides[0].win_event.range()], b"event.1");
+    for side in [ATTACK, DEFEND] {
+        for offset in [0x4e0, 0x500] {
+            let start = side + offset - STATE;
+            fixture.0[start..start + 32].fill(0);
+            fixture.u64(side + offset + 24, 15);
+        }
+    }
+    let border = read_details(
+        &fixture.memory(),
+        BASE,
+        source,
+        &Members::none(),
+        &mut Commanders::default(),
+        &mut Arenas::new().view(),
+    )
+    .unwrap()
+    .border_war
+    .unwrap();
+    assert!(
+        border
+            .sides
+            .iter()
+            .all(|side| { side.win_event.len == 0 && side.lose_event.len == 0 })
+    );
+    fixture.u64(ATTACK + 0x4a8, 1);
+    assert!(
+        read_details(
+            &fixture.memory(),
+            BASE,
+            source,
+            &Members::none(),
+            &mut Commanders::default(),
+            &mut Arenas::new().view()
+        )
+        .is_err()
+    );
 }

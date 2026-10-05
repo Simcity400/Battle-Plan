@@ -96,6 +96,24 @@ pub struct Captured {
 }
 
 impl Captured {
+    #[cfg(test)]
+    pub(super) fn capture_status_fixture(
+        &mut self,
+        memory: &impl Memory,
+        seeds: &[DivisionSeed],
+        row_capacity: usize,
+    ) {
+        self.status.outcome = self.status_packet.capture(
+            memory,
+            0,
+            0,
+            seeds,
+            Outcome::Rows { len: seeds.len() },
+            row_capacity,
+        );
+        self.decode_pending = true;
+    }
+
     /// Empty ownership placeholder; constructing it never provisions packets.
     pub(crate) fn vacant() -> Self {
         Self {
@@ -367,6 +385,31 @@ impl Captured {
         [movement_ticks, qpc().saturating_sub(started).max(0) as u64]
     }
 
+    pub(crate) fn capture_border_stats(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        demanded: Result<impl IntoIterator<Item = u64>, &'static str>,
+    ) -> u64 {
+        if !matches!(self.status.outcome, Outcome::Rows { .. }) {
+            return 0;
+        }
+        let _reads = crate::read_accounting::table(TableId::DivisionStatus);
+        let start = qpc();
+        match demanded {
+            Ok(demanded) => {
+                self.status.outcome = self
+                    .status_packet
+                    .capture_border_stats(memory, base, demanded);
+            }
+            Err(reason) => {
+                self.status_packet.fail_border_stats(reason);
+                self.status.outcome = Outcome::Unavailable { reason };
+            }
+        }
+        qpc().saturating_sub(start).max(0) as u64
+    }
+
     pub fn outcomes(&self) -> [Outcome; N] {
         [
             self.movement.outcome,
@@ -437,6 +480,7 @@ impl Captured {
                     }),
                 )),
                 move_flags: r.move_flags,
+                border_combat_stats: r.border_combat_stats,
             },
         );
         let Some(paths) = self.paths.first.get(..self.paths.len) else {

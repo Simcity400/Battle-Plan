@@ -728,6 +728,21 @@ fn compare_leaders(
                 "no army leader byte",
             );
         }
+        // 140C0D920 writes +0xED4 as government_in_exile_tag only when positive.
+        let exile = if row.exile_country > 0 {
+            country(row.exile_country as u32, links)?
+        } else {
+            None
+        };
+        equal(
+            report,
+            format!("{label}.government_in_exile_tag"),
+            exile,
+            expected.government_in_exile_tag.as_deref(),
+        );
+        if row.exile_country < 0 {
+            report.limitation("nonpositive exile-country references are omitted by 140C0D920; only the absent-tag predicate is certified", format!("{label}.exile_country"));
+        }
         // +0x120 is not saved; the role's character writes its own country,
         // which Capture leaves unchanged, as the owner is.
         match manager

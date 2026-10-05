@@ -4,7 +4,7 @@ use crate::{
     spooling::table,
     table_capture::{CaptureRows, grow_capacity, grow_vec},
 };
-use engine::allocation::{default_vec, owned_vec};
+use engine::allocation::{copy_vec, default_vec, owned_vec};
 use engine::{Memory, cstate, walk::Outcome};
 use replay::{
     frame::TableView,
@@ -33,6 +33,7 @@ pub struct Captured {
     seen: usize,
     source: Outcome,
     required: usize,
+    acquired_ticks: Option<u64>,
 }
 
 impl Default for Captured {
@@ -45,11 +46,18 @@ impl Default for Captured {
             seen: 0,
             source: super::MISSING,
             required: 0,
+            acquired_ticks: None,
         }
     }
 }
 
 impl Captured {
+    #[cfg(test)]
+    pub(super) fn install_border_fixture(&mut self, rows: Vec<cstate::FlagRow>, outcome: Outcome) {
+        self.rows.rows = rows;
+        self.rows.outcome = outcome;
+    }
+
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(capacity.rows),
@@ -57,6 +65,7 @@ impl Captured {
             seen: 0,
             source: super::MISSING,
             required: 0,
+            acquired_ticks: None,
         }
     }
     pub fn reset(&mut self) {
@@ -64,9 +73,17 @@ impl Captured {
         self.seen = 0;
         self.source = super::MISSING;
         self.required = 0;
+        self.acquired_ticks = None;
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.rows.allocated_bytes() + self.first.capacity() * size_of::<cstate::Source>()
+        self.rows.allocated_bytes()
+            + self.first.capacity() * size_of::<cstate::Source>()
+            + self
+                .rows
+                .rows
+                .iter()
+                .map(|row| row.border_conflict_countries.capacity() * size_of::<[i32; 2]>())
+                .sum::<usize>()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         grow_capacity(&mut capacity.rows, self.required);
@@ -110,6 +127,7 @@ impl Captured {
         self.release_sources();
         self.source = Outcome::Unavailable { reason };
         self.rows.outcome = Outcome::Unavailable { reason };
+        self.acquired_ticks = Some(0);
     }
 
     fn release_sources(&mut self) {
@@ -118,6 +136,18 @@ impl Captured {
     }
 
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
+        if let Some(ticks) = self.acquired_ticks.take() {
+            return [ticks];
+        }
+        self.acquire(memory, base, state)
+    }
+
+    /// Runs on the existing States worker, where active tree storage may grow.
+    pub(crate) fn acquire_owned(&mut self, memory: &impl Memory, base: usize, state: usize) {
+        self.acquired_ticks = Some(self.acquire(memory, base, state)[0]);
+    }
+
+    fn acquire(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
         self.rows.outcome = cstate::read_flags(
@@ -136,6 +166,17 @@ impl Captured {
     pub fn outcomes(&self) -> [Outcome; N] {
         [self.rows.outcome]
     }
+    pub(crate) fn rows(&self) -> Result<&[cstate::FlagRow], &'static str> {
+        match self.rows.outcome {
+            Outcome::Rows { len } => self
+                .rows
+                .rows
+                .get(..len)
+                .ok_or("state flag rows exceed buffer"),
+            Outcome::Unavailable { reason } => Err(reason),
+            Outcome::Truncated { .. } => Err("border demand state flags truncated"),
+        }
+    }
     pub fn tables(&self) -> [TableView; N] {
         [table::<tables::StateFlags, _>(
             self.outcomes()[0],
@@ -143,6 +184,8 @@ impl Captured {
             |r| StateFlagRow {
                 state: r.state,
                 demilitarized: r.demilitarized,
+                border_conflict_active: r.border_conflict_active,
+                border_conflict_countries: owned_vec(copy_vec(&r.border_conflict_countries)),
             },
         )]
     }
@@ -211,6 +254,8 @@ mod tests {
         assert_eq!(
             captured.rows.rows[0],
             cstate::FlagRow {
+                border_conflict_active: 0,
+                border_conflict_countries: Vec::new(),
                 state: 1,
                 demilitarized: 255
             }
@@ -318,6 +363,8 @@ mod tests {
             unread_rows: 6,
         });
         captured.rows.rows[0] = cstate::FlagRow {
+            border_conflict_active: 0,
+            border_conflict_countries: Vec::new(),
             state: 1,
             demilitarized: 255,
         };
@@ -562,8 +609,9 @@ mod tests {
         assert_eq!(frame.states_result, Outcome::Rows { len: 1 });
         let mut request = frame.take_states_request(0, STATE);
         assert_eq!(request_layout(&request), buffers);
-        assert_eq!(request.visitor.source, Outcome::Rows { len: 1 });
-        request.visitor.capture(&memory, 0, STATE);
+        assert_eq!(request.visitor.source, super::super::MISSING);
+        assert_eq!(request.visitor.outcomes(), [Outcome::Rows { len: 1 }]);
+        request.visitor.capture(&NoReads, 0, STATE);
         assert_eq!(request.visitor.outcomes(), [Outcome::Rows { len: 1 }]);
         assert_eq!(request_layout(&request), buffers);
         assert!(

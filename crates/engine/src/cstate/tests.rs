@@ -695,7 +695,7 @@ fn shared_state_sources_preserve_sparse_identity_and_native_flag_bytes() {
             }
         ]
     );
-    let mut flags = [FlagRow::default(); 2];
+    let mut flags = vec![FlagRow::default(); 2];
     assert_eq!(
         read_flags(&memory, 0, 0x1000, &sources, parent, &mut flags),
         Outcome::Rows { len: 2 }
@@ -704,10 +704,14 @@ fn shared_state_sources_preserve_sparse_identity_and_native_flag_bytes() {
         flags,
         [
             FlagRow {
+                border_conflict_active: 0,
+                border_conflict_countries: Vec::new(),
                 state: 1,
                 demilitarized: 2
             },
             FlagRow {
+                border_conflict_active: 0,
+                border_conflict_countries: Vec::new(),
                 state: 3,
                 demilitarized: 255
             }
@@ -749,7 +753,7 @@ fn flags_reject_stale_sources_faults_and_incomplete_censuses() {
         base: 0x1000,
         bytes: &bytes,
     };
-    let mut flags = [FlagRow::default(); 2];
+    let mut flags = vec![FlagRow::default(); 2];
     let valid = [
         Source {
             pointer: 0x1400,
@@ -871,13 +875,16 @@ fn state_census_and_flags_keep_primary_read_order_without_terminal_rereads() {
     }
     assert_eq!(*memory.reads.borrow(), expected);
     memory.reads.borrow_mut().clear();
-    let mut flags = [FlagRow::default(); 2];
+    let mut flags = vec![FlagRow::default(); 2];
     assert_eq!(
         read_flags(&memory, 0, 0x1000, &sources, parent, &mut flags),
         parent
     );
     assert_eq!(
-        flags.map(|row| (row.state, row.demilitarized)),
+        flags
+            .iter()
+            .map(|row| (row.state, row.demilitarized))
+            .collect::<Vec<_>>(),
         [(1, 2), (3, 255)]
     );
     let mut expected = vec![(0x1000 + cgame_state::STATES, 16)];

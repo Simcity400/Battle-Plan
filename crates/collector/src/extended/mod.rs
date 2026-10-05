@@ -27,6 +27,7 @@ use std::sync::Arc;
 pub(crate) mod bench_world;
 pub(crate) mod daily_intel;
 
+mod border_inputs;
 mod packs;
 pub(crate) use packs::{
     GatedPacks, LatePacks, OrdinaryPacks, RaidLaunchPacks, RaidStatePacks, RaidStateStores,
@@ -601,6 +602,67 @@ impl Captured {
         self.division_presentation.decode_inputs()
     }
 
+    /// Final scoped scalar acquisition, after the existing States, Provinces,
+    /// ProvinceUnitOrder and Presentation jobs have all returned their leases.
+    pub(crate) fn capture_border_inputs(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        provinces: (&[engine::cprovince::Row], Outcome),
+        countries: (&mut [engine::ccountry::Row], &mut Outcome),
+    ) -> [u64; 2] {
+        let flags = self.state_flags.rows();
+        if flags
+            .as_ref()
+            .is_ok_and(|rows| !border_inputs::needed(rows))
+        {
+            return [0; 2];
+        }
+        let selection_begin = qpc();
+        let selection = flags.and_then(|flags| {
+            let provinces = border_inputs::provinces(provinces.0, provinces.1, flags)?;
+            Ok((flags, provinces))
+        });
+        let demanded =
+            selection
+                .as_ref()
+                .map_err(|reason| *reason)
+                .and_then(|(flags, provinces)| {
+                    let land = self.province_unit_order.land()?;
+                    border_inputs::land(land, provinces)?;
+                    Ok(land.iter().filter_map(move |&(province, handle)| {
+                        border_inputs::active(provinces, flags, province).then_some(handle)
+                    }))
+                });
+        let selection_ticks = qpc().saturating_sub(selection_begin).max(0) as u64;
+        let stats_ticks = self
+            .division_presentation
+            .capture_border_stats(memory, base, demanded);
+        let _reads = crate::read_accounting::table(TableId::Countries);
+        let begin = qpc();
+        let outcome = selection.and_then(|(flags, provinces)| {
+            border_inputs::doctrine(
+                memory,
+                base,
+                game_state,
+                provinces,
+                flags,
+                countries.0,
+                *countries.1,
+            )
+        });
+        if let Err(reason) = outcome {
+            if matches!(*countries.1, Outcome::Rows { .. }) {
+                *countries.1 = Outcome::Unavailable { reason };
+            }
+        }
+        [
+            stats_ticks,
+            selection_ticks + qpc().saturating_sub(begin).max(0) as u64,
+        ]
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_presentation_request(
         &mut self,
@@ -778,6 +840,10 @@ impl Captured {
             },
             part: self.governance.take_research(),
         }
+    }
+
+    pub(crate) fn weather_suspend_failure(&self) -> Option<&'static str> {
+        self.visibility.weather_suspend_failure()
     }
 
     /// Return the research rows and charge their costs to the family report.
@@ -1921,7 +1987,7 @@ impl Captured {
                 scatter(&$pack::TABLES, cost, &mut ticks);
             )+};
         }
-        // StateFlags needs the States rows supplied first: it stays inline.
+        // StateFlags was read by the States worker; capture consumes its ticks.
         ordinary!(weather, state_flags, equipment_destruction);
         if let Some(done) = self.ordinary_ticks.take() {
             for (total, cost) in ticks.iter_mut().zip(done) {

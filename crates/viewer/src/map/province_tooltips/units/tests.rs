@@ -1,0 +1,244 @@
+use super::*;
+use replay::rows::{LexicalTokenRow, TemplateSubunit};
+
+fn unit(owner: u32, rank: u8, template_id: u32, intel: u16) -> Unit {
+    Unit {
+        owner,
+        rank,
+        template: u64::from(template_id) << 32 | 7,
+        intel,
+    }
+}
+
+fn content() -> Content {
+    let mut subunits = SubUnits::default();
+    subunits.read(
+        b"sub_units={Foot={type=infantry} Horse={type=motorized} Boat={type=screen_ship}}",
+        "synthetic.txt",
+    );
+    Content {
+        subunits,
+        defines: CountDefines {
+            denominator: 100_000,
+            minimum: 25_000,
+            maximum: 75_000,
+            range: 150_000,
+        },
+    }
+}
+
+fn loc() -> Localisation {
+    [
+        ("SUB_UNIT_ACCURAT_VALUE", "$VALUE$"),
+        ("SUB_UNIT_RANGED_VALUE", "$MIN$-$MAX$"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.into(), v.into()))
+    .collect()
+}
+
+#[test]
+fn first_input_fake_template_applies_to_every_known_unit_and_249_is_omitted() {
+    let units = vec![unit(2, 0, 1, 249), unit(1, 3, 9, 255), unit(3, 1, 7, 250)];
+    let fallback = 44 << 32 | 7;
+    assert_eq!(group_templates(units, false, fallback), [(fallback, 2)]);
+    assert!(group_templates(vec![unit(2, 0, 1, 249)], false, fallback).is_empty());
+}
+
+#[test]
+fn groups_use_native_rank_country_and_numeric_template_id_descending() {
+    let groups = group_templates(
+        vec![
+            unit(5, 1, 2, 250),
+            unit(2, 2, 3, 250),
+            unit(2, 2, 9, 250),
+            unit(1, 3, 1, 250),
+            unit(5, 1, 2, 250),
+            unit(6, 1, 4, 250),
+            unit(8, 0, 5, 250),
+        ],
+        true,
+        0,
+    );
+    assert_eq!(
+        groups,
+        [(1, 1), (9, 1), (3, 1), (4, 1), (2, 2), (5, 1)].map(|(id, count)| ((id << 32) | 7, count))
+    );
+}
+
+#[test]
+fn composition_aggregates_globally_in_first_encounter_and_keeps_clones_separate() {
+    let content = content();
+    let token_rows = [
+        LexicalTokenRow {
+            token: 1,
+            literal: b"foot".to_vec(),
+        },
+        LexicalTokenRow {
+            token: 2,
+            literal: b"Horse".to_vec(),
+        },
+    ];
+    let tokens = TokenNames::from_rows(&token_rows, true);
+    let template = |entries| DivisionTemplateIconRow {
+        subunits: entries,
+        ..Default::default()
+    };
+    let subunit = |token, local, count| TemplateSubunit {
+        token,
+        local,
+        count,
+    };
+    let mut entries = Vec::new();
+    let mut indices = BTreeMap::new();
+    aggregate(
+        &content,
+        &template(vec![subunit(2, 0, 1), subunit(1, 0, 2)]),
+        3,
+        tokens,
+        1,
+        100_000,
+        0,
+        60_000_000,
+        &mut entries,
+        &mut indices,
+    )
+    .unwrap();
+    aggregate(
+        &content,
+        &template(vec![subunit(1, 0, 4), subunit(2, 1, 2)]),
+        2,
+        tokens,
+        2,
+        100_000,
+        0,
+        60_000_000,
+        &mut entries,
+        &mut indices,
+    )
+    .unwrap();
+    assert_eq!(
+        entries
+            .iter()
+            .map(|e| (e.name.as_str(), e.bounds))
+            .collect::<Vec<_>>(),
+        [("Horse", [3, 3]), ("Foot", [14, 14]), ("Horse", [4, 4])]
+    );
+    assert_eq!(
+        format_entries(&entries, &loc(), false).unwrap(),
+        "3\u{13}unit_Horse_icon_small|1    14\u{13}unit_Foot_icon_small|1    4\u{13}unit_Horse_icon_small|1 "
+    );
+}
+
+#[test]
+fn native_type_mask_and_nato_frame_select_ship_prefix_and_native_range_key() {
+    let content = content();
+    let entries = [Entry {
+        name: "Boat".into(),
+        category: content.subunits.category(b"Boat").unwrap(),
+        bounds: [2, 5],
+    }];
+    assert_eq!(
+        format_entries(&entries, &loc(), true).unwrap(),
+        "2-5\u{13}ship_Boat_icon_small|2 "
+    );
+}
+
+#[test]
+fn content_preload_uses_the_same_native_glyph_names_and_type_masks() {
+    let (assets, refusals) = assets(&content().subunits);
+    assert!(refusals.is_empty());
+    assert!(
+        assets
+            .sprites
+            .contains(b"GFX_unit_Foot_icon_small".as_slice())
+    );
+    assert!(
+        assets
+            .sprites
+            .contains(b"GFX_unit_Horse_icon_small".as_slice())
+    );
+    assert!(
+        assets
+            .sprites
+            .contains(b"GFX_ship_Boat_icon_small".as_slice())
+    );
+    assert!(
+        !assets
+            .sprites
+            .contains(b"GFX_unit_Boat_icon_small".as_slice())
+    );
+}
+
+#[test]
+fn count_ranges_are_exact_at_full_intel_and_clamp_nonpositive_counts() {
+    let d = content().defines;
+    assert_eq!(count_range(9, 1, 75_000, 123, 60_827_914, d), [9, 9]);
+    assert_eq!(count_range(-9, 1, 0, 123, 60_827_914, d), [0, 0]);
+    assert_eq!(count_range(0, 1, 0, 123, 60_827_914, d), [0, 0]);
+    assert_eq!(
+        count_range(
+            9,
+            1,
+            0,
+            123,
+            60_827_914,
+            CountDefines {
+                maximum: d.minimum,
+                ..d
+            }
+        ),
+        [9, 9]
+    );
+    // A tiny positive count cannot become an absent unit at low intel.
+    let [min, max] = count_range(1, 1, 0, 123, 60_827_914, d);
+    assert_eq!(min, 1);
+    assert!(max >= 1);
+}
+
+#[test]
+fn count_ranges_depend_on_native_month_seed_and_subunit_index() {
+    let d = content().defines;
+    let range = count_range(100, 1, 40_000, 123, 60_827_914, d);
+    assert!(range[0] < 100 && range[1] > 100);
+    assert_ne!(range, count_range(100, 2, 40_000, 123, 60_827_914, d));
+    assert_ne!(range, count_range(100, 1, 40_000, 124, 60_827_914, d));
+    assert_eq!(range, count_range(100, 1, 40_000, 123, 60_827_915, d));
+    assert_eq!(fixed15(-150_001), -49_152);
+    assert_eq!(sqrt_fixed5(25_000), 50_001);
+}
+
+#[test]
+fn content_reader_keeps_native_category_reset_and_unknown_tail_refusals() {
+    let mut content = content();
+    assert_ne!(
+        content.subunits.category(b"Boat").unwrap() & 0x80004003C1,
+        0
+    );
+    content
+        .subunits
+        .read(b"sub_units={boat={type=infantry}}", "replaced.txt");
+    assert_eq!(
+        content.subunits.category(b"Boat").unwrap(),
+        installed_content::equipment::category_mask("infantry").unwrap()
+    );
+    content.subunits.read(
+        b"sub_units={bad={weights={x @variable=1}}}",
+        "unsupported.txt",
+    );
+    assert!(
+        content
+            .subunits
+            .category(b"Boat")
+            .unwrap_err()
+            .contains("unsupported.txt")
+    );
+}
+
+#[test]
+fn land_unit_byte_does_not_turn_truncated_unknown_intel_into_a_full_summary() {
+    let vision = Vision::sharing(1, []).with_truncated_unit_intel([(7, 2)]);
+    assert_eq!(vision.land_byte_known(7, 2, 3), Some(250));
+    assert_eq!(vision.land_byte_known(8, 2, 3), None);
+    assert_eq!(vision.land_byte_known(8, 1, 3), Some(255));
+}

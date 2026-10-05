@@ -281,24 +281,18 @@ impl Cache {
                     )
                 },
             )?;
-            // 1418AC1D0 additionally dispatches 1413D69D0 for a border war.
-            // Its side owner/state (+0x4A0/+0x4A8) and event/effect inputs are
-            // unrecorded. Keep the proven common lines, count the missing tail.
-            let modifiers = rows::<tables::LandCombatModifiers>(frame);
-            match modifiers
-                .as_ref()
-                .ok()
-                .and_then(|rows| super::details::border_war(rows.rows(), id))
-            {
-                Some(false) => {}
-                Some(true) => {
-                    text.refused.insert(format!("land marker {id} border-conflict effects omitted: combatant country +0x4A0, state +0x4A8 and event/effect operands of 1413D69D0 are unrecorded"), 1);
-                }
-                None => {
-                    text.refused.insert(format!("land marker {id} border-conflict tail undecided: LandCombatModifiers lacks its class"), 1);
+            text.body = result;
+            if let Some(border) = &detail.border_war {
+                if let Err(why) =
+                    super::border_marker::append(document, frame, viewer, &links, border, &mut text)
+                {
+                    *text
+                        .refused
+                        .entry(format!("land marker {id} border-conflict tail: {why}"))
+                        .or_default() += 1;
                 }
             }
-            Ok(result)
+            Ok(std::mem::take(&mut text.body))
         })();
         match result {
             // BuildTooltip@1418AC1D0 writes only its third (delayed) output.

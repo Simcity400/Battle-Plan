@@ -1,5 +1,5 @@
-//! The map's weather effect entities from `common/weather.txt`, resolved to
-//! their particles.
+//! The map's weather effect entities and native thermal tooltip intervals
+//! from `common/weather.txt`, through the recorded content stack.
 
 use std::{collections::BTreeMap, io};
 
@@ -31,6 +31,32 @@ pub type Effects = BTreeMap<(usize, bool), Vec<EffectPair>>;
 
 type Names = BTreeMap<(usize, bool), Vec<[Option<String>; 2]>>;
 
+/// Native weather-manager interval order (140F08970, tokens 0x2F27..0x2F2A),
+/// also the static-modifier slot identifiers (140600CF0/140F04F70).
+const TEMPERATURE_MODIFIERS: [&str; 4] = [
+    "weather_extreme_cold",
+    "weather_very_cold",
+    "weather_very_hot",
+    "weather_extreme_hot",
+];
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TemperatureRange {
+    /// Signed native fixed5 bounds; lower inclusive, upper exclusive.
+    pub lower: i64,
+    pub upper: i64,
+    /// Localise the effective static modifier's identifier. None is the
+    /// native null modifier's empty display name, never a vanilla fallback.
+    pub modifier: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TemperatureRanges {
+    pub ranges: [TemperatureRange; 4],
+    /// The identifier reader's named content diagnostics.
+    pub notes: Vec<String>,
+}
+
 // 140F08970 loads the file to EOF. Unknown settings terminate that loader;
 // the presentation reader refuses them by name, including malformed ranges,
 // instead of returning effects the native loader would never reach.
@@ -53,7 +79,7 @@ enum WeatherNode {
     Pair,
 }
 
-pub(crate) fn parse_effect_names(bytes: &[u8]) -> io::Result<Names> {
+fn parse_weather(bytes: &[u8]) -> io::Result<native::Read> {
     use WeatherNode::*;
     let mut refused = Vec::new();
     // 140F08970 constructs the lexer in mode 0 (1424A63A0).
@@ -199,6 +225,14 @@ pub(crate) fn parse_effect_names(bytes: &[u8]) -> io::Result<Names> {
             }
         }
     }
+    if let Some(unsettled) = &document.unsettled {
+        return Err(invalid(format!("unsupported weather loader: {unsettled}")));
+    }
+    Ok(document)
+}
+
+pub(crate) fn parse_effect_names(bytes: &[u8]) -> io::Result<Names> {
+    let document = parse_weather(bytes)?;
     let mut out = Names::new();
     for effects in document
         .items
@@ -242,6 +276,75 @@ pub(crate) fn parse_effect_names(bytes: &[u8]) -> io::Result<Names> {
         }
     }
     Ok(out)
+}
+
+fn parse_temperature_ranges(bytes: &[u8]) -> io::Result<[[i64; 2]; 4]> {
+    let document = parse_weather(bytes)?;
+    // Constructor 140EFE890 zeroes +0x158..+0x190. Repeated settings/groups
+    // keep other slots; each encountered pair overwrites its two words.
+    let mut ranges = [[0; 2]; 4];
+    for settings in document
+        .items
+        .iter()
+        .filter(|item| item.keyword_is("settings"))
+    {
+        for temperature in block(&settings.value, "weather settings")?
+            .iter()
+            .filter(|item| item.keyword_is("temperature"))
+        {
+            for field in block(&temperature.value, "weather temperature")? {
+                let Some(slot) = TEMPERATURE_MODIFIERS
+                    .iter()
+                    .position(|key| field.keyword_is(key))
+                else {
+                    continue;
+                };
+                let values = block(&field.value, "weather temperature range")?;
+                let [lower, upper] = values else {
+                    return Err(invalid(format!(
+                        "weather temperature range {} needs two values",
+                        TEMPERATURE_MODIFIERS[slot]
+                    )));
+                };
+                // 140F0AD80 -> 140604600 starts each list entry at zero;
+                // failed ReadFixed5 leaves zero, as the native scanner does.
+                let fixed = |value: &crate::parser::Item| {
+                    value
+                        .value
+                        .scalar()
+                        .and_then(crate::fixed5::script_fixed5)
+                        .unwrap_or(0)
+                };
+                ranges[slot] = [fixed(lower), fixed(upper)];
+            }
+        }
+    }
+    Ok(ranges)
+}
+
+/// The four native thermal intervals and their stack-resolved modifier
+/// identifiers. Numeric/classification consumers retain full fixed5 values.
+pub fn temperature_ranges(layers: &ResolvedLayers) -> io::Result<TemperatureRanges> {
+    let ranges = parse_temperature_ranges(&layers.read(PATH)?)
+        .map_err(|error| invalid(format!("{PATH}: {error}")))?;
+    let identifiers = crate::static_modifiers::read_identifiers(layers, &TEMPERATURE_MODIFIERS)?;
+    let mut out = std::array::from_fn(|slot| TemperatureRange {
+        lower: ranges[slot][0],
+        upper: ranges[slot][1],
+        modifier: None,
+    });
+    for (range, identifier) in out.iter_mut().zip(identifiers.identifiers) {
+        range.modifier = identifier.map_err(|refusal| {
+            invalid(format!(
+                "{}: temperature modifier {}: {}",
+                refusal.file, refusal.modifier, refusal.reason
+            ))
+        })?;
+    }
+    Ok(TemperatureRanges {
+        ranges: out,
+        notes: identifiers.notes,
+    })
 }
 
 /// The particles one weather entity's default state emits. Only the forms the
@@ -385,113 +488,4 @@ pub fn effects(layers: &ResolvedLayers, catalog: &Catalog) -> io::Result<Effects
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn native_variables_keyword_tokens_and_error_recovery() {
-        let names = parse_effect_names(br#"@sprite=rain weather_effects={RAIN_LIGHT={
-            weather_effect={unknown={entity=hidden} "entity"=ignored ENTITY=@sprite small=yes small=bad}
-        }}"#).unwrap();
-        assert_eq!(names[&(0, true)][0][0].as_deref(), Some("rain"));
-        assert!(
-            parse_effect_names(b"settings={temperature={weather_very_hot={1}}}")
-                .unwrap_err()
-                .to_string()
-                .contains("weather_very_hot")
-        );
-        assert!(
-            parse_effect_names(b"settings={unsupported={}} ")
-                .unwrap_err()
-                .to_string()
-                .contains("unsupported")
-        );
-    }
-
-    #[test]
-    fn effects_keep_banks_pair_members_and_authored_order() {
-        let names = parse_effect_names(
-            br#"weather_effects = {
-                rain_light = {
-                    weather_effect = { entity = rain fading_entity = cloud }
-                    weather_effect = { entity = other }
-                    weather_effect = { entity = small_rain small = yes }
-                }
-                sandstorm = { weather_effect = { fading_entity = dust small = yes } }
-                snow = { weather_effect = { } }
-            }"#,
-        )
-        .unwrap();
-        let name = |value: &str| Some(value.to_owned());
-        assert_eq!(
-            names[&(0, false)],
-            [[name("rain"), name("cloud")], [name("other"), None]]
-        );
-        assert_eq!(names[&(0, true)], [[name("small_rain"), None]]);
-        assert_eq!(names[&(4, true)], [[None, name("dust")]]);
-        assert!(!names.contains_key(&(2, false)));
-    }
-
-    #[test]
-    fn entities_resolve_through_clones_and_refuse_unsupported_forms() {
-        let entities = mesh::parse_descriptors(
-            br#"
-            entity = { name = base scale = 2 default_state = idle
-                state = { name = idle state_time = 2 looping = no
-                    event = { time = 0 particle = drops keep_particle = yes }
-                    event = { trigger_once = yes sound = { soundeffect = rain } }
-                }
-            }
-            entity = { name = custom clone = base }
-            entity = { name = timed state = { name = idle event = { time = 1 particle = drops keep_particle = yes } } }
-            entity = { name = orphan clone = absent }
-            "#,
-            "gfx/entities/weather.asset",
-        )
-        .unwrap();
-        let mut catalog = Catalog::default();
-        catalog.add_test_particle("drops", "unrelated_id", 0.5, "gfx/particles/x/file.asset");
-        assert_eq!(
-            entity_particles("custom", &entities, &catalog).unwrap(),
-            [Particle {
-                path: "gfx/particles/x/file.asset".into(),
-                name: "unrelated_id".into(),
-                scale: 1.0,
-                registration: 0,
-            }]
-        );
-        for name in ["timed", "orphan", "absent"] {
-            assert!(
-                entity_particles(name, &entities, &catalog).is_err(),
-                "{name}"
-            );
-        }
-    }
-
-    #[test]
-    fn descriptors_come_from_files_that_name_the_entities_and_follow_clone_parents() {
-        let paths = ["a.asset", "units.asset", "storm.asset", "late.asset"].map(String::from);
-        let files = BTreeMap::from([
-            ("a.asset", &b"entity = { name = base scale = 2 }"[..]),
-            // Unrelated files may be malformed: they are never parsed.
-            ("units.asset", b"entity = { name = stormtrooper"),
-            ("storm.asset", b"entity = { name = storm clone = base }"),
-            ("late.asset", b"entity = { name = base scale = 3 }"),
-        ]);
-        let entities =
-            weather_descriptors(
-                &paths,
-                vec!["storm".into()],
-                |path| Ok(files[path].to_vec()),
-            )
-            .unwrap();
-        assert_eq!(entities.entities.len(), 2);
-        assert_eq!(entities.inherit("storm").unwrap().scale, Some(3.0));
-        assert!(
-            weather_descriptors(&paths[1..2], vec!["stormtrooper".into()], |path| {
-                Ok(files[path].to_vec())
-            })
-            .is_err()
-        );
-    }
-}
+mod tests;

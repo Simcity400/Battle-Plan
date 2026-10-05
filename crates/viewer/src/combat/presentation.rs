@@ -1,7 +1,7 @@
 //! Hourly commander presentation, with native portrait and assigned-trait selection.
 use super::{
     Selection, Values, Widget,
-    binding::{Bindings, SPRITE, hide, sprite},
+    binding::{Bindings, FLAG, SPRITE, country_flag, hide, sprite},
 };
 use crate::{document::Document, map::tables::rows};
 use replay::{
@@ -166,10 +166,29 @@ fn tactic(
     out.bind(key, SPRITE, value);
 }
 
-fn traits(out: &mut Bindings, document: &Document, key: &str, traits: &[LandCombatCommanderTrait]) {
+fn exile_entry(out: &mut Bindings, entry: &mut Values, flag: Result<String, String>) {
+    // 141C61C40 fills the exile flag through 140B35990.
+    match flag {
+        Ok(flag) => out.bind_in(entry, "exile_flag", FLAG, Ok(flag)),
+        Err(why) => {
+            hide(entry, "exile_flag");
+            hide(entry, "exile_flag_frame");
+            out.refuse(format!("Combat exile trait omitted: {why}"));
+        }
+    }
+}
+
+fn traits(
+    out: &mut Bindings,
+    document: &Document,
+    key: &str,
+    traits: &[LandCombatCommanderTrait],
+    exile: &Result<String, String>,
+) {
     // Both filters are enabled by 1415C6AB0 (land), 1417D81B0 (naval),
     // and 1417C6800 (results). Preserve native assigned order, not token order.
     let mut entries = Vec::new();
+    let mut entry_templates = std::collections::BTreeMap::new();
     // Trait sprites that are not loaded, counted by name and why.
     let mut missing: std::collections::BTreeMap<(String, String), usize> = Default::default();
     let names = document.icons.combat.tactics.trait_names();
@@ -177,11 +196,9 @@ fn traits(out: &mut Bindings, document: &Document, key: &str, traits: &[LandComb
     for value in traits.iter().filter(|t| t.kind != 0 && t.relevant != 0) {
         let mut entry = Values::new();
         if value.kind == 6 {
-            // Native uses unit_leader_exile_trait_entry and leader+ED4's country.
-            // The current context does not record that exile-country operand.
-            // Retain its slot but leave it empty instead of inventing a flag.
-            hide(&mut entry, "Background");
-            out.refuse("Combat trait: the exile trait's flag is hidden: its country (leader+ED4) is not recorded, so its assigned slot stays empty.".into());
+            // 141C5EF70 / 141C60E40 switch the assigned-trait entry template.
+            entry_templates.insert(entries.len(), "unit_leader_exile_trait_entry".into());
+            exile_entry(out, &mut entry, exile.clone());
         } else {
             let token = String::from_utf8_lossy(&value.token);
             let requested = format!("GFX_trait_{token}");
@@ -224,6 +241,7 @@ fn traits(out: &mut Bindings, document: &Document, key: &str, traits: &[LandComb
         key.into(),
         Widget {
             entry_template: Some("unit_leader_trait_entry".into()),
+            entry_templates,
             entries,
             ..Widget::default()
         },
@@ -235,8 +253,21 @@ pub(super) fn bind(
     document: &Document,
     frame: &DecodedFrame,
     selection: Selection,
+    flags: &std::collections::BTreeMap<u32, String>,
 ) -> io::Result<()> {
     let has_sprite = |name: &str| document.icons.combat.has_sprite(name);
+    let leaders = rows::<tables::UnitLeaders>(frame);
+    let exile = |commander: u64| -> Result<String, String> {
+        let rows = leaders
+            .as_ref()
+            .map_err(|e| format!("UnitLeaders unavailable: {e}"))?;
+        let row = rows
+            .rows()
+            .iter()
+            .find(|row| (u64::from(row.id) << 32 | u64::from(row.reference_type)) == commander)
+            .ok_or_else(|| format!("UnitLeaders lacks commander {commander}"))?;
+        country_flag(flags, row.exile_country as u32)
+    };
     match selection {
         Selection::Land(id) => {
             let details = rows::<tables::LandCombatDetails>(frame)?;
@@ -262,6 +293,7 @@ pub(super) fn bind(
                     document,
                     &format!("{prefix}_traits_grid"),
                     &side.traits,
+                    &exile(side.commander),
                 );
                 if side.tactic_kind == 2 {
                     tactic(
@@ -315,6 +347,7 @@ pub(super) fn bind(
                         document,
                         &format!("header_container/traits_grid_{prefix}"),
                         &commander.traits,
+                        &exile(commander.commander),
                     );
                 }
             }
@@ -355,6 +388,7 @@ pub(super) fn bind(
                             document,
                             &format!("{root}/traits_grid"),
                             &commander.traits,
+                            &exile(commander.commander),
                         );
                     }
                 }
@@ -378,92 +412,4 @@ pub(super) fn bind(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A refused tactic picture clears the sprite bound before it and hides
-    /// the widget; an undeclared portrait sprite leaves the widget as it was
-    /// (1422E6410). Both are named and counted.
-    #[test]
-    fn a_refused_portrait_or_tactic_picture_hides_the_earlier_sprite() {
-        let mut out = Bindings::default();
-        let has = |name: &str| name == "GFX_known" || name == "combat_tactic:tactic_a";
-        sprite(&mut out.values, "leader", "GFX_earlier".into());
-        sprite(&mut out.values, "tactic", "GFX_earlier".into());
-        let value = CombatCommanderPresentation {
-            character_state: 2,
-            portraits: vec![CombatCommanderPortraitEntry {
-                role: 1,
-                size: 1,
-                is_set: 1,
-                kind: 0,
-                text: b"GFX_missing".to_vec(),
-            }],
-            ..Default::default()
-        };
-        // An undeclared sprite: the setter keeps the widget as it was.
-        portrait(&mut out, &has, "leader", &value, 2);
-        assert_eq!(out.values["leader"].sprite.as_deref(), Some("GFX_earlier"));
-        let tactics =
-            super::super::tactics::Content::from_database(installed_content::combat_tactics::parse(
-                b"a = { picture = tactic_a } b = { picture = tactic_b }",
-                &installed_content::key_names::KeyNames::default(),
-            ));
-        tactic(&mut out, &has, &tactics, "tactic", 2, b"b");
-        assert_eq!(out.values["tactic"].sprite, None);
-        assert!(out.values["tactic"].hidden);
-        let refused: Vec<_> = out.refused().keys().cloned().collect();
-        assert_eq!(
-            refused,
-            [
-                "Combat portrait leader: the content does not declare sprite GFX_missing, so the game's sprite setter (1422E6410) keeps the widget's previous image; the viewer shows the window's own sprite",
-                "Combat tactic picture tactic is hidden: the content lacks sprite combat_tactic:tactic_b for tactic b",
-            ]
-        );
-        tactic(&mut out, &has, &tactics, "tactic", 1, b"a");
-        assert_eq!(
-            out.values["tactic"].sprite.as_deref(),
-            Some("combat_tactic:tactic_a")
-        );
-        assert!(!out.values["tactic"].hidden);
-    }
-
-    #[test]
-    fn portrait_role_fallback_stays_at_the_requested_size() {
-        let mut value = CombatCommanderPresentation {
-            character_state: 2,
-            ..Default::default()
-        };
-        for (role, size, text) in [(1, 0, "wrong_size"), (4, 1, "naval"), (1, 1, "first_role")] {
-            value.portraits.push(CombatCommanderPortraitEntry {
-                role,
-                size,
-                is_set: 1,
-                kind: 0,
-                text: text.as_bytes().into(),
-            });
-        }
-        assert_eq!(
-            select_portrait(&value, 3).unwrap(),
-            PortraitAsset::Declaration("naval".into())
-        );
-        assert_eq!(
-            select_portrait(&value, 2).unwrap(),
-            PortraitAsset::Declaration("first_role".into())
-        );
-        value.portraits[1].is_set = 0;
-        assert!(select_portrait(&value, 3).is_err());
-    }
-
-    #[test]
-    fn authenticated_character_does_not_use_unresolved_leader_fallback() {
-        let value = CombatCommanderPresentation {
-            character_state: 2,
-            fallback_text: [b"gfx/leaders/old.dds".to_vec(), Vec::new(), Vec::new()],
-            ..Default::default()
-        };
-        assert!(select_portrait(&value, 0).is_err());
-        assert!(texture(b"../outside.dds").is_err());
-        assert!(texture(b"C:\\outside.dds").is_err());
-    }
-}
+mod tests;

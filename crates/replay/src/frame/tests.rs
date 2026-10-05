@@ -896,6 +896,7 @@ fn source(branch: BranchId, hour: Hour) -> DecodedFrame {
                     id: b"campaign".to_vec(),
                 }])),
                 TableView::Complete(TableRows::Countries(vec![CountryRow {
+                    border_land_doctrine_level: None,
                     id: 7,
                     canonical_slot: 1,
                     tag: b"GER".to_vec(),

@@ -211,6 +211,19 @@ pub struct SideDetails {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BorderWarSide {
+    pub country: i32,
+    pub state: i32,
+    pub win_event: Span,
+    pub lose_event: Span,
+}
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BorderWarInputs {
+    pub transfer_state: u8,
+    pub sides: [BorderWarSide; 2],
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct DetailsRow {
     pub id: u64,
     pub province: u32,
@@ -222,6 +235,39 @@ pub struct DetailsRow {
     pub stored_terrain_name: Span,
     /// Attacker then defender, regardless of local viewing country.
     pub sides: [SideDetails; 2],
+    pub border_war: Option<BorderWarInputs>,
+}
+
+pub(super) fn read_border_war(
+    reader: &Reader<'_, impl Memory>,
+    source: Source,
+    arenas: &mut DetailArenas<'_>,
+) -> Result<BorderWarInputs, &'static str> {
+    use crate::{cland_border_war_combat as combat, cland_border_war_combatant as side};
+    let mut row = BorderWarInputs {
+        transfer_state: reader.field(source.pointer, combat::TRANSFER_STATE)?,
+        ..Default::default()
+    };
+    for (index, offset) in [ATTACKER, DEFENDER].into_iter().enumerate() {
+        let pointer = reader.pointer(source.pointer, offset)?;
+        let country = reader.field(pointer, side::COUNTRY)?;
+        let state = reader.pointer(pointer, side::STATE)?;
+        reader.vtable(state, 0, crate::cstate::VTABLE_RVA)?;
+        let state = reader.field::<i32>(state, crate::cstate::ID)?;
+        if state <= 0 {
+            return Err("border-war state id invalid");
+        }
+        // 1413D69D0 permits either event length to be zero.
+        let events = reader.field::<[u8; 64]>(pointer, side::WIN_EVENT)?;
+        let lose_offset = side::LOSE_EVENT - side::WIN_EVENT;
+        row.sides[index] = BorderWarSide {
+            country,
+            state,
+            win_event: reader.string(&events[..lose_offset], &BORDER_WIN_EVENT, arenas)?,
+            lose_event: reader.string(&events[lose_offset..], &BORDER_LOSE_EVENT, arenas)?,
+        };
+    }
+    Ok(row)
 }
 
 /// Copy only already-reached leaf spans. A checked-address failure stops at its
@@ -242,6 +288,18 @@ pub(super) fn copy_detail_spans<const N: usize>(
     }
 }
 
+const BORDER_WIN_EVENT: crate::cname_group_member::StringErrors = [
+    "border-war win event header invalid",
+    "border-war win event pointer unreadable or null",
+    "border-war win event bytes unreadable",
+    "border-war win event terminator unreadable or invalid",
+];
+const BORDER_LOSE_EVENT: crate::cname_group_member::StringErrors = [
+    "border-war lose event header invalid",
+    "border-war lose event pointer unreadable or null",
+    "border-war lose event bytes unreadable",
+    "border-war lose event terminator unreadable or invalid",
+];
 const SELECTED_NAME: crate::cname_group_member::StringErrors = [
     "land combat commander name token header invalid",
     "land combat commander name token pointer unreadable or null",
@@ -306,6 +364,11 @@ pub fn read_details(
         defender_bonus: i64::from_le_bytes(defender_bonus),
         ..DetailsRow::default()
     };
+    // 1413D69D0 consumes only the two sides and +F0. Side identity/backlinks
+    // were authenticated by header; identifiers use the existing unbounded arena.
+    if border {
+        row.border_war = Some(read_border_war(&reader, source, arenas)?);
+    }
     let stored_terrain = reader.pointer(source.pointer, STORED_TERRAIN)?;
     let stored_vtable = reader.field::<u64>(stored_terrain, 0)?;
     if ![

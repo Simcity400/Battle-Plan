@@ -4743,6 +4743,9 @@ fn owned_movement_admits_later_short_route_and_ignores_private_status_fault() {
 
 mod status_batches;
 
+#[path = "tests/border_index/tests.rs"]
+mod border_index;
+
 mod movement_pairs;
 
 #[test]

@@ -1,5 +1,6 @@
 //! Owned States census and its callback-scoped StateFlags visitor.
-//! Flag bytes are acquired after this request returns at the census point.
+//! Flags and active border trees use this worker's authenticated census;
+//! assembly later consumes their already acquired timing and owned rows.
 
 use crate::{acquisition_gather, extended::state_flags, sampling};
 use engine::{Memory, cstate, walk::Outcome};
@@ -71,9 +72,11 @@ impl Request {
             names.required = walk.required_bytes;
             walk.outcome
         });
+        let ticks = sampling::qpc() - begin;
+        visitor.acquire_owned(memory, base, game_state);
         Report {
             census: report,
-            ticks: sampling::qpc() - begin,
+            ticks,
         }
     }
 }

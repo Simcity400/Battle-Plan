@@ -4,7 +4,7 @@ use crate::{
     spooling::table,
     table_capture::{Arena, CaptureRows},
 };
-use engine::allocation::{copy_vec, owned_vec};
+use engine::allocation::{copy_vec, owned_vec, reserve};
 use engine::{Memory, cprovince, walk::Outcome};
 use replay::{
     frame::TableView,
@@ -43,8 +43,15 @@ pub struct Captured {
     rows: CaptureRows<cprovince::UnitOrderRow>,
     arena: Arena<u64>,
     terminal_failure: Option<&'static str>,
+    land: Vec<(u32, u64)>,
 }
 impl Captured {
+    #[cfg(test)]
+    pub(super) fn install_land_fixture(&mut self, land: Vec<(u32, u64)>, outcome: Outcome) {
+        self.land = land;
+        self.rows.outcome = outcome;
+    }
+
     /// Allocation-free placeholder while the original buffers are owned by an
     /// acquisition request. Restore that request before publication or growth.
     pub(crate) fn vacant() -> Self {
@@ -56,15 +63,19 @@ impl Captured {
             rows: CaptureRows::new(c.rows),
             arena: Arena::new(c.arena),
             terminal_failure: None,
+            land: Vec::new(),
         }
     }
     pub fn reset(&mut self) {
         self.terminal_failure = None;
         self.rows.reset();
         self.arena.reset();
+        self.land.clear();
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.rows.allocated_bytes() + self.arena.allocated_bytes()
+        self.rows.allocated_bytes()
+            + self.arena.allocated_bytes()
+            + self.land.capacity() * std::mem::size_of::<(u32, u64)>()
     }
     pub fn grow(&mut self, c: &mut Capacities) {
         self.rows.grow(&mut c.rows);
@@ -93,12 +104,18 @@ impl Captured {
         self.reset();
         let _reads = crate::read_accounting::table(TableId::ProvinceUnitOrder);
         let begin = qpc();
-        let acquired = cprovince::walk_unit_order(
+        let land = &mut self.land;
+        let acquired = cprovince::walk_unit_order_with_land(
             memory,
             base,
             state,
             &mut self.rows.rows,
             &mut self.arena.first,
+            |province, handle| {
+                reserve(land, 1).map_err(|_| "province land membership allocation failed")?;
+                land.push((province, handle));
+                Ok(())
+            },
         );
         self.rows.outcome = acquired.outcome;
         self.arena.len = acquired.len;
@@ -109,6 +126,13 @@ impl Captured {
         [self
             .terminal_failure
             .map_or(self.rows.outcome, |reason| Outcome::Unavailable { reason })]
+    }
+    pub(crate) fn land(&self) -> Result<&[(u32, u64)], &'static str> {
+        match self.outcomes()[0] {
+            Outcome::Rows { .. } => Ok(&self.land),
+            Outcome::Unavailable { reason } => Err(reason),
+            Outcome::Truncated { .. } => Err("border demand province unit order truncated"),
+        }
     }
 
     pub fn tables(&self) -> [TableView; N] {

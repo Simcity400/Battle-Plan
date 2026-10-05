@@ -11,7 +11,8 @@ use crate::{
 };
 use engine::allocation::{copy_vec, owned_vec};
 use engine::{
-    Memory, crelation_status, cstrategic_navy, visibility_inputs as native, walk::Outcome,
+    Memory, crelation_status, cstrategic_navy, cweather_manager, visibility_inputs as native,
+    walk::Outcome,
 };
 use replay::{
     cadence::{SKIPPED_REASON, should_walk},
@@ -69,8 +70,15 @@ impl Capacities {
     }
 }
 
+#[derive(Default, Clone, Copy)]
+struct FeatureInputs {
+    dlc_mask: u32,
+    human_ai: u8,
+    weather_suspend: Option<[u8; 2]>,
+}
+
 pub struct Captured {
-    dlc_mask: CaptureRows<(u32, u8)>,
+    dlc_mask: CaptureRows<FeatureInputs>,
     local_player: CaptureRows<[u32; 2]>,
     countries: CaptureRows<native::CountryRow>,
     states: CaptureRows<native::StateRow>,
@@ -83,6 +91,7 @@ pub struct Captured {
     naval_access: CaptureRows<cstrategic_navy::AccessRow>,
     /// Live country slots seen by the last walk.
     slots: usize,
+    weather_suspend_failure: Option<&'static str>,
 }
 
 impl Captured {
@@ -116,6 +125,7 @@ impl Captured {
             war_links: Arena::new(0),
             naval_access: CaptureRows::new(0),
             slots: 0,
+            weather_suspend_failure: None,
         }
     }
 
@@ -131,9 +141,11 @@ impl Captured {
             war_links: Arena::new(capacity.war_links),
             naval_access: CaptureRows::new(capacity.naval_access),
             slots: 0,
+            weather_suspend_failure: None,
         }
     }
     pub fn reset(&mut self) {
+        self.weather_suspend_failure = None;
         self.dlc_mask.reset();
         self.local_player.reset();
         self.countries.reset();
@@ -143,6 +155,10 @@ impl Captured {
         self.war_links.reset();
         self.naval_access.reset();
     }
+    pub(crate) fn weather_suspend_failure(&self) -> Option<&'static str> {
+        self.weather_suspend_failure
+    }
+
     pub fn allocated_bytes(&self) -> usize {
         self.local_player.allocated_bytes()
             + self.dlc_mask.allocated_bytes()
@@ -202,15 +218,27 @@ impl Captured {
             let started = qpc();
             match index {
                 0 => {
-                    self.dlc_mask.outcome = match native::dlc_mask(memory, base)
-                        .and_then(|mask| Ok((mask, native::human_ai(memory, base)?)))
-                    {
-                        Ok(row) => {
-                            self.dlc_mask.rows[0] = row;
-                            Outcome::Rows { len: 1 }
-                        }
-                        Err(reason) => Outcome::Unavailable { reason },
-                    }
+                    self.dlc_mask.outcome =
+                        match native::dlc_mask(memory, base).and_then(|dlc_mask| {
+                            Ok(FeatureInputs {
+                                dlc_mask,
+                                human_ai: native::human_ai(memory, base)?,
+                                weather_suspend: cweather_manager::Reader::new(
+                                    memory, base, game_state,
+                                )
+                                .and_then(|reader| reader.suspend_flags())
+                                .inspect_err(|reason| {
+                                    self.weather_suspend_failure = Some(*reason);
+                                })
+                                .ok(),
+                            })
+                        }) {
+                            Ok(row) => {
+                                self.dlc_mask.rows[0] = row;
+                                Outcome::Rows { len: 1 }
+                            }
+                            Err(reason) => Outcome::Unavailable { reason },
+                        };
                 }
                 1 => {
                     (self.countries.outcome, self.slots) =
@@ -278,7 +306,11 @@ impl Captured {
             table::<tables::SimulationFeatures, _>(
                 self.dlc_mask.outcome,
                 &self.dlc_mask.rows,
-                |&(dlc_mask, human_ai)| SimulationFeatureRow { dlc_mask, human_ai },
+                |r| SimulationFeatureRow {
+                    dlc_mask: r.dlc_mask,
+                    human_ai: r.human_ai,
+                    weather_suspend: r.weather_suspend,
+                },
             ),
             table::<tables::CountryVisibility, _>(
                 self.countries.outcome,
@@ -347,154 +379,4 @@ impl Captured {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn local_player_switch_observer_failure_and_recovery_round_trip() {
-        use replay::frame::{DecodedFrame, Frame, FrameDecoder, FrameEncoder, Metrics};
-        let mut captured = Captured::with_capacities(&Capacities::default());
-        let mut encoder = FrameEncoder::new();
-        let mut decoder = FrameDecoder::new();
-        // Unchanged, a controller change, an observer view, no view, a failed
-        // read and recovery, each decoded through the codec.
-        let samples = [
-            Some([4_999_u32, 0]),
-            Some([4_999, 0]),
-            Some([5_000, 0]),
-            Some([0, 4_999]),
-            Some([0, 0]),
-            None,
-            Some([5_000, 0]),
-        ];
-        for (hour, sample) in samples.into_iter().enumerate() {
-            let bytes: Vec<_> = sample
-                .into_iter()
-                .flatten()
-                .flat_map(u32::to_le_bytes)
-                .collect();
-            let memory = engine::memory::SliceMemory {
-                base: 0x1000 + engine::cgame_state::LOCAL_PLAYER_COUNTRY,
-                bytes: &bytes,
-            };
-            captured.capture(&memory, 0, 0x1000, hour as i32, hour == 0);
-            let mut tables = std::array::from_fn(|_| TableView::Unavailable {
-                reason: "fixture".into(),
-            });
-            tables[TableId::LocalPlayer.index()] = captured.tables()[6].clone();
-            let frame = encoder
-                .encode(
-                    DecodedFrame {
-                        branch: 1,
-                        hour: hour as i32,
-                        tables: tables.map(Into::into),
-                        metrics: Metrics::default(),
-                    },
-                    false,
-                )
-                .unwrap();
-            let mut bytes = Vec::new();
-            frame.encode(&mut bytes).unwrap();
-            let wire = Frame::decode(&mut replay::codec::Decoder::new(&bytes)).unwrap();
-            let decoded = decoder.apply(&wire).unwrap();
-            match sample {
-                Some([country, observer_country]) => assert_eq!(
-                    decoded.complete::<tables::LocalPlayer>().unwrap(),
-                    &[LocalPlayerRow {
-                        country,
-                        observer_country
-                    }]
-                ),
-                None => assert!(decoded.complete::<tables::LocalPlayer>().is_err()),
-            }
-        }
-        captured.fail_capture(9, false, "worker stopped");
-        assert_eq!(
-            captured.outcomes()[6],
-            Outcome::Unavailable {
-                reason: "worker stopped"
-            }
-        );
-    }
-
-    #[test]
-    fn growth_sizes_country_rows_from_the_live_slot_count() {
-        let mut capacity = Capacities::default();
-        let mut captured = Captured::with_capacities(&capacity);
-        captured.slots = 5_000;
-        captured.grow(&mut capacity);
-        assert_eq!(
-            (
-                capacity.countries,
-                capacity.links,
-                capacity.wars,
-                capacity.war_links,
-                capacity.naval_access
-            ),
-            (5_000, 5_000, 5_000, 5_000, 5_000)
-        );
-        assert!(captured.countries.rows.len() >= 5_000);
-    }
-
-    #[test]
-    fn one_failed_input_leaves_the_others_and_the_hourly_features_fail_too() {
-        let mut captured = Captured::with_capacities(&Capacities::default());
-        captured.fail_capture(1, false, "worker stopped");
-        let outcomes = captured.outcomes();
-        // SimulationFeatures is hourly: `human_ai` can be toggled at runtime.
-        // NavalRegionAccess is daily: off its slot a failure is a skip.
-        assert!(outcomes[..5].iter().all(|outcome| *outcome
-            == Outcome::Unavailable {
-                reason: "worker stopped"
-            }));
-        assert_eq!(
-            outcomes[5],
-            Outcome::Unavailable {
-                reason: replay::cadence::SKIPPED_REASON
-            }
-        );
-        captured.links.outcome = Outcome::Rows { len: 1 };
-        captured.links.rows[0] = crelation_status::LinkRow {
-            country: 5,
-            target: 9,
-            links: crelation_status::LINK_ATTACHE,
-        };
-        let [_, _, _, TableView::Complete(rows), _, _, _] = captured.tables() else {
-            panic!("links table stays complete");
-        };
-        assert_eq!(rows.len(), 1);
-    }
-
-    #[test]
-    fn war_rows_convert_their_arena_spans_and_refuse_one_outside_it() {
-        let mut captured = Captured::with_capacities(&Capacities::default());
-        captured.war_links.first[..3].copy_from_slice(&[7, 8, 9]);
-        captured.war_links.len = 3;
-        captured.wars.rows[0] = crelation_status::WarRow {
-            country: 4,
-            can_occupy_non_war: 1,
-            enemies_read: true,
-            enemies_start: 1,
-            enemies_len: 2,
-        };
-        captured.wars.outcome = Outcome::Rows { len: 1 };
-        let TableView::Complete(replay::rows::TableRows::CountryWars(rows)) = captured.wars_table()
-        else {
-            panic!("war table stays complete");
-        };
-        assert_eq!(
-            rows,
-            [CountryWarRow {
-                country: 4,
-                can_occupy_non_war: 1,
-                enemies_read: 1,
-                enemies: vec![8, 9],
-            }]
-        );
-        captured.wars.rows[0].enemies_len = 3;
-        assert!(matches!(
-            captured.wars_table(),
-            TableView::Unavailable { .. }
-        ));
-    }
-}
+mod tests;

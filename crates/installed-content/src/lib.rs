@@ -19,6 +19,7 @@ pub mod division_names;
 pub mod effect_keys;
 pub mod equipment;
 pub mod equipment_graphics;
+pub mod events;
 mod fields;
 pub mod fixed5;
 pub mod flags;

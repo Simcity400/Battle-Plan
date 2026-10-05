@@ -515,6 +515,7 @@ pub struct Viewer {
     raid_lane: crate::raid_lane::RaidLane,
     raid_tooltips: map::raids::tooltips::lane::Lane,
     land_marker_tooltips: crate::combat::land_marker_tooltips::Cache,
+    province_tooltips: map::province_tooltips::Cache,
     tooltip_refused: BTreeMap<String, usize>,
     // counters
     counter_report: CounterReport,
@@ -843,6 +844,7 @@ impl Viewer {
             raid_lane: Default::default(),
             raid_tooltips: Default::default(),
             land_marker_tooltips: Default::default(),
+            province_tooltips: Default::default(),
             tooltip_refused: Default::default(),
             // counters
             counter_report: CounterReport::default(),
@@ -951,6 +953,7 @@ impl Viewer {
         self.options.replay = None;
         self.raid_tooltips = Default::default();
         self.land_marker_tooltips = Default::default();
+        self.province_tooltips = Default::default();
         self.tooltip_refused.clear();
         self.source = None;
         self.source_decoder = None;
@@ -1369,6 +1372,7 @@ impl Viewer {
         self.document = None;
         self.raid_tooltips = Default::default();
         self.land_marker_tooltips = Default::default();
+        self.province_tooltips = Default::default();
         self.tooltip_refused.clear();
         self.source = None;
         self.source_decoder = None;
@@ -1670,7 +1674,7 @@ impl Viewer {
         point: Option<[f32; 2]>,
         extent: [f32; 2],
         ctx: &egui::Context,
-    ) -> Option<(Arc<map::raids::tooltips::Tooltip>, [f32; 4])> {
+    ) -> Option<(Arc<map::raids::tooltips::Tooltip>, [f32; 4], Option<u32>)> {
         let point = point?;
         if let Some(hit) = self
             .prepared_overlay
@@ -1691,6 +1695,7 @@ impl Viewer {
             return Some((
                 text,
                 [hit.origin[0], hit.origin[1], hit.size[0], hit.size[1]],
+                None,
             ));
         }
         if let Some((id, rect)) =
@@ -1709,13 +1714,13 @@ impl Viewer {
                     let mut text = map::raids::tooltips::Tooltip::default();
                     text.refused
                         .insert(format!("land marker {id} engaged index: {why}"), 1);
-                    return Some((Arc::new(text), rect));
+                    return Some((Arc::new(text), rect, None));
                 }
             };
             let text =
                 self.land_marker_tooltips
                     .request(document, frame, viewer, id, index.as_deref());
-            return Some((text, rect));
+            return Some((text, rect, None));
         }
         if let Some(hit) = self
             .counter_report
@@ -1737,15 +1742,35 @@ impl Viewer {
                 text.refused.insert(format!("arrival line: {reason}"), 1);
                 format!("Arrival line refused: {reason}.")
             });
-            return Some((Arc::new(text), hit.rect));
+            return Some((Arc::new(text), hit.rect, None));
         }
-        Some((
-            Arc::new(map::raids::tooltips::Tooltip {
-                title: "Drag to pan · Scroll to zoom".into(),
-                ..Default::default()
-            }),
-            [0.0, 0.0, extent[0], extent[1]],
-        ))
+        let crate::playback::Current::Frame(frame) = document.playback.current() else {
+            return None;
+        };
+        let view = self.last_view.as_ref()?;
+        let province = match map::province_pick::pick(
+            &view.camera,
+            point.map(|v| v * view.ui_scale),
+            view.viewport,
+            &document.map,
+            document.assets.heightmap_texels(),
+        ) {
+            Ok(province) => province?,
+            Err(reason) => {
+                let mut text = map::raids::tooltips::Tooltip::default();
+                text.refused.insert(reason, 1);
+                return Some((Arc::new(text), [0.0, 0.0, extent[0], extent[1]], None));
+            }
+        };
+        let vision = self.overlay_tables.as_ref()?.3.vision();
+        let text = self.province_tooltips.request(
+            &document.content,
+            frame,
+            province,
+            vision,
+            self.counter_view.settings.nato,
+        );
+        Some((text, [0.0, 0.0, extent[0], extent[1]], Some(province)))
     }
 
     fn map(
@@ -2300,16 +2325,21 @@ impl Viewer {
         let map_hit = self.map_tooltip(document, point.filter(|_| !over_combat), extent, ui.ctx());
         let mut tooltip_refused = map_hit
             .as_ref()
-            .map(|(text, _)| text.refused.clone())
+            .map(|(text, _, _)| text.refused.clone())
             .unwrap_or_default();
         let mut additions = Batch::default();
         if let Some((text, anchor)) = self.combat.tooltip(
             drawn.as_ref(),
             &document.icons.combat,
             point,
-            map_hit
-                .as_ref()
-                .map(|(text, rect)| (text.title.as_str(), Some(text.body.as_str()), *rect)),
+            map_hit.as_ref().map(|(text, rect, province)| {
+                (
+                    text.title.as_str(),
+                    Some(text.body.as_str()),
+                    *rect,
+                    *province,
+                )
+            }),
         ) {
             let refused = self
                 .prepared_overlay

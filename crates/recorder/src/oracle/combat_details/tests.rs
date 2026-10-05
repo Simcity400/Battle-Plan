@@ -7,6 +7,80 @@ use replay::{
 };
 
 #[test]
+fn border_marker_witnesses_compare_stored_country_state_and_event_strings() {
+    use replay::rows::{LandBorderWarInputs, LandBorderWarSide, LandCombatDetailsRow};
+    let (mut frame, mut save, ..) = super::super::tests::fixture();
+    let combat = (7_u64 << 32) | 62;
+    let border = LandBorderWarInputs {
+        transfer_state: 128,
+        sides: [
+            LandBorderWarSide {
+                country: 102,
+                state: 11,
+                win_event: b"synthetic.001".to_vec(),
+                lose_event: Vec::new(),
+            },
+            LandBorderWarSide {
+                country: 102,
+                state: 13,
+                win_event: Vec::new(),
+                lose_event: b"synthetic.2".to_vec(),
+            },
+        ],
+    };
+    *frame.tables[TableId::LandCombatDetails.index()] =
+        TableView::Complete(TableRows::LandCombatDetails(vec![LandCombatDetailsRow {
+            combat,
+            province: 2,
+            border_war: Some(border),
+            ..Default::default()
+        }]));
+    let mut details = save::combat_details::LandDetails {
+        border_war: true,
+        transfer_state: Some(true),
+        ..Default::default()
+    };
+    for (side, state) in details.sides.iter_mut().zip([11, 13]) {
+        side.border_country = Some(b"GER".to_vec());
+        side.border_state = Some(state);
+        side.organisation_loss_count = Some(0);
+    }
+    details.sides[0].border_win_event = Some(b"synthetic.001".to_vec());
+    details.sides[1].border_lose_event = Some(b"synthetic.2".to_vec());
+    save.land_combats.insert(
+        combat,
+        save::LandCombat {
+            id: combat,
+            province: 2,
+            details,
+            day: 0,
+            duration: 0,
+            attackers: Vec::new(),
+            defenders: Vec::new(),
+        },
+    );
+    let mut report = Report::default();
+    land(&frame, &save, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    // The class survives an omitted transfer key; its absence is compared separately.
+    save.land_combats
+        .get_mut(&combat)
+        .unwrap()
+        .details
+        .transfer_state = None;
+    let mut report = Report::default();
+    land(&frame, &save, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    let saved = &mut save.land_combats.get_mut(&combat).unwrap().details;
+    saved.transfer_state = Some(false);
+    saved.sides[0].border_state = Some(12);
+    saved.sides[0].border_win_event = Some(b"synthetic.1".to_vec());
+    let mut report = Report::default();
+    land(&frame, &save, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+}
+
+#[test]
 fn air_base_wing_rows_must_be_exactly_the_referenced_bases_in_the_air_censuses() {
     fn set(frame: &mut DecodedFrame, rows: TableRows) {
         let index = rows.table().index();

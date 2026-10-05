@@ -1930,6 +1930,7 @@ mod tests {
         )
         .unwrap();
         let country = CountryRow {
+            border_land_doctrine_level: None,
             id: 11,
             canonical_slot: 7,
             tag: b"GER".to_vec(),
@@ -2149,6 +2150,7 @@ mod tests {
             air_experience=0.00021 air_experience_daily=0.00024 num_armies_for_training=1.00003
         }}}"#).unwrap().items).unwrap();
         let country = CountryRow {
+            border_land_doctrine_level: None,
             id: 11,
             canonical_slot: 7,
             tag: b"GER".to_vec(),
@@ -2290,6 +2292,7 @@ mod tests {
         )
         .unwrap();
         let country = |id, tag: &[u8]| CountryRow {
+            border_land_doctrine_level: None,
             id,
             canonical_slot: id,
             tag: tag.to_vec(),

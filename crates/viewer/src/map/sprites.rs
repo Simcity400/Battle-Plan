@@ -236,15 +236,16 @@ impl MapIcons {
         layers: &ResolvedLayers,
         localisation: &installed_content::localisation::Localisation,
     ) -> io::Result<Vec<String>> {
-        let mut warnings = self.counters.load_gui(
+        let (extra, mut warnings) = self.combat.localisation_assets(localisation);
+        warnings.extend(self.counters.load_gui(
             layers,
             localisation,
-            crate::combat::tooltip_assets(self.combat.native_templates(), localisation),
+            extra.clone(),
             &mut self.images,
-        )?;
+        )?);
         warnings.extend(
             self.combat
-                .load_gui(layers, localisation, &mut self.images)?,
+                .load_gui(layers, localisation, &extra, &mut self.images)?,
         );
         if self.images.len() >= DYNAMIC_BASE {
             return Err(invalid("more static icon pages than texture ids"));

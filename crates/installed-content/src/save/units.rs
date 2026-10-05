@@ -518,7 +518,7 @@ fn country_intel(items: &[Item]) -> io::Result<Vec<IntelEntry>> {
         .collect())
 }
 
-pub(super) fn parse_land_combat(items: &[Item]) -> io::Result<LandCombat> {
+pub(super) fn parse_land_combat(items: &[Item], border_war: bool) -> io::Result<LandCombat> {
     fn participants(items: &[Item], side: &[u8]) -> io::Result<Vec<u64>> {
         required_block(items, side)?
             .iter()
@@ -535,7 +535,7 @@ pub(super) fn parse_land_combat(items: &[Item]) -> io::Result<LandCombat> {
         duration: integer(&required_bytes(items, b"duration")?)?,
         attackers: participants(items, b"attacker")?,
         defenders: participants(items, b"defender")?,
-        details: combat_details::land(items)?,
+        details: combat_details::land(items, border_war)?,
     })
 }
 

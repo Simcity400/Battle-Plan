@@ -9,3 +9,5 @@ pub const VTABLE_RVA: usize = 0x029a_56e0;
 pub const BODY_VTABLE_RVA: usize = 0x029a_57c0;
 /// CLandBorderWarCombat secondary-base displacement; archived land manager walk and a729 RTTI COL offset 16.
 pub const BODY: usize = 0x10;
+/// Transfer-state byte tested by the border tooltip tail at 1413D69D0.
+pub const TRANSFER_STATE: usize = 0xf0;

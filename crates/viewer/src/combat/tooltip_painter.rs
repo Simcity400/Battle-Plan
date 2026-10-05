@@ -49,6 +49,7 @@ impl TooltipDefines {
 /// starts at its first frame.
 #[derive(Default)]
 pub(super) struct HoverState {
+    province: Option<u32>,
     target: Option<[f32; 4]>,
     entered: Option<Instant>,
     delayed_pending: bool,
@@ -70,6 +71,14 @@ pub(super) struct HoverState {
 }
 
 impl HoverState {
+    /// 140B450E0's province binding changes independently of the map rectangle.
+    pub(super) fn bind_province(&mut self, province: Option<u32>) {
+        if self.province != province {
+            self.province = province;
+            self.target = None;
+            self.entered = None;
+        }
+    }
     /// Delays are `[show, delayed-body, hide]` seconds. Call this on every
     /// requested frame, including frames without a hit, so hiding can finish.
     /// An already visible tooltip updates immediately when its binding changes;
@@ -258,231 +267,4 @@ pub(crate) fn draw<R: native_gui::Resources + native_gui::Sheets>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tooltip_edge_reversal_uses_the_pointer_and_twenty_pixel_gap() {
-        assert_eq!(
-            position([100.9, 200.1], [300.0, 80.0], [1000.0, 600.0], [0; 4]),
-            [121.0, 224.0]
-        );
-        assert_eq!(
-            position([900.0, 550.0], [300.0, 80.0], [1000.0, 600.0], [0; 4]),
-            [580.0, 450.0]
-        );
-        assert_eq!(
-            position([5.0, 5.0], [300.0, 80.0], [100.0, 50.0], [0; 4]),
-            [0.0, 0.0]
-        );
-    }
-
-    const TIMING: [f32; 3] = [0.05, 1.0, 0.05];
-    const RECT: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
-    const POINT: Option<[f32; 2]> = Some([2.0, 3.0]);
-
-    #[test]
-    fn hover_uses_strict_show_and_delayed_deadlines() {
-        let start = Instant::now();
-        let mut hover = HoverState::default();
-        let hit = Some(("Header", Some("Body"), RECT));
-        assert_eq!(hover.shown(hit, POINT, start, TIMING), None);
-        assert!(hover.next_change(start, TIMING).is_some());
-        assert_eq!(
-            hover.shown(hit, POINT, start + Duration::from_millis(50), TIMING),
-            None
-        );
-        assert_eq!(
-            hover.shown(hit, POINT, start + Duration::from_millis(51), TIMING),
-            Some(("Header", POINT.unwrap()))
-        );
-        assert_eq!(
-            hover.shown(hit, POINT, start + Duration::from_secs(1), TIMING),
-            Some(("Header", POINT.unwrap()))
-        );
-        assert_eq!(
-            hover.shown(hit, POINT, start + Duration::from_millis(1001), TIMING),
-            Some(("Header\n--------------\nBody", POINT.unwrap()))
-        );
-        assert_eq!(
-            hover.next_change(start + Duration::from_millis(1001), TIMING),
-            None
-        );
-    }
-
-    #[test]
-    fn hover_preserves_authored_whitespace_in_tooltip_parts() {
-        // The clock runs a second before the hover, so a zero delay's
-        // deadline is set (above 0).
-        let clock = Instant::now();
-        let start = clock + Duration::from_secs(1);
-        let mut hover = HoverState::default();
-        hover.shown(None, None, clock, [0.0; 3]);
-        let hit = Some((" \n", Some(" x "), RECT));
-        assert_eq!(hover.shown(hit, POINT, start, [0.0; 3]), None);
-        assert_eq!(
-            hover.shown(hit, POINT, start + Duration::from_millis(1), [0.0; 3]),
-            Some((" \n\n--------------\n x ", POINT.unwrap()))
-        );
-    }
-
-    #[test]
-    fn hovering_new_values_keeps_clock_but_a_new_binding_restarts_delayed_text() {
-        let start = Instant::now();
-        let mut hover = HoverState::default();
-        hover.shown(Some(("10", Some("details"), RECT)), POINT, start, TIMING);
-        hover.shown(
-            Some(("10", Some("details"), RECT)),
-            POINT,
-            start + Duration::from_millis(51),
-            TIMING,
-        );
-        assert_eq!(
-            hover.shown(
-                Some(("11", Some("updated"), RECT)),
-                POINT,
-                start + Duration::from_millis(1001),
-                TIMING
-            ),
-            Some(("11\n--------------\nupdated", POINT.unwrap()))
-        );
-        let next_rect = [5.0, 2.0, 3.0, 4.0];
-        assert_eq!(
-            hover.shown(
-                Some(("New", Some("later"), next_rect)),
-                POINT,
-                start + Duration::from_millis(1100),
-                TIMING
-            ),
-            Some(("New", POINT.unwrap()))
-        );
-    }
-
-    #[test]
-    fn hide_delay_retains_last_text_and_reentry_cancels_hiding() {
-        let start = Instant::now();
-        let mut hover = HoverState::default();
-        let hit = Some(("Header", None, RECT));
-        hover.shown(hit, POINT, start, TIMING);
-        hover.shown(hit, POINT, start + Duration::from_millis(51), TIMING);
-        assert_eq!(
-            hover.shown(None, None, start + Duration::from_millis(100), TIMING),
-            Some(("Header", POINT.unwrap()))
-        );
-        assert_eq!(
-            hover.shown(None, None, start + Duration::from_millis(150), TIMING),
-            Some(("Header", POINT.unwrap()))
-        );
-        assert_eq!(
-            hover.shown(hit, POINT, start + Duration::from_millis(150), TIMING),
-            Some(("Header", POINT.unwrap()))
-        );
-        assert_eq!(
-            hover.next_change(start + Duration::from_millis(150), TIMING),
-            None
-        );
-        hover.shown(None, None, start + Duration::from_millis(200), TIMING);
-        assert_eq!(
-            hover.shown(None, None, start + Duration::from_millis(251), TIMING),
-            None
-        );
-    }
-
-    /// The delays are the game's floats, only compared (1402A4080): a
-    /// negative `TOOLTIP_DELAYED_DELAY` passes `delay < elapsed` at once, so
-    /// the body joins on the first frame, and a negative show delay shows at
-    /// once; neither disables the tooltip.
-    #[test]
-    fn negative_delays_follow_the_native_comparisons() {
-        let defines = Defines::new().unwrap();
-        defines
-            .load(
-                "common/defines/00_defines.lua",
-                b"NDefines = {
-                    NInterface = { TOOLTIP_SCREEN_LEFT_OFFSET_X = 0, TOOLTIP_SCREEN_TOP_OFFSET_Y = 0,
-                        TOOLTIP_SCREEN_RIGHT_OFFSET_X = 0, TOOLTIP_SCREEN_BOTTOM_OFFSET_Y = 0 },
-                    NGraphics = { TOOLTIP_SHOW_DELAY = -1, TOOLTIP_DELAYED_DELAY = -0.5, TOOLTIP_HIDE_DELAY = 0.05 } }",
-            )
-            .unwrap();
-        let timing = TooltipDefines::read(&defines).unwrap().timing;
-        assert_eq!(timing, [-1.0, -0.5, 0.05]);
-        // Two seconds into the presentation clock the show deadline, one
-        // second, is set and already passed.
-        let clock = Instant::now();
-        let start = clock + Duration::from_secs(2);
-        let mut hover = HoverState::default();
-        hover.shown(None, None, clock, timing);
-        let hit = Some(("Header", Some("Body"), RECT));
-        assert_eq!(
-            hover.shown(hit, POINT, start, timing),
-            Some(("Header\n--------------\nBody", POINT.unwrap()))
-        );
-        assert_eq!(hover.next_change(start, timing), None);
-        // A NaN never passes `delay < elapsed`, so the body never joins, and
-        // nothing is scheduled for it.
-        let mut hover = HoverState::default();
-        let nan = [0.0, f32::NAN, 0.05];
-        hover.shown(None, None, clock, nan);
-        hover.shown(hit, POINT, start, nan);
-        assert_eq!(
-            hover.shown(hit, POINT, start + Duration::from_secs(60), nan),
-            Some(("Header", POINT.unwrap()))
-        );
-        assert_eq!(
-            hover.next_change(start + Duration::from_secs(60), nan),
-            None
-        );
-    }
-
-    /// 1402A4080 keeps the show deadline on the presentation clock
-    /// (142238C90) and reads one at or below 0 as unset, setting it again on
-    /// each frame: with a show delay of -1, a hover in the clock's first
-    /// second waits until the deadline `now - 1` rises above 0, then shows at
-    /// once. The hide deadline follows the same rule.
-    #[test]
-    fn a_deadline_at_or_below_zero_on_the_presentation_clock_is_unset() {
-        let clock = Instant::now();
-        let at = |millis| clock + Duration::from_millis(millis);
-        let timing = [-1.0, 1.0, -1.0];
-        let mut hover = HoverState::default();
-        let hit = Some(("Header", None, RECT));
-        assert_eq!(hover.shown(hit, POINT, clock, timing), None);
-        assert_eq!(hover.shown(hit, POINT, at(500), timing), None);
-        // The deadline holds once the clock passes one second.
-        let next = hover.next_change(at(500), timing).unwrap();
-        assert!(
-            next > Duration::from_millis(499) && next < Duration::from_millis(501),
-            "{next:?}"
-        );
-        assert_eq!(
-            hover.shown(hit, POINT, at(1100), timing),
-            Some(("Header", POINT.unwrap()))
-        );
-        // The hide deadline, `now - 1`, is above 0 by now: it hides at once.
-        assert_eq!(hover.shown(None, None, at(1200), timing), None);
-        // In the clock's first second the hide waits instead.
-        let timing = [0.05, 1.0, -1.0];
-        let mut hover = HoverState::default();
-        hover.shown(None, None, clock, timing);
-        hover.shown(hit, POINT, at(100), timing);
-        assert!(hover.shown(hit, POINT, at(200), timing).is_some());
-        assert!(hover.shown(None, None, at(300), timing).is_some());
-        assert_eq!(hover.shown(None, None, at(1100), timing), None);
-    }
-
-    #[test]
-    fn delayed_only_tooltip_waits_for_body_then_show_delay_without_separator() {
-        let start = Instant::now();
-        let mut hover = HoverState::default();
-        let hit = Some(("", Some("Details"), RECT));
-        assert_eq!(hover.shown(hit, POINT, start, TIMING), None);
-        assert_eq!(
-            hover.shown(hit, POINT, start + Duration::from_millis(1001), TIMING),
-            None
-        );
-        assert_eq!(
-            hover.shown(hit, POINT, start + Duration::from_millis(1052), TIMING),
-            Some(("Details", POINT.unwrap()))
-        );
-    }
-}
+mod tests;

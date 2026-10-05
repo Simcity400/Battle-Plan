@@ -609,6 +609,7 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
         OPTIONAL_SCALAR_CASES[OPTIONAL_SCALAR_ORDER[(index + offset) % OPTIONAL_SCALAR_ORDER.len()]]
     };
     let country = |id, canonical_slot| CountryRow {
+        border_land_doctrine_level: None,
         id,
         canonical_slot,
         tag: if id == 7 {

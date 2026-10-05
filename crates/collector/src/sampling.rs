@@ -3025,6 +3025,16 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 // SAFETY: only this callback takes and returns the store.
                 unsafe { return_slice_store(shared, crate::slicing::RETREAT_BANS, store) };
             }
+            let border_ticks = frame.extended.capture_border_inputs(
+                &cached,
+                shared.base,
+                state,
+                (&frame.provinces.rows, frame.provinces_result),
+                (&mut frame.countries, &mut frame.countries_result),
+            );
+            ticks[replay::rows::TableId::DivisionStatus.index()] += border_ticks[0];
+            frame.table_ns[replay::rows::TableId::Countries.index()] +=
+                shared.ns(border_ticks[1] as i64);
             for pending in eta_inputs_pending.into_iter().flatten() {
                 // SAFETY: this thread still owns the live acquisition boundary.
                 let completed = unsafe { finish_acquisition(shared, &mut batch, pending) };
