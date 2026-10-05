@@ -49,13 +49,15 @@ fn naval_ship_pride_hover_uses_executable_key_only_when_visible() {
 fn naval_commander_hover_uses_recorded_name_and_description_tokens() {
     let loc: Localisation = [
         ("HEADER", "$KEY$\n"),
-        ("ADMIRAL_NAME", "Admiral Example"),
+        ("ADMIRAL_NAME", "Example"),
+        ("navy_leader", "Admiral"),
         ("ADMIRAL_DESC", "Career description"),
     ]
     .into_iter()
     .map(|(key, value)| (key.to_owned(), value.to_owned()))
     .collect();
     let commander = replay::rows::NavalCommanderInputs {
+        category: 2,
         name: b"ADMIRAL_NAME".to_vec(),
         description: b"ADMIRAL_DESC".to_vec(),
         ..Default::default()

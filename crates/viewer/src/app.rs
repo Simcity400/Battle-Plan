@@ -381,7 +381,7 @@ fn seek_open_target(
 
 /// The Match game scale and its note, keyed by the monitors' generation and
 /// the document's content.
-type MatchGame = ((u64, usize), (f32, Option<String>));
+type MatchGame = ((u64, usize), (map::ui_scale::Raster, Option<String>));
 
 /// What an overlay was laid out for: the hour, the camera and frame, the perspective and the
 /// counter options.
@@ -505,6 +505,7 @@ pub struct Viewer {
     /// The raid offer cycle, advanced off the frame path.
     raid_lane: crate::raid_lane::RaidLane,
     raid_tooltips: map::raids::tooltips::lane::Lane,
+    land_marker_tooltips: crate::combat::land_marker_tooltips::Cache,
     tooltip_refused: BTreeMap<String, usize>,
     // counters
     counter_report: CounterReport,
@@ -832,6 +833,7 @@ impl Viewer {
             label_report: LabelReport::default(),
             raid_lane: Default::default(),
             raid_tooltips: Default::default(),
+            land_marker_tooltips: Default::default(),
             tooltip_refused: Default::default(),
             // counters
             counter_report: CounterReport::default(),
@@ -939,6 +941,7 @@ impl Viewer {
         }
         self.options.replay = None;
         self.raid_tooltips = Default::default();
+        self.land_marker_tooltips = Default::default();
         self.tooltip_refused.clear();
         self.source = None;
         self.source_decoder = None;
@@ -1356,6 +1359,7 @@ impl Viewer {
         self.combat.close();
         self.document = None;
         self.raid_tooltips = Default::default();
+        self.land_marker_tooltips = Default::default();
         self.tooltip_refused.clear();
         self.source = None;
         self.source_decoder = None;
@@ -1519,14 +1523,14 @@ impl Viewer {
     fn match_game<'a>(
         match_game: &'a mut Option<MatchGame>,
         document: &Document,
-    ) -> &'a (f32, Option<String>) {
+    ) -> &'a (map::ui_scale::Raster, Option<String>) {
         let key = (
             map::ui_scale::monitors_generation(),
             Arc::as_ptr(&document.content) as usize,
         );
         if match_game.as_ref().is_none_or(|(cached, _)| *cached != key) {
             let monitors = map::ui_scale::monitors();
-            let resolved = map::ui_scale::Setting::MatchGame.resolve(
+            let resolved = map::ui_scale::Setting::MatchGame.resolve_raster(
                 document.game_display.as_ref().map_err(String::as_str),
                 monitors
                     .as_ref()
@@ -1680,6 +1684,30 @@ impl Viewer {
                 [hit.origin[0], hit.origin[1], hit.size[0], hit.size[1]],
             ));
         }
+        if let Some((id, rect)) =
+            crate::combat::land_marker_tooltips::hit(&self.counter_report.combat_hits, point)
+            && let crate::playback::Current::Frame(frame) = document.playback.current()
+        {
+            let viewer = self.overlay_tables.as_ref()?.3.ours();
+            let index = match self
+                .hours
+                .as_ref()
+                .map(|hours| hours.engaged(&self.perspective.country))
+                .transpose()
+            {
+                Ok(index) => index,
+                Err(why) => {
+                    let mut text = map::raids::tooltips::Tooltip::default();
+                    text.refused
+                        .insert(format!("land marker {id} engaged index: {why}"), 1);
+                    return Some((Arc::new(text), rect));
+                }
+            };
+            let text =
+                self.land_marker_tooltips
+                    .request(document, frame, viewer, id, index.as_deref());
+            return Some((text, rect));
+        }
         if let Some(hit) = self
             .counter_report
             .arrivals
@@ -1776,18 +1804,19 @@ impl Viewer {
         // unless `--ui-scale` names one, so a `--window-dump` and a `--dump` of
         // the same state stay the same frame.
         let pinned = self.capture.as_ref().and_then(|capture| capture.pinned);
-        let ui_scale = match pinned {
-            Some(_) => self.options.ui_scale.unwrap_or(1.0),
+        let raster = match pinned {
+            Some(_) => map::ui_scale::Raster::direct(self.options.ui_scale.unwrap_or(1.0)),
             None => {
                 Self::watch_monitors(&mut self.monitor_seen, ui.ctx());
                 let setting = self.ui_scale;
                 let (matched, _) = Self::match_game(&mut self.match_game, document);
                 match setting {
-                    map::ui_scale::Setting::Manual(scale) => scale,
+                    map::ui_scale::Setting::Manual(scale) => map::ui_scale::Raster::direct(scale),
                     map::ui_scale::Setting::MatchGame => *matched,
                 }
             }
         };
+        let ui_scale = raster.ui_scale;
         // Ordinary viewing builds none of this text: only diagnostics mode
         // shows it and only a capture prints it (the desktop's on-demand
         // report rebuilds it in `report_map_details`).
@@ -1798,7 +1827,8 @@ impl Viewer {
             Vec::new()
         };
         laps.lap("limitations");
-        self.interface_points = map::ui_scale::points(1.0, ui_scale, ui.ctx().pixels_per_point());
+        self.interface_points =
+            map::ui_scale::points(1.0, raster.screen_scale(), ui.ctx().pixels_per_point());
         if self.diagnostics && !self.dashboard_map && self.embedded.is_none() {
             egui::ScrollArea::vertical()
                 .id_salt("warnings")
@@ -1817,14 +1847,15 @@ impl Viewer {
         // capture: `--window-dump` renders at the size it was asked for rather
         // than at the size the panels left over, so the frame it writes does not
         // depend on this display's scale factor or on where the warning area
-        // wrapped. Every other frame renders the map area at device pixels,
-        // which is the space the projection and the overlay batch already use.
+        // wrapped. Match game renders into the game's framebuffer pixel space
+        // before presenting its completed image at the desktop stretch
+        // (CGraphics::InitializeDevice@142224600, projection@1422206C0).
         let pixels = match pinned {
             Some((size, _)) => size,
-            None => [
+            None => raster.target([
                 (size.x * ui.ctx().pixels_per_point()).round() as u32,
                 (size.y * ui.ctx().pixels_per_point()).round() as u32,
-            ],
+            ]),
         };
         let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
         let map_size = MapSize::of(&document.map);
@@ -1837,10 +1868,9 @@ impl Viewer {
             |placement| placement.on(map_size, defines),
         );
         let camera = &mut camera;
-        // Screen positions reach the camera in physical pixels, the same space
-        // the render target and the projection use.
-        let scale = ui.ctx().pixels_per_point();
-        let physical = |position: egui::Pos2| {
+        // Pointer and drag deltas reach the camera in framebuffer pixels.
+        let scale = ui.ctx().pixels_per_point() / raster.stretch;
+        let frame_point = |position: egui::Pos2| {
             [
                 (position.x - rect.left()) * scale,
                 (position.y - rect.top()) * scale,
@@ -1884,7 +1914,7 @@ impl Viewer {
         let point = response
             .hover_pos()
             .or_else(|| response.interact_pointer_pos())
-            .map(|position| map::ui_scale::to_interface(physical(position), ui_scale));
+            .map(|position| map::ui_scale::to_interface(frame_point(position), ui_scale));
         if response.drag_started() {
             self.combat.start_drag(combat_geometry.as_ref(), point);
         }
@@ -1955,7 +1985,7 @@ impl Viewer {
         {
             self.camera_manual = true;
             let delta = response.drag_delta();
-            let to = physical(pointer);
+            let to = frame_point(pointer);
             camera.pan(
                 [to[0] - delta.x * scale, to[1] - delta.y * scale],
                 to,
@@ -1967,7 +1997,7 @@ impl Viewer {
             if scroll != 0.0 {
                 self.camera_manual = true;
                 let pointer = response.hover_pos().unwrap_or(rect.center());
-                camera.zoom((scroll * 0.002).exp(), physical(pointer), pixels);
+                camera.zoom((scroll * 0.002).exp(), frame_point(pointer), pixels);
             }
         }
         self.camera = Some(camera.placement());
@@ -2341,14 +2371,14 @@ impl Viewer {
                 egui_renderer.update_egui_texture_from_wgpu_texture(
                     &state.device,
                     view,
-                    wgpu::FilterMode::Nearest,
+                    map::ui_scale::PRESENTATION_FILTER,
                     texture,
                 );
             } else {
                 self.texture = Some(egui_renderer.register_native_texture(
                     &state.device,
                     view,
-                    wgpu::FilterMode::Nearest,
+                    map::ui_scale::PRESENTATION_FILTER,
                 ));
             }
             self.generation = scene.generation();

@@ -58,6 +58,7 @@ pub struct Assets {
     pub(super) naval_custom_sea_modifiers:
         BTreeMap<String, Result<installed_content::modifiers::Modifiers, String>>,
     pub(super) naval_terrain: Result<super::naval_terrain::Content, String>,
+    pub(super) land_terrain: Result<Arc<installed_content::terrain::TerrainDefinitions>, String>,
     /// The land window's defines, or why the content lacks them.
     pub(crate) land_defines: Result<super::defines::LandDefines, String>,
     /// `NNavy.BATTLE_NAME_VP_FACTOR` and `BATTLE_NAME_VP_CUTOFF` (1415B06C0),
@@ -108,6 +109,11 @@ impl Assets {
     ) -> io::Result<Vec<String>> {
         let mut assets = native_window_assets(&self.native_windows, localisation);
         assets.extend(super::tooltip_assets(self.native_templates(), localisation));
+        if let Ok(terrain) = &self.land_terrain {
+            for category in &terrain.categories {
+                assets.add_localised(localisation, &category.name);
+            }
+        }
         self.window_sprites.extend(assets.sprites.iter().cloned());
         assets.sprites.retain(|name| {
             std::str::from_utf8(name)
@@ -928,8 +934,14 @@ impl Assets {
                     .collect(),
             }
         };
-        let naval_terrain =
-            super::naval_terrain::Content::load(layers, defines).map_err(|error| error.to_string());
+        // The one terrain database (14142D0A0), shared by both combat views.
+        let land_terrain = installed_content::terrain::read_definitions(layers)
+            .map(Arc::new)
+            .map_err(|error| error.to_string());
+        let naval_terrain = land_terrain.clone().and_then(|terrain| {
+            super::naval_terrain::Content::load(layers, defines, terrain)
+                .map_err(|error| error.to_string())
+        });
         Ok(Self {
             native_windows: native_windows.clone(),
             gui,
@@ -948,6 +960,7 @@ impl Assets {
             naval_screening_modifiers,
             naval_custom_sea_modifiers,
             naval_terrain,
+            land_terrain,
             land_defines: super::defines::LandDefines::read(defines)
                 .map_err(|error| error.to_string()),
             naval_name_defines: ["BATTLE_NAME_VP_FACTOR", "BATTLE_NAME_VP_CUTOFF"]

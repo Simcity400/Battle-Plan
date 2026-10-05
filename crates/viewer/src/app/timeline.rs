@@ -11,7 +11,7 @@ impl Viewer {
             .document
             .as_ref()
             .and(self.match_game.as_ref())
-            .map(|(_, (scale, _))| *scale);
+            .map(|(_, (raster, _))| raster.screen_scale());
         let label = |setting: map::ui_scale::Setting| match setting {
             map::ui_scale::Setting::MatchGame => match matched {
                 Some(scale) => format!("Match game ({:.0}%)", scale * 100.0),

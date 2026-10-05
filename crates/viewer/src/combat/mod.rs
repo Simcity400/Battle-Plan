@@ -15,6 +15,8 @@ mod hq;
 pub(crate) mod icon_frames;
 mod keyed;
 pub(crate) mod land_details;
+pub(crate) mod land_marker_tooltips;
+mod land_terrain;
 pub(crate) mod modifier_text;
 mod naval_air_groups;
 mod naval_air_tooltips;

@@ -289,11 +289,16 @@ pub(super) fn portrait(
     loc: &Localisation,
     name: &[u8],
     description: &[u8],
+    role: (i32, i32),
     progress: Option<(&[LandCombatCommanderLearningTrait], i64, Result<&str, &str>)>,
     initiative: bool,
 ) -> Result<(String, String), String> {
     let name =
         token(icons, loc, name).map_err(|refusal| format!("the commander's name: {refusal}"))?;
+    let title = role_title(icons, loc, role.0, role.1)?;
+    // 140C0A9A0 appends one space and the localized name (+0x40) to
+    // GetLocalizedRoleTitle, even when an unknown category leaves it empty.
+    let name = format!("{title} {name}");
     let mut text = builtin(
         icons,
         loc,
@@ -310,6 +315,31 @@ pub(super) fn portrait(
     let description = token(icons, loc, description)
         .map_err(|refusal| format!("the commander's description: {refusal}"))?;
     Ok((text, description))
+}
+
+/// CUnitLeader::GetLocalizedRoleTitle@140C0A7A0 selects by +0xE7C.
+/// The operative branch reads CUnitLeaderSkill+0x1B8 and checks the key
+/// before falling back. All these key spellings are executable literals.
+fn role_title(
+    icons: &dyn TextIcons,
+    loc: &Localisation,
+    category: i32,
+    skill: i32,
+) -> Result<String, String> {
+    let key = match category {
+        0 => FM_LEADER,
+        1 => CC_LEADER,
+        2 => NAVY_LEADER,
+        3 => {
+            let key = format!("operative_skill_{skill}");
+            if loc.get(&key).is_some() {
+                return builtin(icons, loc, &key, &[]);
+            }
+            OPERATIVE
+        }
+        _ => return Ok(String::new()),
+    };
+    builtin(icons, loc, key, &[])
 }
 
 /// An authored entry the game's reader drops, and why.
@@ -1192,6 +1222,7 @@ pub(super) fn bind(
                     loc,
                     &side.commander_name_token,
                     &side.commander_description_token,
+                    (side.commander_category, side.commander_skill),
                     progress,
                     initiative,
                 )
@@ -1240,7 +1271,12 @@ pub(super) fn bind(
     Ok(())
 }
 
+// Role key literals: CUnitLeader::GetLocalizedRoleTitle@140C0A7A0.
 crate::combat::text::tooltip_keys! {
+    FM_LEADER = "fm_leader",
+    CC_LEADER = "cc_leader",
+    NAVY_LEADER = "navy_leader",
+    OPERATIVE = "OPERATIVE",
     LEARNING_TRAITS = "LEARNING_TRAITS",
     LEARNING_TRAITS_TITLE = "LEARNING_TRAITS_TITLE",
     LEADER_HAS_INITIATIVE = "LEADER_HAS_INITIATIVE",
