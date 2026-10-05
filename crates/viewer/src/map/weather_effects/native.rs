@@ -148,7 +148,7 @@ impl EntitySimulations {
     /// until its finished particle runtime has no living subsystem.
     pub fn prepare(
         &mut self,
-        assets: &super::Assets,
+        entities: &BTreeMap<String, (f32, Vec<Emitter>)>,
         events: &[crate::map::entity_animation::Event],
     ) -> io::Result<()> {
         let mut seen = std::collections::BTreeSet::new();
@@ -156,11 +156,12 @@ impl EntitySimulations {
             let Some(name) = &event.definition.particle else {
                 continue;
             };
-            let Some((scale, emitters)) = assets.entities.get(name) else {
+            let Some((scale, emitters)) = entities.get(name) else {
                 continue;
             };
             for (ordinal, emitter) in emitters.iter().enumerate() {
                 let key = (name.clone(), event.key, ordinal);
+                // Frame-local invariant; later observations reuse the runtime below.
                 if !seen.insert(key.clone()) {
                     return Err(io::Error::other(format!(
                         "Map shader particles: 1 refused actor {name}: duplicate presentation identity {:?}",
@@ -618,6 +619,84 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settled_hulls_keep_one_simulation_per_persistent_event() {
+        use crate::map::{entity_animation, models, unit_history};
+        let mut rig = entity_animation::stage_rig(false);
+        rig.nodes[0].clips[0].animation = None;
+        rig.nodes[0].clips[0]
+            .state
+            .events
+            .push(installed_content::mesh::EntityEvent {
+                particle: Some("wake".into()),
+                keep_particle: true,
+                ..Default::default()
+            });
+        let rigs = [Arc::new(rig)];
+        let mut emitter = super::super::tests::activation_test_emitter();
+        emitter.life.base = 10.;
+        let entities = BTreeMap::from([("wake".into(), (1., vec![emitter]))]);
+        let targets = (0..2)
+            .map(|part| unit_history::Target {
+                part,
+                occupant: u64::from(part),
+                ..unit_history::tests::target(7, unit_history::Kind::Ship)
+            })
+            .collect::<Vec<_>>();
+        for steady in [false, true] {
+            let mut history = unit_history::History::default();
+            history.set(targets.clone(), Arc::default(), steady);
+            let _ = history.step(0., unit_history::tests::GATES, [true; 2], true, |_| true);
+            let mut players = BTreeMap::new();
+            let mut simulations = EntitySimulations::default();
+            let mut first = Vec::new();
+            let mut previous = Vec::new();
+            for time in [1., 2., 3., 4., 4., 4.] {
+                let placed =
+                    history.step(time, unit_history::tests::GATES, [true; 2], true, |_| true);
+                let mut field =
+                    models::ModelField::build(&models::ModelLibrary::default(), placed, 256.);
+                let mut events = Vec::new();
+                models::animate_players(
+                    &mut players,
+                    &rigs,
+                    &[models::PaletteJoint::IDENTITY],
+                    &mut field,
+                    time,
+                    &|_| true,
+                    &mut events,
+                );
+                simulations.prepare(&entities, &events).unwrap();
+                assert_eq!(players.len(), 2);
+                assert_eq!(events.len(), 2);
+                assert_eq!(simulations.0.len(), 2, "one runtime per hull event");
+                if first.is_empty() {
+                    let mut duplicate = events.clone();
+                    duplicate.push(events[0].clone());
+                    let refusal = simulations.prepare(&entities, &duplicate).unwrap_err();
+                    assert!(refusal.to_string().starts_with(
+                        "Map shader particles: 1 refused actor wake: duplicate presentation identity"
+                    ));
+                    first = events.iter().map(|event| (event.key, event.age)).collect();
+                }
+                let mut current = Vec::new();
+                for (event, &(key, age)) in events.iter().zip(&first) {
+                    assert_eq!(event.key, key, "reapplying idle keeps the live event");
+                    assert!((event.age - age - (time - 1.)).abs() < 1e-5);
+                    let sim = &simulations.0[&("wake".into(), key, 0)];
+                    assert!((sim.age - (time - 1.)).abs() < 1e-5, "no respawn");
+                    current.push((sim.seed, sim.particles.len()));
+                }
+                if time == 4. && !previous.is_empty() {
+                    assert_eq!(current, previous, "allocation retry frames do not spawn");
+                }
+                if time == 4. {
+                    previous = current;
+                }
+            }
+        }
+    }
 
     #[test]
     fn fire_packet_passes_one_atlas_tile_and_neutral_tint_to_native_shader() {

@@ -105,6 +105,20 @@ type Parts = BTreeMap<u32, Target>;
 struct Part {
     target: Target,
     epoch: u32,
+    identity: u32,
+}
+
+impl Part {
+    /// 1416542A0 retains each unchanged hull's own entity. Dumps sample
+    /// epoch zero, but same-model hulls still need distinct live players.
+    fn new(target: Target, identity: &mut u32, steady: bool) -> Self {
+        *identity = identity.wrapping_add(1);
+        Self {
+            target,
+            epoch: if steady { 0 } else { *identity },
+            identity: *identity,
+        }
+    }
 }
 
 /// A slot's entity. Its popup scale belongs to the slot (`+0xD38`), so the
@@ -137,6 +151,7 @@ impl Entity {
         self.parts.values().map(|part| {
             let mut instance = part.target.instance;
             instance.animation_epoch = part.epoch;
+            instance.animation_identity = part.identity;
             // FadeInactiveUnitStackModels passes land multiplier 1.0, including
             // transports; the admitted path uses the authored unit multiplier.
             instance.scale = if self.shrinking && self.kind == Kind::Land {
@@ -153,13 +168,6 @@ impl Entity {
             (part.target.mesh, instance)
         })
     }
-}
-
-/// A new incarnation's animation epoch. Explicit dump clocks keep their
-/// sampling convention (epoch 0); only live incarnations start now.
-fn incarnation(epoch: &mut u32, steady: bool) -> u32 {
-    *epoch = epoch.wrapping_add(1);
-    if steady { 0 } else { *epoch }
 }
 
 /// What one viewer frame applies to each province it updates.
@@ -295,13 +303,9 @@ impl Province {
                     if !budget.take() {
                         continue;
                     }
-                    entity.parts.insert(
-                        index,
-                        Part {
-                            target,
-                            epoch: incarnation(epoch, frame.steady),
-                        },
-                    );
+                    entity
+                        .parts
+                        .insert(index, Part::new(target, epoch, frame.steady));
                 } else if let Some(part) = entity.parts.get_mut(&index) {
                     part.target = target;
                 }
@@ -358,15 +362,7 @@ impl Province {
                 shrinking: false,
                 parts: parts
                     .iter()
-                    .map(|(&index, &target)| {
-                        (
-                            index,
-                            Part {
-                                target,
-                                epoch: incarnation(epoch, steady),
-                            },
-                        )
-                    })
+                    .map(|(&index, &target)| (index, Part::new(target, epoch, steady)))
                     .collect(),
             },
         );
