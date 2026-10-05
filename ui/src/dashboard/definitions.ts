@@ -88,6 +88,9 @@ export interface WidgetMeta {
   defaultCountries?: CountrySelection;
   /** The widget's own settings, grouped into the panel's sections. */
   options?: readonly OptionField[];
+  /** A lightweight product reporting whether this recording contains the feature.
+   * The picker disables the entry until the reply establishes `available: true`. */
+  availability?: { product: string; params: Readonly<Record<string, unknown>> };
   /** Upgrades settings saved by an older `version`; null keeps them unchanged. */
   migrate?: (from: number, widget: WidgetSpec) => WidgetSpec | null;
 }

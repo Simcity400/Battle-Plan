@@ -88,6 +88,14 @@ Special projects adds per-country project episodes, native prototype progress an
 
 The Decryption widget reads [`decryption.rs`](src/products/decryption.rs): sparse pair runs with same-hour thresholds, native progress, bonus states, each current attempt's observed start, dated breaks and capture coverage for every recorded pair independently of player status. Its [widget guide](../../ui/src/widgets/decryption/README.md) describes the display and missing-data rules. Gaps interrupt reads within an episode.
 
+Nuclear arsenal reads [country_nukes.rs](src/products/country_nukes.rs): every
+country's whole stockpile as the native top bar displays it, with native type
+ordinals named through recorded tokens and content. The queued-drop `ready`
+counter is a different quantity. [Raids](src/products/raids.rs) shares one cached
+branch scan between the [Raid log](../../ui/src/widgets/raid-log/README.md) and
+[Raid tally](../../ui/src/widgets/raid-tally/README.md), preserving observed dates,
+target controllers, phase/outcome localization and bounded observed totals.
+
 ## Service
 
 `Service` owns sources by canonical path and revision, hands the frontend independently releasable leases, and runs product and open jobs on a small loader pool. Requests for the same product on the same source serialise on that product's cache; different products and sources run in parallel. Replies are bounded, fragmented and cancellable at every step. The map process shares the same sources through `open_map`. [transport.rs](src/transport.rs) owns the retryable refusal catalogue, including the browser bridge and native command queue capacity messages; the generated frontend constants and desktop queue read that catalogue. A capacity refusal decides no country fact and is retried.

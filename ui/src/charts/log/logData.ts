@@ -20,6 +20,19 @@ export function shownMotion<T>(rows: readonly MovingRow<T>[], start: number, end
  * changes): the keyboard's row and a tooltip follow it; the key when absent. */
 export interface LogRow<T> { key: string; id?: string; hour: number; by?: boolean; item: T }
 
+/** Only countries on drawn rows, at each row's own observation hour. Opaque
+ * tags never share a delimiter key, and later names cannot label older rows. */
+export function logCountryRequests<T>(rows: readonly LogRow<T>[], countries: (row: LogRow<T>) => { hour: number; tags: readonly (string | null)[] }): { hour: number; tag: string }[] {
+  const wanted = new Map<number, Set<string>>();
+  for (const row of rows) {
+    const { hour, tags } = countries(row);
+    const set = wanted.get(hour) ?? new Set<string>();
+    for (const tag of tags) if (tag !== null) set.add(tag);
+    wanted.set(hour, set);
+  }
+  return [...wanted].flatMap(([hour, tags]) => [...tags].map(tag => ({ hour, tag })));
+}
+
 /** What a row is about, for following it across keys. */
 export const rowId = (row: LogRow<unknown>) => row.id ?? row.key;
 

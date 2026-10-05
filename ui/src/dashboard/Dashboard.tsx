@@ -380,7 +380,7 @@ export default function Dashboard({ path, client, library: replayLibrary, onPrim
           {library.layouts.map((entry) => <option key={entry.id} value={entry.id}>{entry.template.name}</option>)}
         </select></label>
       <div className="dash-toolbar" role="toolbar" aria-label="Layout changes">
-        <span className="toolbar-slot" data-shown={editing || undefined}><WidgetPicker disabled={!editing || template.widgets.length >= MAX_WIDGETS} onOpen={() => saveMenu.popup.current?.hidePopover()} onAdd={(kind) => {
+        <span className="toolbar-slot" data-shown={editing || undefined}><WidgetPicker runtime={runtime} disabled={!editing || template.widgets.length >= MAX_WIDGETS} onOpen={() => saveMenu.popup.current?.hidePopover()} onAdd={(kind) => {
           const widget = createWidget(kind, template.tracks[0].id);
           update((previous) => ({ ...previous, widgets: [...previous.widgets, widget], layouts: addGridItem(previous.layouts, widget) }));
         }} /></span>

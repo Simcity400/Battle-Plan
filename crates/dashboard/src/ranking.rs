@@ -10,6 +10,40 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+/// Borrow each intersection of sorted, nonoverlapping value runs and membership
+/// spans in one pass. Products use this both to size a reply and to build it.
+pub fn for_each_piece<R>(
+    runs: &[R],
+    spans: &[HourSpan],
+    bounds: impl Fn(&R) -> (i32, i32),
+    cancelled: &AtomicBool,
+    mut piece: impl FnMut(&R, i32, i32),
+) -> io::Result<()> {
+    let (mut run_index, mut span_index) = (0, 0);
+    let mut steps = 0usize;
+    while let (Some(run), Some(span)) = (runs.get(run_index), spans.get(span_index)) {
+        if steps.is_multiple_of(4096) && cancelled.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "The ranking was cancelled",
+            ));
+        }
+        steps += 1;
+        let (first, last) = bounds(run);
+        let first_hour = first.max(span.first_hour);
+        let last_hour = last.min(span.last_hour);
+        if first_hour <= last_hour {
+            piece(run, first_hour, last_hour);
+        }
+        if last < span.last_hour {
+            run_index += 1;
+        } else {
+            span_index += 1;
+        }
+    }
+    Ok(())
+}
+
 /// The hours each country was among the top N, by tag: at every hour a value can
 /// change (a run starting or ending in any series), every country with a known
 /// value then is ranked (highest first, ties by tag), so between two such hours
@@ -92,6 +126,45 @@ pub fn top_membership<R>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ranked_piece_walk_preserves_gaps_at_5000_runs_and_cancels() {
+        let runs: Vec<_> = (0..5000).map(|i| (i * 3, i * 3 + 1)).collect();
+        let spans: Vec<_> = (0..5000)
+            .map(|i| HourSpan {
+                first_hour: i * 3 + 1,
+                last_hour: i * 3 + 2,
+            })
+            .collect();
+        let mut pieces = Vec::new();
+        for_each_piece(
+            &runs,
+            &spans,
+            |run| *run,
+            &AtomicBool::new(false),
+            |_, first, last| pieces.push((first, last)),
+        )
+        .unwrap();
+        assert_eq!(pieces.len(), 5000);
+        assert!(
+            pieces
+                .iter()
+                .enumerate()
+                .all(|(i, &(first, last))| first == i as i32 * 3 + 1 && last == first)
+        );
+        assert_eq!(
+            for_each_piece(
+                &runs,
+                &spans,
+                |run| *run,
+                &AtomicBool::new(true),
+                |_, _, _| panic!("canceled walk supplied a piece")
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::Interrupted
+        );
+    }
 
     #[test]
     fn the_top_n_change_where_any_value_changes_and_unknown_values_are_not_ranked() {

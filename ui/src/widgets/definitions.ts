@@ -15,12 +15,15 @@ import { definition as ideaTimeline } from './idea-timeline/definition.ts';
 import { definition as map } from './map/definition.ts';
 import { definition as nationalFocus } from './national-focus/definition.ts';
 import { definition as nationalSpirits } from './national-spirits/definition.ts';
+import { definition as nuclearArsenal } from './nuclear-arsenal/definition.ts';
 import { definition as occupiedStates } from './occupied-states/definition.ts';
 import { definition as placeholder } from './placeholder/definition.ts';
 import { definition as politicalPower } from './political-power/definition.ts';
 import { definition as productionLines } from './production-lines/definition.ts';
 import { definition as productionSpending } from './production-spending/definition.ts';
 import { definition as research } from './research/definition.ts';
+import { definition as raidLog } from './raid-log/definition.ts';
+import { definition as raidTally } from './raid-tally/definition.ts';
 import { definition as resourceBalance } from './resource-balance/definition.ts';
 import { definition as rulingParty } from './ruling-party/definition.ts';
 import { definition as spiritHistory } from './spirit-history/definition.ts';
@@ -30,6 +33,6 @@ import { definition as subjects } from './subjects/definition.ts';
 import { definition as tradeFlows } from './trade-flows/definition.ts';
 import { definition as worldTension } from './world-tension/definition.ts';
 
-export const widgetMetas = [map, nationalFocus, research, politicalPower, commandPower, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, resourceBalance, equipmentStockpile, fuel, productionLines, factories, equipmentProduced, productionSpending, occupiedStates, experience, factions, subjects, tradeFlows, worldTension, autonomy, constructionLog, constructionSpending, specialProjects, decryption, placeholder] as const;
+export const widgetMetas = [map, nationalFocus, research, politicalPower, commandPower, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, resourceBalance, equipmentStockpile, fuel, productionLines, factories, equipmentProduced, productionSpending, occupiedStates, experience, factions, subjects, tradeFlows, worldTension, autonomy, constructionLog, constructionSpending, specialProjects, nuclearArsenal, raidLog, raidTally, decryption, placeholder] as const;
 
 registerWidgets(widgetMetas);

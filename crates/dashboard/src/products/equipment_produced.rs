@@ -86,7 +86,7 @@ pub const MAX_INCLUDED: usize = 64;
 const MAX_KEY: usize = 256;
 /// The most a reply's series may take serialised: well inside the transport's
 /// 32 MiB with the keys and the envelope.
-pub const MAX_REPLY_BYTES: usize = 24 * 1024 * 1024;
+pub use super::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
 /// JSON of one series and of one key's values besides their numbers.
 const SERIES_OVERHEAD: usize = 128;
 const VALUES_OVERHEAD: usize = 64;

@@ -77,7 +77,7 @@ const MAX_NAME: usize = 256;
 pub const MAX_COUNTRIES: usize = 30;
 /// The most a reply's series may take serialised: well inside the transport's
 /// 32 MiB with the groups, the fields and the envelope.
-pub const MAX_REPLY_BYTES: usize = 24 * 1024 * 1024;
+pub use super::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
 /// JSON of one run besides its numbers: the keys, braces and commas.
 const RUN_OVERHEAD: usize = 64;
 
@@ -629,13 +629,6 @@ pub fn top_membership(
     )
 }
 
-/// Steps between two checks of the cancellation flag in a long loop.
-const CANCEL_EVERY: usize = 4096;
-
-fn cancelled_error() -> io::Error {
-    io::Error::new(io::ErrorKind::Interrupted, "Factories request cancelled")
-}
-
 /// Runs cut to the spans: a piece keeps its run's line break only where the run
 /// itself starts. Both are in hour order and never overlap (a scan's runs, a top-N
 /// membership), so one pass over both cuts them: linear in the runs and spans, and
@@ -646,45 +639,21 @@ pub fn clip_runs(
     cancelled: &AtomicBool,
 ) -> io::Result<Vec<FactoryRun>> {
     let mut clipped = Vec::new();
-    for_each_piece(runs, spans, cancelled, |run, first_hour, last_hour| {
-        clipped.push(FactoryRun {
-            first_hour,
-            last_hour,
-            starts_segment: run.starts_segment && first_hour == run.first_hour,
-            values: run.values.clone(),
-        });
-    })?;
+    crate::ranking::for_each_piece(
+        runs,
+        spans,
+        |run| (run.first_hour, run.last_hour),
+        cancelled,
+        |run, first_hour, last_hour| {
+            clipped.push(FactoryRun {
+                first_hour,
+                last_hour,
+                starts_segment: run.starts_segment && first_hour == run.first_hour,
+                values: run.values.clone(),
+            });
+        },
+    )?;
     Ok(clipped)
-}
-
-/// Each piece of `runs` inside `spans` (its run and the hours it keeps), in one
-/// pass over both, borrowing only; stopped by `cancelled`.
-fn for_each_piece(
-    runs: &[FactoryRun],
-    spans: &[HourSpan],
-    cancelled: &AtomicBool,
-    mut piece: impl FnMut(&FactoryRun, i32, i32),
-) -> io::Result<()> {
-    let (mut run_index, mut span_index) = (0, 0);
-    let mut steps = 0usize;
-    while let (Some(run), Some(span)) = (runs.get(run_index), spans.get(span_index)) {
-        steps += 1;
-        if steps.is_multiple_of(CANCEL_EVERY) && cancelled.load(Ordering::Acquire) {
-            return Err(cancelled_error());
-        }
-        let first_hour = run.first_hour.max(span.first_hour);
-        let last_hour = run.last_hour.min(span.last_hour);
-        if first_hour <= last_hour {
-            piece(run, first_hour, last_hour);
-        }
-        // Move past whichever ends first; the other may still meet the next one.
-        if run.last_hour < span.last_hour {
-            run_index += 1;
-        } else {
-            span_index += 1;
-        }
-    }
-    Ok(())
 }
 
 /// At least as many bytes as a run over these hours with these values takes serialised.
@@ -794,9 +763,15 @@ fn parts_bytes(parts: &Parts<'_>, cancelled: &AtomicBool) -> io::Result<usize> {
     for (tag, runs, segments, membership) in parts {
         bytes += series_overhead(tag, membership.as_deref(), segments.len());
         match membership {
-            Some(spans) => for_each_piece(runs, spans, cancelled, |run, first, last| {
-                bytes += piece_bytes(first, last, &run.values);
-            })?,
+            Some(spans) => crate::ranking::for_each_piece(
+                runs,
+                spans,
+                |run| (run.first_hour, run.last_hour),
+                cancelled,
+                |run, first, last| {
+                    bytes += piece_bytes(first, last, &run.values);
+                },
+            )?,
             None => {
                 bytes += runs
                     .iter()

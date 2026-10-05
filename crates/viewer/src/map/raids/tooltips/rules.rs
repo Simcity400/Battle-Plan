@@ -1,6 +1,7 @@
 //! Line order and conditions, apart from content and recorded-input joins.
 use super::Tooltip;
 use crate::combat::text::localise;
+use engine::craid_instance::{OUTCOME_KEYS, PHASE_KEYS, outcome_key, phase_key};
 use installed_content::localisation::Argument as Arg;
 use installed_content::localisation::Localisation;
 
@@ -29,31 +30,6 @@ pub struct Raid {
     pub counterplay: Known<Vec<Text>>,
 }
 
-const PHASES: [&str; 6] = [
-    "RAID_INST_PHASE_NONE",
-    "RAID_INST_PHASE_ASSEMBLING",
-    "RAID_INST_PHASE_PREPARING",
-    "RAID_INST_PHASE_PREPARED",
-    "RAID_INST_PHASE_IN_PROGRESS",
-    "RAID_INST_PHASE_ENDED",
-];
-const OUTCOMES: [&str; 6] = [
-    "RAID_INST_OUTCOME_NONE",
-    "RAID_INST_OUTCOME_FAILURE",
-    "RAID_INST_OUTCOME_LIMITED_SUCCESS",
-    "RAID_INST_OUTCOME_SUCCESS",
-    "RAID_INST_OUTCOME_CRITICAL_SUCCESS",
-    "RAID_INST_OUTCOME_CANCELED",
-];
-
-fn enum_key(keys: &[&'static str], value: i32) -> &'static str {
-    usize::try_from(value)
-        .ok()
-        .and_then(|i| keys.get(i))
-        .copied()
-        .unwrap_or(keys[0])
-}
-
 pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
     let mut out = Tooltip::default();
     let plain = |key| localise(loc, key, &[]);
@@ -72,7 +48,7 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
                         ("RAID_DESC", Arg::Text(&input.description?)),
                         (
                             "OUTCOME_TYPE",
-                            Arg::Text(&plain(enum_key(&OUTCOMES, input.outcome))?),
+                            Arg::Text(&plain(outcome_key(input.outcome))?),
                         ),
                     ],
                 )
@@ -157,7 +133,7 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
         2,
         RAID_INST_PROGRESS_DESC,
         input.progress.and_then(|progress| {
-            let phase = plain(enum_key(&PHASES, input.phase))?;
+            let phase = plain(phase_key(input.phase))?;
             match progress {
                 Some(value) => localise(
                     loc,
@@ -451,5 +427,9 @@ crate::combat::text::tooltip_keys! {
 
 /// The raid rules' literal keys (141E72380, 141617380, 141612FC0).
 pub(crate) fn keys() -> impl Iterator<Item = &'static str> {
-    TOOLTIP_KEYS.iter().copied().chain(PHASES).chain(OUTCOMES)
+    TOOLTIP_KEYS
+        .iter()
+        .copied()
+        .chain(PHASE_KEYS)
+        .chain(OUTCOME_KEYS)
 }

@@ -164,6 +164,36 @@ export function curveSegments(runs: readonly Run[], from: number, to: number, to
     .map(points => ({ points, path: monotonePath(points) }));
 }
 
+/** Exact held values: horizontal until the next read, vertical at that read.
+ * Missing hours and identity breaks start separate paths, including at zoom edges. */
+export function heldSegments(runs: readonly Run[], from: number, to: number, toX: (hour: number) => number, toY: (value: number) => number): { points: Point[]; path: PathCommand[] }[] {
+  if (to < from) return [];
+  const result: { points: Point[]; path: PathCommand[] }[] = [];
+  let previous: Run | null = null;
+  let current: { points: Point[]; path: PathCommand[] } | null = null;
+  const push = (hour: number, value: number, move = false) => {
+    const point = { x: toX(hour), y: toY(value) };
+    if (!move && current!.points.at(-1)?.x === point.x && current!.points.at(-1)?.y === point.y) return;
+    current!.points.push(point);
+    current!.path.push([move ? 'M' : 'L', point.x, point.y]);
+  };
+  for (const run of runs) {
+    if (run.lastHour < Math.floor(from)) continue;
+    if (run.firstHour > to) break;
+    const first = Math.max(from, run.firstHour);
+    const last = Math.min(to, run.lastHour + 1);
+    const continues = previous && previous.lastHour + 1 === run.firstHour && !run.breakBefore;
+    if (!current || !continues) {
+      current = { points: [], path: [] };
+      result.push(current);
+      push(first, run.value, true);
+    } else { push(first, previous!.value); push(first, run.value); }
+    if (last > first) push(last, run.value);
+    previous = run;
+  }
+  return result;
+}
+
 /** Closed regions for shading between two lines drawn with `curveSegments`, split
  * by which is on top wherever they cross: `above` (the first line higher) is what
  * lies under the first curve and over the second; `below` the reverse. Each region

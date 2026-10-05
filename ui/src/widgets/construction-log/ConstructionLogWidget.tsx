@@ -4,6 +4,7 @@ import { Icon } from '../../components/Icons';
 import WidgetState from '../../components/WidgetState';
 import LogList from '../../charts/log/LogList';
 import type { LogRow } from '../../charts/log/logData';
+import { logCountryRequests } from '../../charts/log/logData';
 import { logSettings } from '../../charts/log/logOptions';
 import { jumpItem } from '../../charts/jump';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
@@ -54,11 +55,7 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   [data, hour, match, types, projects, from, order]);
   // Countries are named and flagged as recorded when each drawn row was first read.
   const [visible, setVisible] = useState<readonly LogRow<ProjectAt>[]>(NO_ROWS);
-  const wanted = useMemo(() => {
-    const seen = new Map<string, { hour: number; tag: string }>();
-    for (const row of visible) seen.set(`${row.item.project.firstRead}:${row.item.project.tag}`, { hour: row.item.project.firstRead, tag: row.item.project.tag });
-    return [...seen.values()];
-  }, [visible]);
+  const wanted = useMemo(() => logCountryRequests(visible, row => ({ hour: row.item.project.firstRead, tags: [row.item.project.tag] })), [visible]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const country = useCallback((at: ProjectAt) => labelAt(at.project.firstRead)(at.project.tag), [labelAt]);
   const chips = useMemo(() => buildingChoices(data).map(choice => ({ ...choice, unavailable: storableToken(choice.value) ? undefined : UNSTORABLE })), [data]);
@@ -102,7 +99,7 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   const menu = (row: LogRow<ProjectAt>) => jumpHours(row.item, hour).map(at => jumpItem(runtime, track.id, at));
   const empty = chosen.length || projects !== 'all' || from != null
     ? 'No construction matches these settings yet.' : widget.countries.kind === 'all' ? 'No construction yet.' : 'No construction by these countries yet.';
-  return <div className="construction-log">
+  return <div className="log-widget construction-log">
     {log.chips && chips.length > 1 && <div className="log-chips">
       <ChipSet label="Building types" max={16} selected={chosen.length ? chosen : ['']}
         chips={[{ value: '', label: 'All types' }, ...chips]}

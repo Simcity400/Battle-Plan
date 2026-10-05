@@ -32,7 +32,7 @@ use std::{
 use ts_rs::TS;
 
 pub struct ProductionSpending;
-const MAX_REPLY_BYTES: usize = 24 * 1024 * 1024;
+use super::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
 const MAX_RUNS: usize = 300_000;
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]

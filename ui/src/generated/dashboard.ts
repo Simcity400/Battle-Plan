@@ -505,6 +505,63 @@ fields: Array<FactoryField>,
  * top N, by tag.
  */
 series: Array<FactorySeries>, warnings: Array<string>, };
+export type NukesParams = { branchId: string, tags: Array<string>, top: number | null, };
+export type NukeTypeInfo = { ordinal: number, token: string | null, name: string | null, supported: boolean, };
+export type NukeCount = { ordinal: number, value: number, };
+export type NukeRun = { firstHour: number, lastHour: number, startsSegment: boolean, counts: Array<NukeCount>,
+/**
+ * Unknown for a hole in this country's native array; unnamed types still count.
+ */
+total: number | null, };
+export type NukeSeries = { tag: string, runs: Array<NukeRun>, segments: Array<HourSpan>, membership: Array<HourSpan> | null, };
+export type CountryNukesReply = { branchId: string,
+/**
+ * Every fresh complete Nukes read, including reads supplying unchanged runs.
+ */
+readHours: Array<number>,
+/**
+ * Complete reads with no nonzero or unknown array among countries present.
+ * Absent rows are outside the race, never supplied as synthetic zero values.
+ */
+emptyReadHours: Array<number>, types: Array<NukeTypeInfo>, series: Array<NukeSeries>, warnings: Array<string>, };
+export type RaidsView = "catalogue" | "log" | "tally";
+export type RaidMetric = "launched" | "succeeded";
+export type RaidTop = { count: number, metric: RaidMetric, };
+export type RaidsParams = { branchId: string, view: RaidsView, tags: Array<string>, top: RaidTop | null, };
+export type RaidTypeInfo = { token: string, name: string | null, missing: string | null, };
+export type RaidArtwork = { key: string, image: string | null, missing: string | null, };
+export type RaidDate = { hour: number, };
+export type RaidRun = { firstHour: number, lastHour: number, readHour: number, raider: string | null, victim: string | null, type: string | null, province: number | null, state: number | null, targetName: string | null,
+/**
+ * Sprite key into RaidsReply.artwork, so each PNG is returned only once.
+ */
+icon: string | null, iconMissing: string | null, phase: number, phaseName: string | null, outcome: number, outcomeName: string | null,
+/**
+ * Null for an ended raid whose launch was never observed.
+ */
+launched: boolean | null, succeeded: boolean | null, };
+export type RaidPreparationRead = [number, number];
+export type RaidEpisode = { id: string,
+/**
+ * Creation/start dates are not in Raids. This is a bound, never an exact start.
+ */
+start: RaidDate, runs: Array<RaidRun>,
+/**
+ * Independent compact reads: preparation changes must not split fact runs.
+ */
+preparation: Array<RaidPreparationRead>, };
+export type RaidTallyRun = { firstHour: number, lastHour: number, readHour: number, launched: number, succeeded: number, };
+export type RaidTallySeries = { tag: string, runs: Array<RaidTallyRun>, segments: Array<HourSpan>, membership: Array<HourSpan> | null, };
+export type RaidsReply = { branchId: string,
+/**
+ * False only when content or the recording proves raids unavailable.
+ */
+available: boolean | null, unavailable: string | null, types: Array<RaidTypeInfo>, artwork: Array<RaidArtwork>, episodes: Array<RaidEpisode>, series: Array<RaidTallySeries>,
+/**
+ * Successful complete census reads with every current country's parent row
+ * resolved. Partial per-country values remain in series, never a world zero.
+ */
+readHours: Array<number>, unobserved: Array<HourSpan>, warnings: Array<string>, };
 export type OccupiedStatesParams = { branchId: string, };
 export type OccupiedValues = { name: string | null, nameMissing: string | null, owner: string | null, occupier: string | null,
 /**
@@ -2066,4 +2123,4 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "occupied-states", "idea-history", "party-history", "resource-balance", "decryption", "production-lines", "production-line-detail", "equipment-stockpile", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "equipment-losses", "construction-spending"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "country-nukes", "raids", "occupied-states", "idea-history", "party-history", "resource-balance", "decryption", "production-lines", "production-line-detail", "equipment-stockpile", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "equipment-losses", "construction-spending"] as const;

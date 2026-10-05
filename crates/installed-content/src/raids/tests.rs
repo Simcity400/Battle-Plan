@@ -403,6 +403,34 @@ fn the_icon_key_follows_the_documented_two_step_lookup() {
 }
 
 #[test]
+fn raids_empty_custom_map_icon_uses_native_generated_base_and_building_suffix() {
+    // BuildSpriteName@141EDC220 tests the authored string's length, so an
+    // explicit empty override follows the same generated-key arm as absence.
+    let catalog = parse(
+        &[],
+        &[doc(br#"types = { synthetic_empty = { custom_map_icon = "" } }"#).unwrap()],
+        EQUIPMENT,
+    )
+    .unwrap();
+    let kind = &catalog.types[0];
+    assert_eq!(kind.custom_map_icon.as_deref(), Some(""));
+    assert_eq!(kind.base_icon(), "GFX_raid_type_icon_synthetic_empty");
+    assert_eq!(
+        kind.icon(Some("synthetic_building"), |key| {
+            key == "GFX_raid_type_icon_synthetic_empty_synthetic_building"
+        }),
+        Some("GFX_raid_type_icon_synthetic_empty_synthetic_building".into())
+    );
+    assert_eq!(
+        kind.icon(Some("synthetic_building"), |key| {
+            key == "GFX_raid_type_icon_synthetic_empty"
+        }),
+        Some("GFX_raid_type_icon_synthetic_empty".into())
+    );
+    assert_eq!(kind.icon(None, |_| false), None);
+}
+
+#[test]
 fn a_name_declared_twice_or_thrice_is_refused_once() {
     let catalog = parse(
         &[],

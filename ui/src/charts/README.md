@@ -59,6 +59,14 @@ The meter's live fill uses `--meter-sweep` over `--meter-sweep-duration` (1.6s);
 
 ## Rules
 
+New country race widgets compose [CountryRaceView](race/CountryRaceView.tsx) and
+[countryRace.ts](race/countryRace.ts): recorded bar entries, exact held country
+lines through `drawLine({ held: true })`, half-pixel-thinned one-country stacks,
+hour-specific looks/hover labels, shared colours, end labels, Jump to and standard
+empty states. Inactive views clear hover country requests. Widget folders supply
+their values and wording. Factories, Equipment produced and Fuel keep their
+existing views; adoption of this shared view is a follow-up for their owners.
+
 - **Shapes ease; numbers stay exact.** Labels and tooltips show the recorded value at the resolved hour; only positions glide. Nothing eases across a gap, and a gap is never drawn as zero.
 - **No fixed dates.** Axes, ticks and ranges come from the recording's start and end; settings store offsets from the branch start.
 - **No fixed colours or sizes.** Draw with `ChartTokens`. Countries use their recorded map colours; categories take their content colour, else the palette in its fixed order. Content may have any number of categories, so none is hidden for want of a colour: lines past the eighth repeat the colours with dashes of their own (`lineStyles`), and bands repeat them in order.

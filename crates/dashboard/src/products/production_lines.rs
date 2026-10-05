@@ -91,7 +91,7 @@ const MAX_RUNS: usize = 2_000_000;
 /// and one reply holds at most 30 reads of each line.
 pub const DETAIL_HOURS: i32 = 720;
 /// Each reply's bound, inside the transport's.
-pub const MAX_REPLY_BYTES: usize = 24 * 1024 * 1024;
+pub use super::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
 const CACHED_COUNTRIES: usize = 8;
 /// Longest side of an equipment or organisation icon.
 const ICON_EDGE: u32 = 96;

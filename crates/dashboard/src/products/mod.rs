@@ -16,6 +16,7 @@ pub mod country_flags;
 pub mod country_fuel;
 pub mod country_groups;
 pub mod country_measure;
+pub mod country_nukes;
 pub mod country_stability;
 pub mod country_styles;
 pub mod decryption;
@@ -35,6 +36,7 @@ pub mod party_history;
 pub mod politics_content;
 pub mod production_lines;
 pub mod production_spending;
+pub mod raids;
 pub mod research;
 pub mod resource_balance;
 pub mod resources;
@@ -51,6 +53,16 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use ts_rs::TS;
 
 use crate::{Source, transport::bounded_json};
+
+/// Leave room for the lease envelope and escaped product JSON inside the
+/// transport's complete-response bound. History products share this reserve.
+pub const MAX_PRODUCT_REPLY_BYTES: usize = 24 * 1024 * 1024;
+
+/// Native fixed64 finite domain, GetNukes@1410828A0: excludes the three
+/// infinity/undefined sentinels while preserving every signed finite value.
+pub(crate) fn finite_fixed64(raw: i64) -> bool {
+    (raw as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd
+}
 
 /// Game and user folders chosen in Settings, needed by products that read
 /// artwork or localisation.
@@ -255,6 +267,8 @@ pub static PRODUCTS: &[Registered] = &[
     register::<country_measure::CountryMeasure>(),
     register::<country_fuel::CountryFuel>(),
     register::<country_factories::CountryFactories>(),
+    register::<country_nukes::CountryNukes>(),
+    register::<raids::Raids>(),
     register::<occupied_states::OccupiedStates>(),
     register::<country_experience::CountryExperience>(),
     register::<idea_history::IdeaHistory>(),

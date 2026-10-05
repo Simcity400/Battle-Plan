@@ -1,0 +1,60 @@
+import type { RaidTallyRun, RaidTallySeries, RaidsReply } from '../../generated/dashboard';
+import type { CountryRaceEntry, CountryRaceLine } from '../../charts/race/countryRace';
+import type { Span } from '../../charts/series';
+import { clipToSpans, runAt } from '../../charts/series.ts';
+import { shownRuns } from '../../charts/race/lines.ts';
+import type { LabelAt } from '../../charts/race/lines';
+import type { TooltipContent } from '../../charts/tooltip';
+import { formatDateTime } from '../../dashboard/calendar.ts';
+import { compareTags } from '../../dashboard/tagOrder.ts';
+
+export type TallyMetric = 'launched' | 'succeeded';
+export const tallyLabel = (metric: TallyMetric) => metric === 'launched' ? 'Observed raid launches' : 'Observed raid successes';
+export const tallyValue = (value: number) => value.toLocaleString('en-US');
+export const tallyCount = (value: number) => `${tallyValue(value)}+`;
+/** Scan::observe extends a tally run only after that country's successful read,
+ * at the immediately following hour. Every included hour is its own exact read. */
+export const tallyReadHour = (run: RaidTallyRun, hour: number) => Math.max(run.firstHour, Math.min(Math.floor(hour), run.lastHour));
+
+export function tallyEntries(series: ReadonlyMap<string, RaidTallySeries>, candidates: readonly string[], hour: number, metric: TallyMetric, limit: number,
+  omitZero = false): CountryRaceEntry[] {
+  return candidates.flatMap(tag => {
+    const item = series.get(tag);
+    const run = runAt(item?.runs ?? [], hour);
+    const identity = runAt(item?.segments ?? [], hour);
+    if (!run || !identity || (omitZero && run[metric] === 0)) return [];
+    return [{ tag, value: run[metric], label: tallyCount(run[metric]), stretch: identity.firstHour }];
+  }).sort((a, b) => b.value - a.value || compareTags(a.tag, b.tag)).slice(0, limit);
+}
+
+export function tallyLines(series: readonly RaidTallySeries[], metric: TallyMetric, range: Span, membership: ReadonlyMap<string, readonly Span[]> | null): CountryRaceLine[] {
+  return series.flatMap(item => {
+    const starts = new Set(item.segments.map(segment => segment.firstHour));
+    // Equal counts may compress across a holder change; split at the recorded
+    // identity spans before group/range clipping so those countries stay apart.
+    const identityRuns = clipToSpans(item.runs.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour, value: run[metric] })), item.segments)
+      .map(run => ({ ...run, breakBefore: starts.has(run.firstHour) }));
+    const runs = shownRuns(identityRuns, membership ? membership.get(item.tag) ?? [] : item.membership, range);
+    return runs.length ? [{ tag: item.tag, runs }] : [];
+  });
+}
+
+export function tallyTooltip(data: RaidsReply, tag: string, hour: number, name: string): TooltipContent {
+  const run = runAt(data.series.find(item => item.tag === tag)?.runs ?? [], Math.floor(hour));
+  return { title: name, subtitle: formatDateTime(hour), rows: run ? [
+    { label: 'Observed launches', value: tallyCount(run.launched) },
+    { label: 'Observed successes', value: tallyCount(run.succeeded) },
+    { label: 'Read', value: formatDateTime(tallyReadHour(run, hour)) },
+  ] : [{ label: 'Not recorded at this time', tone: 'muted' }],
+  note: 'Counts enter at the read that proves them, so their dates are upper bounds. An observed in-progress phase or nonzero recorded flight distance proves launch; terminal outcomes alone do not. Success means the game’s success or critical-success outcome. A + means earlier or between-read events may be absent; gaps stay unknown.' };
+}
+
+export function tallyLineTooltip(series: ReadonlyMap<string, RaidTallySeries>, hour: number, tags: readonly string[],
+  labelAt: LabelAt, country: (tag: string) => string, metric: TallyMetric): TooltipContent {
+  const entries = tags.flatMap(tag => { const run = runAt(series.get(tag)?.runs ?? [], Math.floor(hour)); return run ? [{ tag, run }] : []; });
+  return { title: tallyLabel(metric), subtitle: formatDateTime(hour), rows: entries.length ? entries.map(({ tag, run }) => {
+    const label = labelAt(hour)(tag);
+    return { label: label.name, icon: label.flag, swatch: country(tag), value: tallyCount(run[metric]) };
+  }) : [{ label: 'Not recorded at this time', tone: 'muted' }],
+  note: entries.length ? `Read ${formatDateTime(tallyReadHour(entries[0].run, hour))}. A + is an observed lower bound. Events enter by the read proving them; between-read launches may be unknown. Success excludes limited success.` : undefined };
+}

@@ -2,7 +2,7 @@ import { formatDate, gameDate } from '../dashboard/calendar.ts';
 import { chartBottom } from './frame.ts';
 import type { PlotFrame } from './frame.ts';
 import { layoutEndLabels } from './labels.ts';
-import { curveSegments, gapRegions } from './series.ts';
+import { curveSegments, gapRegions, heldSegments } from './series.ts';
 import type { PathCommand, Run } from './series.ts';
 import { timeTicks } from './timeAxis.ts';
 import type { ChartTokens } from './tokens.ts';
@@ -98,13 +98,15 @@ export function clipToPlot(ctx: CanvasRenderingContext2D, frame: PlotFrame): voi
 
 /** A 2px line through recorded runs, broken at gaps, with an optional light area
  * fill, an optional dash pattern (for a second measure in the same colour) and a
- * ringed dot at its last recorded point. Returns that point. */
+ * ringed dot at its last recorded point. `held` draws exact steps between reads.
+ * Returns that point. */
 export function drawLine(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, runs: readonly Run[],
-  color: string, options: { area?: boolean; endDot?: boolean; until?: number; dash?: readonly number[] } = {}): { x: number; y: number } | null {
+  color: string, options: { area?: boolean; endDot?: boolean; until?: number; dash?: readonly number[]; held?: boolean } = {}): { x: number; y: number } | null {
   const until = Math.min(frame.x[1], options.until ?? Infinity);
   let last: { x: number; y: number } | null = null;
   const baseline = frame.toY(frame.log ? frame.y[0] : Math.max(frame.y[0], Math.min(0, frame.y[1])));
-  for (const { points, path } of curveSegments(runs, frame.x[0], until, frame.toX, frame.toY)) {
+  const lineSegments = options.held ? heldSegments : curveSegments;
+  for (const { points, path } of lineSegments(runs, frame.x[0], until, frame.toX, frame.toY)) {
     if (options.area && points.length > 1) {
       ctx.beginPath(); tracePath(ctx, path);
       ctx.lineTo(points.at(-1)!.x, baseline); ctx.lineTo(points[0].x, baseline); ctx.closePath();
@@ -117,9 +119,9 @@ export function drawLine(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens
     last = points.at(-1)!;
   }
   if (last && options.endDot !== false) {
-    ctx.beginPath(); ctx.arc(last.x, last.y, 4, 0, Math.PI * 2);
+    ctx.beginPath(); ctx.arc(last.x, last.y, tokens.lineWidth.series * 2, 0, Math.PI * 2);
     ctx.fillStyle = color; ctx.fill();
-    ctx.lineWidth = 2; ctx.strokeStyle = tokens.surface; ctx.stroke();
+    ctx.lineWidth = tokens.lineWidth.series; ctx.strokeStyle = tokens.surface; ctx.stroke();
   }
   return last;
 }
