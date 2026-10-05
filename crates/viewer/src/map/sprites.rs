@@ -236,6 +236,7 @@ impl MapIcons {
         layers: &ResolvedLayers,
         localisation: &installed_content::localisation::Localisation,
     ) -> io::Result<Vec<String>> {
+        // Both registries consume this one harvest of expanded localisation.
         let (extra, mut warnings) = self.combat.localisation_assets(localisation);
         warnings.extend(self.counters.load_gui(
             layers,

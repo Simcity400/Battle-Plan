@@ -15,8 +15,6 @@ use replay::{
 
 use crate::{map::perspective::Vision, table_access::TokenNames};
 
-pub const LOCALISATION_KEYS: &[&str] = &["SUB_UNIT_ACCURAT_VALUE", "SUB_UNIT_RANGED_VALUE"];
-
 /// 141006BC0's glyph inventory, from the one parsed sub-unit database. Both
 /// NATO frames use the same declaration; missing declarations draw nothing.
 pub(crate) fn assets(subunits: &SubUnits) -> (crate::map::native_gui::Assets, Vec<String>) {

@@ -131,20 +131,16 @@ fn windows(body: &[u8]) -> NativeWindows {
 }
 
 #[test]
-fn authored_tooltip_icons_follow_the_bound_nodes() {
-    let windows = windows(
-        br#"containerWindowType = { name = w pdx_tooltip = OTHER
-            buttonType = { name = b pdx_tooltip = MAIN pdx_tooltip_delayed = DELAYED } }"#,
-    );
+fn localisation_inventory_includes_unbound_tooltip_keys() {
     let localisation = loc(&[
         ("MAIN", "£main"),
         ("DELAYED", "£delayed"),
         ("OTHER", "£unused"),
     ]);
-    let assets = authored_assets([windows.gui_type(b"w").unwrap()], &localisation);
+    let assets = crate::map::native_gui::Assets::from_localisation(&localisation);
     assert!(assets.sprites.contains(b"GFX_main".as_slice()));
     assert!(assets.sprites.contains(b"GFX_delayed".as_slice()));
-    assert!(!assets.sprites.contains(b"GFX_unused".as_slice()));
+    assert!(assets.sprites.contains(b"GFX_unused".as_slice()));
 }
 
 #[test]
@@ -155,16 +151,9 @@ fn political_province_hover_keys_preload_native_inline_icons() {
         ("PROVINCE_VP_TOOLTIP", "£victory $VALUE$"),
         ("SUB_UNIT_RANGED_VALUE", "£estimate $MIN$-$MAX$"),
     ]);
-    let assets = authored_assets([], &localisation);
+    let assets = crate::map::native_gui::Assets::from_localisation(&localisation);
     for sprite in ["GFX_pin", "GFX_weather", "GFX_victory", "GFX_estimate"] {
         assert!(assets.sprites.contains(sprite.as_bytes()), "{sprite}");
-    }
-    for key in [
-        "PROV_TOOLTIP_LOCATION_HEADER",
-        "BORDER_WAR_HINT",
-        "SUB_UNIT_RANGED_VALUE",
-    ] {
-        assert!(keys().any(|candidate| candidate == key), "{key}");
     }
 }
 

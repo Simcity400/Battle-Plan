@@ -573,20 +573,6 @@ const ICON_MODIFIERS: [(u32, &str); 8] = [
     (16, BM_PARADROP),
 ];
 
-/// Description keys made from the same modifier/stat keys (1415C3AA0, 1415BF4B0).
-pub(super) fn description_keys() -> impl Iterator<Item = String> {
-    ICON_MODIFIERS
-        .iter()
-        .map(|(_, key)| *key)
-        .chain([
-            STAT_ARMY_SOFT_ATTACK,
-            STAT_ARMY_HARD_ATTACK,
-            STAT_ARMY_BREAKTHROUGH,
-            STAT_ARMY_DEFENSE,
-        ])
-        .map(|key| format!("{key}_DESC"))
-}
-
 struct ModifierIconContext<'context, 'frame> {
     icons: &'context dyn TextIcons,
     loc: &'context Localisation,

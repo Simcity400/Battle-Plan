@@ -78,6 +78,143 @@ fn tga(width: u16, height: u16) -> Vec<u8> {
 }
 
 #[test]
+fn combat_inline_sprite_substitution_renders_through_loaded_inventory() {
+    use crate::combat::{binding::Bindings, gui_resources, tooltip_painter};
+    use crate::map::{native_gui::Resources, sprites::Batch};
+
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_combat_inline_sprite_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let mut declaration = String::from("guiTypes = {");
+    for name in WINDOW_TEMPLATES
+        .iter()
+        .copied()
+        .chain([b"unit_counter_navy".as_slice(), b"naval_combat_mapicon"])
+    {
+        let text = if name == b"landcombatview" {
+            r#"instantTextBoxType = { name = "fixture_text" font = "fixture_font" }"#
+        } else {
+            ""
+        };
+        declaration.push_str(&format!(
+            "containerWindowType = {{ name = \"{}\" {text} }}\n",
+            std::str::from_utf8(name).unwrap()
+        ));
+    }
+    declaration.push_str(
+        r#"textBoxType = { name = "ToolTip" font = "fixture_font"
+            maxWidth = 200 borderSize = { x = 1 y = 1 } } }"#,
+    );
+    for (path, bytes) in [
+        ("interface/fixture.gui", declaration.into_bytes()),
+        ("interface/fixture.gfx", br#"spriteTypes = {
+            spriteType = { name = "GFX_fixture_substituted" textureFile = "gfx/icon.tga" }
+        }
+        bitmapfonts = { bitmapfont = { name = "fixture_font" path = "gfx/fonts/fixture" } }"#.to_vec()),
+        ("map/default.map", br#"definitions = "x" provinces = "x" terrain = "x"
+            rivers = "x" heightmap = "x" tree_definition = "x""#.to_vec()),
+        ("common/terrain/fixture.txt", b"categories = { fixture = {} }".to_vec()),
+        ("common/combat_tactics.txt", Vec::new()),
+        ("localisation/english/fixture.yml", "\u{feff}l_english:\n fixture_unlisted_modifier:0 \"A £$fixture_icon_name$\"\n fixture_icon_name:0 \"fixture_substituted\"\n".as_bytes().to_vec()),
+        ("gfx/icon.tga", tga(4, 4)),
+        ("gfx/fonts/fixture.tga", tga(2, 2)),
+        ("gfx/fonts/fixture.fnt", b"info face=\"fixture\" size=4\ncommon lineHeight=4 base=3 scaleW=2 scaleH=2 pages=1\npage id=0 file=\"fixture.tga\"\nchars count=1\nchar id=65 x=0 y=0 width=1 height=1 xoffset=0 yoffset=0 xadvance=1 page=0 chnl=15\n".to_vec()),
+        ("gfx/FX/defines_hlsl_dx11.fxh", Vec::new()),
+        ("gfx/FX/text.shader", b"Effect Text { }".to_vec()),
+        ("gfx/FX/buttonstate.shader", b"Effect Up { }".to_vec()),
+    ] {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, bytes).unwrap();
+    }
+    let shared = Arc::new(ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap());
+    let windows = NativeWindows::load_at(&shared, [640, 480]).unwrap();
+    let registry = Registry::load(&shared).unwrap();
+    let interface = crate::map::sprites::Interface {
+        sprites: installed_content::gfx::SpriteSet::new(&registry.files),
+        registry,
+        decode: Decode::default(),
+    };
+    let lazy = LazyTextures::new();
+    let flags = crate::map::counters::flag_set(
+        &shared,
+        installed_content::flags::FlagSet::Normal,
+        [1, 1],
+        |_| {},
+        &lazy,
+    )
+    .unwrap();
+    let mut images = Vec::new();
+    let mut combat = Assets::load(
+        &shared,
+        &BTreeMap::new(),
+        &Defines::new().unwrap(),
+        &interface,
+        &flags,
+        ("english", [10, 10], &windows),
+        &mut images,
+        &lazy,
+    )
+    .unwrap();
+    let localisation = installed_content::localisation::read(&shared, "english").unwrap();
+    // The same inventory and load calls MapIcons::load_gui uses; no test-only merge.
+    let (extra, _) = combat.localisation_assets(&localisation);
+    combat
+        .load_gui(&shared, &localisation, &extra, &mut images)
+        .unwrap();
+    let inventory = gui_resources::GuiAssets::new(&combat, &Bindings::default());
+    let resources = gui_resources::GuiResources::new(
+        &combat,
+        &windows,
+        &localisation,
+        &flags,
+        &flags,
+        &inventory,
+    );
+    let text = localisation.localise(b"fixture_unlisted_modifier").unwrap();
+    let defines = Defines::new().unwrap();
+    defines
+        .load(
+            "fixture",
+            b"NDefines = { NInterface = {
+        TOOLTIP_SCREEN_LEFT_OFFSET_X = 0, TOOLTIP_SCREEN_TOP_OFFSET_Y = 0,
+        TOOLTIP_SCREEN_RIGHT_OFFSET_X = 0, TOOLTIP_SCREEN_BOTTOM_OFFSET_Y = 0
+    }, NGraphics = { TOOLTIP_SHOW_DELAY = 0, TOOLTIP_DELAYED_DELAY = 0, TOOLTIP_HIDE_DELAY = 0 } }",
+        )
+        .unwrap();
+    let mut batch = Batch::default();
+    let refused = tooltip_painter::draw(
+        &resources,
+        &mut batch,
+        &text,
+        [0.0; 2],
+        [640.0, 480.0],
+        &tooltip_painter::TooltipDefines::read(&defines).unwrap(),
+        0.0,
+    );
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(refused.is_empty(), "{refused:?}");
+    assert!(!batch.is_empty(), "the combat popup must draw");
+    assert!(resources.sprite(b"GFX_fixture_substituted").is_some());
+    let icon = combat
+        .gui
+        .sheet(b"GFX_fixture_substituted")
+        .unwrap()
+        .texture;
+    assert!(
+        batch
+            .quads
+            .iter()
+            .filter_map(|quad| quad.exact.as_ref()?.native.as_ref()?.bake.as_ref())
+            .flat_map(|bake| &bake.draws)
+            .any(|draw| draw.textures.contains(&(0, Some(icon)))),
+        "the popup bake must draw its substituted inline sprite"
+    );
+}
+
+#[test]
 fn combat_fonts_select_the_native_language_family() {
     let root = std::env::temp_dir().join(format!(
         "hoi4_combat_font_language_{}_{:?}",

@@ -56,7 +56,6 @@ pub(crate) fn contains(rect: [f32; 4], point: [f32; 2]) -> bool {
         && point[1] < rect[1] + rect[3]
 }
 use std::{collections::BTreeMap, io};
-pub(crate) use tooltips::{authored_assets as tooltip_assets, keys as tooltip_keys};
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())

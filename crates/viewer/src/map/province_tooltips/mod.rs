@@ -5,49 +5,6 @@ mod units;
 mod weather;
 pub(crate) use units::assets as unit_assets;
 
-/// Native producer keys: 140DEBC90, weather helpers 140F06980/140F04F70,
-/// and border-war block 1409C8D50. Replay omits unavailable click/ping actions.
-pub(crate) const LOCALISATION_KEYS: &[&str] = &[
-    "PROV_TOOLTIP_LOCATION_HEADER",
-    "PROV_TOOLTIP_LOCATION_STATE",
-    "PROV_TOOLTIP_LOCATION_OWNER",
-    "PROV_TOOLTIP_LOCATION_CONTROLLER",
-    "DEMILITARIZED_ZONE",
-    "PROVINCE_STATE_IMPASSABLE",
-    "PROVINCE_WEATHER_HEADER",
-    "PROV_TOOLTIP_TEMPERATURE",
-    "PROV_TOOLTIP_WEATHER_MODIFIER",
-    "PROV_TOOLTIP_TEMPERATURE_MODIFIER",
-    "PROV_TOOLTIP_LOCAL_TIME",
-    "PROVINCE_AIRBASE_TOOLTIP",
-    "PROVINCE_ROCKET_TOOLTIP",
-    "PROVINCE_PORT_TOOLTIP",
-    "PROVINCE_PORT_TOOLTIP_LEVEL",
-    "PROVINCE_VP_TOOLTIP",
-    "weather_rain_light",
-    "weather_rain_heavy",
-    "weather_snow",
-    "weather_blizzard",
-    "weather_sandstorm",
-    "weather_mud",
-    "weather_none",
-    "BORDER_WAR_NOT_OURS",
-    "BORDER_WAR_HEADER",
-    "BORDER_WAR_POWER",
-    "BORDER_WAR_POWER_ENEMY",
-    "BORDER_WAR_POWER_RATIO",
-    "BORDER_WAR_WIN",
-    "BORDER_WAR_LOSS",
-    "BORDER_WAR_HINT",
-];
-
-pub(crate) fn keys() -> impl Iterator<Item = &'static str> {
-    LOCALISATION_KEYS
-        .iter()
-        .chain(units::LOCALISATION_KEYS)
-        .copied()
-}
-
 use super::{perspective::Vision, raids::tooltips::Tooltip};
 use crate::{document, table_access::TokenNames};
 use installed_content::{

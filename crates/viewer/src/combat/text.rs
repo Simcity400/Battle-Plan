@@ -3,15 +3,10 @@ use dashboard::scripted_text::stored_text;
 use installed_content::localisation::{Argument as Arg, Localisation};
 use replay::rows::CountryRow;
 
-// One declaration supplies the producer's keys and the preload inventory.
+// Native keys used by the tooltip producers.
 macro_rules! tooltip_keys {
-    ($list:ident; $($key:ident = $text:literal),* $(,)?) => {
-        $(const $key: &str = $text;)*
-        pub(super) const $list: &[&str] = &[$($key),*];
-    };
     ($($key:ident = $text:literal),* $(,)?) => {
         $(const $key: &str = $text;)*
-        pub(super) const TOOLTIP_KEYS: &[&str] = &[$($key),*];
     };
 }
 pub(crate) use tooltip_keys;

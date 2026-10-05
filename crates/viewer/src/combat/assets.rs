@@ -83,11 +83,6 @@ impl Assets {
     pub(crate) fn sub_units(&self) -> Result<&installed_content::unit_leader::SubUnits, &str> {
         self.commander_tooltips.sub_units()
     }
-    /// ReloadGui@1415C5900 / 1417D7450 resolve combat templates in the global registry.
-    pub(crate) fn native_templates(&self) -> impl Iterator<Item = &gui::native::Element> {
-        native_templates(&self.native_windows)
-    }
-
     pub(crate) fn window_sprites(&self) -> &BTreeSet<Vec<u8>> {
         &self.window_sprites
     }
@@ -168,23 +163,14 @@ impl Assets {
         Ok(warnings)
     }
 
-    /// Exact producer artwork shared by counter and combat ToolTip resources.
+    /// Inventoried once per GUI load, then shared by counter and combat ToolTip resources.
     pub(crate) fn localisation_assets(
         &self,
         localisation: &installed_content::localisation::Localisation,
     ) -> (native_gui::Assets, Vec<String>) {
-        let mut assets = super::tooltip_assets(self.native_templates(), localisation);
+        let mut assets = native_gui::Assets::from_localisation(localisation);
         let mut warnings = Vec::new();
-        if let Ok(terrain) = &self.land_terrain {
-            for category in &terrain.categories {
-                assets.add_localised(localisation, &category.name);
-            }
-        }
-        // Event text is resolved on demand. Inventory its possible inline
-        // artwork from the already-loaded localisation, without event reads.
-        for (_, text) in localisation.iter() {
-            assets.add_text(text);
-        }
+        // 141006BC0 generates inline sub-unit sprite names from data, not localisation.
         match self.commander_tooltips.sub_units() {
             Ok(subunits) => {
                 let (unit_assets, unit_warnings) =
@@ -195,15 +181,6 @@ impl Assets {
             Err(reason) => warnings.push(format!(
                 "Province hover: sub-unit icon content unavailable: {reason} (1 subunit_icon)."
             )),
-        }
-        // 140F04F70 resolves each thermal slot's effective modifier identifier.
-        match &self.temperature {
-            Ok(ranges) => {
-                for key in ranges.ranges.iter().filter_map(|range| range.modifier.as_deref()) {
-                    assets.add_localised(localisation, key.as_bytes());
-                }
-            }
-            Err(reason) => warnings.push(format!("Province hover: thermal modifier icon content unavailable: {reason} (1 temperature_icon).")),
         }
         (assets, warnings)
     }

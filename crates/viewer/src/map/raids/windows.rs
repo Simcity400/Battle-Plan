@@ -362,7 +362,12 @@ mod tests {
         resources.add_sprite("plus", [32, 32], 1);
         // GUI loading uses this production inventory. A declared sprite omitted
         // from it refuses the native text bake.
-        let inventory = windows.assets(&loc);
+        let inventory = crate::map::counters::gui_assets(
+            &windows,
+            &native::resources::Registry::default(),
+            &loc,
+            native_gui::Assets::from_localisation(&loc),
+        );
         if inventory.sprites.contains(b"GFX_unpreloaded".as_slice()) {
             resources.add_sprite("GFX_unpreloaded", [12, 12], 1);
         }
