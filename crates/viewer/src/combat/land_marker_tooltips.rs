@@ -179,9 +179,13 @@ fn intel(
     }
 }
 
+/// The branch, hour, viewing country and combat a tooltip was built for, and
+/// whether the engaged index covered that hour.
+type CacheKey = (replay::BranchId, i32, u32, u64, bool);
+
 #[derive(Default)]
 pub(crate) struct Cache {
-    held: Option<((replay::BranchId, i32, u32, u64, bool), Arc<Tooltip>)>,
+    held: Option<(CacheKey, Arc<Tooltip>)>,
 }
 impl Cache {
     pub(crate) fn request(

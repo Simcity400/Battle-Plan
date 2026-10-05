@@ -602,6 +602,7 @@ pub struct DumpReport {
 }
 
 /// Renders one frame headlessly through the same [`Scene`] the window uses.
+#[allow(clippy::too_many_arguments)] // The window's scene inputs plus the dump's request and output.
 pub fn dump_png(
     assets: &MapAssets,
     // political fill + borders

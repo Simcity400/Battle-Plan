@@ -242,7 +242,7 @@ fn icon_key(cat: &Catalogue, kind: &RaidType, template: Option<&str>) -> Result<
 fn decode_icon(cat: &Catalogue, key: &str) -> Result<String, String> {
     let sprite = cat
         .sprites
-        .find(&key)?
+        .find(key)?
         .ok_or_else(|| format!("raid sprite {key} is unavailable"))?;
     catalogue::sprite_frame_png(&cat.content.layers, sprite, cat.gui_decode.clone()?, 0, 48)
         .map_err(|error| format!("raid sprite {key}: {error}"))
@@ -554,18 +554,17 @@ impl Scan {
         let hour = frame.hour;
         if let Some(last) = self.last
             && last.checked_add(1) != Some(hour)
+            && last < hour - 1
         {
-            if last < hour - 1 {
-                if let Some(span) = self.result.unobserved.last_mut()
-                    && span.last_hour.checked_add(1) == Some(last + 1)
-                {
-                    span.last_hour = hour - 1;
-                } else {
-                    self.result.unobserved.push(HourSpan {
-                        first_hour: last + 1,
-                        last_hour: hour - 1,
-                    });
-                }
+            if let Some(span) = self.result.unobserved.last_mut()
+                && span.last_hour.checked_add(1) == Some(last + 1)
+            {
+                span.last_hour = hour - 1;
+            } else {
+                self.result.unobserved.push(HourSpan {
+                    first_hour: last + 1,
+                    last_hour: hour - 1,
+                });
             }
         }
         self.last = Some(hour);
