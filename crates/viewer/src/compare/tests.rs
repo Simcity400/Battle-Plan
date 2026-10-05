@@ -361,6 +361,30 @@ fn a_greyscale_png_and_a_non_png_are_named_errors() {
 }
 
 #[test]
+fn the_ultrawide_interface_rectangles_stay_inside_the_frame_and_are_chosen_by_size() {
+    let rects = game_ui_exclusions(GAME_UI_WIDE_WIDTH, GAME_UI_HEIGHT).unwrap();
+    let mut mask = Mask::full(GAME_UI_WIDE_WIDTH, GAME_UI_HEIGHT).unwrap();
+    for rect in rects {
+        assert!(rect.right() <= GAME_UI_WIDE_WIDTH && rect.bottom() <= GAME_UI_HEIGHT);
+        mask.exclude_rect(*rect);
+    }
+    let total = u64::from(GAME_UI_WIDE_WIDTH) * u64::from(GAME_UI_HEIGHT);
+    assert!(mask.included_pixels() > total * 3 / 4);
+    assert!(!mask.includes(0, 99));
+    assert!(mask.includes(0, 100));
+    assert!(!mask.includes(2000, 105));
+    assert!(!mask.includes(3439, 115));
+    assert!(!mask.includes(3400, 1200));
+    assert!(!mask.includes(1700, 1400));
+    assert!(mask.includes(1500, 1400));
+    assert_eq!(
+        game_ui_exclusions(GAME_UI_WIDTH, GAME_UI_HEIGHT).map(<[Rect]>::len),
+        Some(GAME_UI_EXCLUSIONS.len())
+    );
+    assert!(game_ui_exclusions(1920, 1080).is_none());
+}
+
+#[test]
 fn the_measured_game_interface_rectangles_stay_inside_the_frame() {
     let mut mask = Mask::full(GAME_UI_WIDTH, GAME_UI_HEIGHT).unwrap();
     for rect in GAME_UI_EXCLUSIONS {

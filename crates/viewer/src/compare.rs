@@ -18,10 +18,12 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// Width of the game screenshots the built-in exclusion set was measured on.
+/// Width of the game screenshots the 2560x1440 exclusion set was measured on.
 pub const GAME_UI_WIDTH: u32 = 2560;
-/// Height of the game screenshots the built-in exclusion set was measured on.
+/// Height of the game screenshots both built-in exclusion sets were measured on.
 pub const GAME_UI_HEIGHT: u32 = 1440;
+/// Width of the ultrawide game screenshots the second exclusion set was measured on.
+pub const GAME_UI_WIDE_WIDTH: u32 = 3440;
 
 /// The game's interface regions at 2560x1440, excluded by `--exclude-game-ui`.
 ///
@@ -71,6 +73,63 @@ pub const GAME_UI_EXCLUSIONS: [Rect; 4] = [
         height: 154,
     },
 ];
+
+/// The game's interface regions at 3440x1440 (the same 1.25 interface scale on an ultrawide
+/// window), excluded by `--exclude-game-ui`.
+///
+/// Measured on the 24 GER frames of `captures\political_live\part-A` (12:00-13:00
+/// 24 Oct 1943, cameras from the far map to close zoom): the interface is every pixel whose
+/// luminance varies by at most 6 across those different map views, and each box is that static
+/// region rounded outwards by two pixels:
+///
+/// - Top bar `0,0 3440x100`. Rows 94 to 98 are the last mostly static rows across the width; row 99
+///   is map in every column outside the two hangs below.
+/// - Army group buttons `1990,100 276x8`. Their flag strips hang to row 106 between x 1996 and 2259.
+/// - Date and speed cluster `3280,100 160x16`. It hangs to row 115 between x 3283 and the right edge.
+/// - Right side panels `3345,997 95x443`. The map mode column is static from x 3347 and row 999.
+/// - Bottom centre portraits `1584,1301 200x139`. The two leader cards span x 1586..1781 and rows
+///   1303..1439.
+pub const GAME_UI_WIDE_EXCLUSIONS: [Rect; 5] = [
+    Rect {
+        x: 0,
+        y: 0,
+        width: 3440,
+        height: 100,
+    },
+    Rect {
+        x: 1990,
+        y: 100,
+        width: 276,
+        height: 8,
+    },
+    Rect {
+        x: 3280,
+        y: 100,
+        width: 160,
+        height: 16,
+    },
+    Rect {
+        x: 3345,
+        y: 997,
+        width: 95,
+        height: 443,
+    },
+    Rect {
+        x: 1584,
+        y: 1301,
+        width: 200,
+        height: 139,
+    },
+];
+
+/// The measured interface rectangles for a game screenshot of this size, if one was measured.
+pub fn game_ui_exclusions(width: u32, height: u32) -> Option<&'static [Rect]> {
+    match (width, height) {
+        (GAME_UI_WIDTH, GAME_UI_HEIGHT) => Some(&GAME_UI_EXCLUSIONS),
+        (GAME_UI_WIDE_WIDTH, GAME_UI_HEIGHT) => Some(&GAME_UI_WIDE_EXCLUSIONS),
+        _ => None,
+    }
+}
 
 /// Factor the per channel absolute difference is multiplied by in the `--diff` image.
 pub const DIFF_AMPLIFICATION: u16 = 4;

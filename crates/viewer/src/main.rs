@@ -734,17 +734,19 @@ fn run_compare(options: &Options, paths: &[PathBuf; 2]) -> io::Result<()> {
         None => compare::Mask::full(game.width(), game.height())?,
     };
     if options.exclude_game_ui {
-        if game.width() != compare::GAME_UI_WIDTH || game.height() != compare::GAME_UI_HEIGHT {
+        let Some(rects) = compare::game_ui_exclusions(game.width(), game.height()) else {
             return Err(invalid(format!(
-                "--exclude-game-ui was measured on a {}x{} screenshot; these images are {}x{}",
+                "--exclude-game-ui was measured on {}x{} and {}x{} screenshots; these images are {}x{}",
                 compare::GAME_UI_WIDTH,
+                compare::GAME_UI_HEIGHT,
+                compare::GAME_UI_WIDE_WIDTH,
                 compare::GAME_UI_HEIGHT,
                 game.width(),
                 game.height()
             )));
-        }
-        for rect in compare::GAME_UI_EXCLUSIONS {
-            mask.exclude_rect(rect);
+        };
+        for rect in rects {
+            mask.exclude_rect(*rect);
         }
     }
     for rect in &options.excludes {
