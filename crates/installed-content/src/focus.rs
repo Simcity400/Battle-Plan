@@ -12,6 +12,9 @@ use crate::{
 };
 use std::{collections::BTreeMap, io};
 
+/// Focus definitions by id.
+pub type Focuses = BTreeMap<String, FocusDefinition>;
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FocusDefinition {
     pub localisation: String,
@@ -76,13 +79,7 @@ pub fn parse(
     input: &[u8],
     database: Database,
     names: &KeyNames,
-) -> Result<
-    (
-        BTreeMap<String, FocusDefinition>,
-        Vec<(crate::DiagnosticKind, String)>,
-    ),
-    (crate::DiagnosticKind, io::Error),
-> {
+) -> Result<(Focuses, Vec<crate::Diagnostic>), (crate::DiagnosticKind, io::Error)> {
     use Node::*;
     let mut undecided = Vec::new();
     let mut refused = Vec::new();
@@ -409,12 +406,7 @@ pub fn point_days(layers: &ResolvedLayers) -> io::Result<Option<f64>> {
 }
 
 /// Reader diagnostics with severity retained from their creation sites.
-pub fn read(
-    layers: &ResolvedLayers,
-) -> io::Result<(
-    BTreeMap<String, FocusDefinition>,
-    Vec<(crate::DiagnosticKind, String)>,
-)> {
+pub fn read(layers: &ResolvedLayers) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
     let mut paths = layers
         .paths()
         .filter(|p| {

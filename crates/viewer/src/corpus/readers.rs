@@ -411,11 +411,11 @@ struct Map {
     buildings: Option<installed_content::buildings::Buildings>,
     ideologies: Option<(
         installed_content::ideologies::Ideologies,
-        Vec<(installed_content::DiagnosticKind, String)>,
+        Vec<installed_content::Diagnostic>,
     )>,
     resources: Option<(
         Vec<installed_content::resources::Resource>,
-        Vec<(installed_content::DiagnosticKind, String)>,
+        Vec<installed_content::Diagnostic>,
     )>,
     data: Option<installed_content::map::MapData>,
     regions: Option<BTreeMap<u32, installed_content::regions::StrategicRegion>>,

@@ -112,7 +112,7 @@ pub(super) fn document(
     bytes: &[u8],
     equipment: super::Equipment<'_>,
     names: &KeyNames,
-    notes: &mut Vec<(crate::DiagnosticKind, String)>,
+    notes: &mut Vec<crate::Diagnostic>,
 ) -> io::Result<Document> {
     use Node::*;
     let mut reported = Vec::new();

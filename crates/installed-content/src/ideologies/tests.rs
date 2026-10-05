@@ -23,10 +23,11 @@ fn fixture(name: &str, files: &[(&str, &str)]) -> (Ideologies, Vec<String>) {
         std::fs::write(directory.join(file), source).unwrap();
     }
     let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let result = read(&layers).unwrap();
+    let (ideologies, warnings) = read(&layers).unwrap();
     drop(layers);
     std::fs::remove_dir_all(root).unwrap();
-    result
+    let messages = warnings.into_iter().map(|(_, message)| message).collect();
+    (ideologies, messages)
 }
 
 // 140A38190: a duplicate skips its body, not the rest of the file.

@@ -51,10 +51,7 @@ fn parse_with_registry(
     input: &[u8],
     registry: &units::Registry,
     names: &KeyNames,
-) -> Result<
-    (EquipmentLinks, Vec<(crate::DiagnosticKind, String)>),
-    (crate::DiagnosticKind, io::Error),
-> {
+) -> Result<(EquipmentLinks, Vec<crate::Diagnostic>), (crate::DiagnosticKind, io::Error)> {
     use Node::*;
     let mut undecided = Vec::new();
     let mut refused = Vec::new();
@@ -293,10 +290,7 @@ fn parse_with_registry(
 
 pub fn read_equipment(
     layers: &ResolvedLayers,
-) -> io::Result<(
-    BTreeMap<String, String>,
-    Vec<(crate::DiagnosticKind, String)>,
-)> {
+) -> io::Result<(BTreeMap<String, String>, Vec<crate::Diagnostic>)> {
     let registry = units::Registry::read(layers)?;
     let names = layers.key_names()?;
     let mut result = BTreeMap::new();

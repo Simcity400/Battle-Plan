@@ -624,7 +624,10 @@ fn the_loader_reads_resources_and_the_building_cap_from_content() {
     assert_eq!(state.buildings["infrastructure"].level, 10);
     assert_eq!(state.provinces, [2, 1]);
     assert_eq!(
-        notes,
+        notes
+            .iter()
+            .map(|(_, note)| note.as_str())
+            .collect::<Vec<_>>(),
         [
             "history/states/1-a.txt state 1: province 3 is not on the map (3 provinces); the game reports it and keeps it out of the state; the state follows the game's reading",
             "history/states/1-a.txt state 1: `oil` is no strategic resource; the game reports it and keeps no amount; the state follows the game's reading",

@@ -30,8 +30,7 @@ pub fn parse(input: &[u8]) -> io::Result<Vec<Resource>> {
 
 fn parse_file(
     input: &[u8],
-) -> Result<(Vec<Resource>, Vec<(crate::DiagnosticKind, String)>), (crate::DiagnosticKind, io::Error)>
-{
+) -> Result<(Vec<Resource>, Vec<crate::Diagnostic>), (crate::DiagnosticKind, io::Error)> {
     #[derive(Clone, Copy)]
     enum Node {
         File,
@@ -131,9 +130,7 @@ fn parse_file(
 /// another resource, as the game keeps it: its loader
 /// (`CStrategicResourceDatabase::load_file@140AB2ED0`) interns each declared key
 /// and appends a new item and key without looking for an earlier one.
-pub fn read(
-    layers: &ResolvedLayers,
-) -> io::Result<(Vec<Resource>, Vec<(crate::DiagnosticKind, String)>)> {
+pub fn read(layers: &ResolvedLayers) -> io::Result<(Vec<Resource>, Vec<crate::Diagnostic>)> {
     let mut warnings = Vec::new();
     let mut result: Vec<Resource> = Vec::new();
     for path in script_files::paths(layers, "common/resources/", Some(".txt")) {

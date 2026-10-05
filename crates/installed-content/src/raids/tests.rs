@@ -11,7 +11,7 @@ fn doc(bytes: &[u8]) -> io::Result<parser::Document> {
 fn raid_reader_notes_keep_native_kinds() {
     let mut notes = Vec::new();
     reader::document(
-        b"types = { a = { unit_model = { type = x } success_levels = { success = { actor_effects = { injure_scientist_for_days = 1 } } } } }",
+        b"types = { a = { unit_model = { type = x } success_levels = { success = { actor_effects = { free_operative = { operative = x } } } } } }",
         EQUIPMENT,
         &KeyNames::default(),
         &mut notes,

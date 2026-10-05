@@ -249,6 +249,16 @@ fn content_readers_ask_the_keyword_helper() {
         // The modifier a key names (1406042A0): the lexer folds a bare
         // key (1424A7A90), FindTokenNoCase a quoted one (1424A7060).
         ("modifiers.rs", "name: key.to_ascii_lowercase(),"),
+        // Its registry lookup: FindTokenNoCase 14022EC40 folds ASCII
+        // before comparing, for built-in and scripted names alike.
+        (
+            "modifiers.rs",
+            ".any(|name| name.as_bytes().eq_ignore_ascii_case(key))",
+        ),
+        (
+            "modifiers.rs",
+            "if effects.modifiers.contains(&key.to_ascii_lowercase()) {",
+        ),
         // Stored dynamic token (140A38190 -> 1424A6500).
         (
             "ideologies.rs",
