@@ -227,8 +227,8 @@ mod tests {
              NDefines.NNavy.CARRIER_OFFENSIVE_STANCE_SORTIE_RATIO = { 1 }\n\
              NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY = 1\n\
              NDefines.NNavy.SELECTED_SORTIE_INITIAL_TIME = 1\n\
-             NDefines.NNavy.NAVY_PIERCING_THRESHOLDS = { 2 1 }\n\
-             NDefines.NNavy.NAVY_PIERCING_THRESHOLD_CRITICAL_VALUES = { 2 1 }\n\
+             NDefines.NNavy.NAVY_PIERCING_THRESHOLDS = { 2, 1 }\n\
+             NDefines.NNavy.NAVY_PIERCING_THRESHOLD_CRITICAL_VALUES = { 2, 1 }\n\
              NDefines.NNavy.DAMAGE_PENALTY_ON_MINIMUM_POSITIONING = 0.1\n\
              NDefines.NNavy.AA_EFFICIENCY_PENALTY_ON_MINIMUM_POSITIONING = 0.2\n\
              NDefines.NNavy.SUBMARINE_REVEAL_ON_MINIMUM_POSITIONING = 0.3\n",

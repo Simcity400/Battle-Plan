@@ -103,6 +103,7 @@ pub(crate) fn read_hits(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // Two caller-owned spans, each with its length and demand.
 pub(crate) fn read(
     memory: &impl Memory,
     base: usize,

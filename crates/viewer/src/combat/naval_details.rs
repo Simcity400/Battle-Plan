@@ -230,6 +230,7 @@ fn push_air_entry(
     *height += size[1] + 3.0;
 }
 
+#[allow(clippy::too_many_arguments)] // The hour's frame, the battle's identity and its draw state.
 fn air_entries(
     out: &mut Bindings,
     document: &Document,

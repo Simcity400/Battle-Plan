@@ -150,7 +150,7 @@ fn category_key(mask: u64) -> &'static str {
         0x40_0000_0000 => "EQUIPMENT_LAND_CRUISER",
         0x40_8000_003c => "EQUIPMENT_LAND",
         0x80_0000_0000 => "EQUIPMENT_SUPPORT_SHIP",
-        0x8000_4003_c1 => "EQUIPMENT_NAVAL",
+        0x0080_0040_03c1 => "EQUIPMENT_NAVAL",
         _ => "EQUIPMENT_UNKNOWN",
     }
 }
@@ -172,6 +172,7 @@ pub(super) fn wing_short_name(loc: &Localisation, tag: &str, key: &str) -> Resul
 
 /// 1417D2430 joins 141963460's distinct wing short names with comma-space,
 /// then formats its two native header branches and the recorded hit vectors.
+#[allow(clippy::too_many_arguments)] // The plane's recorded row, its native texts and text resources.
 pub(super) fn plane_hover(
     plane: &NavalCombatPlane,
     name: &str,
@@ -310,6 +311,7 @@ pub(super) fn plane_hover(
 
 /// 1417DAA40 starts with the first plane's carrier-efficiency text, then
 /// ensures two trailing newlines before every 1417D2430 member description.
+#[allow(clippy::too_many_arguments)] // The group's recorded rows, native texts and text resources.
 pub(super) fn group_hover(
     planes: &[&NavalCombatPlane],
     presentations: &[(String, String)],

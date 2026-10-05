@@ -151,10 +151,6 @@ fn carrier_ratio_penalty(input: &Inputs<'_>, defines: &Defines) -> i64 {
 
 /// Native `141609460` without its optional localized tooltip construction.
 /// `None` denotes a modifier callback or operand that cannot be resolved.
-pub(super) fn displayed(input: &Inputs<'_>, defines: &Defines) -> Option<i64> {
-    displayed_terms(input, defines).map(|terms| terms.value)
-}
-
 pub(super) fn displayed_terms(input: &Inputs<'_>, defines: &Defines) -> Option<Terms> {
     let mut value = defines.summary_fixed[0];
     let summary = &input.side.summary;
@@ -335,6 +331,10 @@ pub(super) fn positioning_terms_values(
 mod tests {
     use super::*;
     use replay::rows::{NavalCombatPlane, NavalCombatSummaryModifier};
+
+    fn displayed(input: &Inputs<'_>, defines: &Defines) -> Option<i64> {
+        displayed_terms(input, defines).map(|terms| terms.value)
+    }
 
     fn defines() -> Defines {
         Defines {

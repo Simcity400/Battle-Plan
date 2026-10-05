@@ -171,22 +171,22 @@ impl<M: Memory> Capture<'_, '_, M> {
         // recent owned term span within this hourly callback, while retaining
         // every source occurrence in native order. Bound the search because
         // each ship's own accumulator is unique.
-        if let Some(accumulator) = accumulator {
-            if let Some(previous) = self.buffers.sources.get(..source).and_then(|rows| {
+        if let Some(accumulator) = accumulator
+            && let Some(previous) = self.buffers.sources.get(..source).and_then(|rows| {
                 rows.iter()
                     .rev()
                     .take(64)
                     .find(|previous| previous.accumulator == accumulator)
-            }) {
-                row.accumulator = accumulator;
-                row.terms = previous.terms;
-                self.buffers.sources.truncate(source);
-                self.buffers.sources.push(row);
-                self.buffers.lengths[0] = source
-                    .checked_add(1)
-                    .ok_or("naval weapon source length overflow")?;
-                return Ok(());
-            }
+            })
+        {
+            row.accumulator = accumulator;
+            row.terms = previous.terms;
+            self.buffers.sources.truncate(source);
+            self.buffers.sources.push(row);
+            self.buffers.lengths[0] = source
+                .checked_add(1)
+                .ok_or("naval weapon source length overflow")?;
+            return Ok(());
         }
         let data = accumulator
             .map(|p| array(self.memory, p, 0, 16))

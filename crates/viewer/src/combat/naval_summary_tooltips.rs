@@ -554,6 +554,7 @@ fn header(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Both sides' recorded details and text resources.
 fn side_hovers(
     out: &mut Bindings,
     icons: &dyn TextIcons,
