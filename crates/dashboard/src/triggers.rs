@@ -37,6 +37,7 @@ mod world;
 pub use eval::{Combat, Evaluator};
 pub use operands::{Selected, Selector, compare, scope_selector, shown, trigger_boolean};
 pub use variables::Temps;
+pub(crate) use world::fixed_round;
 pub use world::{
     ContentFacts, LeaderRoles, NULL_STATE, PartyLeader, PartyLeaders, RecordedTemplate, World,
     required_invasion_hours,

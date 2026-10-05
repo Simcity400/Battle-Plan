@@ -41,7 +41,8 @@ air-score ratio, decryption term and enemy counterintelligence. The lane comes
 from the building definition's `detecting_intel_type`. REQUIRED comes from
 `NRaids.TARGET_DETECTION_INTEL_TRESHOLD`. `1411DED90`/`1411E3C60` use the strategic
 operative roster, unique operative identities, descending contributions and
-successive stacking factors. Cryptology uses `1413E3350`'s rounded strength.
+successive stacking factors. Cryptology uses the shared native predicate in
+[dashboard/cryptology.rs](../../../../../dashboard/src/cryptology.rs).
 Facility selection uses the first country program at the target province and
 its active project definition; the definition key is localised in the viewer.
 The captive name uses the leader's original +20 input: `140C16FB0` localises it

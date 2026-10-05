@@ -18,6 +18,7 @@ pub mod country_groups;
 pub mod country_measure;
 pub mod country_stability;
 pub mod country_styles;
+pub mod decryption;
 pub mod equipment;
 pub mod equipment_icon;
 pub mod equipment_losses;
@@ -259,6 +260,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<idea_history::IdeaHistory>(),
     register::<party_history::PartyHistory>(),
     register::<resource_balance::ResourceBalance>(),
+    register::<decryption::Decryption>(),
     register::<production_lines::ProductionLines>(),
     register::<production_lines::ProductionLineDetail>(),
     register::<equipment_stockpile::EquipmentStockpile>(),

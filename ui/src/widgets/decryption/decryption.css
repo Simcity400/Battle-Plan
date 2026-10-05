@@ -1,0 +1,15 @@
+.decryption { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.decryption-row { display: grid; grid-template-columns: 150px minmax(0, 1fr) 118px; gap: calc(var(--space-3) + var(--space-1)); align-items: center; padding: 0 var(--space-4); height: 52px; }
+.decryption-pair { display: flex; align-items: center; gap: calc(var(--space-2) + var(--space-1) / 2); font-size: var(--type-sm); min-width: 0; }
+.decryption-pair small { color: var(--muted); }
+.decryption-flag { display: inline-flex; flex: 0 0 21px; width: 21px; height: 14px; background: var(--hover); border-radius: 2px; overflow: hidden; }
+.decryption-flag img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.decryption-target { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.decryption-progress .progress-meter { height: var(--space-4); border-radius: calc(var(--space-2) + var(--space-1)); }
+.decryption-progress { position: relative; min-width: 0; }
+.decryption-unknown { position: absolute; top: 100%; left: 0; right: 0; padding-top: var(--space-1); font-size: calc(var(--type-xs) - var(--space-1) / 2); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.decryption-status { font-size: var(--type-xs); color: var(--muted); line-height: 1.25; min-width: 0; }
+.decryption-status b { display: block; color: var(--text); font-weight: 600; font-size: var(--type-sm); }
+.decryption-status > span { display: block; }
+.decryption-status .decryption-badge { display: inline-block; padding: 0 calc(var(--space-2) + var(--space-1)); border-radius: 999px; font-size: calc(var(--type-xs) - var(--space-1) / 2); background: var(--badge-warning-background); color: var(--warning); margin-top: var(--space-1); }
+.decryption-amount { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

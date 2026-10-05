@@ -4,18 +4,20 @@
  * its choices) and against the field when read, so a bad value falls back to the
  * field's default instead of reaching the widget. */
 
+import type { CountrySelection } from './model';
+
 export type OptionValue = boolean | number | string | null;
 export type WidgetOptions = Readonly<Record<string, OptionValue>>;
 /** Where a field shows in the settings panel. */
-export type OptionSection = 'time' | 'options' | 'axes' | 'interaction';
+export type OptionSection = 'countries' | 'time' | 'options' | 'axes' | 'interaction';
 
 interface FieldBase {
   key: string;
   section: OptionSection;
   label: string;
   hint?: string;
-  /** Shown only when this returns true for the current resolved options. */
-  visibleWhen?: (options: Readonly<Record<string, OptionValue>>) => boolean;
+  /** Shown only when this returns true for the resolved options and country choice. */
+  visibleWhen?: (options: Readonly<Record<string, OptionValue>>, countries?: CountrySelection) => boolean;
 }
 export type OptionField = FieldBase & (
   | { kind: 'toggle'; default: boolean }
@@ -151,6 +153,6 @@ export function setOption(fields: readonly OptionField[] = [], stored: WidgetOpt
 }
 
 /** Fields shown in one settings section, in declaration order. */
-export function sectionFields(fields: readonly OptionField[] = [], section: OptionSection, resolved: Readonly<Record<string, OptionValue>>): OptionField[] {
-  return fields.filter(field => field.section === section && (field.visibleWhen?.(resolved) ?? true));
+export function sectionFields(fields: readonly OptionField[] = [], section: OptionSection, resolved: Readonly<Record<string, OptionValue>>, countries?: CountrySelection): OptionField[] {
+  return fields.filter(field => field.section === section && (field.visibleWhen?.(resolved, countries) ?? true));
 }

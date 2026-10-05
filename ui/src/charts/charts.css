@@ -71,6 +71,9 @@
 .moving-row { transition: transform var(--row-glide, 450ms) cubic-bezier(.2, .8, .2, 1), opacity 450ms; }
 .moving-row.is-entering { animation: moving-row-in 700ms cubic-bezier(.2, .8, .2, 1); }
 .moving-row.is-leaving { opacity: 0; pointer-events: none; }
+.windowed-rows { min-height: 0; flex: 1; overflow: auto; }
+.windowed-rows-body { position: relative; }
+.windowed-rows .moving-row { position: absolute; top: 0; left: 0; right: 0; }
 @keyframes moving-row-in { from { opacity: 0; background: color-mix(in srgb, var(--accent) 16%, transparent); } }
 /* Reduced motion as the app resolves it (Appearance → Motion, where "system" follows the
    system's preference, useAppearance): rows neither glide, flash nor fade. */

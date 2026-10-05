@@ -54,13 +54,13 @@ function SettingsBody({ widget, template, runtime, onChange, onReset, choices }:
     const title = named ? label(value) ?? definition?.title ?? widget.title : widget.title;
     save({ ...widget, options, title });
   };
-  const fields = (section: OptionSection) => <OptionFields fields={sectionFields(definition?.options, section, values)} values={values}
+  const fields = (section: OptionSection) => <OptionFields fields={sectionFields(definition?.options, section, values, widget.countries)} values={values}
     choices={choices} onChange={setValue} />;
   const body = (section: SettingsSection) => {
     switch (section) {
       case 'campaign': return <CampaignPicker widget={widget} template={template} runtime={runtime} />;
-      case 'countries': return <CountriesSection widget={widget} reference={reference} runtime={runtime} limits={definition?.countries ?? { max: 1 }}
-        onChange={countries => save({ ...widget, countries })} />;
+      case 'countries': return <><CountriesSection widget={widget} reference={reference} runtime={runtime} limits={definition?.countries ?? { max: 1 }}
+        onChange={countries => save({ ...widget, countries })} />{fields('countries')}</>;
       case 'time': return <>{definition?.history && <TimeSection widget={widget} effective={effective} reference={reference} runtime={runtime}
         modes={definition.timeModes} onChange={time => save({ ...widget, time })} />}{fields('time')}</>;
       case 'size': return <SizeStepper widget={widget} onChange={save} />;

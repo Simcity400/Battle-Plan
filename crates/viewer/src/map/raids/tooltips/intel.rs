@@ -4,7 +4,7 @@
 use super::super::{RaidAssets, script::World};
 use replay::rows::{RaidCounterOperative, RaidIntelInputRow, RaidScope, tables};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Defines {
     pub lanes: [i64; 4],
     pub network: i64,
@@ -15,10 +15,32 @@ pub struct Defines {
     pub base_counter: i64,
     pub operative_base: i64,
     pub stacking: i64,
-    pub crypto_base: i64,
-    pub crypto_upgrade: i64,
+    pub crypto: dashboard::cryptology::Defines,
     pub required: i64,
 }
+// Zero operands belong only to synthetic tooltip fixtures. Production reads content.
+#[cfg(test)]
+impl Default for Defines {
+    fn default() -> Self {
+        Self {
+            lanes: [0; 4],
+            network: 0,
+            neighbour: 0,
+            air: 0,
+            decryption: 0,
+            counter: 0,
+            base_counter: 0,
+            operative_base: 0,
+            stacking: 0,
+            crypto: dashboard::cryptology::Defines {
+                base: 0,
+                upgrade: 0,
+            },
+            required: 0,
+        }
+    }
+}
+
 impl Defines {
     pub fn read(d: &installed_content::defines::Defines) -> Result<Self, String> {
         let raid = |name| d.fixed5("NRaids", name).map_err(|e| e.to_string());
@@ -38,8 +60,7 @@ impl Defines {
             base_counter: op("BASE_COUNTER_INTELLIGENCE_RATING")?,
             operative_base: op("OPERATIVE_BASE_INTEL_AGENCY_DEFENSE")?,
             stacking: op("COUNTER_INTELLIGENCE_STACKING_FACTOR")?,
-            crypto_base: op("CRYPTO_BASE_CRYPTO_LEVEL")?,
-            crypto_upgrade: op("CRYPTO_CRYPTO_LEVEL_PER_CRYPTO_UPGRADE")?,
+            crypto: dashboard::cryptology::Defines::read(d)?,
             required: raid("TARGET_DETECTION_INTEL_TRESHOLD")?,
         })
     }
@@ -107,22 +128,18 @@ pub fn defense(row: &RaidIntelInputRow, d: &Defines) -> Result<i64, String> {
     }
 }
 
-/// `1413E3350`: bonus first; `1424D8760` rounds, then the caller narrows to i32.
 pub fn decrypted(
     amount: i64,
     active: u8,
     strength: Option<i64>,
     d: &Defines,
 ) -> Result<bool, String> {
-    if active != 0 {
-        return Ok(true);
-    }
-    let strength = strength.ok_or("target has no authenticated cryptology owner")?;
-    let rounded =
-        (strength.wrapping_add(if strength < 0 { -50_000 } else { 50_000 }) / 100_000) as i32;
-    let required = times(i64::from(rounded).wrapping_mul(100_000), d.crypto_upgrade)
-        .wrapping_add(d.crypto_base);
-    Ok(amount >= required)
+    dashboard::cryptology::fully_decrypted(
+        amount,
+        active,
+        strength.map(|strength| dashboard::cryptology::threshold(strength, d.crypto)),
+    )
+    .ok_or_else(|| "target has no authenticated cryptology owner".into())
 }
 
 pub struct Terms {
@@ -339,8 +356,10 @@ mod tests {
     #[test]
     fn decryption_bonus_and_rounding_threshold_are_distinct() {
         let d = Defines {
-            crypto_base: 200000,
-            crypto_upgrade: 300000,
+            crypto: dashboard::cryptology::Defines {
+                base: 200000,
+                upgrade: 300000,
+            },
             ..Default::default()
         };
         assert_eq!(decrypted(-1, 1, None, &d), Ok(true));

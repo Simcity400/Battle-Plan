@@ -6,6 +6,7 @@ pub mod catalogue;
 pub mod character_scope;
 pub mod config;
 pub mod content;
+pub mod cryptology;
 mod dto;
 pub mod map_settings;
 pub mod metadata;

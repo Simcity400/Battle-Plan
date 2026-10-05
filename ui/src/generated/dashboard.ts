@@ -912,6 +912,37 @@ series: Array<ResourceSeries>,
  * deals.
  */
 dealHours: Array<HourSpan>, trades: Array<TradeRun>, warnings: Array<string>, };
+export type DecryptionParams = { branchId: string, };
+export type CipherObservation = { hour: number,
+/**
+ * Already underway at the first read, after a gap, or after an unknown predicate.
+ */
+upperBound: boolean, };
+export type DecryptionRun = { firstHour: number, lastHour: number, startAmountRaw: string, stepRawPerDay: string, thresholdRaw: string | null, thresholdUnknown: string | null,
+/**
+ * Countdown at first_hour; reconstructed only at observed integer hours.
+ */
+bonusDays: number, bonusDaysStepPerDay: number,
+/**
+ * Low byte: native decrypting; high byte: native bonus_active.
+ */
+stateFlags: number, broken: boolean | null,
+/**
+ * Start observation of the attempt current during this run, never a prior episode.
+ */
+started: CipherObservation | null, };
+export type DecryptionTagRun = { firstHour: number, lastHour: number,
+/**
+ * None when native tag bytes cannot be represented by the JSON/name contract.
+ */
+ownerTag: string | null, targetTag: string | null, };
+export type DecryptionPair = {
+/**
+ * Canonical slots, resolved from each hour's CountryLinks, never tag concatenations.
+ */
+ownerId: string, targetId: string, runs: Array<DecryptionRun>, tagRuns: Array<DecryptionTagRun>, breaks: Array<CipherObservation>, };
+export type DecryptionCoverage = { firstHour: number, lastHour: number, complete: boolean, reason: string | null, };
+export type DecryptionReply = { branchId: string, pairs: Array<DecryptionPair>, coverage: Array<DecryptionCoverage>, warnings: Array<string>, };
 export type LineKind = "military" | "naval" | "shipRefit" | "railwayGun";
 export type LineStep = { firstHour: number, lastHour: number,
 /**
@@ -2035,4 +2066,4 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "occupied-states", "idea-history", "party-history", "resource-balance", "production-lines", "production-line-detail", "equipment-stockpile", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "equipment-losses", "construction-spending"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "occupied-states", "idea-history", "party-history", "resource-balance", "decryption", "production-lines", "production-line-detail", "equipment-stockpile", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "equipment-losses", "construction-spending"] as const;
