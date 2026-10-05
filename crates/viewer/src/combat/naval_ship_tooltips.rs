@@ -30,7 +30,25 @@ struct VariantContext<'a> {
 
 struct EscapeContext<'a> {
     details: Result<&'a [NavalCombatDetailsRow], String>,
+    trees: Result<MemberTrees<'a>, String>,
     definitions: Result<&'a [ModifierDefinitionRow], String>,
+}
+
+type MemberTrees<'a> =
+    BTreeMap<(u64, u8, u32), Vec<super::naval_summary_tooltips::NavalTreeUse<'a>>>;
+
+fn member_trees(rows: &[replay::rows::NavalModifierBreakdownRow], combat: u64) -> MemberTrees<'_> {
+    let mut indexed = MemberTrees::new();
+    for tree in super::naval_summary_tooltips::expanded_trees(rows) {
+        let use_ = tree.use_;
+        if use_.combat == combat && use_.battle_slot != u32::MAX {
+            indexed
+                .entry((use_.combat, use_.side, use_.battle_slot))
+                .or_default()
+                .push(tree);
+        }
+    }
+    indexed
 }
 
 // Executable localisation keys used by 1417D3220, 1417DBBE0, 1415B3FB0,
@@ -109,6 +127,19 @@ pub(super) fn bind(
                         Err("NavalCombatDetails is incomplete".into())
                     }
                 }),
+            trees: rows::<tables::NavalModifierBreakdowns>(frame)
+                .map_err(|error| error.to_string())
+                .and_then(|read| {
+                    replay::fixed_layout::validate_recording(
+                        frame,
+                        replay::fixed_layout::NAVAL_BREAKDOWNS,
+                    )?;
+                    if read.is_complete() {
+                        Ok(member_trees(read.rows(), id))
+                    } else {
+                        Err("NavalModifierBreakdowns is incomplete".into())
+                    }
+                }),
             definitions: rows::<tables::ModifierDefinitions>(frame)
                 .map_err(|error| error.to_string())
                 .and_then(|read| {
@@ -144,17 +175,7 @@ pub(super) fn bind(
             )
         };
         match built {
-            Ok(text) => {
-                set_hover(&mut entry.values, "icon", hover_text(&text), None);
-                if !entry.unknown {
-                    for slot in &entry.battle_slots {
-                        if let Some(row) = by_slot.get(&(side, *slot)).filter(|row| row.state == 8)
-                        {
-                            refusals.push(escape_breakdown_refusal(row));
-                        }
-                    }
-                }
-            }
+            Ok(text) => set_hover(&mut entry.values, "icon", hover_text(&text), None),
             Err(reasons) => {
                 set_hover(&mut entry.values, "icon", None, None);
                 for reason in reasons {
@@ -169,18 +190,6 @@ pub(super) fn bind(
         out.refuse(refusal);
     }
     Ok(())
-}
-
-fn escape_breakdown_refusal(row: &NavalCombatShipRow) -> String {
-    let missing = if row.live_ship != 0 {
-        "country, ship, doctrine, critical and HQ modifier breakdown"
-    } else {
-        "convoy escape chance and country/weather/terrain/commander modifier breakdown"
-    };
-    format!(
-        "Naval combat {} side {} slot {} {missing} is pending capture-on-change (14195C7D0, 14195EEC0, 14054D0F0).",
-        row.combat, row.side, row.battle_slot
-    )
 }
 
 #[allow(clippy::too_many_arguments)] // The group's recorded rows and text resources.
@@ -514,8 +523,9 @@ fn member_tooltip(
 }
 
 /// 1417D3220 appends the stored escape progress, the on-demand 14195C7D0
-/// chance where its source terms are recorded. Numeric defines come from the
-/// content stack; child descriptions are pending capture-on-change.
+/// chance, then its source-order description. Numeric defines come from the
+/// matching content stack; source labels are stored text and only render in
+/// the recording language (PLAN #164).
 fn escape_description(
     row: &NavalCombatShipRow,
     icons: &dyn TextIcons,
@@ -531,18 +541,16 @@ fn escape_description(
         .sides
         .get(row.side as usize)
         .ok_or_else(|| format!("naval combat {} has no side {}", row.combat, row.side))?;
-    let definitions = if row.live_ship != 0 {
-        context
-            .escape
-            .definitions
-            .as_ref()
-            .map_err(Clone::clone)?
-            .iter()
-            .map(|definition| (definition.index, definition))
-            .collect()
-    } else {
-        BTreeMap::new()
-    };
+    let all_trees = context.escape.trees.as_ref().map_err(Clone::clone)?;
+    let trees = all_trees
+        .get(&(row.combat, row.side, row.battle_slot))
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let all_definitions = context.escape.definitions.as_ref().map_err(Clone::clone)?;
+    let definitions: BTreeMap<_, _> = all_definitions
+        .iter()
+        .map(|definition| (definition.index, definition))
+        .collect();
     let assets = &context.document.icons.combat;
     let defines = assets.naval_escape_defines.as_ref().map_err(Clone::clone)?;
     let keys: &[u32] = if row.live_ship != 0 {
@@ -563,11 +571,18 @@ fn escape_description(
     };
     let mut modifiers = 0_i64;
     let mut by_key = Vec::new();
-    for &key in keys.iter().filter(|_| row.live_ship != 0) {
+    for &key in keys {
+        if !trees.iter().any(|tree| tree.key == key) {
+            return Err(format!(
+                "side {} slot {} escape key {key:#x} has no NavalModifierBreakdowns source",
+                row.side, row.battle_slot
+            ));
+        }
         let (total, screening) = super::naval_escape::modifier_value(
             row,
             side,
             key,
+            trees,
             &assets.naval_escape_screening,
             &definitions,
         )?;
@@ -590,16 +605,26 @@ fn escape_description(
     };
     let parts =
         super::naval_escape::chance(row, combat.duration, modifiers, speed_modifier, defines);
-    escape_text(row, parts, &by_key, row.live_ship != 0, icons, loc)
+    escape_text(
+        row,
+        parts,
+        &by_key,
+        trees,
+        &definitions,
+        &context.document.recorded_language,
+        icons,
+        loc,
+    )
 }
 
-/// 14195C7D0's recorded state-8 lines in native order. A convoy's modifier
-/// roots were supplied only by the retired tree capture, so its chance waits.
+/// 14195C7D0's complete appended state-8 section, in source occurrence order.
 fn escape_text(
     row: &NavalCombatShipRow,
     parts: super::naval_escape::Parts,
     by_key: &[(u32, i64)],
-    chance_supported: bool,
+    trees: &[super::naval_summary_tooltips::NavalTreeUse<'_>],
+    definitions: &BTreeMap<u32, &ModifierDefinitionRow>,
+    recorded_language: &str,
     icons: &dyn TextIcons,
     loc: &Localisation,
 ) -> Result<String, String> {
@@ -612,15 +637,13 @@ fn escape_text(
         &[("NUM", Argument::Fixed5(row.escape_progress))],
     )?);
     out.push('\n');
-    if chance_supported {
-        out.push_str(&builtin(
-            icons,
-            loc,
-            CHANCE_TO_ESCAPE,
-            &[("NUM", Argument::Fixed5(parts.total))],
-        )?);
-        out.push('\n');
-    }
+    out.push_str(&builtin(
+        icons,
+        loc,
+        CHANCE_TO_ESCAPE,
+        &[("NUM", Argument::Fixed5(parts.total))],
+    )?);
+    out.push('\n');
     let line = |key, value| builtin(icons, loc, key, &[("NUM", Argument::Fixed5(value))]);
     if parts.base != 0 {
         out.push_str("  ");
@@ -632,7 +655,53 @@ fn escape_text(
         out.push_str(&line(ESCAPE_SPEED_COMBAT_DURATION, parts.duration)?);
         out.push('\n');
     }
-    for &(_, screening) in by_key {
+    for &(key, screening) in by_key {
+        let definition = definitions.get(&key).ok_or_else(|| {
+            format!("escape modifier key {key:#x} has no ModifierDefinitions row")
+        })?;
+        for tree in trees.iter().filter(|tree| tree.key == key) {
+            if row.live_ship != 0
+                && !super::naval_environment::breakdown_visible(
+                    &row.weapon_context,
+                    key,
+                    tree.use_.source_scope,
+                    tree.use_.source_index,
+                )
+                .ok_or_else(|| {
+                    format!(
+                        "side {} slot {} escape support source {}:{} is unavailable",
+                        row.side, row.battle_slot, tree.use_.source_scope, tree.use_.source_index,
+                    )
+                })?
+            {
+                continue;
+            }
+            let scale = if row.live_ship != 0 {
+                super::naval_environment::breakdown_scale(
+                    &row.weapon_context,
+                    tree.use_.source_scope,
+                    tree.use_.source_index,
+                )
+                .ok_or_else(|| {
+                    format!(
+                        "side {} slot {} escape source {}:{} scale is unavailable",
+                        row.side, row.battle_slot, tree.use_.source_scope, tree.use_.source_index,
+                    )
+                })?
+            } else {
+                100_000
+            };
+            out.push_str(&super::naval_summary_tooltips::ship_modifier_breakdown(
+                &tree.nodes,
+                definition,
+                scale,
+                "  ",
+                recorded_language,
+                icons,
+                loc,
+                !matches!(tree.use_.source_scope, 12..=15),
+            )?);
+        }
         if screening != 0 {
             out.push_str("  ");
             out.push_str(&line(SCREENING_VALUE, screening)?);
@@ -817,6 +886,49 @@ mod tests {
     use crate::combat::binding::NoIcons;
 
     #[test]
+    fn escape_tree_index_keeps_member_identity_native_order_and_shared_borrows() {
+        let usage = |combat, side, battle_slot, order| replay::rows::NavalModifierUse {
+            combat,
+            side,
+            battle_slot,
+            order,
+            ..Default::default()
+        };
+        let tree = |accumulator, uses| replay::rows::NavalModifierBreakdownRow {
+            accumulator,
+            key: engine::modifier_keys::NAVAL_RETREAT_SPEED,
+            uses,
+            nodes: vec![replay::rows::ModifierBreakdownNode::default()],
+        };
+        let rows = [
+            tree(
+                1,
+                vec![
+                    usage(7, 0, 3, 2),
+                    usage(7, 1, 3, 3),
+                    usage(8, 0, 3, 0),
+                    usage(7, 0, u32::MAX, 4),
+                ],
+            ),
+            tree(2, vec![usage(7, 0, 3, 1), usage(7, 0, 4, 5)]),
+        ];
+        let indexed = member_trees(&rows, 7);
+        assert_eq!(indexed.len(), 3);
+        let sources = &indexed[&(7, 0, 3)];
+        assert_eq!(
+            sources
+                .iter()
+                .map(|source| source.use_.order)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert!(std::ptr::eq(sources[0].tree, &rows[1]));
+        assert!(std::ptr::eq(sources[0].use_, &rows[1].uses[0]));
+        assert!(std::ptr::eq(sources[1].tree, indexed[&(7, 1, 3)][0].tree));
+        assert!(std::ptr::eq(indexed[&(7, 0, 4)][0].use_, &rows[1].uses[1]));
+    }
+
+    #[test]
     fn escaping_member_section_has_native_newlines_and_source_order() {
         let localisation: Localisation = [
             ("ESCAPE_PROGRESS", "Progress|"),
@@ -845,61 +957,168 @@ mod tests {
             total: 35_630,
         };
         assert_eq!(
-            escape_text(&row, parts, &[], true, &NoIcons, &localisation).unwrap(),
+            escape_text(
+                &row,
+                parts,
+                &[],
+                &[],
+                &BTreeMap::new(),
+                "english",
+                &NoIcons,
+                &localisation
+            )
+            .unwrap(),
             "\nProgress|\nChance|\n  Base|\n  Duration|\n  Speed|\n  Hidden|\n"
         );
     }
 
     #[test]
-    fn convoy_escape_keeps_stored_lines_without_inventing_a_chance() {
-        // Deliberately no CHANCE_TO_ESCAPE localisation: that unrecorded
-        // value must not be formatted, even as a zero/default chance.
-        let localisation: Localisation = [
+    fn state_eight_ship_and_convoy_tree_sections_render_native_sources() {
+        use replay::rows::{
+            NavalModifierBreakdownRow, NavalModifierUse, NavalShipModifierSource,
+            NavalShipModifierTerm,
+        };
+        let mut loc: Localisation = [
             ("ESCAPE_PROGRESS", "Progress $NUM$"),
+            ("CHANCE_TO_ESCAPE", "Chance $NUM$"),
             ("BASE_ESCAPE_SPEED", "Base $NUM$"),
-            ("ESCAPE_SPEED_COMBAT_DURATION", "Duration $NUM$"),
-            ("ESCAPE_SPEED_FROM_SHIP_SPEED", "Speed $NUM$"),
-            ("HIDDEN_SUBS_ESCAPE_BONUS", "Hidden $NUM$"),
         ]
         .into_iter()
-        .map(|(key, text)| (key.to_owned(), text.to_owned()))
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
         .collect();
-        let row = NavalCombatShipRow {
-            combat: 42,
-            side: 1,
-            battle_slot: 7,
-            state: 8,
-            live_convoy: 1,
-            detection_state: 0,
-            escape_progress: 50_000,
-            ..Default::default()
-        };
-        let parts = super::super::naval_escape::Parts {
-            base: 10_000,
-            duration: 20_000,
-            modifiers: 0,
-            ship_speed: 630,
-            detection: 5_000,
-            total: 35_630,
-        };
-        let text = escape_text(&row, parts, &[], false, &NoIcons, &localisation).unwrap();
-        assert_eq!(
-            text,
-            "\nProgress 0.50\n  Base 0.10\n  Duration 0.20\n  Speed 0.00\n  Hidden 0.05\n"
-        );
-
-        let mut out = Bindings::default();
-        set_hover(&mut out.values, "icon", hover_text(&text), None);
-        let refusal = escape_breakdown_refusal(&row);
-        out.refuse(refusal.clone());
-        out.refuse(refusal.clone());
-        assert_eq!(out.refused()[&refusal], 2);
-        assert!(refusal.contains("convoy escape chance"));
-        assert!(refusal.contains("pending capture-on-change"));
-        assert_eq!(
-            out.values["icon"].tooltip.as_deref(),
-            Some("Progress 0.50\n  Base 0.10\n  Duration 0.20\n  Speed 0.00\n  Hidden 0.05")
-        );
+        loc.language = "english".into();
+        for ship in [true, false] {
+            let key = if ship { 0x5b } else { 0x5d };
+            let row = NavalCombatShipRow {
+                state: 8,
+                live_ship: u8::from(ship),
+                live_convoy: u8::from(!ship),
+                detection_state: 1,
+                escape_progress: 50_000,
+                weapon_context: replay::rows::NavalShipWeaponContext {
+                    sources: [0, 1, 4, 11, 12]
+                        .into_iter()
+                        .map(|scope| NavalShipModifierSource {
+                            scope,
+                            weights: match scope {
+                                4 => [1, 2],
+                                11 => [2, 0],
+                                _ => [0; 2],
+                            },
+                            terms: vec![NavalShipModifierTerm {
+                                key,
+                                raw: 20_000,
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        })
+                        .collect(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let source_names: &[(u8, &[u8])] = if ship {
+                &[
+                    (0, b"Country"),
+                    (1, b"Ship"),
+                    (4, b"Doctrine"),
+                    (11, b"Critical"),
+                    (12, b"HQ"),
+                ]
+            } else {
+                &[
+                    (0, b"Country"),
+                    (6, b"Weather"),
+                    (5, b"Sea"),
+                    (9, b"Admiral"),
+                ]
+            };
+            let trees: Vec<_> = source_names
+                .iter()
+                .enumerate()
+                .map(|(order, (scope, name))| NavalModifierBreakdownRow {
+                    key,
+                    uses: vec![NavalModifierUse {
+                        source_scope: *scope,
+                        order: order as u32,
+                        ..Default::default()
+                    }],
+                    nodes: vec![
+                        replay::rows::ModifierBreakdownNode {
+                            children: 1,
+                            value: 20_000,
+                            ..Default::default()
+                        },
+                        replay::rows::ModifierBreakdownNode {
+                            value: 20_000,
+                            name: name.to_vec(),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                })
+                .collect();
+            let uses = super::super::naval_summary_tooltips::expanded_trees(&trees);
+            let definition = ModifierDefinitionRow {
+                index: key,
+                precision: 2,
+                ..Default::default()
+            };
+            let definitions = BTreeMap::from([(key, &definition)]);
+            let modifier = if ship {
+                super::super::naval_environment::modifier(&row.weapon_context, key).unwrap()
+            } else {
+                trees.iter().map(|tree| tree.nodes[0].value).sum()
+            };
+            let parts = super::super::naval_escape::chance(
+                &row,
+                0,
+                modifier,
+                0,
+                &super::super::naval_escape::Defines {
+                    base: 10_000,
+                    per_day: 0,
+                    duration_max: 0,
+                    speed_factor: 0,
+                    hidden_sub: 0,
+                    sub_base: 0,
+                    out_of_fuel: 0,
+                    initial_duration: 24,
+                },
+            );
+            let text = escape_text(
+                &row,
+                parts,
+                &[(key, 0)],
+                &uses,
+                &definitions,
+                "english",
+                &NoIcons,
+                &loc,
+            )
+            .unwrap();
+            assert_eq!(
+                text,
+                if ship {
+                    concat!(
+                        "\nProgress 0.50\nChance 1.20\n  Base 0.10\n",
+                        "  Country: \u{11}R+0.20\u{11}!\n",
+                        "  Ship: \u{11}R+0.20\u{11}!\n",
+                        "  Doctrine: \u{11}R+0.10\u{11}!\n",
+                        "  Critical: \u{11}R+0.40\u{11}!\n",
+                        "  \u{11}R+0.20\u{11}!\n",
+                    )
+                } else {
+                    concat!(
+                        "\nProgress 0.50\nChance 0.90\n  Base 0.10\n",
+                        "  Country: \u{11}R+0.20\u{11}!\n",
+                        "  Weather: \u{11}R+0.20\u{11}!\n",
+                        "  Sea: \u{11}R+0.20\u{11}!\n",
+                        "  Admiral: \u{11}R+0.20\u{11}!\n",
+                    )
+                }
+            );
+        }
     }
 
     fn loc() -> Localisation {

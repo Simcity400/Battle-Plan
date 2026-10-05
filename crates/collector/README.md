@@ -44,11 +44,7 @@ Read [AGENTS.md](../../AGENTS.md), then [cadence.rs](../replay/src/cadence.rs) a
 
 Collect the least data the viewer and dashboard need to display, so recording costs the game as little as possible. Record the value the game already stores for what is displayed. Capture inputs instead only when the game does not store the result (it computes it on demand), when the result depends on the viewing country or camera, when it is text the game has already localised (display text follows the viewer's language, not the recording client's), or when it is much larger than its inputs. Every new table, field or cadence increase must serve something visible and be measured against its capture cost.
 
-The naval details pack keeps live-combat damage history, baseline health,
-custom sea words, air-name inputs and state-8 speed operands. Its ordered
-modifier child-tree capture is deferred until exact native writer notifications
-can make unchanged sources free; viewer omissions are counted as pending
-capture-on-change. Row contracts live in the [replay guide](../replay/README.md).
+The naval details pack follows the [naval modifier tree contract](../replay/README.md#naval-modifier-breakdowns); future reuse needs the writer coverage described below.
 
 Ship modifier inputs still read afresh at combat cadence. Their selected sources
 include independently mutable medals, doctrine, fuel, HQ membership and leader

@@ -16,6 +16,98 @@ use replay::{
 };
 use std::io;
 
+/// 140C29020 -> 140C230A0 -> 14054D0F0: each ship modifier source has an
+/// ordered cloned-child tree. The labels at CModifier+0x58 are stored text,
+/// with no surviving source key (1405FFDE0), so another display language
+/// cannot reconstruct them. 1415B4BB0 and 140C230A0 pass depth -1, so
+/// 14054C770 prints every nonzero leaf regardless of hierarchy depth.
+pub(super) fn ship_modifier_breakdown(
+    nodes: &[replay::rows::ModifierBreakdownNode],
+    definition: &replay::rows::ModifierDefinitionRow,
+    scale: i64,
+    prefix: &str,
+    recorded_language: &str,
+    icons: &dyn TextIcons,
+    loc: &Localisation,
+    show_names: bool,
+) -> Result<String, String> {
+    dashboard::modifier_text::breakdown(
+        nodes,
+        dashboard::modifier_text::Breakdown {
+            depth: -1,
+            prefix,
+            suffix: "",
+        },
+        |node| {
+            let mut text = if show_names {
+                dashboard::scripted_text::stored_text(
+                    loc,
+                    recorded_language,
+                    &node.name,
+                    "naval ship modifier source",
+                )?
+            } else {
+                String::new()
+            };
+            super::binding::validate(icons, &text)
+                .map_err(|reason| format!("naval ship modifier source holds {reason}"))?;
+            if !text.is_empty() {
+                text.push_str(": ");
+            }
+            text.push_str(
+                &super::modifier_text::value_text(
+                    definition,
+                    super::fixed::mul(node.value, scale),
+                    2,
+                    false,
+                    false,
+                    icons,
+                    loc,
+                )
+                .map_err(|reason| reason.to_string())?,
+            );
+            Ok(text)
+        },
+    )
+}
+
+/// Table 270 shares each stable accumulator/key tree among its native source
+/// occurrences. The join borrows nodes while restoring 1415B4BB0/140C230A0
+/// source order; no tree is copied for another combat or ship.
+#[derive(Clone, Copy)]
+pub(super) struct NavalTreeUse<'a> {
+    pub tree: &'a replay::rows::NavalModifierBreakdownRow,
+    pub use_: &'a replay::rows::NavalModifierUse,
+}
+
+impl std::ops::Deref for NavalTreeUse<'_> {
+    type Target = replay::rows::NavalModifierBreakdownRow;
+    fn deref(&self) -> &Self::Target {
+        self.tree
+    }
+}
+
+pub(super) fn expanded_trees(
+    rows: &[replay::rows::NavalModifierBreakdownRow],
+) -> Vec<NavalTreeUse<'_>> {
+    let mut expanded = Vec::new();
+    for tree in rows {
+        for use_ in &tree.uses {
+            expanded.push(NavalTreeUse { tree, use_ });
+        }
+    }
+    expanded.sort_unstable_by_key(|row| row.use_.order);
+    expanded
+}
+
+#[cfg(test)]
+pub(super) fn test_tree_use(tree: &replay::rows::NavalModifierBreakdownRow) -> NavalTreeUse<'_> {
+    NavalTreeUse {
+        tree,
+        use_: &tree.uses[0],
+    }
+}
+
 // `1417D4980` chooses these executable keys for paired stat text and
 // background widgets. `1417D1A90` makes the delayed second string.
 super::text::tooltip_keys! {
@@ -106,6 +198,7 @@ fn screening_description(
     census: &Census,
     screening: &Screening,
     defines: &installed_content::naval_combat_defines::Defines,
+    correction: &str,
     static_modifier: Result<&installed_content::modifiers::Modifiers, String>,
     definitions: Result<&Definitions<'_>, String>,
     icons: &dyn TextIcons,
@@ -120,7 +213,11 @@ fn screening_description(
     } else {
         (screening.capital, screening.capital)
     };
-    let mut text = String::new();
+    let mut text = if carrier {
+        String::new()
+    } else {
+        correction.to_owned()
+    };
     text.push_str(&builtin(
         icons,
         loc,
@@ -223,10 +320,12 @@ fn screening_description(
 }
 
 /// 141609460 writes the fresh positioning description in this order. Its
-/// ordered country/weather/terrain/commander child lines are pending
-/// capture-on-change. 1417D4980 prepends the heading and one newline.
+/// source text is 1415B4BB0's ordered country/weather/terrain/commander
+/// breakdown for keys 0x1B2 and, for an early defender, 0x5A. 1417D4980
+/// then prepends the immediate heading and one newline.
 fn positioning_description(
     terms: super::naval_positioning::Terms,
+    sources: &str,
     defines: &installed_content::naval_combat_defines::Defines,
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -242,6 +341,7 @@ fn positioning_description(
         )?);
         text.push('\n');
     }
+    text.push_str(sources);
     if terms.escort > 1_000 {
         text.push_str(&builtin(
             icons,
@@ -317,21 +417,56 @@ fn positioning_description(
     Ok(text)
 }
 
-fn positioning_hover(
-    out: &mut Bindings,
+fn positioning_sources(
     id: u64,
-    side: &str,
-    terms: super::naval_positioning::Terms,
-    defines: &installed_content::naval_combat_defines::Defines,
+    side: u8,
+    early_defender: bool,
+    trees: &[NavalTreeUse<'_>],
+    definitions: &[replay::rows::ModifierDefinitionRow],
+    recorded_language: &str,
     icons: &dyn TextIcons,
     loc: &Localisation,
 ) -> Result<String, String> {
-    let text = positioning_description(terms, defines, icons, loc)?;
-    // 141609460 -> 1415B4BB0: numerical positioning terms are recorded;
-    // ordered modifier children await native writer notifications.
-    out.refuse(format!("Naval combat {id} {side} positioning modifier breakdown is pending capture-on-change (141609460, key 0x1B2, 1415B4BB0, 14054D0F0)."));
-    if terms.early_defender {
-        out.refuse(format!("Naval combat {id} {side} early-defender positioning modifier breakdown is pending capture-on-change (141609460, key 0x5A)."));
+    let mut text = String::new();
+    for key in [Some(0x1b2), early_defender.then_some(0x5a)]
+        .into_iter()
+        .flatten()
+    {
+        let definition = definitions
+            .iter()
+            .find(|row| row.index == key)
+            .ok_or_else(|| format!("positioning modifier definition {key:#x} is absent"))?;
+        let sources: Vec<_> = trees
+            .iter()
+            .filter(|row| {
+                row.use_.combat == id
+                    && row.use_.side == side
+                    && row.use_.battle_slot == u32::MAX
+                    && row.key == key
+            })
+            .collect();
+        if !sources.iter().any(|row| row.use_.source_scope == 0) {
+            return Err(format!(
+                "positioning key {key:#x} has no captured country source"
+            ));
+        }
+        for source in sources {
+            text.push_str(&ship_modifier_breakdown(
+                &source.nodes,
+                definition,
+                super::fixed::ONE,
+                "",
+                recorded_language,
+                icons,
+                loc,
+                true,
+            )?);
+            // 1415B4BB0 does not add a newline after the country source, but
+            // ensures one after weather, terrain and commander, even empty.
+            if source.use_.source_scope != 0 && !text.ends_with('\n') {
+                text.push('\n');
+            }
+        }
     }
     Ok(text)
 }
@@ -620,6 +755,11 @@ pub(super) fn bind(
     let live_ships = rows::<tables::Ships>(frame)?;
     let dense_rows = rows::<tables::NavalCombatAirBaseWingHandles>(frame)?;
     let wings = rows::<tables::AirWings>(frame)?;
+    let trees = rows::<tables::NavalModifierBreakdowns>(frame)?;
+    let breakdown_layout =
+        replay::fixed_layout::validate_recording(frame, replay::fixed_layout::NAVAL_BREAKDOWNS);
+    let expanded = trees.is_complete().then(|| expanded_trees(trees.rows()));
+    let raw_definitions = rows::<tables::ModifierDefinitions>(frame)?;
     let definitions = Definitions::read(frame, &document.modifier_names)?;
     let keyed_models = models
         .is_complete()
@@ -670,7 +810,23 @@ pub(super) fn bind(
                     .naval_defines
                     .as_ref()
                     .ok_or("matching naval combat defines are unavailable")?;
-                positioning_hover(out, id, name, terms, defines, icons, loc)
+                breakdown_layout.as_ref().map_err(Clone::clone)?;
+                if !trees.is_complete() || !raw_definitions.is_complete() {
+                    return Err(
+                        "NavalModifierBreakdowns or ModifierDefinitions is incomplete".to_owned(),
+                    );
+                }
+                let source_text = positioning_sources(
+                    id,
+                    side as u8,
+                    terms.early_defender,
+                    expanded.as_deref().unwrap_or(&[]),
+                    raw_definitions.rows(),
+                    &document.recorded_language,
+                    icons,
+                    loc,
+                )?;
+                positioning_description(terms, &source_text, defines, icons, loc)
             })();
             for key in position_keys {
                 let hover = positioning.as_ref().ok().and_then(|text| hover_text(text));
@@ -717,14 +873,47 @@ pub(super) fn bind(
                         || (screening.capital == 0
                             && !detail.sides[side].summary.countries.is_empty()
                             && census.eligible_submarines == 0);
-                    if !carrier && correction_branch {
-                        out.refuse(format!("Naval combat {id} {name} capital screening country modifier breakdown is pending capture-on-change (14160AD8B, key 0x1B3, 14054D0F0)."));
-                    }
+                    let correction = if !carrier && correction_branch {
+                        breakdown_layout.as_ref().map_err(Clone::clone)?;
+                        if !trees.is_complete() || !raw_definitions.is_complete() {
+                            return Err("NavalModifierBreakdowns or ModifierDefinitions is incomplete for the country screening correction".to_owned());
+                        }
+                        let source = expanded
+                            .as_deref()
+                            .unwrap_or(&[])
+                            .iter()
+                            .find(|row| {
+                                row.use_.combat == id
+                                    && row.use_.side == side as u8
+                                    && row.use_.battle_slot == u32::MAX
+                                    && row.use_.source_scope == 0
+                                    && row.key == 0x1b3
+                            })
+                            .ok_or("the country screening correction has no captured 0x1B3 tree")?;
+                        let definition = raw_definitions
+                            .rows()
+                            .iter()
+                            .find(|row| row.index == 0x1b3)
+                            .ok_or("the 0x1B3 modifier definition is absent")?;
+                        ship_modifier_breakdown(
+                            &source.nodes,
+                            definition,
+                            super::fixed::ONE,
+                            "",
+                            &document.recorded_language,
+                            icons,
+                            loc,
+                            true,
+                        )?
+                    } else {
+                        String::new()
+                    };
                     screening_description(
                         carrier,
                         census,
                         screening,
                         defines,
+                        &correction,
                         icons.naval_screening_modifiers[usize::from(carrier)]
                             .as_ref()
                             .map_err(Clone::clone),
@@ -759,6 +948,32 @@ mod tests {
     use super::*;
     use crate::combat::binding::NoIcons;
     use replay::rows::{LexicalTokenRow, NavalDamageSource};
+
+    #[test]
+    fn shared_tree_uses_borrow_the_same_decoded_nodes() {
+        let tree = replay::rows::NavalModifierBreakdownRow {
+            accumulator: 17,
+            key: 0x1b2,
+            uses: [1, 2]
+                .into_iter()
+                .map(|combat| replay::rows::NavalModifierUse {
+                    combat,
+                    order: combat as u32,
+                    ..Default::default()
+                })
+                .collect(),
+            nodes: vec![replay::rows::ModifierBreakdownNode::default()],
+        };
+        let expanded = expanded_trees(std::slice::from_ref(&tree));
+        assert_eq!(expanded.len(), 2);
+        assert!(std::ptr::eq(expanded[0].tree, expanded[1].tree));
+        assert!(std::ptr::eq(expanded[0].use_, &tree.uses[0]));
+        assert!(std::ptr::eq(expanded[1].use_, &tree.uses[1]));
+        assert!(std::ptr::eq(
+            expanded[0].nodes.as_ptr(),
+            tree.nodes.as_ptr()
+        ));
+    }
 
     #[test]
     fn flag_damage_summary_uses_native_sections_and_sorted_source_types() {
@@ -944,45 +1159,134 @@ mod tests {
             piercing_critical_values: vec![],
             positioning_impacts: [40_000, 60_000, 30_000],
         };
-        let mut out = Bindings::default();
-        let text =
-            positioning_hover(&mut out, 42, "right", terms, &defines, &NoIcons, &loc).unwrap();
         assert_eq!(
-            text,
-            "Positioning\nBase 0.40\nEscort 0.10\nDetection 0.20\nShip -0.10\nCarrier -0.05\nRecent -0.05\n\nPenalty\nAttack -0.20\nScreen -0.10\nAA -0.30\nSub 0.15\n"
-        );
-        assert_eq!(out.refused().len(), 2);
-        assert!(
-            out.refused()
-                .iter()
-                .all(|(reason, &count)| reason.contains("pending capture-on-change") && count == 1)
-        );
-        let mut later = terms;
-        later.early_defender = false;
-        assert_eq!(
-            positioning_hover(&mut out, 42, "right", later, &defines, &NoIcons, &loc).unwrap(),
-            text
-        );
-        assert_eq!(out.refused().values().copied().sum::<usize>(), 3);
-        assert_eq!(
-            out.refused()
-                .iter()
-                .find(|(reason, _)| reason.contains("key 0x5A"))
-                .unwrap()
-                .1,
-            &1
+            positioning_description(
+                terms,
+                "Country +0.03\nWeather -0.01\n",
+                &defines,
+                &NoIcons,
+                &loc
+            )
+            .unwrap(),
+            "Positioning\nBase 0.40\nCountry +0.03\nWeather -0.01\nEscort 0.10\nDetection 0.20\nShip -0.10\nCarrier -0.05\nRecent -0.05\n\nPenalty\nAttack -0.20\nScreen -0.10\nAA -0.30\nSub 0.15\n"
         );
     }
 
     #[test]
-    fn screen_hover_keeps_supported_lines_without_a_country_tree() {
-        let loc: Localisation = [
+    fn positioning_hover_reads_captured_side_trees_in_native_source_order() {
+        let tree = |scope, key, name: &str| replay::rows::NavalModifierBreakdownRow {
+            uses: vec![replay::rows::NavalModifierUse {
+                combat: 42,
+                side: 1,
+                battle_slot: u32::MAX,
+                source_scope: scope,
+                ..Default::default()
+            }],
+            key,
+            nodes: vec![
+                replay::rows::ModifierBreakdownNode {
+                    children: 1,
+                    ..Default::default()
+                },
+                replay::rows::ModifierBreakdownNode {
+                    value: 20_000,
+                    name: name.as_bytes().to_vec(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let sources = [
+            tree(0, 0x1b2, "Country"),
+            tree(6, 0x1b2, "Weather"),
+            tree(5, 0x1b2, "Sea"),
+            tree(9, 0x1b2, "Admiral"),
+            tree(0, 0x5a, "Early defender"),
+        ];
+        let sources = sources.iter().map(test_tree_use).collect::<Vec<_>>();
+        let definitions = [0x1b2, 0x5a].map(|key| replay::rows::ModifierDefinitionRow {
+            index: key,
+            precision: 2,
+            ..Default::default()
+        });
+        let mut loc = Localisation::default();
+        loc.language = "english".into();
+        assert_eq!(
+            positioning_sources(
+                42,
+                1,
+                false,
+                &sources,
+                &definitions,
+                "english",
+                &NoIcons,
+                &loc
+            )
+            .unwrap(),
+            concat!(
+                "Country: \u{11}R+0.20\u{11}!\n",
+                "Weather: \u{11}R+0.20\u{11}!\n",
+                "Sea: \u{11}R+0.20\u{11}!\n",
+                "Admiral: \u{11}R+0.20\u{11}!\n"
+            )
+        );
+        assert_eq!(
+            positioning_sources(
+                42,
+                1,
+                true,
+                &sources,
+                &definitions,
+                "english",
+                &NoIcons,
+                &loc
+            )
+            .unwrap(),
+            concat!(
+                "Country: \u{11}R+0.20\u{11}!\n",
+                "Weather: \u{11}R+0.20\u{11}!\n",
+                "Sea: \u{11}R+0.20\u{11}!\n",
+                "Admiral: \u{11}R+0.20\u{11}!\n",
+                "Early defender: \u{11}R+0.20\u{11}!\n"
+            )
+        );
+    }
+
+    #[test]
+    fn screen_hover_keeps_country_correction_before_the_zero_screens_message() {
+        let mut loc: Localisation = [
             ("SCREENING_TOOLTIP_SCREEN_BOX", "Screens $NUM$"),
             ("SCREENING_TOOLTIP_NO_SCREENS", "No screens"),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
         .collect();
+        loc.language = "english".into();
+        let correction = ship_modifier_breakdown(
+            &[
+                replay::rows::ModifierBreakdownNode {
+                    children: 1,
+                    ..Default::default()
+                },
+                replay::rows::ModifierBreakdownNode {
+                    value: -10_000,
+                    name: b"Country".to_vec(),
+                    ..Default::default()
+                },
+            ],
+            &replay::rows::ModifierDefinitionRow {
+                index: 0x1b3,
+                precision: 2,
+                ..Default::default()
+            },
+            super::super::fixed::ONE,
+            "",
+            "english",
+            &NoIcons,
+            &loc,
+            true,
+        )
+        .unwrap();
         let census = Census::default();
         let screening = Screening {
             capital: 0,
@@ -1008,6 +1312,7 @@ mod tests {
                 &census,
                 &screening,
                 &defines,
+                &correction,
                 Err("not read".into()),
                 Err("not read".into()),
                 &NoIcons,
@@ -1015,7 +1320,7 @@ mod tests {
             )
             .unwrap()
             .0,
-            "Screens 0.00\n\nNo screens"
+            "Country: \u{11}G-0.10\u{11}!\nScreens 0.00\n\nNo screens"
         );
     }
 

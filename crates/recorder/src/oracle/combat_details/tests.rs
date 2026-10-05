@@ -67,6 +67,91 @@ fn air_base_wing_rows_must_be_exactly_the_referenced_bases_in_the_air_censuses()
 use replay::rows::{LandCombatCommanderTimedTrait, LandCombatSideDetails};
 
 #[test]
+fn naval_modifier_breakdowns_check_runtime_joins_without_claiming_save_values() {
+    use replay::rows::{
+        ModifierBreakdownNode, NavalCombatDetailsRow, NavalModifierBreakdownRow, NavalModifierUse,
+    };
+    fn set(frame: &mut DecodedFrame, rows: TableRows) {
+        let index = rows.table().index();
+        *frame.tables[index] = TableView::Complete(rows);
+    }
+    let (mut frame, ..) = super::super::tests::fixture();
+    set(
+        &mut frame,
+        TableRows::NavalCombatDetails(vec![NavalCombatDetailsRow {
+            combat: 123,
+            ..Default::default()
+        }]),
+    );
+    set(
+        &mut frame,
+        TableRows::NavalCombatShips(vec![NavalCombatShipRow {
+            combat: 123,
+            side: 1,
+            battle_slot: 7,
+            state: 8,
+            ..Default::default()
+        }]),
+    );
+    let tree = NavalModifierBreakdownRow {
+        accumulator: 0x5678,
+        key: 0x5b,
+        uses: vec![NavalModifierUse {
+            combat: 123,
+            side: 1,
+            battle_slot: 7,
+            source_scope: 1,
+            ..Default::default()
+        }],
+        nodes: vec![ModifierBreakdownNode {
+            children: 0,
+            value: 42,
+            name: b"Runtime source".to_vec(),
+        }],
+    };
+    set(
+        &mut frame,
+        TableRows::NavalModifierBreakdowns(vec![tree.clone()]),
+    );
+    let mut report = Report::default();
+    naval_modifier_breakdowns(&frame, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["NavalModifierBreakdowns"], 1);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|text| text.contains("does not serialize"))
+    );
+
+    let mut bad = tree;
+    bad.uses.push(bad.uses[0].clone());
+    bad.uses[1].combat = 999;
+    set(&mut frame, TableRows::NavalModifierBreakdowns(vec![bad]));
+    let mut report = Report::default();
+    naval_modifier_breakdowns(&frame, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|text| text.contains("source order"))
+    );
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|text| text.contains("999 combat"))
+    );
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|text| text.contains("999 slot"))
+    );
+}
+
+#[test]
 fn naval_air_localized_cache_is_not_a_saved_plane_comparator() {
     let date = installed_content::save::SavedDate::parse(b"1936.1.1.1").unwrap();
     let mut saved = installed_content::save::combat_details::NavalPlane {

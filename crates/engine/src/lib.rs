@@ -605,6 +605,7 @@ pub mod naval_combat_transfers;
 pub mod naval_commander_inputs;
 pub mod naval_dominance_entry;
 pub mod naval_mission_inputs;
+pub mod naval_ship_modifier_breakdown;
 pub mod naval_ship_modifier_inputs;
 pub mod navy_theater_manager;
 pub mod ncombat_log_cequipment_loss;

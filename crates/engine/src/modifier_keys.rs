@@ -59,8 +59,16 @@ keys! {
     LOCAL_INTEL_TO_ENEMIES = 0x4b;
     /// Register@1405b40b6 (token global 0x1427c0228).
     UNIT_UPKEEP_ATTRITION_FACTOR = 0x54;
+    /// Register@1405D0447; selected by escape chance 14195C7D0.
+    NAVAL_RETREAT_SPEED_AFTER_INITIAL_COMBAT = 0x59;
     /// Register@1405d086c (token global 0x1427bfce8).
     NAVAL_ENEMY_POSITIONING_IN_INITIAL_ATTACK = 0x5a;
+    /// Register@1405D0022; selected by escape chance 14195C7D0.
+    NAVAL_RETREAT_SPEED = 0x5b;
+    /// Register@1405D10B6; selected by escape chance 14195C7D0.
+    SUB_RETREAT_SPEED = 0x5c;
+    /// Register@1405D0C91; selected by escape chance 14195C7D0.
+    CONVOY_RETREAT_SPEED = 0x5d;
     /// Register@1405aa75d (token global 0x1427bff08).
     OUT_OF_SUPPLY_FACTOR = 0x5e;
     /// Register@14058B36B (token global 0x1427bffa8).

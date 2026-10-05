@@ -261,6 +261,30 @@ fn air_entries(
     let ship_rows = rows::<tables::NavalCombatShips>(frame)?;
     let ship_models = rows::<tables::ShipModels>(frame)?;
     let live_ships = rows::<tables::Ships>(frame)?;
+    let breakdowns = rows::<tables::NavalModifierBreakdowns>(frame)?;
+    let breakdown_layout =
+        replay::fixed_layout::validate_recording(frame, replay::fixed_layout::NAVAL_BREAKDOWNS);
+    let modifier_definitions = rows::<tables::ModifierDefinitions>(frame)?;
+    let expanded_breakdowns = breakdowns
+        .is_complete()
+        .then(|| super::naval_summary_tooltips::expanded_trees(breakdowns.rows()));
+    let breakdown_index = expanded_breakdowns.as_ref().map(|expanded| {
+        let mut by_member = BTreeMap::new();
+        for row in expanded.iter().filter(|row| row.use_.combat == id) {
+            by_member
+                .entry((row.use_.side, row.use_.battle_slot, row.key))
+                .or_insert_with(Vec::new)
+                .push(row);
+        }
+        by_member
+    });
+    let by_modifier = modifier_definitions.is_complete().then(|| {
+        modifier_definitions
+            .rows()
+            .iter()
+            .map(|row| (row.index, row))
+            .collect::<BTreeMap<_, _>>()
+    });
     let members: Vec<_> = ship_rows
         .rows()
         .iter()
@@ -459,11 +483,34 @@ fn air_entries(
                         .ok_or("matching carrier sortie defines are unavailable")?;
                     let mut member_breakdown = String::new();
                     if first.carrier_member_present != 0 && sortie_efficiency != 100_000 {
+                        breakdown_layout.as_ref().map_err(Clone::clone)?;
+                        let member = joins
+                            .carrier_member(group.side, first)
+                            .ok_or("141963700 linked carrier member is unavailable")?;
+                        let trees = breakdown_index
+                            .as_ref()
+                            .ok_or("NavalModifierBreakdowns is incomplete")?;
+                        let definitions = by_modifier
+                            .as_ref()
+                            .ok_or("ModifierDefinitions is incomplete")?;
                         for (lane, key) in [(0, 0x24), (1, 0x1b6)] {
                             if lane == 1 && first.efficiency.pool_type_flags & 0x1_0000_0400 == 0 {
                                 continue;
                             }
-                            out.refuse(format!("Naval combat {id} side {} carrier air group {} sortie key {key:#x} country, ship, doctrine, critical and HQ modifier breakdown is pending capture-on-change (141963700, 140C29020, 14054D0F0).", group.side, first.index));
+                            member_breakdown.push_str(
+                                &super::naval_air_tooltips::carrier_key_breakdown(
+                                    member,
+                                    trees
+                                        .get(&(group.side, member.battle_slot, key))
+                                        .map(Vec::as_slice)
+                                        .unwrap_or(&[]),
+                                    definitions.get(&key).copied(),
+                                    key,
+                                    &document.recorded_language,
+                                    &document.names.localisation,
+                                    &document.icons.combat,
+                                )?,
+                            );
                             let screening = super::naval_air_groups::display_screening_extra(
                                 first,
                                 &detail.sides[group.side as usize],

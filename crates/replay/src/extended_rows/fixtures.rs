@@ -348,6 +348,30 @@ impl Fixture for PowerBalanceModifierBreakdownRow {
         u32::MAX as u128
     }
 }
+impl Fixture for NavalModifierBreakdownRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        Self {
+            accumulator: (key >> 32) as u64,
+            key: key as u32,
+            uses: vec![NavalModifierUse {
+                combat: tick as u64 + 1,
+                side: (tick % 2) as u8,
+                battle_slot: if tick.is_multiple_of(2) {
+                    u32::MAX
+                } else {
+                    tick as u32
+                },
+                source_scope: tick as u8,
+                source_index: tick as u32,
+                order: tick as u32,
+            }],
+            nodes: ReserveModifierBreakdownRow::fixture(1, tick).nodes,
+        }
+    }
+    fn largest_key() -> u128 {
+        (u64::MAX as u128) << 32 | u32::MAX as u128
+    }
+}
 impl Fixture for GlobalSavedEventTargetRow {
     fn fixture(key: u128, tick: usize) -> Self {
         Self {
@@ -1435,6 +1459,9 @@ pub(crate) fn sample_extended_table(table: TableId, tick: usize) -> Option<Table
         TableId::PowerBalanceModifierBreakdowns => TableRows::PowerBalanceModifierBreakdowns(
             rows::<PowerBalanceModifierBreakdownRow>(tick),
         ),
+        TableId::NavalModifierBreakdowns => {
+            TableRows::NavalModifierBreakdowns(rows::<NavalModifierBreakdownRow>(tick))
+        }
         _ => return None,
     })
 }
@@ -2048,10 +2075,11 @@ fn ship_models_preserve_full_flags_and_counter_inputs() {
 }
 
 #[test]
-fn naval_window_stored_operands_round_trip() {
+fn naval_window_stored_operands_and_breakdowns_round_trip() {
     check_table::<NavalCombatDetailsRow>(TableId::NavalCombatDetails);
     check_table::<NavalCombatShipRow>(TableId::NavalCombatShips);
     check_table::<NavalCombatResultDetailsRow>(TableId::NavalCombatResultDetails);
+    check_table::<NavalModifierBreakdownRow>(TableId::NavalModifierBreakdowns);
 }
 
 #[test]
@@ -2431,6 +2459,7 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<EquipmentDestructionRow>(TableId::EquipmentDestruction);
     check_table::<ReserveModifierBreakdownRow>(TableId::ReserveModifierBreakdowns);
     check_table::<PowerBalanceModifierBreakdownRow>(TableId::PowerBalanceModifierBreakdowns);
+    check_table::<NavalModifierBreakdownRow>(TableId::NavalModifierBreakdowns);
     check_table::<OperationRow>(TableId::Operations);
     check_table::<OperationAssignmentRow>(TableId::OperationAssignments);
     check_table::<WingEquipmentRow>(TableId::WingEquipment);

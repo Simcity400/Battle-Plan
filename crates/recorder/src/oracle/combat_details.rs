@@ -14,6 +14,73 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
     report.attempt_table(TableId::NavalCombatAirBaseWingHandles, |r| {
         air_base_wings(frame, r)
     });
+    report.attempt_table(TableId::NavalModifierBreakdowns, |r| {
+        naval_modifier_breakdowns(frame, r)
+    });
+}
+
+/// 140C29020 describes these runtime ordered child trees on demand. The save
+/// keeps neither their display labels nor the resulting tree; check the live
+/// combat/member join and key integrity, then state the save limitation.
+fn naval_modifier_breakdowns(frame: &DecodedFrame, r: &mut Report) -> io::Result<()> {
+    let rows = frame.complete::<tables::NavalModifierBreakdowns>()?;
+    let combats: BTreeSet<_> = frame
+        .complete::<tables::NavalCombatDetails>()?
+        .iter()
+        .map(|row| row.combat)
+        .collect();
+    let ships: BTreeMap<_, _> = frame
+        .complete::<tables::NavalCombatShips>()?
+        .iter()
+        .map(|row| ((row.combat, row.side, row.battle_slot), row))
+        .collect();
+    let mut seen_orders = BTreeSet::new();
+    let mut uses = 0;
+    for row in rows {
+        for usage in &row.uses {
+            uses += 1;
+            if !seen_orders.insert(usage.order) {
+                r.difference("NavalModifierBreakdowns source order", "repeated", "unique");
+            }
+            if !combats.contains(&usage.combat) {
+                r.difference(
+                    format!("NavalModifierBreakdowns {} combat", usage.combat),
+                    "absent",
+                    "present",
+                );
+            }
+            if usage.battle_slot != u32::MAX {
+                match ships.get(&(usage.combat, usage.side, usage.battle_slot)) {
+                    // 14195C7D0's escape roots need state 8; 1417DAA40's
+                    // carrier-air roots (+0x24/+0x1B6) can join any member state.
+                    Some(ship)
+                        if matches!(row.key, 0x5b | 0x59 | 0x5c | 0x5d) && ship.state != 8 =>
+                    {
+                        r.difference(
+                            format!(
+                                "NavalModifierBreakdowns {} slot {}",
+                                usage.combat, usage.battle_slot
+                            ),
+                            "non-escaping ship",
+                            "escaping ship",
+                        )
+                    }
+                    Some(_) => {}
+                    None => r.difference(
+                        format!(
+                            "NavalModifierBreakdowns {} slot {}",
+                            usage.combat, usage.battle_slot
+                        ),
+                        "absent",
+                        "present",
+                    ),
+                }
+            }
+        }
+    }
+    r.compared("NavalModifierBreakdowns", uses);
+    r.limitation("The text save does not serialize transient ordered modifier child identities, contributions or recording-client display labels. Combat and escaping-member joins plus codec tree structure are checked; native hover values require a matched live comparison.", "NavalModifierBreakdowns");
+    Ok(())
 }
 
 /// `NavalCombatAirBaseWingHandles` joins: exactly the bases the hour's naval combats reference

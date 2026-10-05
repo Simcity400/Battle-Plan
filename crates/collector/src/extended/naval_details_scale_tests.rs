@@ -34,7 +34,7 @@ const SHIP_BUCKETS: usize = 0x8_1000;
 const SHIP_MASK: usize = 16383;
 const WING: usize = 0xf_0000;
 const WING_HANDLE: u64 = (1_u64 << 32) | 52;
-// CStrategicRegionTemplate vtable, shared fixture for main and format 90.
+// CStrategicRegionTemplate vtable for the shared main/branch fixture.
 // 1415938B0 reads its custom-modifier vector.
 const TEMPLATE_VTABLE_RVA: usize = 0x029c_5260;
 
@@ -528,6 +528,126 @@ fn percentiles(mut values: Vec<Duration>) -> (Duration, Duration, Duration) {
 }
 
 #[test]
+fn naval_empty_hour_keeps_all_tables_complete_without_tree_storage() {
+    let memory = Fixture::new(0);
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    captured.capture(&memory, IMAGE, STATE);
+    assert_eq!(captured.outcomes(), [Outcome::Rows { len: 0 }; N]);
+    assert_eq!(captured.breakdown_requests.len, 0);
+    assert_eq!(captured.breakdown_nodes.len, 0);
+    assert_eq!(
+        captured.breakdown_requests.allocated_bytes()
+            + captured.breakdown_roots.allocated_bytes()
+            + captured.breakdown_nodes.allocated_bytes()
+            + captured.breakdown_text.allocated_bytes()
+            + captured.breakdown_depth.allocated_bytes(),
+        0
+    );
+    assert!(
+        captured
+            .tables()
+            .iter()
+            .all(|view| matches!(view, TableView::Complete(_)))
+    );
+}
+
+#[test]
+fn naval_shared_country_roots_walk_once_across_combat_side_and_ship_uses() {
+    struct Counted {
+        memory: Fixture,
+        visits: std::cell::Cell<[u32; COUNTRY_COUNT]>,
+    }
+    impl Memory for Counted {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            for slot in 0..COUNTRY_COUNT {
+                let root =
+                    COUNTRY_BASE + slot * COUNTRY_STRIDE + engine::ccountry::MODIFIER_ACCUMULATOR;
+                if address == root + 0x18 && destination.len() == 16 {
+                    let mut visits = self.visits.get();
+                    visits[slot] += 1;
+                    self.visits.set(visits);
+                }
+            }
+            self.memory.copy(address, destination)
+        }
+    }
+    let memory = Counted {
+        memory: Fixture::new(20),
+        visits: std::cell::Cell::new([0; COUNTRY_COUNT]),
+    };
+    let mut captured = Captured::with_capacities(&Capacities {
+        breakdown_requests: 20 * 128,
+        breakdown_roots: 20 * 80 + 2100,
+        breakdown_nodes: 20 * 80 + 2100,
+        breakdown_text: 32_000,
+        breakdown_depth: 128,
+        ..Capacities::default()
+    });
+    captured.capture(&memory, IMAGE, STATE);
+    assert!(
+        matches!(captured.breakdown_outcome, Outcome::Rows { .. }),
+        "{:?}",
+        captured.breakdown_outcome
+    );
+    assert_eq!(memory.visits.get(), [1; COUNTRY_COUNT]);
+    let rows = captured.project_breakdowns().unwrap();
+    let country = COUNTRY_BASE + engine::ccountry::MODIFIER_ACCUMULATOR;
+    let shared = rows
+        .iter()
+        .find(|row| row.accumulator == country as u64 && row.key == 0x1b2)
+        .unwrap();
+    assert_eq!(shared.uses.len(), 4);
+    assert_eq!(shared.nodes.len(), TREE_CHILDREN + 1);
+}
+
+#[test]
+fn naval_tree_arena_shortage_withholds_only_trees_and_grows_after_capture() {
+    let memory = Fixture::new(1);
+    let mut capacities = Capacities::default();
+    let mut captured = Captured::with_capacities(&capacities);
+    captured.capture(&memory, IMAGE, STATE);
+    assert_eq!(captured.details.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(
+        captured.ships.outcome,
+        Outcome::Rows {
+            len: SHIPS_PER_COMBAT
+        }
+    );
+    assert_eq!(
+        captured.breakdown_outcome,
+        Outcome::Unavailable {
+            reason: engine::naval_ship_modifier_breakdown::REQUEST_CAPACITY,
+        }
+    );
+    assert!(matches!(
+        captured.breakdown_table(),
+        TableView::Unavailable { .. }
+    ));
+    assert_eq!(captured.breakdown_requests.first.len(), 0);
+    assert_eq!(captured.breakdown_requests.required, 1);
+    captured.grow(&mut capacities);
+    assert!(capacities.breakdown_requests >= 1);
+    assert_eq!(
+        captured.breakdown_requests.first.len(),
+        capacities.breakdown_requests
+    );
+    for _ in 0..64 {
+        captured.reset();
+        captured.capture(&memory, IMAGE, STATE);
+        assert_eq!(captured.details.outcome, Outcome::Rows { len: 1 });
+        if matches!(captured.breakdown_outcome, Outcome::Rows { .. }) {
+            break;
+        }
+        captured.grow(&mut capacities);
+    }
+    assert!(
+        matches!(captured.breakdown_table(), TableView::Complete(_)),
+        "tree arenas did not grow to the live fixture demand: {:?}",
+        captured.breakdown_outcome
+    );
+}
+
+#[test]
 fn naval_bench_in_place_changes_keep_headers_and_reach_capture() {
     let mut memory = Fixture::new(1);
     let root = COUNTRY_BASE + engine::ccountry::MODIFIER_ACCUMULATOR;
@@ -601,11 +721,17 @@ fn naval_window_operand_scale_bench() {
                     side_units: combats * 2,
                     weapon_sources: combats * SHIPS_PER_COMBAT * 12,
                     weapon_terms: 16_384,
+                    breakdown_requests: combats * 128,
+                    breakdown_roots: combats * 80 + 2100,
+                    breakdown_nodes: combats * 80 + 2100,
+                    breakdown_text: 32_000,
+                    breakdown_depth: 128,
                     ..Capacities::default()
                 })
             };
             let mut block = Vec::with_capacity(256);
             let mut projection = Vec::with_capacity(256);
+            let mut allocated = None;
             for pass in 0..320 {
                 memory.advance(combats, hour, pass);
                 let began = Instant::now();
@@ -620,6 +746,21 @@ fn naval_window_operand_scale_bench() {
                     }
                 );
                 assert_eq!(captured.planes.len, combats * 4);
+                assert!(
+                    matches!(captured.breakdown_outcome, Outcome::Rows { len }
+                    if if combats == 0 { len == 0 } else { len > COUNTRY_COUNT }),
+                    "tree capture refused the fixture: {:?}",
+                    captured.outcomes()
+                );
+                if pass == 64 {
+                    allocated = Some(captured.allocated_bytes());
+                }
+                if pass >= 64 {
+                    assert_eq!(Some(captured.allocated_bytes()), allocated);
+                }
+                if pass == 0 {
+                    assert!(matches!(captured.breakdown_table(), TableView::Complete(_)));
+                }
                 let began_projection = Instant::now();
                 black_box(captured.tables());
                 let projected = began_projection.elapsed();

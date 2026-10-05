@@ -51,8 +51,8 @@ pub struct SourceRow {
     /// Doctrine country modifiers selected by141956CB0/141956D40.
     pub dynamic_keys: [u32; 2],
     pub terms: [usize; 2],
-    /// Transient identity for sharing owned term spans within this callback.
-    /// Never projected to replay. 140C29020 reads source +0x10.
+    /// Transient identity for shared term spans and this hour's child-tree
+    /// capture. Never projected to replay. 140C230A0 reads source +0x10.
     pub accumulator: usize,
 }
 

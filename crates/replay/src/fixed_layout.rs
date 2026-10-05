@@ -155,6 +155,15 @@ pub const NAVAL_AIR: Family = Family {
     tables: &[TableId::NavalCombatDetails],
 };
 
+/// 14160A7B0/141609460's side trees and 14195C7D0/141963700's
+/// ship/carrier trees, selected by the hourly reader's native hover keys.
+pub const NAVAL_BREAKDOWNS: Family = Family {
+    name: "naval modifier breakdowns",
+    keys: &engine::naval_ship_modifier_breakdown::KEYS,
+    tokens: &[],
+    tables: &[TableId::NavalModifierBreakdowns],
+};
+
 /// The combat window's positioning recomputation: surface detection and the
 /// carrier sortie keys, read through the ship modifier port of 140C29020,
 /// which also reads the weather and critical keys.
@@ -368,6 +377,7 @@ pub const FAMILIES: &[Family] = &[
     NAVAL_WEAPONS,
     NAVAL_SUMMARY,
     NAVAL_AIR,
+    NAVAL_BREAKDOWNS,
     NAVAL_POSITIONING,
     NAVAL_ANTI_AIR,
     RESEARCH,
@@ -527,6 +537,7 @@ mod tests {
             SHIP_ORGANISATION,
             NAVAL_POSITIONING,
             NAVAL_ANTI_AIR,
+            NAVAL_BREAKDOWNS,
         ] {
             for &key in family.keys {
                 let mut frame = fixture();
@@ -553,6 +564,18 @@ mod tests {
                 );
                 assert!(refusal.contains("different script name"));
             }
+        }
+    }
+
+    #[test]
+    fn naval_breakdown_family_covers_all_capture_keys_and_its_table() {
+        assert_eq!(
+            NAVAL_BREAKDOWNS.keys,
+            engine::naval_ship_modifier_breakdown::KEYS
+        );
+        assert_eq!(NAVAL_BREAKDOWNS.tables, [TableId::NavalModifierBreakdowns]);
+        for key in NAVAL_BREAKDOWNS.keys {
+            assert!(keys::ALL.iter().any(|expected| expected.index == *key));
         }
     }
 

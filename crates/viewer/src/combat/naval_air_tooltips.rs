@@ -1,7 +1,7 @@
 //! Air-group icon hovers assembled from each CFEXAir's recorded operands.
 use super::binding::{TextIcons, builtin, displayable};
 use installed_content::localisation::{Argument, Localisation};
-use replay::rows::NavalCombatPlane;
+use replay::rows::{ModifierDefinitionRow, NavalCombatPlane, NavalCombatShipRow};
 
 // Executable keys in 1417D2430 and 1415B46D0. Category names are selected
 // by 140F734A0 and then localised by 140F742C0.
@@ -168,6 +168,54 @@ pub(super) fn wing_short_name(loc: &Localisation, tag: &str, key: &str) -> Resul
         return super::text::country_localised(loc, Ok(tag), key);
     };
     super::text::localise(loc, &selected, &[])
+}
+
+/// 141963700 -> 14195EEC0 -> 140C29020 appends each linked carrier source's
+/// cloned child tree in the Table 270 source order. The winning HQ influence
+/// and doctrine/critical display scales are the same as the ship hovers.
+pub(super) fn carrier_key_breakdown(
+    member: &NavalCombatShipRow,
+    rows: &[&super::naval_summary_tooltips::NavalTreeUse<'_>],
+    definition: Option<&ModifierDefinitionRow>,
+    key: u32,
+    recorded_language: &str,
+    loc: &Localisation,
+    icons: &dyn TextIcons,
+) -> Result<String, String> {
+    let mut text = String::new();
+    for row in rows {
+        if row.key != key {
+            return Err("carrier modifier tree key differs from requested sortie key".into());
+        }
+        if !super::naval_environment::breakdown_visible(
+            &member.weapon_context,
+            key,
+            row.use_.source_scope,
+            row.use_.source_index,
+        )
+        .ok_or("carrier sortie HQ influence selection is unavailable")?
+        {
+            continue;
+        }
+        let definition = definition.ok_or("carrier sortie modifier has no recorded definition")?;
+        let scale = super::naval_environment::breakdown_scale(
+            &member.weapon_context,
+            row.use_.source_scope,
+            row.use_.source_index,
+        )
+        .ok_or("carrier sortie modifier source scale is unavailable")?;
+        text.push_str(&super::naval_summary_tooltips::ship_modifier_breakdown(
+            &row.nodes,
+            definition,
+            scale,
+            "  ",
+            recorded_language,
+            icons,
+            loc,
+            !matches!(row.use_.source_scope, 12..=15),
+        )?);
+    }
+    Ok(text)
 }
 
 /// 1417D2430 joins 141963460's distinct wing short names with comma-space,
@@ -692,5 +740,67 @@ mod tests {
             carrier_org_suffix(100_000, 70_000, &loc(), &NoIcons).unwrap(),
             ""
         );
+    }
+
+    #[test]
+    fn linked_carrier_source_trees_keep_capture_order_for_both_sortie_keys() {
+        for key in [0x24, 0x1b6] {
+            let tree = |name: &[u8], scope| replay::rows::NavalModifierBreakdownRow {
+                key,
+                uses: vec![replay::rows::NavalModifierUse {
+                    source_scope: scope,
+                    ..Default::default()
+                }],
+                nodes: vec![
+                    replay::rows::ModifierBreakdownNode {
+                        children: 1,
+                        ..Default::default()
+                    },
+                    replay::rows::ModifierBreakdownNode {
+                        value: 20_000,
+                        name: name.to_vec(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            };
+            let first = tree(b"First", 0);
+            let second = tree(b"Second", 1);
+            let definition = ModifierDefinitionRow {
+                index: key,
+                precision: 2,
+                ..Default::default()
+            };
+            let first_use = crate::combat::naval_summary_tooltips::test_tree_use(&first);
+            let second_use = crate::combat::naval_summary_tooltips::test_tree_use(&second);
+            assert_eq!(
+                carrier_key_breakdown(
+                    &NavalCombatShipRow::default(),
+                    &[&first_use, &second_use],
+                    Some(&definition),
+                    key,
+                    "english",
+                    &loc(),
+                    &NoIcons,
+                )
+                .unwrap(),
+                concat!(
+                    "  First: \u{11}R+0.20\u{11}!\n",
+                    "  Second: \u{11}R+0.20\u{11}!\n",
+                )
+            );
+            assert!(
+                carrier_key_breakdown(
+                    &NavalCombatShipRow::default(),
+                    &[&first_use],
+                    Some(&definition),
+                    key + 1,
+                    "english",
+                    &loc(),
+                    &NoIcons,
+                )
+                .is_err()
+            );
+        }
     }
 }

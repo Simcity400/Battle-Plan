@@ -36,6 +36,8 @@ The collector may decode owned copies after the callback. Those copies must be s
 
 ## Reuse and measurement
 
+The [naval modifier tree contract](../replay/README.md#naval-modifier-breakdowns) links the reader and native evidence; ship input writer-coverage notes do not certify reuse.
+
 Keep cached plans and copied buffers within their proved lifetime. Reloadable defines, weather structures and mutable definitions are not automatically session-static. Reuse native inputs only when identity, ownership and invalidation are established.
 
 [read_plan.rs](src/read_plan.rs) executes fresh exact reads with ordered comparisons of the owned values that selected later addresses. The native executor uses compact checked descriptors; geometry outside that representation keeps the ordinary ordered executor. Hints run only after their selecting controls pass and never acquire a value. A stopped plan exposes its completed prefix and attempted failure so a producer can continue without rereading it. Bounds validation alone does not prove a plan's dependency coverage or object lifetime.

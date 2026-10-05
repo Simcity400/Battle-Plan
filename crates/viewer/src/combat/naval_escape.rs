@@ -1,6 +1,7 @@
 //! State-8 member escape speed from 14195C7D0. The native getter computes
 //! this on demand; the replay stores the mutable speed base and the source
 //! operands, while the content stack supplies NNavy defines.
+use engine::modifier_keys;
 use installed_content::{
     ResolvedLayers,
     static_modifiers::{self, Request},
@@ -12,7 +13,12 @@ use std::collections::BTreeMap;
 
 const ONE: i64 = 100_000;
 const SCREENING_NAMES: [&str; 2] = ["screening_bonus", "capital_screening_bonus"]; // 140600CF0
-pub(super) const ESCAPE_KEYS: [u32; 4] = [0x5b, 0x5c, 0x59, 0x5d]; // 14195C7D0
+pub(super) const ESCAPE_KEYS: [u32; 4] = [
+    modifier_keys::NAVAL_RETREAT_SPEED,
+    modifier_keys::SUB_RETREAT_SPEED,
+    modifier_keys::NAVAL_RETREAT_SPEED_AFTER_INITIAL_COMBAT,
+    modifier_keys::CONVOY_RETREAT_SPEED,
+]; // 14195C7D0
 
 #[derive(Debug)]
 pub(super) struct Screening {
@@ -107,6 +113,7 @@ pub(super) fn modifier_value(
     row: &NavalCombatShipRow,
     side: &NavalCombatSideDetails,
     key: u32,
+    trees: &[super::naval_summary_tooltips::NavalTreeUse<'_>],
     screening: &Screening,
     definitions: &BTreeMap<u32, &ModifierDefinitionRow>,
 ) -> Result<(i64, i64), String> {
@@ -114,9 +121,22 @@ pub(super) fn modifier_value(
         super::naval_environment::modifier(&row.weapon_context, key)
             .ok_or_else(|| format!("state-8 ship modifier {key:#x} source unsupported"))?
     } else {
-        return Err(format!(
-            "state-8 convoy modifier {key:#x} is pending capture-on-change (1415B4BB0)"
-        ));
+        let mut found = false;
+        let mut sum = 0_i64;
+        for tree in trees.iter().filter(|tree| tree.key == key) {
+            found = true;
+            let root = tree
+                .nodes
+                .first()
+                .ok_or("naval escape modifier tree is empty")?;
+            sum = sum.wrapping_add(root.value);
+        }
+        if !found {
+            return Err(format!(
+                "state-8 convoy modifier {key:#x} has no recorded source trees"
+            ));
+        }
+        sum
     };
     let display_box = super::naval_air_groups::display_box(row, pool_flags(row));
     let mut screening_value = 0;
@@ -320,6 +340,73 @@ mod tests {
             out_of_fuel: -50_000,
             initial_duration: 24,
         }
+    }
+
+    #[test]
+    fn convoy_escape_uses_native_roots_even_when_child_lines_prune_to_zero() {
+        let key = 0x5d;
+        let row = NavalCombatShipRow {
+            state: 8,
+            live_convoy: 1,
+            detection_state: 1,
+            ..Default::default()
+        };
+        let trees: Vec<_> = [0, 6, 5, 9]
+            .into_iter()
+            .enumerate()
+            .map(|(order, scope)| replay::rows::NavalModifierBreakdownRow {
+                key,
+                uses: vec![replay::rows::NavalModifierUse {
+                    source_scope: scope,
+                    order: order as u32,
+                    ..Default::default()
+                }],
+                nodes: vec![
+                    replay::rows::ModifierBreakdownNode {
+                        children: 1,
+                        value: (order as i64 + 1) * 1_000,
+                        ..Default::default()
+                    },
+                    replay::rows::ModifierBreakdownNode::default(),
+                ],
+                ..Default::default()
+            })
+            .collect();
+        let uses = super::super::naval_summary_tooltips::expanded_trees(&trees);
+        let definition = ModifierDefinitionRow {
+            index: key,
+            ..Default::default()
+        };
+        for tree in &trees {
+            assert_eq!(
+                super::super::naval_summary_tooltips::ship_modifier_breakdown(
+                    &tree.nodes,
+                    &definition,
+                    ONE,
+                    "  ",
+                    "english",
+                    &super::super::binding::NoIcons,
+                    &installed_content::localisation::Localisation::default(),
+                    true,
+                )
+                .unwrap(),
+                ""
+            );
+        }
+        let screening = Screening {
+            values: std::array::from_fn(|_| std::array::from_fn(|_| Ok(0))),
+        };
+        let (modifier, screen) = modifier_value(
+            &row,
+            &NavalCombatSideDetails::default(),
+            key,
+            &uses,
+            &screening,
+            &BTreeMap::from([(key, &definition)]),
+        )
+        .unwrap();
+        assert_eq!((modifier, screen), (10_000, 0));
+        assert_eq!(chance(&row, 0, modifier, 0, &defines()).total, 20_000);
     }
 
     #[test]
