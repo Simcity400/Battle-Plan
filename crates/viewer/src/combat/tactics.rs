@@ -1139,26 +1139,29 @@ fn normalized_chances(weights: &[Option<i64>]) -> Vec<Option<i64>> {
         .collect()
 }
 
-/// 141C5C1F0 tests the attacker's ordered primary country set. Its members
-/// may be seeded or retained after the current division roster changes.
-/// An unresolved raw country cannot prove that the viewer is on the defender.
+/// 141C5C1F0 tests the attacker's ordered primary country set (the naval
+/// progress skin, 1417DA6CB, tests the defender's): 0 when the viewer is in
+/// `primary`, else 1. Its members may be seeded or retained after the current
+/// division roster changes. An unresolved raw country cannot prove that the
+/// viewer is outside the set; `side` names the set in that refusal.
 pub(super) fn viewing_side(
-    attacker_primary: &[u32],
+    primary: &[u32],
+    side: &str,
     aliases: &BTreeMap<u32, u32>,
     viewing_slot: u32,
 ) -> Evaluation<usize> {
-    let mut attacker = false;
+    let mut member = false;
     let mut unresolved = None;
-    for raw in attacker_primary {
+    for raw in primary {
         match aliases.get(raw) {
-            Some(slot) => attacker |= *slot == viewing_slot,
+            Some(slot) => member |= *slot == viewing_slot,
             None => unresolved = unresolved.or(Some(*raw)),
         }
     }
-    match (attacker, unresolved) {
+    match (member, unresolved) {
         (true, _) => Ok(0),
         (false, Some(raw)) => Err(format!(
-            "the viewing country's combat side is unavailable: attacker primary country {raw} has no CountryLinks row"
+            "the viewing country's combat side is unavailable: {side} primary country {raw} has no CountryLinks row"
         )),
         (false, None) => Ok(1),
     }
@@ -1228,7 +1231,7 @@ pub(super) fn bind(
         .ok_or_else(|| {
             format!("the viewing country's combat side is unavailable: combat {id} has no LandCombatSides row")
         })
-        .and_then(|sets| viewing_side(&sets.attacker_primary, &aliases, vision.ours()));
+        .and_then(|sets| viewing_side(&sets.attacker_primary, "attacker", &aliases, vision.ours()));
     let side_known = selected_side.is_ok();
     let side = match selected_side {
         Ok(side) => side,
@@ -2289,14 +2292,14 @@ mod tests {
     #[test]
     fn missing_attacker_set_member_cannot_be_treated_as_defender_perspective() {
         let aliases = BTreeMap::from([(10, 1), (20, 2)]);
-        assert_eq!(viewing_side(&[10], &aliases, 1), Ok(0));
-        assert_eq!(viewing_side(&[10], &aliases, 2), Ok(1));
-        assert_eq!(viewing_side(&[10, 20], &aliases, 2), Ok(0));
-        assert_eq!(viewing_side(&[99, 10], &aliases, 1), Ok(0));
-        assert_eq!(viewing_side(&[10, 99], &aliases, 1), Ok(0));
-        assert!(viewing_side(&[99, 20], &aliases, 1).is_err());
-        assert!(viewing_side(&[20, 99], &aliases, 1).is_err());
-        assert_eq!(viewing_side(&[], &aliases, 2), Ok(1));
+        assert_eq!(viewing_side(&[10], "attacker", &aliases, 1), Ok(0));
+        assert_eq!(viewing_side(&[10], "attacker", &aliases, 2), Ok(1));
+        assert_eq!(viewing_side(&[10, 20], "attacker", &aliases, 2), Ok(0));
+        assert_eq!(viewing_side(&[99, 10], "attacker", &aliases, 1), Ok(0));
+        assert_eq!(viewing_side(&[10, 99], "attacker", &aliases, 1), Ok(0));
+        assert!(viewing_side(&[99, 20], "attacker", &aliases, 1).is_err());
+        assert!(viewing_side(&[20, 99], "attacker", &aliases, 1).is_err());
+        assert_eq!(viewing_side(&[], "attacker", &aliases, 2), Ok(1));
     }
 
     #[test]

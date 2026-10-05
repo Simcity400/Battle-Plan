@@ -69,15 +69,25 @@ fn naval_commander_hover_uses_recorded_name_and_description_tokens() {
 }
 
 #[test]
-fn naval_flag_hover_selects_viewer_within_side_and_refuses_unknown_alias() {
-    let aliases = BTreeMap::from([(12, 120), (34, 340)]);
-    assert_eq!(naval_flag_country(&[12, 34], &aliases, 340), Ok(340));
-    assert_eq!(naval_flag_country(&[12, 34], &aliases, 800), Ok(120));
+fn naval_flag_hover_titles_both_flags_from_first_side_and_refuses_unknown_alias() {
+    let aliases = BTreeMap::from([(12, 120), (34, 340), (80, 800)]);
+    let detail = |first: &[u32], second: &[u32]| {
+        let mut detail = replay::rows::NavalCombatDetailsRow::default();
+        detail.sides[0].summary.countries = first.to_vec();
+        detail.sides[1].summary.countries = second.to_vec();
+        detail
+    };
+    // The viewer in the first combatant is selected through its canonical
+    // alias; viewing from the other combatant still titles BOTH flags with
+    // the first country's name (1417D53C0), not the enemy flag's country.
+    let combat = detail(&[12, 34], &[80]);
+    assert_eq!(naval_flag_country(&combat, &aliases, 340), Ok(340));
+    assert_eq!(naval_flag_country(&combat, &aliases, 800), Ok(120));
     assert_eq!(
-        naval_flag_country(&[800, 34], &aliases, 800),
+        naval_flag_country(&detail(&[800, 34], &[80]), &aliases, 800),
         Err("naval flag side country 800 has no CountryLinks row".to_owned())
     );
-    assert!(naval_flag_country(&[12, 78], &aliases, 800).is_err());
+    assert!(naval_flag_country(&detail(&[12, 78], &[80]), &aliases, 800).is_err());
 }
 
 #[test]

@@ -113,6 +113,107 @@ fn flag_damage_summary_uses_native_sections_and_sorted_source_types() {
 }
 
 #[test]
+fn flag_damage_summary_keeps_blank_null_type_and_empty_localisation_rows() {
+    let loc: Localisation = [
+        ("total_damage_dealt", "TOTAL $NUM$;"),
+        ("damage_dealt_by_box", "BOX;"),
+        ("damage_dealt_by_ship_types", "TYPES;"),
+        ("damage_dealt_by_type", "[$TYPE$ $NUM$ $RATIO$]"),
+        ("AAA_destroyer", ""),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_owned(), value.to_owned()))
+    .collect();
+    let side = NavalCombatSideDetails {
+        total_damage: 1_000_000,
+        damage_by_type: vec![
+            NavalDamageSource {
+                token: 2,
+                damage: 300_000,
+            },
+            NavalDamageSource {
+                token: 1,
+                damage: 200_000,
+            },
+            NavalDamageSource {
+                token: 0,
+                damage: 100_000,
+            },
+        ],
+        ..Default::default()
+    };
+    let opponent = NavalCombatSideDetails {
+        original_health: 2_000_000,
+        ..Default::default()
+    };
+    let rows = [
+        LexicalTokenRow {
+            token: 1,
+            literal: b"destroyer".to_vec(),
+        },
+        LexicalTokenRow {
+            token: 2,
+            literal: b"not_a_subunit".to_vec(),
+        },
+    ];
+    let tokens = TokenNames::from_rows(&rows, true);
+    let mut sub_units = SubUnits::default();
+    sub_units.read(b"sub_units={destroyer={}}", "common/units/test.txt");
+    assert_eq!(
+        flag_description(
+            &side,
+            &opponent,
+            &tokens,
+            &sub_units,
+            Ok("AAA"),
+            &NoIcons,
+            &loc
+        )
+        .unwrap(),
+        "TOTAL 10.00;\nBOX;\nTYPES;[ 1.00 0.10][ 2.00 0.20][ 3.00 0.30]\n"
+    );
+    // A missing localisation shows the key itself (142230940), while an
+    // empty authored localisation stays empty: neither drops the type row.
+    assert!(
+        flag_description(
+            &side,
+            &opponent,
+            &tokens,
+            &sub_units,
+            Ok("BBB"),
+            &NoIcons,
+            &loc
+        )
+        .unwrap()
+        .contains("[destroyer 2.00 0.20]")
+    );
+}
+
+#[test]
+fn torpedo_hover_reports_damage_history_not_current_attack_counter() {
+    let loc: Localisation = [
+        ("damage_done_by_weapon_type", "$NUM|0$"),
+        ("relative_damage_ratio_to_enemy_health", "Ratio $NUM$"),
+        ("damage_dealt_screen", "Screens $NUM|0$"),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_owned(), value.to_owned()))
+    .collect();
+    let mut side = NavalCombatSideDetails::default();
+    side.damage_history[0][2] = 18_000_000;
+    let opponent = NavalCombatSideDetails {
+        original_health: 30_000_000,
+        ..Default::default()
+    };
+    // 1417D1A90 -> 14160C600 reads the historical matrix's torpedo column,
+    // independently of 1417D9C60's current active-member attack summary.
+    assert_eq!(
+        weapon_description(&side, &opponent, 2, None, &NoIcons, &loc).unwrap(),
+        "180\nRatio 0.60\nScreens 180"
+    );
+}
+
+#[test]
 fn weapon_damage_summary_includes_piercing_in_native_order() {
     let loc: Localisation = [
         ("damage_done_by_weapon_type", "Total $NUM$"),

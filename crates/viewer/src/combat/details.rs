@@ -1039,10 +1039,10 @@ fn naval(
             .iter()
             .map(|r| (r.id, r.canonical_slot))
             .collect();
-        // 1417DA6E6..1417DA74A: the viewing country is compared with every
-        // attacker primary country (+0x38). A match shows the defender skin;
+        // 1417DA6CB loads CCombat+0x30: compare the viewing country with
+        // the defender primary list (+0x38). A match shows the defender skin;
         // otherwise the attacker skin. Both widgets receive the same progress.
-        match naval_progress_skin(&detail.sides[0].summary.countries, &aliases, vision.ours()) {
+        match naval_progress_skin(detail, &aliases, vision.ours()) {
             Ok(shown) => bind_naval_progress(&mut out.values, shown, detail.progress),
             Err(reason) => out.withhold(
                 &[
@@ -1255,15 +1255,21 @@ fn naval(
     Ok(())
 }
 
-/// 1417DA6E6..1417DA74A selects the opposite-named skin when the viewing
-/// country is in the attacker set. Raw links must be resolved to canonical
+/// 1417DA6CB..1417DA74A selects the defender skin when the viewing
+/// country is in the defender primary list. Raw links resolve to canonical
 /// slots before comparison (`tactics::viewing_side`, 1406D7F90).
 fn naval_progress_skin(
-    attackers: &[u32],
+    detail: &replay::rows::NavalCombatDetailsRow,
     aliases: &BTreeMap<u32, u32>,
     viewer: u32,
 ) -> Result<&'static str, String> {
-    super::tactics::viewing_side(attackers, aliases, viewer).map(|side| {
+    super::tactics::viewing_side(
+        &detail.sides[1].summary.countries,
+        "defender",
+        aliases,
+        viewer,
+    )
+    .map(|side| {
         if side == 0 {
             "progress_defender"
         } else {

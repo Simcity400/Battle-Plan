@@ -14,6 +14,14 @@ use replay::{frame::TABLE_COUNT, rows::TableId};
 use std::{mem::size_of, sync::Arc};
 
 impl Captured {
+    pub(crate) fn naval_breakdown_status(&self) -> naval_details::BreakdownStatus {
+        let mut status = self.naval_details.breakdown_status();
+        if let Some(reason) = self.ordinary_failure {
+            status.outcome = Outcome::Unavailable { reason };
+        }
+        status
+    }
+
     /// Lend the ordinary packs to the pool: swap them with the spare set so
     /// nothing allocates on the game thread.
     pub(crate) fn take_ordinary_request(

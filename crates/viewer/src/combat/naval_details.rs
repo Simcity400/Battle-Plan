@@ -377,18 +377,20 @@ fn air_entries(
     let Some(database) = database else {
         return Ok(());
     };
-    let stacking_penalty =
-        super::tactics::viewing_side(&detail.sides[0].summary.countries, aliases, vision.ours())
-            .and_then(|side| {
-                out.naval_penalties[side]
-                    .as_ref()
-                    .ok_or_else(|| {
-                        "the perspective carrier penalty has not been evaluated".to_owned()
-                    })?
-                    .as_ref()
-                    .map(|values| values.0)
-                    .map_err(Clone::clone)
-            });
+    let stacking_penalty = super::tactics::viewing_side(
+        &detail.sides[0].summary.countries,
+        "attacker",
+        aliases,
+        vision.ours(),
+    )
+    .and_then(|side| {
+        out.naval_penalties[side]
+            .as_ref()
+            .ok_or_else(|| "the perspective carrier penalty has not been evaluated".to_owned())?
+            .as_ref()
+            .map(|values| values.0)
+            .map_err(Clone::clone)
+    });
     for group in groups {
         let first = group.planes[0];
         let definition = &database.equipment[group.model];

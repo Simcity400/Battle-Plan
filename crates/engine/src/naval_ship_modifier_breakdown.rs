@@ -32,6 +32,55 @@ pub const ROOT_CAPACITY: &str = "naval modifier root arena capacity exceeded";
 pub const NODE_CAPACITY: &str = "naval modifier node arena capacity exceeded";
 pub const TEXT_CAPACITY: &str = "naval modifier text arena capacity exceeded";
 pub const DEPTH_CAPACITY: &str = "naval modifier depth arena capacity exceeded";
+pub const STACK_HEADROOM: &str = "naval modifier census worker stack headroom exhausted";
+
+// Leave 64 KiB for guard pages, guarded node reads and returning the refusal.
+// This protects the worker's actual reserve (4 MiB in acquisition), not a
+// chosen limit on native tree depth.
+const STACK_MARGIN: usize = 64 * 1024;
+
+#[derive(Clone, Copy)]
+struct StackLimits {
+    low: usize,
+    high: usize,
+}
+
+impl StackLimits {
+    #[cfg(windows)]
+    fn current() -> Result<Self, &'static str> {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentThreadStackLimits(low: *mut usize, high: *mut usize);
+        }
+        let mut limits = Self { low: 0, high: 0 };
+        // Windows returns the current thread's stack reservation boundaries;
+        // no game memory or function is involved.
+        unsafe { GetCurrentThreadStackLimits(&mut limits.low, &mut limits.high) };
+        if limits.low == 0 || limits.low >= limits.high {
+            return Err("naval modifier census worker stack limits unavailable");
+        }
+        Ok(limits)
+    }
+
+    #[cfg(not(windows))]
+    fn current() -> Result<Self, &'static str> {
+        Err("naval modifier census worker stack limits unavailable")
+    }
+
+    fn check_at(&self, pointer: usize) -> Result<(), &'static str> {
+        if pointer >= self.high || pointer.saturating_sub(self.low) < STACK_MARGIN {
+            Err(STACK_HEADROOM)
+        } else {
+            Ok(())
+        }
+    }
+
+    #[inline(always)]
+    fn check_current(&self) -> Result<(), &'static str> {
+        let marker = 0_u8;
+        self.check_at(std::ptr::addr_of!(marker) as usize)
+    }
+}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Use {
@@ -74,6 +123,8 @@ pub struct Frame {
 
 /// All storage is pack-owned and grows only after the hourly block. A short
 /// arena refuses the complete Table 270 for that hour and reports demand.
+/// `*_len` is a stored prefix; `*_required` is full demand, counting each tree once.
+/// Root.nodes uses census offsets; every short arena returns Err, never publishes.
 pub struct Buffers<'a> {
     pub requests: &'a mut [Request],
     pub request_len: usize,
@@ -105,7 +156,7 @@ fn field<T: crate::memory::Raw>(
     read(memory, at(pointer, offset)?).ok_or("naval modifier breakdown field unreadable")
 }
 fn push(
-    buffers: &mut Buffers<'_>,
+    emit: &mut impl FnMut(Request) -> Result<(), &'static str>,
     member: &cfex_member::DetailsRow,
     scope: u8,
     index: u32,
@@ -113,7 +164,7 @@ fn push(
     accumulator: usize,
 ) -> Result<(), &'static str> {
     push_side(
-        buffers,
+        emit,
         member.member.combat,
         member.member.side,
         member.member.battle_slot,
@@ -129,7 +180,7 @@ fn push(
     reason = "Keep native identity and source coordinates explicit when recording a request"
 )]
 fn push_side(
-    buffers: &mut Buffers<'_>,
+    emit: &mut impl FnMut(Request) -> Result<(), &'static str>,
     combat: u64,
     side: u8,
     battle_slot: u32,
@@ -138,18 +189,7 @@ fn push_side(
     key: u32,
     accumulator: usize,
 ) -> Result<(), &'static str> {
-    let order = u32::try_from(buffers.request_required)
-        .map_err(|_| "naval modifier request order overflow")?;
-    let next = buffers
-        .request_required
-        .checked_add(1)
-        .ok_or("naval modifier request length overflow")?;
-    buffers.request_required = next;
-    let slot = buffers
-        .requests
-        .get_mut(buffers.request_len)
-        .ok_or(REQUEST_CAPACITY)?;
-    *slot = Request {
+    emit(Request {
         accumulator,
         key,
         usage: Use {
@@ -158,11 +198,60 @@ fn push_side(
             battle_slot,
             source_scope: scope,
             source_index: index,
-            order,
+            order: 0,
         },
-    };
-    buffers.request_len += 1;
+    })
+}
+
+fn record_request(mut request: Request, buffers: &mut Buffers<'_>) -> Result<(), &'static str> {
+    request.usage.order = u32::try_from(buffers.request_required)
+        .map_err(|_| "naval modifier request order overflow")?;
+    buffers.request_required = buffers
+        .request_required
+        .checked_add(1)
+        .ok_or("naval modifier request length overflow")?;
+    if let Some(slot) = buffers.requests.get_mut(buffers.request_len) {
+        *slot = request;
+        buffers.request_len += 1;
+    }
     Ok(())
+}
+
+/// Only refusal hours re-enumerate requests to select successive distinct
+/// accumulator addresses and their actual key unions. Each tree is walked
+/// once, even with zero request storage; demand equals the next full capture.
+fn census_requested_roots(
+    memory: &impl Memory,
+    base: usize,
+    enumerate: &mut impl FnMut(
+        &mut dyn FnMut(Request) -> Result<(), &'static str>,
+    ) -> Result<(), &'static str>,
+    buffers: &mut Buffers<'_>,
+    stack_limits: &Result<StackLimits, &'static str>,
+) -> Result<(), &'static str> {
+    let mut previous = None;
+    loop {
+        let mut next = None;
+        let mut wanted = [false; KEYS.len()];
+        enumerate(&mut |request| {
+            if previous.is_some_and(|previous| request.accumulator <= previous) {
+                return Ok(());
+            }
+            if next.is_none_or(|next| request.accumulator < next) {
+                next = Some(request.accumulator);
+                wanted.fill(false);
+            }
+            if next == Some(request.accumulator) {
+                wanted[KEYS
+                    .binary_search(&request.key)
+                    .map_err(|_| "naval modifier hover key unsupported")?] = true;
+            }
+            Ok(())
+        })?;
+        let Some(root) = next else { return Ok(()) };
+        capture_requested_root(memory, base, root, wanted, false, buffers, stack_limits)?;
+        previous = Some(root);
+    }
 }
 
 /// 14160C6D0's forward-list predicate for the country-only 0x1B3 hover.
@@ -181,7 +270,7 @@ fn eligible_submarine(members: &[cfex_member::DetailsRow], side: u8) -> bool {
 /// walks country, weather, terrain/ocean and commander sources in this order.
 /// 0x1B3 passes null province and commander, so it has country only.
 fn side_trees(
-    buffers: &mut Buffers<'_>,
+    emit: &mut impl FnMut(Request) -> Result<(), &'static str>,
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -251,7 +340,7 @@ fn side_trees(
         ];
         for key in keys.into_iter().flatten() {
             push_side(
-                buffers,
+                emit,
                 combat.combat,
                 side_index as u8,
                 u32::MAX,
@@ -265,7 +354,7 @@ fn side_trees(
             }
             if let Some(region_at) = region_at {
                 push_side(
-                    buffers,
+                    emit,
                     combat.combat,
                     side_index as u8,
                     u32::MAX,
@@ -276,7 +365,7 @@ fn side_trees(
                 )?;
             }
             push_side(
-                buffers,
+                emit,
                 combat.combat,
                 side_index as u8,
                 u32::MAX,
@@ -297,7 +386,7 @@ fn side_trees(
                     return Err("naval side breakdown commander identity mismatch");
                 }
                 push_side(
-                    buffers,
+                    emit,
                     combat.combat,
                     side_index as u8,
                     u32::MAX,
@@ -354,6 +443,77 @@ pub fn capture(
     if combats.is_empty() {
         return Ok(());
     }
+    // Query once for this job; an unavailable limit refuses only a walk that
+    // actually needs the recursive fallback.
+    let stack_limits = StackLimits::current();
+    let mut enumerate = |emit: &mut dyn FnMut(Request) -> Result<(), &'static str>| {
+        enumerate_requests(
+            memory,
+            base,
+            game_state,
+            combats,
+            members,
+            planes,
+            sources,
+            &mut |request| emit(request),
+        )
+    };
+    enumerate(&mut |request| record_request(request, buffers))?;
+    let store = buffers.request_required <= buffers.requests.len();
+    if !store {
+        census_requested_roots(memory, base, &mut enumerate, buffers, &stack_limits)?;
+    } else {
+        buffers.requests[..buffers.request_len]
+            .sort_unstable_by_key(|r| (r.accumulator, r.key, r.usage.order));
+        let mut at = 0;
+        while at < buffers.request_len {
+            let root = buffers.requests[at].accumulator;
+            let mut end = at + 1;
+            let mut wanted = [false; KEYS.len()];
+            wanted[KEYS
+                .binary_search(&buffers.requests[at].key)
+                .map_err(|_| "naval modifier hover key unsupported")?] = true;
+            while end < buffers.request_len && buffers.requests[end].accumulator == root {
+                wanted[KEYS
+                    .binary_search(&buffers.requests[end].key)
+                    .map_err(|_| "naval modifier hover key unsupported")?] = true;
+                end += 1;
+            }
+            capture_requested_root(memory, base, root, wanted, true, buffers, &stack_limits)?;
+            at = end;
+        }
+    }
+    // Partial storage never becomes a published tree. All observed demands
+    // survive the refusal and drive the existing off-thread arena growth.
+    if buffers.request_required > buffers.requests.len() {
+        Err(REQUEST_CAPACITY)
+    } else if buffers.stack_required > buffers.stack.len() {
+        Err(DEPTH_CAPACITY)
+    } else if buffers.root_required > buffers.roots.len() {
+        Err(ROOT_CAPACITY)
+    } else if buffers.node_required > buffers.nodes.len() {
+        Err(NODE_CAPACITY)
+    } else if buffers.text_required > buffers.text.len() {
+        Err(TEXT_CAPACITY)
+    } else {
+        Ok(())
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Separate native census inputs and request consumer"
+)]
+fn enumerate_requests(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    combats: &[cnaval_combat::DetailsRow],
+    members: &[cfex_member::DetailsRow],
+    planes: &[cfex_air::Row],
+    sources: &[naval_ship_modifier_inputs::SourceRow],
+    emit: &mut impl FnMut(Request) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
     let initial: i32 = field(memory, base, COMBAT_INITIAL_DURATION_RVA)?;
     let mut member_cursor = 0;
     for combat in combats {
@@ -366,7 +526,7 @@ pub fn capture(
         }
         let combat_members = &members[start..member_cursor];
         side_trees(
-            buffers,
+            emit,
             memory,
             base,
             game_state,
@@ -427,7 +587,7 @@ pub fn capture(
                     {
                         if source.accumulator != 0 && matches!(source.scope, 0..=15) {
                             push(
-                                buffers,
+                                emit,
                                 member,
                                 source.scope,
                                 source.index,
@@ -437,7 +597,7 @@ pub fn capture(
                         }
                     }
                 } else if member.live_convoy != 0 {
-                    convoy(memory, base, game_state, member, key, buffers)?;
+                    convoy(memory, base, game_state, member, key, emit)?;
                 } else if key != 0x24 && key != 0x1b6 {
                     return Err("state-8 naval member has no live ship or convoy");
                 } else {
@@ -473,34 +633,30 @@ pub fn capture(
     if member_cursor != members.len() {
         return Err("naval modifier member is outside the indexed combat census");
     }
-    buffers.requests[..buffers.request_len]
-        .sort_unstable_by_key(|r| (r.accumulator, r.key, r.usage.order));
-    let mut at = 0;
-    while at < buffers.request_len {
-        let root = buffers.requests[at].accumulator;
-        let mut end = at + 1;
-        let mut wanted = [false; KEYS.len()];
-        wanted[KEYS
-            .binary_search(&buffers.requests[at].key)
-            .map_err(|_| "naval modifier hover key unsupported")?] = true;
-        while end < buffers.request_len && buffers.requests[end].accumulator == root {
-            wanted[KEYS
-                .binary_search(&buffers.requests[end].key)
-                .map_err(|_| "naval modifier hover key unsupported")?] = true;
-            end += 1;
-        }
-        buffers.root_required = buffers.root_len + 1;
-        if buffers.root_len == buffers.roots.len() {
-            return Err(ROOT_CAPACITY);
-        }
-        let first = buffers.node_len;
-        capture_root(memory, base, root, wanted, buffers)?;
-        buffers.roots[buffers.root_len] = Root {
+    Ok(())
+}
+
+fn capture_requested_root(
+    memory: &impl Memory,
+    base: usize,
+    root: usize,
+    wanted: [bool; KEYS.len()],
+    store: bool,
+    buffers: &mut Buffers<'_>,
+    stack_limits: &Result<StackLimits, &'static str>,
+) -> Result<(), &'static str> {
+    let index = buffers.root_required;
+    buffers.root_required = index
+        .checked_add(1)
+        .ok_or("naval modifier root length overflow")?;
+    let first = buffers.node_required;
+    capture_root(memory, base, root, wanted, store, buffers, stack_limits)?;
+    if store && let Some(slot) = buffers.roots.get_mut(index) {
+        *slot = Root {
             accumulator: root,
-            nodes: [first, buffers.node_len - first],
+            nodes: [first, buffers.node_required - first],
         };
         buffers.root_len += 1;
-        at = end;
     }
     Ok(())
 }
@@ -515,7 +671,9 @@ fn capture_root(
     base: usize,
     root: usize,
     wanted: [bool; KEYS.len()],
+    store: bool,
     buffers: &mut Buffers<'_>,
+    stack_limits: &Result<StackLimits, &'static str>,
 ) -> Result<(), &'static str> {
     let mut keys = [0_u32; KEYS.len()];
     let mut positions = [0_usize; KEYS.len()];
@@ -529,67 +687,36 @@ fn capture_root(
             key_count += 1;
         }
     }
+    let selection = Selection {
+        keys,
+        positions,
+        metadata,
+        len: key_count,
+    };
     let mut address = root;
     let mut depth = 0;
     loop {
         if address == 0 || buffers.stack[..depth].iter().any(|f| f.address == address) {
             return Err("naval modifier null node or ancestor cycle");
         }
-        let children = Array::read(memory, at(address, 0x18)?, 8)
-            .ok_or("naval modifier children unreadable or invalid")?;
-        let mut raw = [modifier_accumulator::Value::default(); KEYS.len()];
-        modifier_accumulator::lookup_many_at(
-            memory,
-            address,
-            &keys[..key_count],
-            &mut raw[..key_count],
-        )?;
-        let mut values = [0_i64; KEYS.len()];
-        for i in 0..key_count {
-            if raw[i].present {
-                values[positions[i]] = metadata[i].effective(raw[i].raw);
-            }
-        }
-        // With depth -1, 14054D0F0 prints only nonzero leaf values. An
-        // interior node and an all-zero leaf never need display bytes.
-        let name_len = if children.count == 0 && values.iter().any(|&value| value != 0) {
-            let name_address = at(address, 0x48)?;
-            let header = read::<[u8; msvc_string::STRIDE]>(memory, name_address)
-                .ok_or("naval modifier display header unreadable")?;
-            let name = msvc_string::Descriptor::from_header(memory, name_address, header)?;
-            let name_end = buffers
-                .text_len
-                .checked_add(name.len)
-                .ok_or("naval modifier text length overflow")?;
-            buffers.text_required = buffers.text_required.max(name_end);
-            if name_end > buffers.text.len() {
-                return Err(TEXT_CAPACITY);
-            }
-            name.copy(memory, &mut buffers.text[buffers.text_len..name_end])?;
-            name.len
+        // Once retained scratch ends, count the entire remaining subtree with
+        // call-stack frames. Later hours need not discover deeper demand.
+        if depth == buffers.stack.len() {
+            let limits = stack_limits.as_ref().map_err(|reason| *reason)?;
+            limits.check_current()?;
+            walk_without_scratch(
+                memory, address, &selection, store, buffers, depth, None, limits,
+            )?;
         } else {
-            0
-        };
-        buffers.node_required = buffers.node_len + 1;
-        let node = buffers
-            .nodes
-            .get_mut(buffers.node_len)
-            .ok_or(NODE_CAPACITY)?;
-        *node = RawNode {
-            children: children.count,
-            name: [buffers.text_len, name_len],
-            values,
-        };
-        buffers.node_len += 1;
-        buffers.text_len += name_len;
-        buffers.stack_required = buffers.stack_required.max(depth + 1);
-        let frame = buffers.stack.get_mut(depth).ok_or(DEPTH_CAPACITY)?;
-        *frame = Frame {
-            address,
-            children,
-            next: 0,
-        };
-        depth += 1;
+            let children = capture_node(memory, address, &selection, store, buffers)?;
+            buffers.stack_required = buffers.stack_required.max(depth + 1);
+            buffers.stack[depth] = Frame {
+                address,
+                children,
+                next: 0,
+            };
+            depth += 1;
+        }
         loop {
             if depth == 0 {
                 return Ok(());
@@ -599,20 +726,156 @@ fn capture_root(
                 depth -= 1;
                 continue;
             }
-            let pointer = frame
-                .children
-                .element(frame.next, 8)
-                .and_then(|at| read::<u64>(memory, at))
-                .and_then(|p| usize::try_from(p).ok())
-                .filter(|p| *p != 0)
-                .ok_or("naval modifier child pointer unreadable or null")?;
+            address = child_address(memory, frame.children, frame.next)?;
             frame.next += 1;
-            address = pointer
-                .checked_add(0x10)
-                .ok_or("naval modifier child address overflow")?;
             break;
         }
     }
+}
+
+struct Selection {
+    keys: [u32; KEYS.len()],
+    positions: [usize; KEYS.len()],
+    metadata: [modifier_definition::Operands; KEYS.len()],
+    len: usize,
+}
+
+fn child_address(memory: &impl Memory, children: Array, index: u32) -> Result<usize, &'static str> {
+    let pointer = children
+        .element(index, 8)
+        .and_then(|at| read::<u64>(memory, at))
+        .and_then(|p| usize::try_from(p).ok())
+        .filter(|p| *p != 0)
+        .ok_or("naval modifier child pointer unreadable or null")?;
+    pointer
+        .checked_add(0x10)
+        .ok_or("naval modifier child address overflow")
+}
+
+// Keep entry/string temporaries out of recursive ancestor frames.
+#[inline(never)]
+fn capture_node(
+    memory: &impl Memory,
+    address: usize,
+    selection: &Selection,
+    store: bool,
+    buffers: &mut Buffers<'_>,
+) -> Result<Array, &'static str> {
+    let children = Array::read(memory, at(address, 0x18)?, 8)
+        .ok_or("naval modifier children unreadable or invalid")?;
+    let mut raw = [modifier_accumulator::Value::default(); KEYS.len()];
+    modifier_accumulator::lookup_many_at(
+        memory,
+        address,
+        &selection.keys[..selection.len],
+        &mut raw[..selection.len],
+    )?;
+    let mut values = [0_i64; KEYS.len()];
+    for i in 0..selection.len {
+        if raw[i].present {
+            values[selection.positions[i]] = selection.metadata[i].effective(raw[i].raw);
+        }
+    }
+    // With depth -1, 14054D0F0 prints only nonzero leaf values. An
+    // interior node and an all-zero leaf never need display bytes.
+    let name_first = buffers.text_required;
+    let name_len = if children.count == 0 && values.iter().any(|&value| value != 0) {
+        let name_address = at(address, 0x48)?;
+        let header = read::<[u8; msvc_string::STRIDE]>(memory, name_address)
+            .ok_or("naval modifier display header unreadable")?;
+        let name = msvc_string::Descriptor::from_header(memory, name_address, header)?;
+        let name_end = buffers
+            .text_required
+            .checked_add(name.len)
+            .ok_or("naval modifier text length overflow")?;
+        buffers.text_required = name_end;
+        if store && let Some(output) = buffers.text.get_mut(name_first..name_end) {
+            name.copy(memory, output)?;
+            buffers.text_len = name_end;
+        }
+        name.len
+    } else {
+        0
+    };
+    let node_index = buffers.node_required;
+    buffers.node_required = node_index
+        .checked_add(1)
+        .ok_or("naval modifier node length overflow")?;
+    if store && let Some(node) = buffers.nodes.get_mut(node_index) {
+        *node = RawNode {
+            children: children.count,
+            name: [name_first, name_len],
+            values,
+        };
+        buffers.node_len += 1;
+    }
+    Ok(children)
+}
+
+struct Ancestor<'a> {
+    address: usize,
+    parent: Option<&'a Ancestor<'a>>,
+}
+
+/// Native retention is governed by accumulator+0xAC: 14054AD00/14054AF60
+/// clone with depth-1; 1405FFDE0 -> 1406000C0 stops cloning at zero.
+/// Copy-preserving 1406000C0 uses each child's retained depth, not a global
+/// numerical bound. Hover 14054D0F0 receives -1 and walks all retained levels.
+/// Ordinary jobs run only on acquisition workers (explicit 4 MiB reserve in
+/// collector::acquisition); each descent checks actual reservation headroom,
+/// with no chosen tree-depth cap or heap allocation.
+#[inline(never)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Borrowed ancestor frames replace short heap scratch"
+)]
+fn walk_without_scratch(
+    memory: &impl Memory,
+    address: usize,
+    selection: &Selection,
+    store: bool,
+    buffers: &mut Buffers<'_>,
+    prefix_depth: usize,
+    ancestors: Option<&Ancestor<'_>>,
+    stack_limits: &StackLimits,
+) -> Result<(), &'static str> {
+    if address == 0
+        || buffers.stack[..prefix_depth]
+            .iter()
+            .any(|f| f.address == address)
+    {
+        return Err("naval modifier null node or ancestor cycle");
+    }
+    let mut previous = ancestors;
+    let mut depth = prefix_depth + 1;
+    while let Some(ancestor) = previous {
+        if ancestor.address == address {
+            return Err("naval modifier null node or ancestor cycle");
+        }
+        depth += 1;
+        previous = ancestor.parent;
+    }
+    let children = capture_node(memory, address, selection, store, buffers)?;
+    buffers.stack_required = buffers.stack_required.max(depth);
+    let current = Ancestor {
+        address,
+        parent: ancestors,
+    };
+    for index in 0..children.count {
+        let child = child_address(memory, children, index)?;
+        stack_limits.check_current()?;
+        walk_without_scratch(
+            memory,
+            child,
+            selection,
+            store,
+            buffers,
+            prefix_depth,
+            Some(&current),
+            stack_limits,
+        )?;
+    }
+    Ok(())
 }
 
 fn convoy(
@@ -621,7 +884,7 @@ fn convoy(
     game_state: usize,
     member: &cfex_member::DetailsRow,
     key: u32,
-    buffers: &mut Buffers<'_>,
+    emit: &mut impl FnMut(Request) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
     let side: usize = field::<u64>(memory, member.native_group, 0x38)? as usize;
     if field::<u64>(memory, side, 0)? != at(base, cnaval_combatant::VTABLE_RVA)? as u64 {
@@ -634,7 +897,7 @@ fn convoy(
     let country_head = field::<u64>(memory, side, 0x38)? as usize;
     let country_link: u32 = field(memory, country_head, 0)?;
     let country = ccountry::Reader::new(memory, base, game_state)?.resolve(country_link)?;
-    push(buffers, member, 0, 0, key, at(country.pointer, 0x5b8)?)?;
+    push(emit, member, 0, 0, key, at(country.pointer, 0x5b8)?)?;
     let combat: usize = field::<u64>(memory, side, cnaval_combatant::COMBAT)? as usize;
     let province: usize = field::<u64>(memory, combat, cnaval_combat::PROVINCE)? as usize;
     let definition: usize = field::<u64>(memory, province, 0xc8)? as usize;
@@ -644,16 +907,16 @@ fn convoy(
     let regions = Array::read(memory, at(weather, 0x40)?, 0x160)
         .ok_or("naval escape convoy weather region array invalid")?;
     if let Some(region_at) = regions.element(region, 0x160) {
-        push(buffers, member, 6, 0, key, at(region_at, 0x58)?)?;
+        push(emit, member, 6, 0, key, at(region_at, 0x58)?)?;
     }
     let terrain = naval_ship_modifier_inputs::terrain(memory, base, definition)?;
-    push(buffers, member, 5, 0, key, at(terrain, 0xb8)?)?;
+    push(emit, member, 5, 0, key, at(terrain, 0xb8)?)?;
     let leader: usize = field::<u64>(memory, side, cnaval_combatant::COMMANDER)? as usize;
     if leader != 0 {
         if field::<u64>(memory, leader, 0)? != at(base, crate::cnavy_leader::VTABLE_RVA)? as u64 {
             return Err("naval escape convoy leader identity mismatch");
         }
-        push(buffers, member, 9, 0, key, at(leader, 0x418)?)?;
+        push(emit, member, 9, 0, key, at(leader, 0x418)?)?;
     }
     Ok(())
 }
@@ -703,6 +966,349 @@ mod tests {
     }
 
     #[test]
+    fn census_uses_distinct_accumulators_and_actual_key_unions() {
+        struct Counted {
+            fixture: Fixture,
+            visits: std::cell::Cell<[usize; 2]>,
+        }
+        impl Memory for Counted {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                if let Some(index) = [0x200 + 0x18, 0x400 + 0x18]
+                    .iter()
+                    .position(|&header| header == address && output.len() == 16)
+                {
+                    let mut visits = self.visits.get();
+                    visits[index] += 1;
+                    self.visits.set(visits);
+                }
+                self.fixture.copy(address, output)
+            }
+        }
+        let mut fixture = Fixture::new();
+        // The first root's nonzero positioning key is never requested: its
+        // display name must not contribute to the census.
+        fixture.node(0x200, 0x600, modifier_keys::POSITIONING, 7_000);
+        fixture.node(0x400, 0x620, modifier_keys::POSITIONING, 8_000);
+        fixture.put(0x400 + 0x48, b"law");
+        fixture.u64(0x400 + 0x48 + 16, 3);
+        fixture.u64(0x400 + 0x48 + 24, 15);
+        let memory = Counted {
+            fixture,
+            visits: std::cell::Cell::new([0; 2]),
+        };
+        let requests = [
+            Request {
+                accumulator: 0x400,
+                key: modifier_keys::POSITIONING,
+                ..Default::default()
+            },
+            Request {
+                accumulator: 0x200,
+                key: modifier_keys::SORTIE_EFFICIENCY,
+                ..Default::default()
+            },
+            Request {
+                accumulator: 0x400,
+                key: modifier_keys::SORTIE_EFFICIENCY,
+                ..Default::default()
+            },
+            Request {
+                accumulator: 0x200,
+                key: modifier_keys::SCREENING_WITHOUT_SCREENS,
+                ..Default::default()
+            },
+            Request {
+                accumulator: 0x400,
+                key: modifier_keys::POSITIONING,
+                ..Default::default()
+            },
+        ];
+        let mut buffers = Buffers {
+            requests: &mut [],
+            request_len: 0,
+            request_required: 0,
+            roots: &mut [],
+            root_len: 0,
+            root_required: 0,
+            nodes: &mut [],
+            node_len: 0,
+            node_required: 0,
+            text: &mut [],
+            text_len: 0,
+            text_required: 0,
+            stack: &mut [],
+            stack_required: 0,
+        };
+        census_requested_roots(
+            &memory,
+            0,
+            &mut |emit| requests.iter().try_for_each(|request| emit(*request)),
+            &mut buffers,
+            &StackLimits::current(),
+        )
+        .unwrap();
+        assert_eq!(memory.visits.get(), [1, 1]);
+        assert_eq!(buffers.root_required, 2);
+        assert_eq!(buffers.node_required, 2);
+        assert_eq!(buffers.text_required, 3);
+        assert_eq!(buffers.stack_required, 1);
+    }
+
+    #[test]
+    fn census_stack_guard_checks_reservation_boundaries_and_margin() {
+        let limits = StackLimits {
+            low: 0x1000,
+            high: 0x1000 + 4 * 1024 * 1024,
+        };
+        assert_eq!(limits.check_at(limits.low - 1), Err(STACK_HEADROOM));
+        assert_eq!(
+            limits.check_at(limits.low + STACK_MARGIN - 1),
+            Err(STACK_HEADROOM)
+        );
+        assert_eq!(limits.check_at(limits.low + STACK_MARGIN), Ok(()));
+        assert_eq!(limits.check_at(limits.high - 1), Ok(()));
+        assert_eq!(limits.check_at(limits.high), Err(STACK_HEADROOM));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn census_stack_guard_refuses_a_deep_chain_before_overflow() {
+        // A smaller synthetic worker makes the resource guard deterministic
+        // without exercising an actual stack overflow or a chosen depth cap.
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                struct Chain;
+                const NODES: usize = 10_000;
+                const START: usize = 0x1000;
+                const STRIDE: usize = 0x100;
+                const LINKS: usize = 0x100_0000;
+                impl Memory for Chain {
+                    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                        if let Some(offset) = address.checked_sub(START)
+                            && offset / STRIDE < NODES
+                            && output.len() == 16
+                        {
+                            output.fill(0);
+                            match offset % STRIDE {
+                                0 => return true, // Empty entry array.
+                                0x18 => {
+                                    if offset / STRIDE + 1 < NODES {
+                                        output[..8].copy_from_slice(
+                                            &((LINKS + offset / STRIDE * 8) as u64).to_le_bytes(),
+                                        );
+                                        output[8..12].copy_from_slice(&1_u32.to_le_bytes());
+                                        output[12..].copy_from_slice(&1_u32.to_le_bytes());
+                                    }
+                                    return true;
+                                }
+                                _ => return false,
+                            }
+                        }
+                        if let Some(offset) = address.checked_sub(LINKS)
+                            && offset.is_multiple_of(8)
+                            && offset / 8 + 1 < NODES
+                            && output.len() == 8
+                        {
+                            output.copy_from_slice(
+                                &((START + (offset / 8 + 1) * STRIDE - 0x10) as u64).to_le_bytes(),
+                            );
+                            return true;
+                        }
+                        false
+                    }
+                }
+                let limits = StackLimits::current().unwrap();
+                assert_eq!(limits.high - limits.low, 256 * 1024);
+                let selection = Selection {
+                    keys: [0; KEYS.len()],
+                    positions: [0; KEYS.len()],
+                    metadata: [modifier_definition::Operands::default(); KEYS.len()],
+                    len: 0,
+                };
+                let mut buffers = Buffers {
+                    requests: &mut [],
+                    request_len: 0,
+                    request_required: 0,
+                    roots: &mut [],
+                    root_len: 0,
+                    root_required: 0,
+                    nodes: &mut [],
+                    node_len: 0,
+                    node_required: 0,
+                    text: &mut [],
+                    text_len: 0,
+                    text_required: 0,
+                    stack: &mut [],
+                    stack_required: 0,
+                };
+                limits.check_current().unwrap();
+                assert_eq!(
+                    walk_without_scratch(
+                        &Chain,
+                        START,
+                        &selection,
+                        false,
+                        &mut buffers,
+                        0,
+                        None,
+                        &limits
+                    ),
+                    Err(STACK_HEADROOM)
+                );
+                assert!(buffers.node_required > 1 && buffers.node_required < NODES);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn short_request_storage_counts_the_complete_use_census() {
+        for capacity in [0, 1, 8] {
+            let mut requests = [Request::default(); 8];
+            let mut buffers = Buffers {
+                requests: &mut requests[..capacity],
+                request_len: 0,
+                request_required: 0,
+                roots: &mut [],
+                root_len: 0,
+                root_required: 0,
+                nodes: &mut [],
+                node_len: 0,
+                node_required: 0,
+                text: &mut [],
+                text_len: 0,
+                text_required: 0,
+                stack: &mut [],
+                stack_required: 0,
+            };
+            for slot in 0..16 {
+                push_side(
+                    &mut |request| record_request(request, &mut buffers),
+                    7,
+                    0,
+                    slot,
+                    0,
+                    0,
+                    0x1b2,
+                    0x200,
+                )
+                .unwrap();
+            }
+            assert_eq!(buffers.request_required, 16);
+            assert_eq!(buffers.request_len, capacity);
+            assert_eq!(buffers.root_required, 0);
+            assert_eq!(buffers.node_required, 0);
+            assert_eq!(buffers.stack_required, 0);
+            assert!(
+                buffers.requests[..capacity]
+                    .iter()
+                    .enumerate()
+                    .all(|(index, request)| request.usage.order == index as u32)
+            );
+        }
+    }
+
+    #[test]
+    fn short_node_and_text_storage_still_counts_every_sibling() {
+        let mut fixture = Fixture::new();
+        fixture.node(0x200, 0x600, 0x1b2, 0);
+        fixture.node(0x400, 0x620, 0x1b2, 7_000);
+        fixture.node(0x500, 0x640, 0x1b2, 8_000);
+        fixture.u64(0x200 + 0x18, 0x700);
+        fixture.u64(0x200 + 0x20, 0x2_0000_0002);
+        fixture.u64(0x700, 0x400 - 0x10);
+        fixture.u64(0x708, 0x500 - 0x10);
+        for at in [0x400, 0x500] {
+            fixture.put(at + 0x48, b"law");
+            fixture.u64(at + 0x48 + 16, 3);
+            fixture.u64(at + 0x48 + 24, 15);
+        }
+        for (node_capacity, text_capacity, depth_capacity) in [(0, 0, 0), (1, 3, 1), (3, 6, 2)] {
+            let mut nodes = [RawNode::default(); 3];
+            let mut text = [0; 6];
+            let mut stack = [Frame::default(); 2];
+            let mut buffers = Buffers {
+                requests: &mut [],
+                request_len: 0,
+                request_required: 0,
+                roots: &mut [],
+                root_len: 0,
+                root_required: 0,
+                nodes: &mut nodes[..node_capacity],
+                node_len: 0,
+                node_required: 0,
+                text: &mut text[..text_capacity],
+                text_len: 0,
+                text_required: 0,
+                stack: &mut stack[..depth_capacity],
+                stack_required: 0,
+            };
+            capture_root(
+                &fixture,
+                0,
+                0x200,
+                [false, false, false, false, false, false, true, false, false],
+                true,
+                &mut buffers,
+                &StackLimits::current(),
+            )
+            .unwrap();
+            assert_eq!(buffers.node_required, 3);
+            assert_eq!(buffers.text_required, 6);
+            assert_eq!(buffers.stack_required, 2);
+            assert_eq!(buffers.node_len, node_capacity);
+            assert_eq!(buffers.text_len, text_capacity);
+        }
+    }
+
+    #[test]
+    fn ancestor_cycles_refuse_with_empty_partial_or_sufficient_depth_scratch() {
+        let mut fixture = Fixture::new();
+        fixture.node(0x200, 0x600, 0x1b2, 0);
+        fixture.node(0x400, 0x620, 0x1b2, 0);
+        fixture.u64(0x200 + 0x18, 0x700);
+        fixture.u64(0x200 + 0x20, 0x1_0000_0001);
+        fixture.u64(0x700, 0x400 - 0x10);
+        fixture.u64(0x400 + 0x18, 0x708);
+        fixture.u64(0x400 + 0x20, 0x1_0000_0001);
+        fixture.u64(0x708, 0x200 - 0x10);
+        for capacity in [0, 1, 2, 3] {
+            let mut stack = [Frame::default(); 3];
+            let mut buffers = Buffers {
+                requests: &mut [],
+                request_len: 0,
+                request_required: 0,
+                roots: &mut [],
+                root_len: 0,
+                root_required: 0,
+                nodes: &mut [],
+                node_len: 0,
+                node_required: 0,
+                text: &mut [],
+                text_len: 0,
+                text_required: 0,
+                stack: &mut stack[..capacity],
+                stack_required: 0,
+            };
+            assert_eq!(
+                capture_root(
+                    &fixture,
+                    0,
+                    0x200,
+                    [true; KEYS.len()],
+                    false,
+                    &mut buffers,
+                    &StackLimits::current()
+                ),
+                Err("naval modifier null node or ancestor cycle")
+            );
+            assert_eq!(buffers.node_required, 2);
+        }
+    }
+
+    #[test]
     fn one_root_visit_keeps_both_keys_and_child_text() {
         let mut fixture = Fixture::new();
         fixture.node(0x200, 0x600, 0x1b2, 0);
@@ -735,14 +1341,36 @@ mod tests {
             stack: &mut stack,
             stack_required: 0,
         };
-        push_side(&mut buffers, 0x1234, 1, u32::MAX, 9, 0, 0x1b2, 0x200).unwrap();
-        push_side(&mut buffers, 0x1234, 1, u32::MAX, 9, 0, 0x1b3, 0x200).unwrap();
+        push_side(
+            &mut |request| record_request(request, &mut buffers),
+            0x1234,
+            1,
+            u32::MAX,
+            9,
+            0,
+            0x1b2,
+            0x200,
+        )
+        .unwrap();
+        push_side(
+            &mut |request| record_request(request, &mut buffers),
+            0x1234,
+            1,
+            u32::MAX,
+            9,
+            0,
+            0x1b3,
+            0x200,
+        )
+        .unwrap();
         capture_root(
             &fixture,
             0,
             0x200,
             [false, false, false, false, false, false, true, true, false],
+            true,
             &mut buffers,
+            &StackLimits::current(),
         )
         .unwrap();
         assert_eq!(buffers.request_len, 2);

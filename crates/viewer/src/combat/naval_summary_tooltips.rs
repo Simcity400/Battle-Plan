@@ -9,7 +9,7 @@ use super::{
 use crate::table_access::TokenNames;
 use crate::{document::Document, map::tables::rows};
 use installed_content::localisation::{Argument, Localisation};
-use installed_content::unit_leader::{SubUnit, SubUnits};
+use installed_content::unit_leader::SubUnits;
 use replay::{
     frame::DecodedFrame,
     rows::{NavalCombatSideDetails, tables},
@@ -551,23 +551,20 @@ pub(super) fn flag_description(
     let mut by_type: Vec<_> = side.damage_by_type.iter().collect();
     by_type.sort_by_key(|source| source.damage);
     for source in by_type {
-        let key = tokens
-            .name(source.token)
-            .map_err(|error| error.to_string())?;
-        let index = match sub_units.get(key) {
-            SubUnit::Index(index) => index,
-            SubUnit::Unknown => {
-                return Err(format!(
-                    "ship class {key} is absent from the content database"
-                ));
-            }
-            SubUnit::Uncertain(reason) => {
-                return Err(format!("ship class {key} is uncertain: {reason}"));
-            }
+        let token = if source.token == 0 {
+            installed_content::tokens::Token::Rejected
+        } else {
+            installed_content::tokens::Token::register(
+                tokens
+                    .name(source.token)
+                    .map_err(|error| error.to_string())?
+                    .as_bytes(),
+            )
         };
-        let name = sub_units.name(index).ok_or_else(|| {
-            format!("ship class index {index} is absent from the content database")
-        })??;
+        // 1417D0EC0 -> 140AB5EE0 falls back to the null sub-unit's empty
+        // name. It still appends DAMAGE_DEALT_BY_TYPE, even with empty TYPE
+        // (140AB54B0 -> 141003CB0; 142230F20 localises an empty key empty).
+        let name = sub_units.token_name(&token)?;
         let name = super::text::country_localised(loc, viewing_tag, name)?;
         super::binding::validate(icons, &name)?;
         result.push_str(&builtin(

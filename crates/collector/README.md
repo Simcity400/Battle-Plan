@@ -46,6 +46,34 @@ Collect the least data the viewer and dashboard need to display, so recording co
 
 The naval details pack follows the [naval modifier tree contract](../replay/README.md#naval-modifier-breakdowns); future reuse needs the writer coverage described below.
 
+Its tree arenas start empty and grow on the spool thread from capture demand.
+A short arena still counts every request, root, node, display byte and depth
+in the same capture pass. When requests do not fit, allocation-free request
+re-enumeration selects each distinct accumulator and its actual key union;
+each tree is walked once, so demand matches a full capture. When
+depth scratch is short, borrowed worker-stack ancestor frames finish the walk
+and check cycles. A check of the worker's actual stack reservation leaves
+64 KiB of safety headroom before recursion; exhaustion is a named, counted
+refusal, never an abort or a content-depth cap. One short-arena hour reports
+all demand; after spool-side growth, the next unchanged population captures
+completely. A later rise costs the same single refusal while the spool keeps
+up; frames captured before the spool grew from the refusing one refuse too, so
+a backlog of k frames can cost up to k+1 refused hours. No partial tree is
+published, no population cap is imposed, and capture allocates no tree storage.
+Uses share the request arena; their replay projection allocates off-thread.
+The production loan/restore/growth regression includes broad four-level trees
+and carrier/escape requests and requires exactly one counted refusal.
+Growth consumes every captured hour's demand before reset, including after
+earlier complete captures. A later-rise regression exceeds all five arenas,
+then requires one refusal, complete capture after growth, and no further
+refusal when demand falls and rises within retained capacity.
+
+`status.json.naval_modifier_breakdowns` counts sampled, available and refused
+hours, groups refusals by their exact names, and reports each arena's latest
+required and allocated lengths (text in bytes). The spool worker observes these
+before growth, including captures whose frame is subsequently rejected;
+clockless frames do not recount an earlier capture.
+
 Ship modifier inputs still read afresh at combat cadence. Their selected sources
 include independently mutable medals, doctrine, fuel, HQ membership and leader
 adjusters ([native writer evidence](../engine/src/naval_ship_modifier_inputs.rs));

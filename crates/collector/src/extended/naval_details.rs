@@ -26,6 +26,60 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("dense combat air base wing occurrences", 2, &[2]),
     ("live naval hover modifier child trees", 3, &[3]),
 ];
+
+/// Copy-only pressure witness; status aggregation runs on the spool worker.
+#[derive(Clone, Copy)]
+pub(crate) struct BreakdownStatus {
+    pub(crate) outcome: Outcome,
+    required: [usize; 5],
+    capacity: [usize; 5],
+}
+
+#[derive(Default)]
+pub(crate) struct BreakdownWork {
+    hours: u64,
+    available_hours: u64,
+    refusals: std::collections::BTreeMap<&'static str, u64>,
+    latest: Option<BreakdownStatus>,
+}
+
+impl BreakdownWork {
+    pub(crate) fn observe(&mut self, status: BreakdownStatus) {
+        self.hours = self.hours.saturating_add(1);
+        if let Outcome::Unavailable { reason } = status.outcome {
+            let count = self.refusals.entry(reason).or_default();
+            *count = count.saturating_add(1);
+        } else if matches!(status.outcome, Outcome::Rows { .. }) {
+            self.available_hours = self.available_hours.saturating_add(1);
+        }
+        self.latest = Some(status);
+    }
+
+    pub(crate) fn json(&self) -> serde_json::Value {
+        let mut arenas = serde_json::Map::new();
+        if let Some(latest) = self.latest {
+            for (index, name) in ["requests", "roots", "nodes", "text_bytes", "depth"]
+                .into_iter()
+                .enumerate()
+            {
+                arenas.insert(
+                    name.into(),
+                    serde_json::json!({
+                        "required": latest.required[index],
+                        "capacity": latest.capacity[index],
+                    }),
+                );
+            }
+        }
+        serde_json::json!({
+            "hours": self.hours,
+            "available_hours": self.available_hours,
+            "refused_hours": self.refusals.values().fold(0_u64, |sum, count| sum.saturating_add(*count)),
+            "refusals": self.refusals,
+            "latest_arenas": arenas,
+        })
+    }
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     details: usize,
@@ -520,6 +574,25 @@ impl Captured {
             self.dense_bases.outcome,
             self.breakdown_outcome,
         ]
+    }
+    pub(crate) fn breakdown_status(&self) -> BreakdownStatus {
+        BreakdownStatus {
+            outcome: self.breakdown_outcome,
+            required: [
+                self.breakdown_requests.required,
+                self.breakdown_roots.required,
+                self.breakdown_nodes.required,
+                self.breakdown_text.required,
+                self.breakdown_depth.required,
+            ],
+            capacity: [
+                self.breakdown_requests.first.len(),
+                self.breakdown_roots.first.len(),
+                self.breakdown_nodes.first.len(),
+                self.breakdown_text.first.len(),
+                self.breakdown_depth.first.len(),
+            ],
+        }
     }
     pub fn tables(&self) -> [TableView; N] {
         let out = self.outcomes();
@@ -1344,3 +1417,7 @@ mod tests {
 #[cfg(test)]
 #[path = "naval_details_scale_tests.rs"]
 mod scale_tests;
+
+#[cfg(test)]
+#[path = "naval_details_fixtures.rs"]
+pub(crate) mod fixtures;

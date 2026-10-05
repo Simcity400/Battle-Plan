@@ -199,35 +199,44 @@ fn combat_raster_active_row_ellipsis_and_thin_glyphs() {
 }
 
 #[test]
-fn naval_progress_uses_opposite_skin_for_attacker_perspective() {
+fn naval_progress_uses_defender_list_for_both_participant_perspectives() {
     let aliases = BTreeMap::from([(12, 120), (34, 340), (56, 560)]);
+    let mut detail = replay::rows::NavalCombatDetailsRow::default();
+    detail.sides[0].summary.countries = vec![12, 34];
+    detail.sides[1].summary.countries = vec![56];
     let mut values = Values::new();
-    let attacker = naval_progress_skin(&[12, 34], &aliases, 340).unwrap();
+    let attacker = naval_progress_skin(&detail, &aliases, 340).unwrap();
     bind_naval_progress(&mut values, attacker, 65_000);
-    assert!(values["header_container/progress_attacker"].hidden);
-    assert!(!values["header_container/progress_defender"].hidden);
-    assert_eq!(
-        values["header_container/progress_defender"].fill,
-        Some(0.65)
-    );
-    let defender = naval_progress_skin(&[12, 34], &aliases, 560).unwrap();
-    bind_naval_progress(&mut values, defender, 35_000);
     assert!(!values["header_container/progress_attacker"].hidden);
     assert!(values["header_container/progress_defender"].hidden);
     assert_eq!(
         values["header_container/progress_attacker"].fill,
+        Some(0.65)
+    );
+    let defender = naval_progress_skin(&detail, &aliases, 560).unwrap();
+    bind_naval_progress(&mut values, defender, 35_000);
+    assert!(values["header_container/progress_attacker"].hidden);
+    assert!(!values["header_container/progress_defender"].hidden);
+    assert_eq!(
+        values["header_container/progress_defender"].fill,
         Some(0.35)
     );
     assert_eq!(
-        naval_progress_skin(&[], &aliases, 340),
+        naval_progress_skin(&detail, &aliases, 999),
         Ok("progress_attacker")
     );
-    assert!(naval_progress_skin(&[12, 78], &aliases, 560).is_err());
+    detail.sides[1].summary.countries = vec![12, 78];
+    assert!(naval_progress_skin(&detail, &aliases, 560).is_err());
+    detail.sides[1].summary.countries = vec![340, 78];
     assert_eq!(
-        naval_progress_skin(&[340, 78], &aliases, 340),
-        Err("the viewing country's combat side is unavailable: attacker primary country 340 has no CountryLinks row".to_owned())
+        naval_progress_skin(&detail, &aliases, 340),
+        Err("the viewing country's combat side is unavailable: defender primary country 340 has no CountryLinks row".to_owned())
     );
-    assert!(naval_progress_skin(&[12], &aliases, 560).is_ok());
+    detail.sides[1].summary.countries = vec![];
+    assert_eq!(
+        naval_progress_skin(&detail, &aliases, 340),
+        Ok("progress_attacker")
+    );
 }
 
 /// The BM_ keys are the executable's: a missing one is refused, never

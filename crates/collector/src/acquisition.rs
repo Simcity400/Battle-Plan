@@ -23,6 +23,11 @@ use serde::Serialize;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 
 const MAX_WORKERS: usize = 15;
+// Ordinary naval tree censuses fall back to borrowed ancestor frames when
+// pack depth scratch is short. Keep the worker reserve explicit, independent
+// of RUST_MIN_STACK, matching hoi4.exe a729's PE SizeOfStackReserve (4 MiB).
+// Native retention/copy depth is documented beside the engine reader.
+const WORKER_STACK_BYTES: usize = 4 * 1024 * 1024;
 /// Longest a collector spins on its awaited running job before it parks.
 /// A woken collector must win a CPU back from every other ready thread, which
 /// can take much longer than the job's remaining work. It spins only while a
@@ -445,6 +450,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             let shared = Arc::clone(&pool.shared);
             let thread = std::thread::Builder::new()
                 .name(format!("native-acquisition-{index}"))
+                .stack_size(WORKER_STACK_BYTES)
                 .spawn(move || worker_loop(shared, index));
             match thread {
                 Ok(thread) => pool

@@ -1206,6 +1206,7 @@ fn needs_retry(tables: &[TableInput; TABLE_COUNT]) -> bool {
 }
 
 struct Statistics {
+    naval_breakdowns: crate::extended::naval_details::BreakdownWork,
     war_snapshots: WarSnapshotWork,
     order_counters: OrderCounterWitness,
     hours: u64,
@@ -1246,6 +1247,7 @@ struct Statistics {
 impl Default for Statistics {
     fn default() -> Self {
         Self {
+            naval_breakdowns: crate::extended::naval_details::BreakdownWork::default(),
             order_counters: OrderCounterWitness::default(),
             war_snapshots: WarSnapshotWork::default(),
             hours: 0,
@@ -1562,6 +1564,11 @@ impl Processor {
     }
 
     pub(crate) fn prepare_frame(&mut self, captured: &Captured) -> io::Result<PreparedFrame> {
+        if captured.clock.is_some() {
+            self.stats
+                .naval_breakdowns
+                .observe(captured.extended.naval_breakdown_status());
+        }
         // A clockless frame read nothing; its selections belong to an older hour.
         for (index, family) in crate::slicing::FAMILIES
             .iter()
@@ -2069,6 +2076,7 @@ impl Processor {
                 .collect::<Vec<_>>()
         );
         value["war_owned_snapshots"] = stats.war_snapshots.json();
+        value["naval_modifier_breakdowns"] = stats.naval_breakdowns.json();
         value["spool_work"]["lexical_conversion"] = lexical_conversion_status(
             self.campaigns
                 .values()
@@ -2653,6 +2661,67 @@ mod tests {
         assert_eq!(work.passes, u64::MAX);
         assert_eq!(work.totals, [u64::MAX; 6]);
         assert_eq!(work.json()["queries"], u64::MAX);
+    }
+
+    #[test]
+    fn naval_breakdown_status_counts_arena_refusals_before_growth() {
+        use crate::extended::naval_details::fixtures::capture_live_shape;
+        use engine::naval_ship_modifier_breakdown::REQUEST_CAPACITY;
+        let mut processor = Processor {
+            root: PathBuf::new(),
+            history: PreparedCampaigns::default(),
+            session: session(),
+            campaigns: BTreeMap::new(),
+            stats: Statistics::default(),
+            unknown_pending: 0,
+            suppress_origin: false,
+            retry_full: false,
+            unpublished_families: 0,
+        };
+        let mut source = Captured::new();
+        capture_live_shape(&mut source.extended);
+        source.clock = Some(Clock {
+            campaign_id: Default::default(),
+            ..clock(10)
+        });
+        // A rejected frame still contributes its capture refusal, before any
+        // filesystem work. Reusing an older clockless frame counts nothing.
+        assert!(processor.prepare_frame(&source).is_err());
+        let status = processor.status()["naval_modifier_breakdowns"].clone();
+        assert_eq!(status["refused_hours"], 1);
+        assert_eq!(status["refusals"][REQUEST_CAPACITY], 1);
+        for arena in ["requests", "roots", "nodes", "text_bytes", "depth"] {
+            assert!(
+                status["latest_arenas"][arena]["required"].as_u64().unwrap() > 0,
+                "{arena}"
+            );
+            assert_eq!(status["latest_arenas"][arena]["capacity"], 0);
+        }
+        assert!(
+            status["latest_arenas"]["requests"]["required"]
+                .as_u64()
+                .unwrap()
+                > 100
+        );
+        assert_eq!(status["latest_arenas"]["depth"]["required"], 4);
+        source.clock = None;
+        assert!(processor.prepare_frame(&source).is_err());
+        assert_eq!(processor.status()["naval_modifier_breakdowns"], status);
+        source
+            .extended
+            .grow(&mut crate::extended::Capacities::default());
+        source.extended.reset();
+        capture_live_shape(&mut source.extended);
+        source.clock = Some(Clock {
+            campaign_id: Default::default(),
+            ..clock(11)
+        });
+        assert!(processor.prepare_frame(&source).is_err());
+        let status = processor.status()["naval_modifier_breakdowns"].clone();
+        assert_eq!(status["hours"], 2);
+        assert_eq!(status["available_hours"], 1);
+        assert_eq!(status["refused_hours"], 1);
+        assert_eq!(status["refusals"], serde_json::json!({REQUEST_CAPACITY: 1}));
     }
 
     #[test]
