@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
-import { keyTarget, logDate, logItems, logOffsets, monthLabel, MONTH_HEIGHT, newestFirst, ROW_HEIGHT, rowId, scrollToShow, shownMotion, tipRow, visibleRange } from './logData.ts';
+import { keyTarget, logDate, logItems, logOffsets, logRowColumns, monthLabel, MONTH_HEIGHT, newestFirst, ROW_HEIGHT, rowId, scrollToShow, shownMotion, tipRow, visibleRange } from './logData.ts';
 import type { LogRow } from './logData';
 import type { MovingRow } from '../rowMotion';
 import { LOG_OPTIONS, logSettings } from './logOptions.ts';
@@ -9,6 +9,19 @@ import { resolveOptions } from '../../dashboard/options.ts';
 
 const hour = (year: number, month: number, day: number, at = 1) => engineHour({ year, month, day, hour: at }) as number;
 const row = (key: string, at: number, by = false): LogRow<string> => ({ key, hour: at, by, item: key });
+
+test('mixed log rows reserve optional tracks only for the rows that draw their content', () => {
+  const sentence = 'var(--space-6) minmax(0, 1fr) auto';
+  const meter = 'var(--space-6) minmax(0, 2fr) minmax(0, 1fr) auto';
+  const rows = [row('ongoing', 10), row('ended', 20, true), row('unread', 15)];
+  const columns = (row: LogRow<string>) => row.item === 'ongoing' ? meter : sentence;
+  for (const months of [false, true]) {
+    const items = logItems(rows, months).filter(item => item.kind === 'row');
+    assert.deepEqual(items.map(item => logRowColumns(columns, item.row)), [meter, sentence, sentence]);
+    assert.deepEqual(items.map(item => item.row.hour), [10, 20, 15]);
+    assert.deepEqual(items.map(item => logRowColumns(sentence, item.row)), [sentence, sentence, sentence]);
+  }
+});
 
 test('rows are newest first, and rows of one hour keep the order given', () => {
   const rows = [row('a', 10), row('b', 30), row('c', 20), row('d', 30)];
@@ -33,6 +46,12 @@ test('offsets stack rows and dividers at their heights for either density', () =
     2 * MONTH_HEIGHT + 2 * ROW_HEIGHT.comfortable]);
   assert.equal(logOffsets(items, 'compact').at(-1), 2 * MONTH_HEIGHT + 2 * ROW_HEIGHT.compact);
   assert.deepEqual(logOffsets([], 'compact'), [0]);
+});
+
+test('pinned running rows retain unique month sections before newest-first history', () => {
+  const items = logItems([row('running', hour(1941, 5, 30)), row('finished', hour(1941, 6, 2)), row('older', hour(1941, 5, 2))], true);
+  assert.equal(new Set(items.map(item => item.key)).size, items.length);
+  assert.deepEqual(items.filter(item => item.kind === 'month').map(item => item.label), ['May 1941', 'Jun 1941', 'May 1941']);
 });
 
 test('only the items in view are drawn, with a margin each way', () => {

@@ -1,8 +1,8 @@
 import type { CountryGroupReply } from '../generated/dashboard';
+import { isSpan } from '../charts/series.ts';
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value != null;
 const isHour = (value: unknown) => Number.isInteger(value);
-const isSpan = (value: unknown) => isObject(value) && isHour(value.firstHour) && isHour(value.lastHour) && (value.firstHour as number) <= (value.lastHour as number);
 const isRun = (value: unknown) => isSpan(value) && typeof (value as Record<string, unknown>).tag === 'string';
 const listOf = (value: unknown, check: (item: unknown) => boolean) => Array.isArray(value) && value.every(check);
 

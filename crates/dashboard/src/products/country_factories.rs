@@ -42,11 +42,16 @@
 //! runs cover any hour. The reply's size is counted before it is built and
 //! refused past [`MAX_REPLY_BYTES`], inside the transport's bound.
 
-use super::{LoadContext, Product, country_groups::HourSpan, validate_tag};
+use super::{
+    LoadContext, Product,
+    country_groups::HourSpan,
+    country_history::{Identity, observe_identity, unique_by_slot},
+    validate_tag,
+};
 use crate::{
     Source,
     catalogue::{self, Catalogue},
-    metadata::{TaggedCountry, link_slot, slot_read, tagged_countries, validate_campaign},
+    metadata::{TaggedCountry, slot_read, tagged_countries, validate_campaign},
 };
 use installed_content::buildings::Buildings;
 use replay::{
@@ -56,7 +61,7 @@ use replay::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, VecDeque},
     io,
     sync::{
         Arc,
@@ -393,9 +398,6 @@ fn values(row: &CountryFactoriesRow) -> Option<(Vec<i32>, Vec<FactoryGroupKey>)>
     Some((values, unexplained))
 }
 
-/// A country identity: its canonical slot and native id.
-type Identity = (u32, u32);
-
 /// One tag's runs, and the identity and hour its last run was extended to.
 #[derive(Default)]
 struct Track {
@@ -448,23 +450,11 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
             let rows = decoded.complete::<tables::CountryFactories>().ok();
             let read = slot_read(&decoded.metrics, TableId::CountryFactories, decoded.hour);
             // Each row by the slot its link names; a slot two rows name is unknown.
-            let mut by_slot: HashMap<u32, Option<&CountryFactoriesRow>> = HashMap::new();
-            if read {
-                for row in rows.into_iter().flatten() {
-                    match link_slot(links, row.country) {
-                        Some(slot) => {
-                            by_slot
-                                .entry(slot)
-                                .and_modify(|seen| {
-                                    *seen = None;
-                                    result.unreadable += 1;
-                                })
-                                .or_insert(Some(row));
-                        }
-                        None => result.unreadable += 1,
-                    }
-                }
-            }
+            let by_slot =
+                unique_by_slot(rows.filter(|_| read).into_iter().flatten(), links, |row| {
+                    row.country
+                });
+            result.unreadable += by_slot.unresolved_rows + by_slot.duplicate_rows;
             for (tag, lookup) in tagged_countries(countries, links) {
                 let TaggedCountry::Found(country, slot) = lookup else {
                     continue;
@@ -478,28 +468,19 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 }
                 let track = tracks.get_mut(name).expect("inserted above");
                 let identity = (slot, country.id);
-                let same_identity = track
-                    .last_identity
-                    .is_some_and(|(seen, at)| seen == identity && at.checked_add(1) == Some(hour));
-                if same_identity {
-                    track
-                        .segments
-                        .last_mut()
-                        .expect("previous identity")
-                        .last_hour = hour;
-                } else {
+                if !observe_identity(
+                    &mut track.segments,
+                    &mut track.last_identity,
+                    identity,
+                    hour,
+                ) {
                     segments += 1;
                     if segments > MAX_RUNS {
                         return Err(io::Error::other(
                             "The country identity history exceeds its memory budget",
                         ));
                     }
-                    track.segments.push(HourSpan {
-                        first_hour: hour,
-                        last_hour: hour,
-                    });
                 }
-                track.last_identity = Some((identity, hour));
                 // Factory availability must not change a known country identity.
                 if rows.is_none() {
                     continue;
@@ -515,7 +496,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                     }
                     continue;
                 }
-                let Some(Some(row)) = by_slot.get(&slot) else {
+                let Some(Some(row)) = by_slot.rows.get(&slot) else {
                     continue;
                 };
                 let Some((values, unexplained)) = values(row) else {
@@ -651,6 +632,7 @@ pub fn clip_runs(
                 starts_segment: run.starts_segment && first_hour == run.first_hour,
                 values: run.values.clone(),
             });
+            Ok(())
         },
     )?;
     Ok(clipped)
@@ -770,6 +752,7 @@ fn parts_bytes(parts: &Parts<'_>, cancelled: &AtomicBool) -> io::Result<usize> {
                 cancelled,
                 |run, first, last| {
                     bytes += piece_bytes(first, last, &run.values);
+                    Ok(())
                 },
             )?,
             None => {

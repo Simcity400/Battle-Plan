@@ -422,6 +422,7 @@ pub fn requested_series(
         );
         let mut size_piece = |run: &NukeRun, _: i32, _: i32| {
             bytes = bytes.saturating_add(160 + run.counts.len() * 64);
+            Ok(())
         };
         match spans {
             Some(spans) => crate::ranking::for_each_piece(
@@ -433,7 +434,7 @@ pub fn requested_series(
             )?,
             None => {
                 for run in runs {
-                    size_piece(run, run.first_hour, run.last_hour);
+                    size_piece(run, run.first_hour, run.last_hour)?;
                 }
             }
         }
@@ -464,6 +465,7 @@ pub fn requested_series(
                         piece.last_hour = last_hour;
                         piece.starts_segment = run.starts_segment && first_hour == run.first_hour;
                         kept.push(piece);
+                        Ok(())
                     },
                 )?;
                 kept

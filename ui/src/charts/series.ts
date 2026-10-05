@@ -10,6 +10,25 @@ export type PathCommand = readonly ['M', number, number] | readonly ['L', number
 /** Hours from `firstHour` to `lastHour`, both included. */
 export interface Span { firstHour: number; lastHour: number }
 
+/** Admit a recorded inclusive-hour span without changing its fields. */
+export function isSpan(value: unknown): value is Record<string, unknown> & Span {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const span = value as Record<string, unknown>;
+  return typeof span.firstHour === 'number' && Number.isSafeInteger(span.firstHour)
+    && typeof span.lastHour === 'number' && Number.isSafeInteger(span.lastHour) && span.firstHour <= span.lastHour;
+}
+
+/** Admit ordered, disjoint spans; adjacent spans and gaps both remain intact. */
+export function isOrderedSpans(value: unknown): value is (Record<string, unknown> & Span)[] {
+  if (!Array.isArray(value)) return false;
+  let last: number | null = null;
+  for (const span of value) {
+    if (!isSpan(span) || (last !== null && last >= span.firstHour)) return false;
+    last = span.lastHour;
+  }
+  return true;
+}
+
 /** A run whose line may break before it: `breakBefore` on plotting runs,
  * `startsSegment` on the runs products send. */
 export type Breakable = Span & { breakBefore?: boolean; startsSegment?: boolean };
@@ -36,6 +55,23 @@ export function runIndexAt(runs: readonly Span[], hour: number): number {
 export function runAt<T extends Span>(runs: readonly T[], hour: number): T | null {
   const index = runIndexAt(runs, hour);
   return index < 0 ? null : runs[index];
+}
+
+/** Ordered, disjoint value spans must fit wholly inside the observed hours.
+ * Two cursors keep validation linear even for thousands of country histories. */
+export function spansCovered(values: readonly Span[], observed: readonly Span[]): boolean {
+  let index = 0;
+  for (const value of values) {
+    while (index < observed.length && observed[index].lastHour < value.firstHour) index++;
+    let end = value.firstHour - 1;
+    for (let at = index; at < observed.length && end < value.lastHour; at++) {
+      const span = observed[at];
+      if (span.firstHour > end + 1) break;
+      end = span.lastHour;
+    }
+    if (end < value.lastHour) return false;
+  }
+  return true;
 }
 
 /** For each run, the first hour of the unbroken stretch it belongs to: no missing

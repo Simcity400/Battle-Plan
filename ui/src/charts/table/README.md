@@ -68,7 +68,7 @@ before Zambia and State 2 before State 10. Row-key tie-breaks remain determinist
 Null, undefined and nonfinite numbers display **—**, even with `render`, unless
 `renderMissing: true`. That opt-in is useful for a portrait/name or an explicit
 "Unknown" fallback. Missing values stay last in both directions. Equal values,
-including missing ones, tie-break by `rowKey` using deterministic string order
+including missing ones, tie-break by `rowKey` using UTF-8/code-point order
 (not locale or input order), ascending in both sort directions. Keys must be
 unique and stable across updates. There is no human/AI visibility gate.
 
@@ -80,6 +80,12 @@ their content without reserving the default vertical padding. The
 `--table-row-height` variable is available to renderers that need to fit art
 in both densities. Column `width` accepts a CSS grid track (e.g. `92px` or
 `minmax(190px, 2fr)`), including the cell's 12px padding on each side.
+Use `minmax(0, 1fr)` for names that should truncate and `max-content` for
+numbers that keep their natural width. Content-sized columns measure the header
+and mounted cells, share the widest measurement across rows, and grow as new
+virtual rows appear. Density, font or column-label changes remeasure them. `CountryCell`
+exposes the full country name through its title; custom name cells should do
+the same. Column minimums, rather than full name text, determine overflow.
 
 `onRowClick` runs on a row click, or Enter/Space on a focused row. Clicks do
 not open the menu. `menu` builds items on right-click, the context-menu key or

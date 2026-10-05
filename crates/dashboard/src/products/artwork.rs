@@ -16,8 +16,11 @@ use std::{
     },
 };
 
-/// Longest side of a returned focus or technology icon.
-const ICON_EDGE: u32 = 96;
+/// Longest side of returned product artwork previews.
+pub(crate) const ICON_EDGE: u32 = 96;
+
+/// The retained compressed artwork budget shared by product content caches.
+pub(crate) const MAX_RETAINED_ARTWORK_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -228,7 +231,7 @@ impl Context {
                     artwork_bytes(&art) + messages.iter().map(|s| s.len() + 32).sum::<usize>();
                 // Retain a multi-country dashboard's working set of compressed
                 // icons so switching countries does not repeatedly decode them.
-                if self.artwork_bytes + size > 64 * 1024 * 1024 {
+                if self.artwork_bytes + size > MAX_RETAINED_ARTWORK_BYTES {
                     self.artwork_cache.clear();
                     self.artwork_bytes = 0;
                 }
@@ -247,7 +250,7 @@ impl Context {
     }
 }
 
-fn artwork_bytes(art: &Artwork) -> usize {
+pub(crate) fn artwork_bytes(art: &Artwork) -> usize {
     128 + art.token.len()
         + art.name.as_ref().map_or(0, String::len)
         + art.description.as_ref().map_or(0, String::len)

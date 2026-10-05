@@ -1,11 +1,12 @@
 /* Shared style-5 Scoreboard measures; its colours come from the active theme. */
-.chart-table { --table-comfortable-height: 34px; --table-compact-height: 25px; --table-header-height: 26px; --table-muted-opacity: .55; --table-row-height: var(--table-comfortable-height); --table-cell-y: 7px; --table-font: 13px; min-height: 0; height: 100%; overflow: auto; padding: 0 6px 8px; }
+.chart-table { --table-comfortable-height: 34px; --table-compact-height: 25px; --table-header-height: 26px; --table-muted-opacity: .55; --table-row-height: var(--table-comfortable-height); --table-cell-y: 7px; --table-font: 13px; --table-rank-width: 44px; min-height: 0; height: 100%; overflow: auto; padding: 0 6px 8px; }
 .chart-table.is-compact { --table-row-height: var(--table-compact-height); --table-cell-y: 3px; --table-font: 12px; }
-.chart-table table { display: grid; width: 100%; min-width: max-content; border-collapse: collapse; font-size: var(--table-font); }
+.chart-table table { display: grid; width: 100%; min-width: 0; border-collapse: collapse; font-size: var(--table-font); }
 .chart-table thead { position: sticky; top: 0; z-index: 2; background: var(--surface); }
 .chart-table tr { display: grid; grid-template-columns: var(--table-columns); }
-.chart-table th { height: var(--table-header-height); padding: 0 12px; align-content: center; text-align: start; color: var(--muted); font-size: 12px; font-weight: 500; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
+.chart-table th { min-width: 0; height: var(--table-header-height); padding: 0 12px; align-content: center; text-align: start; color: var(--muted); font-size: 12px; font-weight: 500; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chart-table th button { display: inline; width: 100%; padding: 0; border: 0; border-radius: 0; box-shadow: none; background: none; text-align: inherit; color: inherit; font: inherit; }
+.table-natural { display: inline-block; width: max-content; white-space: nowrap; }
 .chart-table th[aria-sort='ascending'], .chart-table th[aria-sort='descending'] { color: var(--text); }
 .chart-table .table-sort { color: var(--accent); }
 .chart-table tbody { display: block; position: relative; }

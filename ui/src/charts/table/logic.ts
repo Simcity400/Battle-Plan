@@ -1,4 +1,5 @@
 import type { MovingRow } from '../rowMotion';
+import { compareTags } from '../../dashboard/tagOrder.ts';
 
 /** Exact ordering: geometry may use numbers, comparisons never round integers. */
 export type SortValue = string | number | bigint | null | undefined;
@@ -6,7 +7,7 @@ export type SortDirection = 'ascending' | 'descending';
 export interface Sort { column: string; direction: SortDirection }
 
 export const isMissing = (v: SortValue) => v == null || (typeof v === 'number' && !Number.isFinite(v));
-const compareKey = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+const compareKey = compareTags;
 const valueCollator = new Intl.Collator(undefined, { numeric: true });
 /** Equal values always order by key, in either direction and across input updates. */
 export function sortRows<T>(rows: readonly T[], value: (row: T) => SortValue, direction: SortDirection, rowKey: (row: T) => string): T[] {

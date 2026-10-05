@@ -74,6 +74,7 @@ test('a malformed parts reply is refused', () => {
   const reply = { branchId: '1', tag: 'GER', decimals: 5, stability: PARTS, warSupport: { observed: [], parts: [] }, warnings: [] };
   assert.equal(validateStabilityPartsReply(reply).tag, 'GER');
   assert.throws(() => validateStabilityPartsReply({ ...reply, stability: { ...PARTS, observed: [{ firstHour: 5, lastHour: 1 }] } }), /malformed/);
+  assert.throws(() => validateStabilityPartsReply({ ...reply, stability: { ...PARTS, observed: [{ firstHour: 0, lastHour: Number.MAX_SAFE_INTEGER + 1 }] } }), /malformed/);
   assert.throws(() => validateStabilityPartsReply({ ...reply, warSupport: undefined }), /malformed/);
 });
 

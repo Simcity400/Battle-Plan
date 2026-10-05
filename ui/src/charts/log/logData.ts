@@ -20,6 +20,10 @@ export function shownMotion<T>(rows: readonly MovingRow<T>[], start: number, end
  * changes): the keyboard's row and a tooltip follow it; the key when absent. */
 export interface LogRow<T> { key: string; id?: string; hour: number; by?: boolean; item: T }
 
+/** Tracks after the date, shared by every row or chosen from that row's content. */
+export type LogColumns<T> = string | ((row: LogRow<T>) => string);
+export const logRowColumns = <T>(columns: LogColumns<T>, row: LogRow<T>): string => typeof columns === 'string' ? columns : columns(row);
+
 /** Only countries on drawn rows, at each row's own observation hour. Opaque
  * tags never share a delimiter key, and later names cannot label older rows. */
 export function logCountryRequests<T>(rows: readonly LogRow<T>[], countries: (row: LogRow<T>) => { hour: number; tags: readonly (string | null)[] }): { hour: number; tag: string }[] {
@@ -76,13 +80,17 @@ export type LogItem<T> = { kind: 'month'; key: string; label: string } | { kind:
 
 export function logItems<T>(rows: readonly LogRow<T>[], months: boolean): LogItem<T>[] {
   const items: LogItem<T>[] = [];
+  const sections = new Map<number | null, number>();
   let month: number | null | undefined;
   for (const row of rows) {
     if (months) {
       const next = monthOf(row.hour);
       if (next !== month) {
         month = next;
-        items.push({ kind: 'month', key: `month:${next ?? 'undated'}`, label: monthLabel(row.hour) });
+        // Pinned running rows can precede a newer finished section of the same month.
+        const section = sections.get(next) ?? 0;
+        sections.set(next, section + 1);
+        items.push({ kind: 'month', key: `month:${next ?? 'undated'}${section ? `:${section}` : ''}`, label: monthLabel(row.hour) });
       }
     }
     items.push({ kind: 'row', key: row.key, row });

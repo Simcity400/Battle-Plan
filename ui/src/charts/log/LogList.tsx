@@ -6,8 +6,8 @@ import { fitTooltip, hideTooltip, showTooltip, tooltipStore, tooltipText } from 
 import type { TooltipContent } from '../tooltip';
 import { useRowMotion, movingRowClass } from '../useRowMotion';
 import { useViewportHeight } from '../useChartTokens';
-import { keyTarget, logDate, logItems, logOffsets, MONTH_HEIGHT, ROW_HEIGHT, rowId, scrollToShow, shownMotion, tipRow, visibleRange } from './logData.ts';
-import type { LogDensity, LogItem, LogRow, LogTip } from './logData';
+import { keyTarget, logDate, logItems, logOffsets, logRowColumns, MONTH_HEIGHT, ROW_HEIGHT, rowId, scrollToShow, shownMotion, tipRow, visibleRange } from './logData.ts';
+import type { LogColumns, LogDensity, LogItem, LogRow, LogTip } from './logData';
 import '../charts.css';
 import './log.css';
 
@@ -24,8 +24,9 @@ export interface LogListProps<T> {
   animate: boolean;
   /** The row's cells after its date, laid out by `columns`. */
   renderRow: (row: LogRow<T>) => ReactNode;
-  /** The grid columns of those cells (CSS `grid-template-columns`). */
-  columns: string;
+  /** The grid columns after the date; per-row tracks avoid reserving space for
+   * optional content such as a live meter on a completed row. */
+  columns: LogColumns<T>;
   /** The row as one sentence, for assistive technology. */
   describe: (row: LogRow<T>) => string;
   /** The row's tooltip forms, fullest first (`fitTooltip` shows the fullest that fits). */
@@ -161,7 +162,7 @@ export default function LogList<T>({ rows, label, density, months, animate, rend
 
   if (!rows.length) return <div className="log-empty">{empty}</div>;
   return <div className={`log${density === 'compact' ? ' is-compact' : ''}${animate ? '' : ' no-motion'}`}
-    style={{ '--log-columns': columns } as React.CSSProperties}>
+    style={{ '--log-columns': typeof columns === 'string' ? columns : undefined } as React.CSSProperties}>
     {topMonth && <div className="log-month is-sticky" aria-hidden="true">{topMonth.label}</div>}
     <div ref={setScroller} className="log-scroll" role="listbox" aria-label={label} tabIndex={0}
       aria-activedescendant={current ? optionId(current) : undefined}
@@ -182,7 +183,8 @@ export default function LogList<T>({ rows, label, density, months, animate, rend
           const date = logDate(row.hour);
           return <div key={moved.key} id={leaving ? undefined : optionId(id)} data-log-id={leaving ? undefined : id} role="option"
             aria-selected={!leaving && id === current} aria-hidden={leaving || undefined} aria-label={describe(row)}
-            className={`log-row ${motion}${!leaving && id === current ? ' is-active' : ''}`} style={style}
+            className={`log-row ${motion}${!leaving && id === current ? ' is-active' : ''}`}
+            style={{ ...style, '--log-columns': logRowColumns(columns, row) } as React.CSSProperties}
             onPointerMove={event => { if (!leaving) showTip({ id, by: 'pointer', x: event.clientX, y: event.clientY }); }}
             onPointerLeave={() => { if (tip.current?.by === 'pointer') { tip.current = null; hideTooltip(owner); } }}
             onClick={() => { if (!leaving) setActive(id); }}

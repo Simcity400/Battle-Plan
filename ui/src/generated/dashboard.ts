@@ -2114,6 +2114,108 @@ leaves: Array<SpendingLeaf>,
  * progress before that read is not counted.
  */
 beforeFirstRead: number, warnings: Array<string>, };
+export type EspionageOperationType = { key: string, name: string | null, icon: string | null, iconMissing: string | null, };
+export type EspionageOperationRun = { firstHour: number, lastHour: number,
+/**
+ * First read of this equal-value run. read_hours also dates equal re-reads.
+ */
+readHour: number,
+/**
+ * Native resource-meter ratio, fixed5; not equipment readiness.
+ */
+preparationRatio: number | null,
+/**
+ * 1413EC160 signed day result at this read; native -1 stays unknown.
+ */
+elapsedDays: number | null,
+/**
+ * Zero-based native phase at the supplying read; names/IDs are not captured.
+ */
+currentPhase: number | null, terminal: boolean,
+/**
+ * Auto-commence, tested by 141189630 before 1413EF490 starts it.
+ */
+autoCommence: boolean, startHour: number | null,
+/**
+ * Non-null handles in native slot order; null means assignments unread.
+ */
+operatives: Array<string> | null, };
+export type EspionageEndReason = "completed" | "disappeared";
+export type EspionageOutcome = { description: string, };
+export type EspionageOperationEnd = { byHour: number, lastSeen: number, reason: EspionageEndReason, outcome: EspionageOutcome | null, outcomeUnrecorded: string | null, ownerTag: string | null, targetTag: string | null, };
+export type EspionageOperation = {
+/**
+ * Full native handle and episode's first read. Auto-repeat creates a fresh
+ * identity (14118B110 -> 141A13EA0 -> 141189390 -> 142209A50).
+ */
+id: string, firstRead: number, startHour: number | null, startKnownAt: number | null, ownerTag: string | null, targetTag: string | null, typeKey: string,
+/**
+ * Selected definitions, not completed phases (1413EB710).
+ */
+phaseCount: number,
+/**
+ * Manager 14118B110 tests +0x41 after completion to repeat the operation.
+ */
+autoRepeat: boolean, durationDays: number,
+/**
+ * All +0xE0 slots, including unassigned ones (1413E9210/141BD1CD0).
+ */
+assignedSlots: number, runs: Array<EspionageOperationRun>, end: EspionageOperationEnd | null, };
+export type EspionageLogReply = { branchId: string, firstHour: number, lastHour: number, available: Array<HourSpan>, readHours: Array<number>, types: Array<EspionageOperationType>, operations: Array<EspionageOperation>, warnings: Array<string>, unavailable: string | null, };
+export type AgencyComparisonParams = { branchId: string,
+/**
+ * Empty means all countries; tags are never restricted by human status.
+ */
+tags: Array<string>, includeUncreated: boolean, top: AgencyTop | null, };
+export type AgencyRankField = "defense" | "active" | "maximum";
+export type AgencyTop = { count: number, field: AgencyRankField, };
+export type AgencyUpgradeItem = {
+/**
+ * CAgencyUpgrade+0x260 owns the branch; branch+8 and definition+8 are
+ * separate lexical tokens (140618C40, 140FCA0F0). A token alone is ambiguous.
+ */
+branchToken: string, token: string, name: string | null, icon: string | null, };
+export type AgencyUpgrades = { count: number | null, items: Array<AgencyUpgradeItem>, };
+export type AgencyValue = { created: boolean,
+/**
+ * Created names are literal recorded bytes, including an empty name.
+ * Uncreated names use GetAgency's content-localised default (141A7B350).
+ */
+name: string | null, defenseRaw: string,
+/**
+ * The full native content-localised text, retained for the tooltip.
+ */
+defenseText: string | null,
+/**
+ * Only LEVEL's native formatted output (1402E2DA0 -> 142232AB0).
+ */
+defenseValue: string | null, activeCount: number, maximum: number, upgrades: AgencyUpgrades, };
+export type AgencyEntry = { firstHour: number, lastHour: number,
+/**
+ * First supplying read; every hour in this run independently reconfirms
+ * the agency scalars. The operative list retains its separate daily date.
+ */
+readHour: number, value: AgencyValue, };
+export type AgencySeries = { tag: string, segments: Array<HourSpan>, membership: Array<HourSpan> | null, entries: Array<AgencyEntry>, rosters: Array<AgencyRosterRun>, };
+export type AgencyRosterRun = { firstHour: number, lastHour: number, count: number, };
+export type AgencyComparisonReply = { branchId: string,
+/**
+ * False only when the branch contains no readable agency table at all.
+ */
+available: boolean,
+/**
+ * Complete country and agency tables at these hours. A missing country
+ * row inside them is still missing, never a zero-valued agency.
+ */
+observed: Array<HourSpan>, operativeReadHours: Array<number>, series: Array<AgencySeries>,
+/**
+ * Label from the screen's AGENCY_DEFENSE_LEVEL template (140F172A0).
+ */
+defenseLabel: string | null,
+/**
+ * One recording-level reason, rather than repeating it at every agency read.
+ */
+upgradesUnrecorded: string | null, warnings: Array<string>, };
 /** Refusals for want of room: a message starting with one may be tried again. */
 export const CAPACITY_REACHED = "Dashboard request capacity reached";
 export const TOO_MANY_SOURCES = "Too many open dashboard source bindings";
@@ -2123,4 +2225,4 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "country-nukes", "raids", "occupied-states", "idea-history", "party-history", "resource-balance", "decryption", "production-lines", "production-line-detail", "equipment-stockpile", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "equipment-losses", "construction-spending"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "country-nukes", "raids", "occupied-states", "idea-history", "party-history", "resource-balance", "decryption", "production-lines", "production-line-detail", "equipment-stockpile", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "equipment-losses", "construction-spending", "espionage-log", "agency-comparison"] as const;

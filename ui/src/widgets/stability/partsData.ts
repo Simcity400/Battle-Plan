@@ -1,4 +1,4 @@
-import { divergingStack, runAt } from '../../charts/series.ts';
+import { divergingStack, isSpan, runAt } from '../../charts/series.ts';
 import type { Band } from '../../charts/series';
 import type { HourSpan, MeasureParts, StabilityPart, StabilityPartsReply } from '../../generated/dashboard';
 import { orderedRuns } from '../country-measure/measureData.ts';
@@ -13,10 +13,6 @@ import type { Measure } from './stabilityData';
 export const REMAINDER_LABEL = 'Other / not identified';
 /** Parts past the palette are shown together under this name. */
 export const SMALLER_LABEL = 'Smaller parts';
-
-const isSpan = (value: unknown): value is HourSpan => typeof value === 'object' && value != null
-  && Number.isInteger((value as HourSpan).firstHour) && Number.isInteger((value as HourSpan).lastHour)
-  && (value as HourSpan).firstHour <= (value as HourSpan).lastHour;
 
 /** Checks a `stability-parts` reply's shape: every part's runs, and the known
  * hours, in hour order and never overlapping. */

@@ -28,6 +28,7 @@ pub mod gui;
 pub mod ideas;
 pub mod ideologies;
 pub mod image;
+pub mod intelligence;
 pub mod key_names;
 pub mod leader_traits;
 pub mod localisation;

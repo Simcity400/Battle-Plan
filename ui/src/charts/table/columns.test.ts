@@ -2,10 +2,26 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createElement, isValidElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { cellContent, columnAlign } from './columns.ts';
+import { cellContent, columnAlign, growColumnWidths, tableGrid } from './columns.ts';
 import type { TableColumn } from './columns';
 import { densityRowHeight, rowOffsets, sortRows, visibleRange } from './logic.ts';
 import { acesFixture, generalsFixture } from './military.fixture.ts';
+
+test('content tracks share mounted widths without letting long names force a table wider', () => {
+  const columns: TableColumn<string>[] = [
+    { key: 'name', header: 'Name', label: 'Name', value: row => row, width: 'minmax(0, 2fr)' },
+    { key: 'value', header: 'Value', label: 'Value', value: () => 0, numeric: true, width: 'max-content' },
+  ];
+  const initial = new Map<string, number>();
+  const measured = growColumnWidths(initial, [{ key: 'value', width: 81.2 }, { key: 'value', width: 120 }, { key: 'value', width: NaN }]);
+  assert.equal(measured.get('value'), 120);
+  assert.equal(initial.size, 0);
+  assert.equal(tableGrid(columns, true, measured), 'var(--table-rank-width) minmax(0, 2fr) 120px');
+  assert.equal(growColumnWidths(measured, [{ key: 'value', width: 70 }, { key: 'value', width: -1 }]), measured);
+  const later = growColumnWidths(measured, [{ key: 'value', width: 140.1 }]);
+  assert.equal(later.get('value'), 141);
+  assert.equal(tableGrid(columns, false, later), 'minmax(0, 2fr) 141px');
+});
 
 test('missing values override custom renderers unless opted in, regardless of numeric or alignment', () => {
   let calls = 0;

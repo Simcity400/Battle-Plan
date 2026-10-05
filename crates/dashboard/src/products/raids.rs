@@ -1192,6 +1192,7 @@ fn selected_series(
                     json_len(&piece, MAX_PRODUCT_REPLY_BYTES).unwrap_or(MAX_PRODUCT_REPLY_BYTES),
                 )
                 .saturating_add(1);
+            Ok(())
         };
         if let Some(spans) = spans {
             crate::ranking::for_each_piece(
@@ -1203,7 +1204,7 @@ fn selected_series(
             )?;
         } else {
             for run in runs {
-                count(run, run.first_hour, run.last_hour);
+                count(run, run.first_hour, run.last_hour)?;
             }
         }
         if bytes > MAX_PRODUCT_REPLY_BYTES {
@@ -1229,6 +1230,7 @@ fn selected_series(
                         last_hour: last,
                         ..run.clone()
                     });
+                    Ok(())
                 },
             )?;
             clipped

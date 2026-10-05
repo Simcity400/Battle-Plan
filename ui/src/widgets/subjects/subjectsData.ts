@@ -1,4 +1,5 @@
 import type { BandStep, TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
+import { isSpan } from '../../charts/series.ts';
 import { bridgeGaps, coverCounts, runState, stretchesOf, withoutHours } from '../../charts/timeline/runState.ts';
 import { Lineage } from '../../dashboard/identity.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
@@ -12,7 +13,6 @@ import type { HourSpan, SubjectLevel, SubjectReply, SubjectRun } from '../../gen
  * never keyed on a level's name, so a mod's levels work. */
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value != null;
-const isSpan = (value: unknown) => isObject(value) && Number.isInteger(value.firstHour) && Number.isInteger(value.lastHour) && (value.firstHour as number) <= (value.lastHour as number);
 const listOf = (value: unknown, check: (item: unknown) => boolean) => Array.isArray(value) && value.every(check);
 const isText = (value: unknown) => typeof value === 'string';
 

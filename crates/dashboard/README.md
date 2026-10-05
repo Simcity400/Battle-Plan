@@ -88,6 +88,23 @@ Special projects adds per-country project episodes, native prototype progress an
 
 The Decryption widget reads [`decryption.rs`](src/products/decryption.rs): sparse pair runs with same-hour thresholds, native progress, bonus states, each current attempt's observed start, dated breaks and capture coverage for every recorded pair independently of player status. Its [widget guide](../../ui/src/widgets/decryption/README.md) describes the display and missing-data rules. Gaps interrupt reads within an episode.
 
+The Intel products [`espionage_log.rs`](src/products/espionage_log.rs) and
+[`agency_comparison.rs`](src/products/agency_comparison.rs) include every
+country. Operation episodes retain recorded launch dates, civilian preparation,
+read-time execution progress and phase indices, assignments and bounded endings; missing reads break
+runs. Completion does not identify an outcome because the game's result text,
+bonus and operative-detection operands are not recorded. Agency comparison
+uses the agency screen's stored active count and maximum, rather than its
+recruitment admission ceiling, and localises defence through the content's
+formatter. Acquired upgrades are **Not recorded**; `upgrades_at_read` is the
+single adapter for their future capture. Agency values compress independently
+of the roster counts and their shared daily read dates. Both products refuse oversized replies
+and share [`intelligence_content.rs`](src/products/intelligence_content.rs)
+for content names, artwork and agency text. Top-N selection and run clipping
+use [`ranking.rs`](src/ranking.rs), also used by Factories. Their UI rules live
+in the [operation log](../../ui/src/widgets/espionage-log/README.md) and
+[agency table](../../ui/src/widgets/agency-comparison/README.md) guides.
+
 Nuclear arsenal reads [country_nukes.rs](src/products/country_nukes.rs): every
 country's whole stockpile as the native top bar displays it, with native type
 ordinals named through recorded tokens and content. The queued-drop `ready`

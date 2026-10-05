@@ -216,3 +216,14 @@ export function resolveCountries(selection: CountrySelection, fallback: string[]
     ? new Map(tags.map(tag => [tag, runs.filter(run => run.tag === tag)])) : null;
   return { tags, membership, unobserved, dropped: Math.max(0, members.length - max), reason: members.length ? null : 'This group has no members in this campaign branch.' };
 }
+
+export interface WorldRequestTags { tags: string[]; ready: boolean; reason: string | null }
+/** A whole-branch world's request: [] means all, chosen countries stay chosen,
+ * and an hourly group requests its branch-wide union before local filtering.
+ * Pending or empty choices never accidentally request the entire world. */
+export function worldRequestTags(selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, lastHour: number): WorldRequestTags {
+  if (selection.kind === 'all' || (selection.kind === 'group' && selection.group.type === 'top')) return { tags: [], ready: true, reason: null };
+  if (selection.kind === 'group' && !groups) return { tags: [], ready: false, reason: null };
+  const resolved = resolveCountries(selection, fallback, groups, lastHour, Number.MAX_SAFE_INTEGER);
+  return { tags: resolved.tags, ready: resolved.reason === null && resolved.tags.length > 0, reason: resolved.reason };
+}

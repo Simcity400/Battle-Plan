@@ -20,6 +20,7 @@ test('a reply missing a list, or with a malformed entry, is refused', () => {
   assert.throws(() => validateCountryGroupReply({ ...good, capitulations: [{ hour: '8', tag: 'POL' }] }), /malformed/);
   assert.throws(() => validateCountryGroupReply({ ...good, identityChanges: [{ hour: 7, from: 'AAA' }] }), /malformed/);
   assert.throws(() => validateCountryGroupReply({ ...good, wars: [{ first: 'GER', second: 'POL', firstHour: 9, lastHour: 5 }] }), /malformed/);
+  assert.throws(() => validateCountryGroupReply({ ...good, unobserved: { ...good.unobserved, wars: [{ firstHour: 0, lastHour: Number.MAX_SAFE_INTEGER + 1 }] } }), /malformed/);
   assert.throws(() => validateCountryGroupReply({ ...good, unobserved: { humans: [], factions: [] } }), /malformed/);
   // A faction's leaders are its own list, of runs.
   assert.throws(() => validateCountryGroupReply({ ...good, factions: [{ ...good.factions[0], leaders: undefined }] }), /malformed/);

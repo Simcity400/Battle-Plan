@@ -5,6 +5,7 @@
 //! service, transport, host and frontend never name a product; they route by
 //! its key.
 
+pub mod agency_comparison;
 pub mod artwork;
 pub mod autonomy;
 pub mod character_portraits;
@@ -15,6 +16,7 @@ pub mod country_factories;
 pub mod country_flags;
 pub mod country_fuel;
 pub mod country_groups;
+pub(crate) mod country_history;
 pub mod country_measure;
 pub mod country_nukes;
 pub mod country_stability;
@@ -25,9 +27,11 @@ pub mod equipment_icon;
 pub mod equipment_losses;
 pub mod equipment_produced;
 pub mod equipment_stockpile;
+pub mod espionage_log;
 pub mod idea_format;
 pub mod idea_history;
 pub mod identity;
+pub mod intelligence_content;
 pub use identity::civil_war;
 pub mod land_owners;
 pub mod national_focus;
@@ -288,6 +292,8 @@ pub static PRODUCTS: &[Registered] = &[
     register::<construction_log::ConstructionLog>(),
     register::<equipment_losses::EquipmentLosses>(),
     register::<construction_spending::ConstructionSpending>(),
+    register::<espionage_log::EspionageLog>(),
+    register::<agency_comparison::AgencyComparison>(),
 ];
 
 pub fn find(key: &str) -> Option<&'static Registered> {

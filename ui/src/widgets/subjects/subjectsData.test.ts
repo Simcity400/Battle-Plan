@@ -93,6 +93,7 @@ test('a relation spanning a swap follows each country and clips its level steps'
 
 test('a subjects reply is validated, down to steps covering their run and naming listed levels', () => {
   assert.equal(validateSubjectReply(reply).runs.length, 5);
+  assert.throws(() => validateSubjectReply({ ...reply, unobserved: [{ firstHour: 0, lastHour: Number.MAX_SAFE_INTEGER + 1 }] }), /malformed/);
   const broken = structuredClone(reply);
   broken.runs[0].steps[1].firstHour = 151;
   assert.throws(() => validateSubjectReply(broken), /malformed/);

@@ -10,32 +10,40 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-/// Borrow each intersection of sorted, nonoverlapping value runs and membership
-/// spans in one pass. Products use this both to size a reply and to build it.
+/// Visit the intersection of ordered, nonoverlapping runs and spans in one
+/// linear pass. A clipped piece retains its original supplying run; gaps and
+/// read dates remain the caller's recorded facts. The visitor can refuse a
+/// budget before copying the piece.
 pub fn for_each_piece<R>(
     runs: &[R],
     spans: &[HourSpan],
-    bounds: impl Fn(&R) -> (i32, i32),
+    span: impl Fn(&R) -> (i32, i32),
     cancelled: &AtomicBool,
-    mut piece: impl FnMut(&R, i32, i32),
+    mut piece: impl FnMut(&R, i32, i32) -> io::Result<()>,
 ) -> io::Result<()> {
+    if cancelled.load(Ordering::Acquire) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "The ranking was cancelled",
+        ));
+    }
     let (mut run_index, mut span_index) = (0, 0);
     let mut steps = 0usize;
-    while let (Some(run), Some(span)) = (runs.get(run_index), spans.get(span_index)) {
+    while let (Some(run), Some(selected)) = (runs.get(run_index), spans.get(span_index)) {
+        steps += 1;
         if steps.is_multiple_of(4096) && cancelled.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "The ranking was cancelled",
             ));
         }
-        steps += 1;
-        let (first, last) = bounds(run);
-        let first_hour = first.max(span.first_hour);
-        let last_hour = last.min(span.last_hour);
+        let (first, last) = span(run);
+        let first_hour = first.max(selected.first_hour);
+        let last_hour = last.min(selected.last_hour);
         if first_hour <= last_hour {
-            piece(run, first_hour, last_hour);
+            piece(run, first_hour, last_hour)?;
         }
-        if last < span.last_hour {
+        if last < selected.last_hour {
             run_index += 1;
         } else {
             span_index += 1;
@@ -128,6 +136,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ranking_clipping_preserves_gaps_read_origins_and_refusals() {
+        let runs = [(0, 5), (7, 10), (20, 23)];
+        let spans = [
+            HourSpan {
+                first_hour: 3,
+                last_hour: 8,
+            },
+            HourSpan {
+                first_hour: 10,
+                last_hour: 21,
+            },
+        ];
+        let mut pieces = Vec::new();
+        for_each_piece(
+            &runs,
+            &spans,
+            |run| *run,
+            &AtomicBool::new(false),
+            |run, first, last| {
+                pieces.push((run.0, first, last));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(pieces, [(0, 3, 5), (7, 7, 8), (7, 10, 10), (20, 20, 21)]);
+        let error = for_each_piece(
+            &runs,
+            &spans,
+            |run| *run,
+            &AtomicBool::new(false),
+            |_, _, _| Err(io::Error::other("budget")),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "budget");
+        assert_eq!(
+            for_each_piece(
+                &runs,
+                &spans,
+                |run| *run,
+                &AtomicBool::new(true),
+                |_, _, _| Ok(())
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::Interrupted
+        );
+    }
+
+    #[test]
     fn ranked_piece_walk_preserves_gaps_at_5000_runs_and_cancels() {
         let runs: Vec<_> = (0..5000).map(|i| (i * 3, i * 3 + 1)).collect();
         let spans: Vec<_> = (0..5000)
@@ -142,7 +199,10 @@ mod tests {
             &spans,
             |run| *run,
             &AtomicBool::new(false),
-            |_, first, last| pieces.push((first, last)),
+            |_, first, last| {
+                pieces.push((first, last));
+                Ok(())
+            },
         )
         .unwrap();
         assert_eq!(pieces.len(), 5000);

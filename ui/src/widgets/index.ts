@@ -3,12 +3,14 @@
 import { registerWidgets } from '../dashboard/definitions';
 import type { WidgetRenderer } from '../dashboard/definitions';
 import { widgetMetas } from './definitions';
+import agencyComparison from './agency-comparison';
 import autonomy from './autonomy';
 import commandPower from './command-power';
 import constructionLog from './construction-log';
 import constructionSpending from './construction-spending';
 import decryption from './decryption';
 import equipmentProduced from './equipment-produced';
+import espionageLog from './espionage-log';
 import factories from './factories';
 import equipmentStockpile from './equipment-stockpile';
 import factions from './factions';
@@ -36,6 +38,6 @@ import subjects from './subjects';
 import tradeFlows from './trade-flows';
 import worldTension from './world-tension';
 
-const renderers: Record<(typeof widgetMetas)[number]['kind'], WidgetRenderer> = { map, 'national-focus': nationalFocus, research, 'political-power': politicalPower, 'command-power': commandPower, stability, 'idea-timeline': ideaTimeline, 'national-spirits': nationalSpirits, 'spirit-history': spiritHistory, 'ruling-party': rulingParty, 'resource-balance': resourceBalance, 'equipment-stockpile': equipmentStockpile, fuel, 'production-lines': productionLines, factories, 'equipment-produced': equipmentProduced, 'production-spending': productionSpending, 'occupied-states': occupiedStates, experience, factions, subjects, 'trade-flows': tradeFlows, 'world-tension': worldTension, autonomy, 'construction-log': constructionLog, 'construction-spending': constructionSpending, 'special-projects': specialProjects, 'nuclear-arsenal': nuclearArsenal, 'raid-log': raidLog, 'raid-tally': raidTally, decryption, placeholder };
+const renderers: Record<(typeof widgetMetas)[number]['kind'], WidgetRenderer> = { map, 'national-focus': nationalFocus, research, 'political-power': politicalPower, 'command-power': commandPower, stability, 'idea-timeline': ideaTimeline, 'national-spirits': nationalSpirits, 'spirit-history': spiritHistory, 'ruling-party': rulingParty, 'resource-balance': resourceBalance, 'equipment-stockpile': equipmentStockpile, fuel, 'production-lines': productionLines, factories, 'equipment-produced': equipmentProduced, 'production-spending': productionSpending, 'occupied-states': occupiedStates, experience, factions, subjects, 'trade-flows': tradeFlows, 'world-tension': worldTension, autonomy, 'construction-log': constructionLog, 'construction-spending': constructionSpending, 'special-projects': specialProjects, 'nuclear-arsenal': nuclearArsenal, 'raid-log': raidLog, 'raid-tally': raidTally, decryption, 'espionage-log': espionageLog, 'agency-comparison': agencyComparison, placeholder };
 
 registerWidgets(widgetMetas.map(meta => ({ ...meta, ...renderers[meta.kind] })));

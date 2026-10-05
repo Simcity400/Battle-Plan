@@ -10,7 +10,7 @@ import { useChartTokens } from '../useChartTokens';
 import { easeTau } from '../easing';
 import { barFraction, barMaximum, densityRowHeight, isMissing, nextSort, rankChanges, rowOffsets, scrollToShow, shownMotion, sortRows, visibleRange } from './logic.ts';
 import type { RankChange, Sort } from './logic';
-import { cellContent, columnAlign } from './columns.ts';
+import { cellContent, columnAlign, growColumnWidths, tableGrid } from './columns.ts';
 import type { TableColumn } from './columns';
 import { sortKey } from './options.ts';
 import '../charts.css';
@@ -48,6 +48,8 @@ export default function Table<T>({ label, rows, columns, rowKey, sort: storedSor
   const tipCache = useRef<{ row: T; build: NonNullable<TableProps<T>['tooltip']>; content: TooltipContent } | null>(null);
   const activeTip = useRef<{ key: string; origin: 'pointer' | 'keyboard'; x: number; y: number } | null>(null);
   const [localSort, setLocalSort] = useState<Sort | null>(null);
+  const widthScope = JSON.stringify([density, tokens.font, columns.map(column => [column.key, column.label, column.width])]);
+  const [natural, setNatural] = useState<{ scope: string; widths: ReadonlyMap<string, number> }>({ scope: widthScope, widths: new Map() });
   const requestedSort = setOption ? storedSort : localSort ?? storedSort;
   const sortedColumn = columns.find(column => column.key === requestedSort.column && column.sortable !== false)
     ?? columns.find(column => column.sortable !== false);
@@ -114,6 +116,26 @@ export default function Table<T>({ label, rows, columns, rowKey, sort: storedSor
     || (!tokens.reducedMotion && (departing.has(rowKey(row)) || crossing?.has(rowKey(row)) === true))),
     [ordered, start, end, departing, crossing, focusedKey, rowKey, tokens.reducedMotion]);
   useEffect(() => { onVisibleRows?.(visible); }, [visible, onVisibleRows]);
+  useLayoutEffect(() => {
+    const elements = [...scroll.current?.querySelectorAll<HTMLElement>('[data-table-natural]') ?? []];
+    if (!elements.length) return;
+    const measure = () => {
+      const readings = elements.map(element => {
+        const cell = element.closest('th, td')!;
+        const css = getComputedStyle(cell);
+        return { key: element.dataset.tableNatural!, width: element.offsetWidth + parseFloat(css.paddingLeft) + parseFloat(css.paddingRight) };
+      });
+      setNatural(before => {
+        const previous = before.scope === widthScope ? before.widths : new Map<string, number>();
+        const widths = growColumnWidths(previous, readings);
+        return before.scope === widthScope && widths === previous ? before : { scope: widthScope, widths };
+      });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    elements.forEach(element => observer.observe(element));
+    return () => observer.disconnect();
+  }, [columns, visible, widthScope]);
   const maxima = useMemo(() => new Map(columns.filter(column => column.bar != null).map(column => [column.key,
     column.bar === 'visible' ? barMaximum(ordered, column.value) : column.bar as number | bigint])), [columns, ordered]);
   useEffect(() => () => hideTooltip(owner), [owner]);
@@ -150,7 +172,9 @@ export default function Table<T>({ label, rows, columns, rowKey, sort: storedSor
     clearTip(); contextMenu.open(x, y, items);
     return true;
   };
-  const grid = `${rank ? '44px ' : ''}${columns.map(column => column.width ?? 'minmax(100px, 1fr)').join(' ')}`;
+  const grid = tableGrid(columns, rank, natural.scope === widthScope ? natural.widths : new Map());
+  const naturalContent = (column: TableColumn<T>, content: ReactNode) => column.width === 'max-content'
+    ? <span className="table-natural" data-table-natural={column.key}>{content}</span> : content;
   return <div ref={scroll} className={`chart-table${density === 'compact' ? ' is-compact' : ''}`}
     style={{ '--table-columns': grid, '--table-row-height': view.rowHeight > 0 ? `${view.rowHeight}px` : undefined,
       '--table-cell-y': rowHeight == null ? undefined : '0px', '--row-glide': `${glideMs}ms`, '--table-bar-glide': tokens.reducedMotion ? '0ms' : '300ms' } as CSSProperties}
@@ -159,10 +183,10 @@ export default function Table<T>({ label, rows, columns, rowKey, sort: storedSor
       <thead><tr>{rank && <th scope="col" className="table-rank">#</th>}{columns.map(column => <th key={column.key} scope="col"
         className={`${column.numeric ? 'is-numeric ' : ''}align-${columnAlign(column)}`} aria-label={column.label}
         aria-sort={column.sortable === false ? undefined : sort.column === column.key ? sort.direction : 'none'}>
-        {column.sortable === false ? column.header : <button type="button" aria-label={column.label} onClick={() => {
+        {column.sortable === false ? naturalContent(column, column.header) : <button type="button" aria-label={column.label} onClick={() => {
           const next = nextSort(sort, column.key, column.numeric ? 'descending' : 'ascending');
           if (setOption) setOption('tableSort', sortKey(next)); else setLocalSort(next);
-        }}>{column.header}{sort.column === column.key && <span className="table-sort" aria-hidden="true"> {sort.direction === 'descending' ? '▾' : '▴'}</span>}</button>}
+        }}>{naturalContent(column, <>{column.header}{(sort.column === column.key || column.width === 'max-content') && <span className="table-sort" aria-hidden="true" style={{ visibility: sort.column === column.key ? undefined : 'hidden' }}> {sort.direction === 'descending' ? '▾' : '▴'}</span>}</>)}</button>}
       </th>)}</tr></thead>
       <tbody style={{ height: count * view.rowHeight }}>{mounted.map(row => {
         const change = ranks.get(row.key)?.delta ?? 0;
@@ -204,8 +228,8 @@ export default function Table<T>({ label, rows, columns, rowKey, sort: storedSor
             const missing = isMissing(value);
             const content = cellContent(column, row.item.value, value);
             return <td key={column.key} className={`${column.numeric ? 'is-numeric ' : ''}align-${columnAlign(column)}`}>
-              {column.bar != null ? <CellBar value={cellBars && !missing && (typeof value === 'number' || typeof value === 'bigint') ? value : null}
-                maximum={maxima.get(column.key) ?? 0}>{content}</CellBar> : content}
+              {naturalContent(column, column.bar != null ? <CellBar value={cellBars && !missing && (typeof value === 'number' || typeof value === 'bigint') ? value : null}
+                maximum={maxima.get(column.key) ?? 0}>{content}</CellBar> : content)}
             </td>;
           })}
         </tr>;
@@ -225,5 +249,5 @@ export function CellBar({ value, maximum, children }: {
 }
 
 export function CountryCell({ name, flag }: { name: string; flag?: string }) {
-  return <span className="table-country">{flag ? <img src={flag} alt="" /> : <i className="table-flag-missing" aria-label="Flag not in this recording" />}<span>{name}</span></span>;
+  return <span className="table-country" title={name}>{flag ? <img src={flag} alt="" /> : <i className="table-flag-missing" aria-label="Flag not in this recording" />}<span>{name}</span></span>;
 }
