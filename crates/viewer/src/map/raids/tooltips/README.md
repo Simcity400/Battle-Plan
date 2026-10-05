@@ -2,7 +2,10 @@
 
 Only the three icons produced by ordinary map mode are covered. The unit icon
 belongs to raid planning, whose client selection is outside the recording.
-Hover uses the native ToolTip painter and hit rectangles in reverse submission order.
+Hover uses the native ToolTip painter and hit rectangles in reverse window paint order.
+The manager sorts and reattaches visible windows (`140B2F270`, `140B2BEF0`);
+the collision walk tests their paint list backwards (`142226CC0`). Pool/live
+order can differ after a camera move or reused slot and is not hover order.
 A coalescing worker builds text for one requested hour,
 perspective and content object; the same icon keeps its last text while the next
 hour's builds. No simulation or localisation work runs per frame.
@@ -36,6 +39,14 @@ leading separator. Arguments stay typed: strings, signed integers, or fixed5;
 the content's formatting directive chooses precision, percentage and colour.
 `142232AB0`/`1424B89F0` truncate decimal digits. Viewer language and recorded mount
 order determine every expansion, country name and asset.
+
+Target location (`140FD1BB0`) first tries the explicit province or leader
+province's victory-point name, then the explicit state, either province's
+state, or the building's state. `CBuilding::get_state` (`1410C6520` →
+`141162450`) follows status bit 0 to the province's recorded state; otherwise
+the location is a state ID. `target_loc_key` wraps that LOCATION without
+changing its selection (`140FD1D50`). Neighbouring buildings may have different
+state names; their hit must select the same target as their painted window.
 
 ## Derived inputs and diagnostic order
 

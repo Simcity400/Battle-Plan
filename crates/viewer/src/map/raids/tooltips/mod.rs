@@ -31,8 +31,8 @@ pub enum Key {
     Offer(Arc<[TooltipTarget]>),
 }
 
-/// Interface pixels, in submission order; reverse iteration gives the
-/// topmost admitted icon, exactly as the counter arrival hit test does.
+/// Interface pixels, in window paint order; reverse iteration gives the
+/// topmost admitted icon (visible-window reattachment@140B2F270, hit list@142226CC0).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hit {
     pub origin: [f32; 2],

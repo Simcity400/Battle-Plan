@@ -179,7 +179,7 @@ impl PreparedRaids {
             .as_ref()
             .and_then(|bound| bound.as_ref().ok())
             .map(|bound| bound.frame);
-        let drawn = view.present(
+        let mut drawn = view.present(
             context,
             &Plan {
                 name: WINDOW,
@@ -209,6 +209,10 @@ impl PreparedRaids {
             },
             &mut report.reasons,
         );
+        // 140B2F270 sorts and reverse-attaches the visible windows before GUI
+        // paint; 142226CC0 tests that paint list backwards. Pool/live order can
+        // differ after a camera move or slot reuse, so hover follows our draw rank.
+        drawn.sort_by_key(|drawn| placed[&drawn.owner].0);
         let mut count = 0;
         for drawn in drawn {
             let (ordinal, placed) = placed[&drawn.owner];
@@ -511,6 +515,245 @@ mod tests {
         assert_eq!(hits[0].origin, [125., 175.]);
         assert_eq!(hits[0].size, [52., 52.]);
         assert!(report.reasons.is_empty());
+    }
+
+    #[test]
+    fn raid_tooltip_regression_overlap_tracks_paint_order_after_camera_move() {
+        let resources = draw_resources();
+        let windows = native_gui::tests::windows(DRAW_GUI);
+        let context = crate::map::native_resources::Context {
+            resources: &resources,
+            windows: &windows,
+            viewport: [2048, 1152],
+            time: Some(0.),
+        };
+        let camera = Camera {
+            center: [3000., 1500.],
+            height: 300.,
+            map: crate::map::camera::MapSize::TEST,
+            defines: crate::map::camera::MapDefines::test(),
+        };
+        let key = |id| tooltips::Key::Raid {
+            id,
+            reference_type: 4,
+            incoming: false,
+        };
+        let icons = RaidIcons {
+            icons: [1, 2]
+                .map(|province| RaidIcon {
+                    province,
+                    frame: 0,
+                    enabled: false,
+                    glyph: Some("glyph".into()),
+                    plus: false,
+                    tooltip: Some(key(province)),
+                })
+                .into(),
+            report: Default::default(),
+            built_for: None,
+        };
+        let mut view = crate::map::icon_windows::PoolView::default();
+        for swapped in [false, true] {
+            let anchor = |province| {
+                let north = (province == 1) == swapped;
+                Some([3000., 10., if north { 1501. } else { 1499. }])
+            };
+            let prepared = prepare(
+                &RaidInputs {
+                    anchor: &anchor,
+                    camera,
+                    viewport: [2048, 1152],
+                    ui_scale: 1.,
+                },
+                &icons,
+            );
+            let expected = if swapped { 2 } else { 1 };
+            // Distinct projected depths; the southward eye draws the near icon last.
+            assert_eq!(prepared.placed.last().unwrap().icon.province, expected);
+            let mut batch = Batch::default();
+            let mut hits = Vec::new();
+            let mut report = RaidReport::default();
+            assert_eq!(
+                prepared.draw(
+                    &context,
+                    assets().priority,
+                    &mut view,
+                    &mut batch,
+                    &mut hits,
+                    &mut report,
+                ),
+                2
+            );
+            assert!(report.reasons.is_empty(), "{:?}", report.reasons);
+            let near = hits.iter().find(|hit| hit.key == key(expected)).unwrap();
+            let centre = std::array::from_fn(|i| near.origin[i] + near.size[i] / 2.);
+            assert!(hits.iter().all(|hit| hit.contains(centre)));
+            assert_eq!(
+                hits.iter()
+                    .rev()
+                    .find(|hit| hit.contains(centre))
+                    .unwrap()
+                    .key,
+                key(expected),
+            );
+            let top = batch.quads.iter().max_by_key(|quad| quad.layer).unwrap();
+            assert_eq!(
+                sprites::layer_icon(top.layer),
+                1,
+                "hover and the nearer icon's glyph use the same window rank",
+            );
+        }
+    }
+
+    #[test]
+    fn raid_tooltip_regression_overlapping_buildings_keep_the_hovered_targets_native_state() {
+        use super::super::tests::{frame, put, registered_command_power};
+        use installed_content::localisation::Localisation;
+
+        let resources = draw_resources();
+        let windows = native_gui::tests::windows(DRAW_GUI);
+        let context = crate::map::native_resources::Context {
+            resources: &resources,
+            windows: &windows,
+            viewport: [2048, 1152],
+            time: Some(0.),
+        };
+        let mut assets = assets();
+        assets.tooltip.state_names = [
+            (10, Ok("near_state".into())),
+            (20, Ok("other_state".into())),
+        ]
+        .into();
+        assets
+            .buildings
+            .types
+            .get_mut("dam")
+            .unwrap()
+            .need_detection = false;
+        assets.buildings.types.insert(
+            "facility".into(),
+            installed_content::buildings::BuildingType {
+                name: "facility".into(),
+                ..Default::default()
+            },
+        );
+        assets.catalog.types[0].command_power_raw = 200_000;
+        let mut frame = frame();
+        let mut tokens = frame.complete::<tables::LexicalTokens>().unwrap().to_vec();
+        tokens.push(replay::rows::LexicalTokenRow {
+            token: 201,
+            literal: b"facility".to_vec(),
+        });
+        put::<tables::LexicalTokens>(&mut frame, tokens);
+        put::<tables::CountryCommandPower>(&mut frame, registered_command_power([0, 1]));
+        put::<tables::CountryAppearance>(
+            &mut frame,
+            [10, 11]
+                .map(|country| replay::rows::CountryAppearanceRow {
+                    country,
+                    ..Default::default()
+                })
+                .into(),
+        );
+        put::<tables::Politics>(
+            &mut frame,
+            [10, 11]
+                .map(|country| replay::rows::PoliticsRow {
+                    country,
+                    ..Default::default()
+                })
+                .into(),
+        );
+        let key = |id| {
+            tooltips::Key::Offer(
+                vec![offers::TooltipTarget {
+                    scope: RaidScope {
+                        building_type: if id == 2 { 201 } else { 200 },
+                        building_location: id,
+                        building_flags: 5,
+                        ..Default::default()
+                    },
+                    types: vec![0],
+                }]
+                .into(),
+            )
+        };
+        let placed = |id| Placed {
+            screen: match id {
+                1 => [100., 200.],
+                2 => [85., 195.],
+                _ => [112., 202.],
+            },
+            icon: RaidIcon {
+                province: id,
+                frame: 0,
+                enabled: false,
+                glyph: Some("glyph".into()),
+                plus: false,
+                tooltip: Some(key(id)),
+            },
+        };
+        let mut view = crate::map::icon_windows::PoolView::default();
+        let mut hits = Vec::new();
+        let mut report = RaidReport::default();
+        // A retained pool's live order differs from the new near-to-far ranks.
+        // The first fixture populates that history; the second is paint order.
+        for order in [[1, 3, 2], [2, 3, 1]] {
+            let prepared = PreparedRaids {
+                placed: order.map(placed).into(),
+                report: Default::default(),
+            };
+            let mut batch = Batch::default();
+            assert_eq!(
+                prepared.draw(
+                    &context,
+                    assets.priority,
+                    &mut view,
+                    &mut batch,
+                    &mut hits,
+                    &mut report,
+                ),
+                3
+            );
+        }
+        assert!(report.reasons.is_empty(), "{:?}", report.reasons);
+        let loc: Localisation = [
+            ("near_state", "Native building state"),
+            ("other_state", "Neighbouring building state"),
+            ("VICTORY_POINTS_1", "Different province name"),
+            ("dam", "Dam"),
+            ("facility", "Facility"),
+            ("RAID_TARGET_NAME", "$WHAT$ in $LOCATION$"),
+            ("raid_type_oilfield", "Building mission"),
+            (
+                "TOOLTIP_POTENTIAL_TARGET_ENTRY_NOT_ALLOWED",
+                "Target $TARGET_NAME$",
+            ),
+        ]
+        .map(|(key, text)| (key.into(), text.into()))
+        .into_iter()
+        .collect();
+        for point in [[164., 201.], [151., 201.]] {
+            let hit = hits.iter().rev().find(|hit| hit.contains(point)).unwrap();
+            let tooltip = tooltips::build_from(tooltips::Inputs {
+                assets: &assets,
+                frame: &frame,
+                ours: 1,
+                key: &hit.key,
+                loc: &loc,
+                recorded_language: &loc.language,
+                scripted_content: &Err("no scripted substitutions in this fixture".into()),
+                flag_exists: &|_| true,
+            });
+            // 140FD1BB0 uses the building's state via 1410C6520/141162450;
+            // a building-only target does not query its province's VP name.
+            assert!(
+                tooltip
+                    .title
+                    .starts_with("Target Dam in Native building state"),
+                "{point:?}: {tooltip:?}",
+            );
+        }
     }
 
     #[test]
