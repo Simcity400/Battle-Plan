@@ -31,6 +31,10 @@ pub(crate) struct View {
 }
 
 impl View {
+    pub(crate) fn retry(&self) -> Option<crate::map::icon_windows::Retry> {
+        self.pool.retry()
+    }
+
     pub(crate) fn take_running(&mut self) -> bool {
         self.pool.take_running()
     }

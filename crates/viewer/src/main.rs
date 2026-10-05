@@ -933,32 +933,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         // counters: bases, labels, counters and combats in priority order.
         let ui_scale = options.ui_scale.unwrap_or(1.0);
-        let (mut label_batch, label_report, counter_report, raid_report) = document.overlay_batch(
+        let mut dump_overlay = document.dump_overlay(
             camera,
             options.size,
             ui_scale,
             &options.perspective,
             omitted,
             options.counter_settings(document.game_counters),
-            // The map-icon windows' clock is the dump's presentation clock, at the time the
-            // frame renders at (`vGlobalTime`).
-            options.presentation_time + options.settle,
         )?;
-        for warning in label_report.warnings() {
-            eprintln!("Warning: {warning}");
-        }
-        if let Some(path) = &options.counters_json {
-            let mut census =
-                document
-                    .icons
-                    .counters
-                    .census(&label_batch, &document.icons.fonts, ui_scale);
-            // The same combat lines the dump prints, so the export names the
-            // combats whose icons were undecided or drawn with a limited value.
-            census["combat_diagnostics"] =
-                serde_json::json!(counter_report.combat_gap_lines().collect::<Vec<_>>());
-            std::fs::write(path, serde_json::to_vec_pretty(&census)?)?;
-        }
         if let Some(selector) = options.combat {
             let mut window = combat::Window::default();
             let selection = selector.resolve(&document)?;
@@ -987,7 +969,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             if let Some(drawn) = drawn {
                 println!("Combat window: {selection:?}, rect {:?}", drawn.rect);
-                label_batch.quads.extend(drawn.batch.quads);
+                dump_overlay.extra.quads.extend(drawn.batch.quads);
             } else {
                 println!(
                     "Combat window: {selection:?} not shown: its combat is not engaged for the viewing country at this hour, or the flag is undecided (see the warnings)"
@@ -1061,6 +1043,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // names
             &document.icons,
             options.settle,
+            &mut dump_overlay,
             Request {
                 size: options.size,
                 camera,
@@ -1079,7 +1062,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 overlay: Overlay {
                     names: (!omitted.labels).then_some(&placements),
                     layer_alpha: fade.0,
-                    sprites: Some(&label_batch),
+                    sprites: None,
                     ui_scale,
                 },
                 // trees
@@ -1087,6 +1070,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             output,
             (!unverified.is_empty()).then_some(unverified.as_str()),
         )?;
+        for warning in &dump_overlay.settlement_warnings {
+            eprintln!("Warning: {warning}");
+        }
+        let (label_batch, label_report, counter_report, raid_report) = (
+            dump_overlay.batch,
+            dump_overlay.labels,
+            dump_overlay.counters,
+            dump_overlay.raids,
+        );
+        for warning in label_report.warnings() {
+            eprintln!("Warning: {warning}");
+        }
+        if let Some(path) = &options.counters_json {
+            let mut census =
+                document
+                    .icons
+                    .counters
+                    .census(&label_batch, &document.icons.fonts, ui_scale);
+            // The same combat lines the dump prints, so the export names the
+            // combats whose icons were undecided or drawn with a limited value.
+            census["combat_diagnostics"] =
+                serde_json::json!(counter_report.combat_gap_lines().collect::<Vec<_>>());
+            std::fs::write(path, serde_json::to_vec_pretty(&census)?)?;
+        }
         for warning in &report.pass_warnings {
             eprintln!("{warning}");
         }

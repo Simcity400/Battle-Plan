@@ -13,6 +13,45 @@ use super::{
     native_resources::Context,
 };
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Retry {
+    pub name: String,
+    pub requests: usize,
+    pub rounds: usize,
+}
+
+impl Retry {
+    pub fn warning(&self) -> String {
+        format!(
+            "Map icon dump settling: {} {} requests still pending at the native growth-round bound (140B63880/140B64F20/140B626F0)",
+            self.requests, self.name
+        )
+    }
+}
+
+/// The allocator's remaining growth rounds, summed because 140B63880 shares
+/// one worker handle across types. A frozen dump cannot introduce new demand.
+#[derive(Default)]
+pub(crate) struct DumpFrames {
+    remaining: Option<usize>,
+}
+
+impl DumpFrames {
+    pub fn next(&mut self, retries: &[Retry]) -> bool {
+        if retries.is_empty() {
+            return false;
+        }
+        let remaining = self
+            .remaining
+            .get_or_insert_with(|| retries.iter().map(|r| r.rounds).sum());
+        if *remaining == 0 {
+            return false;
+        }
+        *remaining -= 1;
+        true
+    }
+}
+
 /// One owner request and its projected position, with the province's dirty-bit bypass.
 pub struct Owner<K = u32> {
     pub id: K,
@@ -95,6 +134,10 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
 
     pub fn take_running(&mut self) -> bool {
         std::mem::take(&mut self.active)
+    }
+
+    pub(crate) fn retry(&self) -> Option<Retry> {
+        self.pool.as_ref().and_then(Pool::retry)
     }
 
     pub fn present(
@@ -212,6 +255,16 @@ pub struct Views {
 }
 
 impl Views {
+    pub(crate) fn retries(&self) -> Vec<Retry> {
+        let mut retries = self.naval.retries();
+        retries.extend(self.labels.retries());
+        retries.extend(self.pings.retry());
+        retries.extend(self.raids.retry());
+        retries.extend(self.bases.iter().filter_map(PoolView::retry));
+        retries.extend(self.land_combats.retry());
+        retries
+    }
+
     pub fn take_running(&mut self) -> bool {
         let naval = self.naval.take_active();
         let labels = self.labels.take_running();
@@ -238,6 +291,38 @@ mod tests {
         size = { width = 100 height = 100 }
         iconType = { name = icon spriteType = GFX_even }
     } }"#;
+
+    #[test]
+    fn dump_stalled_pools_reach_the_derived_bound_with_names_and_counts() {
+        let retries = vec![
+            Retry {
+                name: "synthetic_labels".into(),
+                requests: 17,
+                rounds: 2,
+            },
+            Retry {
+                name: "synthetic_bases".into(),
+                requests: 16,
+                rounds: 1,
+            },
+        ];
+        let mut frames = DumpFrames::default();
+        for _ in 0..3 {
+            assert!(frames.next(&retries));
+        }
+        assert!(!frames.next(&retries));
+        assert!(
+            retries[0]
+                .warning()
+                .contains("17 synthetic_labels requests still pending")
+        );
+        assert!(
+            retries[1]
+                .warning()
+                .contains("16 synthetic_bases requests still pending")
+        );
+        assert!(!frames.next(&[]));
+    }
 
     #[test]
     fn combat_handles_keep_their_high_bits_in_pool_ownership() {

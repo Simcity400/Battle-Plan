@@ -609,6 +609,7 @@ pub fn dump_png(
     // names
     icons: &MapIcons,
     settle: f32,
+    overlay: &mut crate::document::DumpOverlay<'_>,
     request: Request<'_>,
     path: &Path,
     banner: Option<&str>,
@@ -724,14 +725,17 @@ pub fn dump_png(
         // fog of war
         scene.set_fog_of_war(&queue, &layers.intel_map.texels, layers.intel_map.fog)?;
         scene.settle_models();
+        scene.share_province_schedule(overlay.schedule());
         // `--settle`: play the preceding seconds, one frame a second, so entity
         // events and particles are under way when the frame renders.
         let steps = settle.ceil() as u32;
         for step in 0..steps {
             let at = request.animation_time + step as f32 * settle / steps as f32;
-            scene.render(
+            dump_frame(
+                &mut scene,
                 &device,
                 &queue,
+                overlay,
                 Request {
                     animation_time: at,
                     ..request
@@ -744,7 +748,11 @@ pub fn dump_png(
         };
         // A first frame warms the pipeline caches so the timing below measures
         // the steady-state cost the window pays.
-        scene.render(&device, &queue, request)?;
+        dump_frame(&mut scene, &device, &queue, overlay, request)?;
+        let mut frames = crate::map::icon_windows::DumpFrames::default();
+        while frames.next(&overlay.retries()) {
+            dump_frame(&mut scene, &device, &queue, overlay, request)?;
+        }
         device
             .poll(wgpu::PollType::Wait {
                 submission_index: None,
@@ -752,10 +760,11 @@ pub fn dump_png(
             })
             .map_err(io::Error::other)?;
         let start = std::time::Instant::now();
-        // The animation time is 0 and the overlay is the same one, so a
-        // headless dump is deterministic.
-        scene.render(&device, &queue, request)?;
+        // Allocation retry frames have zero elapsed time. Scene and GUI clocks
+        // stay together at the requested timestamp; the recorded hour stays fixed.
+        dump_frame(&mut scene, &device, &queue, overlay, request)?;
         let cpu_seconds = start.elapsed().as_secs_f64();
+        overlay.refuse_settlement(overlay.retries());
         // `Wait` blocks until the GPU drains the submission, so this is the
         // frame's GPU execution time plus driver sync, the part no CPU lap
         // sees. There is no swap chain headlessly, so present/vsync needs the
@@ -809,10 +818,39 @@ pub fn dump_png(
         };
         // After the PNG and its report: diagnostics advance clocks a re-render
         // cannot rewind, such as the weather particles'.
+        let request = Request {
+            overlay: crate::map::scene::Overlay {
+                sprites: Some(&overlay.sprites),
+                ..request.overlay
+            },
+            ..request
+        };
         bench_frames(&mut scene, &device, &queue, request)?;
         model_frames(&mut scene, &device, &queue, request, path, banner)?;
         Ok(report)
     })
+}
+
+fn dump_frame(
+    scene: &mut Scene,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    overlay: &mut crate::document::DumpOverlay<'_>,
+    request: Request<'_>,
+) -> io::Result<()> {
+    // CInGameIdler::Idle@140DBF240: province owners, icon manager, then draw.
+    let sprites = overlay.present(request.animation_time)?;
+    scene.render(
+        device,
+        queue,
+        Request {
+            overlay: crate::map::scene::Overlay {
+                sprites: Some(sprites),
+                ..request.overlay
+            },
+            ..request
+        },
+    )
 }
 
 /// Diagnostic only: after the settled PNG, restart the model histories and

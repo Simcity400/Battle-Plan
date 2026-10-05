@@ -406,6 +406,7 @@ fn custom_material_source_reaches_native_geometry() {
         &decoded,
         &resolved,
         0,
+        "synthetic_actor",
         |_, sub| {
             Ok(Arc::new(super::super::mesh_shader::Geometry::from_mesh(
                 sub, 1.,
@@ -782,8 +783,8 @@ fn two_entities_share_a_partial_stream_mesh_and_keep_placed_vertices() {
     assert_eq!(geometry.vertices.len(), 18);
     assert_eq!(geometry.vertices[6..10], [4., 5., 6., 0.]);
     for (slot, scale) in [(0, 1.0), (1, 2.0)] {
-        let actors = super::super::mesh_pose::actors(library.rig(slot), None, true).unwrap();
-        let world = actors[0].world;
+        let actors = super::super::mesh_pose::actors(library.rig(slot), None, true);
+        let world = *actors[0].world.as_ref().unwrap();
         for (vertex, raw) in [[1., 2., 3.], [4., 5., 6.], [7., 8., 9.]]
             .into_iter()
             .enumerate()

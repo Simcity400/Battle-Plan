@@ -518,10 +518,7 @@ impl History {
             .schedule
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if schedule.pending() {
-            return;
-        }
-        schedule.advance_view(
+        schedule.advance_frame(
             &self.bounds,
             self.provinces.keys().copied(),
             camera,

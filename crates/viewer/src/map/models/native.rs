@@ -30,6 +30,7 @@ impl std::fmt::Debug for Part {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Descriptor {
+    pub name: String,
     pub node: usize,
     pub distances: Vec<f32>,
     pub lods: Vec<Vec<Part>>,
@@ -64,6 +65,7 @@ pub(super) fn descriptor(
     decoded: &mesh::Mesh,
     resolved: &mesh::ResolvedMesh<'_>,
     node: usize,
+    name: &str,
     mut geometry: impl FnMut(GeometryKey, &mesh::SubMesh) -> io::Result<Arc<mesh_shader::Geometry>>,
     mut material_index: impl FnMut(&str, &mesh::SubMesh) -> io::Result<usize>,
 ) -> io::Result<Descriptor> {
@@ -96,6 +98,7 @@ pub(super) fn descriptor(
         }
     }
     Ok(Descriptor {
+        name: name.to_owned(),
         node,
         distances: decoded.lod_distances.iter().map(|v| v * v).collect(),
         lods: lods(records)?,
@@ -300,11 +303,55 @@ type Textures = [Option<wgpu::TextureView>; TEXTURE_BINDINGS];
 
 struct Resident {
     pipeline: mesh_shader::Pass,
+    required_constants: Vec<u32>,
+    required_textures: Vec<u32>,
     /// The lit program's native binds, which later passes retain.
     retained: shader_scene::Program,
     geometry: SharedGeometry,
     caster_texture: bool,
     blended: bool,
+}
+
+enum PrepareError {
+    Actor(io::Error),
+    Shared(io::Error),
+}
+
+impl From<io::Error> for PrepareError {
+    fn from(error: io::Error) -> Self {
+        Self::Shared(error)
+    }
+}
+
+struct PreparedPart<'a> {
+    key: Key,
+    bindings: shader_pipeline::gpu::Bindings,
+    buffers: Constants<'a>,
+    textures: Textures,
+    material: usize,
+    count: u32,
+}
+
+impl Resident {
+    fn check_bindings(&self, buffers: &Constants, textures: &Textures) -> Result<(), PrepareError> {
+        for &slot in &self.required_constants {
+            if buffers[slot as usize].is_none() {
+                return Err(PrepareError::Actor(invalid(format!(
+                    "native constant buffer {} has not been bound",
+                    slot / 2
+                ))));
+            }
+        }
+        for &slot in &self.required_textures {
+            if textures[slot as usize].is_none() {
+                return Err(PrepareError::Actor(invalid(format!(
+                    "native texture slot {} has not been bound",
+                    slot / 2
+                ))));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -632,6 +679,7 @@ impl ModelPass {
         poses.1.resize_with(self.field.instances.len(), || None);
         let eye = frame.camera.eye();
         let mut drawn = 0;
+        let mut last_material = None;
         let mut pending = Pending::default();
         // The last draw's part and bindings: a draw with the same pipeline rebinds only what
         // changed, and the same part keeps its buffers.
@@ -654,319 +702,425 @@ impl ModelPass {
                 let mesh = &self.meshes[group.mesh];
                 {
                     let instance = self.field.instances[index];
-                    let instance_world = instance.native_transform()?;
-                    let rig = self
-                        .rigs
-                        .get(group.mesh)
-                        .ok_or_else(|| invalid("native actor rig unavailable"))?;
+                    let instance_world = match instance.native_transform() {
+                        Ok(world) => world,
+                        Err(why) => {
+                            self.refuse_actor(arena.frame(), index, usize::MAX, &mesh.name, why);
+                            continue;
+                        }
+                    };
+                    let Some(rig) = self.rigs.get(group.mesh) else {
+                        self.refuse_actor(
+                            arena.frame(),
+                            index,
+                            usize::MAX,
+                            &mesh.name,
+                            "native actor rig unavailable",
+                        );
+                        continue;
+                    };
                     let player = self.players.get(&(
                         group.mesh,
                         instance.animation_seed,
                         instance.animation_epoch,
                     ));
-                    let actors = match &mut poses.1[index] {
-                        Some(actors) => actors,
-                        empty => empty.insert(
-                            mesh_pose::actors(
-                                rig,
-                                player,
-                                instance.animation != entity_animation::STOPPED,
-                            )
-                            .map_err(|e| {
-                                invalid(format!(
-                                    "Map shader {}: 1 refused actor {}: {e}",
-                                    self.label, mesh.name
-                                ))
-                            })?,
-                        ),
-                    };
+                    let actors = poses.1[index].get_or_insert_with(|| {
+                        mesh_pose::actors(
+                            rig,
+                            player,
+                            instance.animation != entity_animation::STOPPED,
+                        )
+                    });
                     for descriptor in &mesh.native {
-                        let actor = &actors[descriptor.node];
-                        let world = mesh_pose::multiply(matrix(&instance_world), actor.world);
-                        let position = [world[3][0] + offset, world[3][1], world[3][2]];
-                        let Some(lod) = descriptor.lod(position, eye)? else {
-                            continue;
-                        };
-                        let descriptor_key = (group.mesh, descriptor.node);
-                        if !native.queues.contains_key(&descriptor_key) {
-                            let mut admitted = [false; 2];
-                            for part in descriptor.lods.iter().flatten() {
-                                let lit = select(&mut native.library, part, false)?;
-                                let shadow = select(&mut native.library, part, true)?;
-                                let (_, alternate) = material_flags(
-                                    &lit.effect
-                                        .source
-                                        .blend(&lit.effect.source.techniques[lit.index]),
-                                    &shadow
-                                        .effect
-                                        .source
-                                        .blend(&shadow.effect.source.techniques[shadow.index]),
-                                    !part.material.diffuse.is_empty(),
-                                );
-                                admitted[usize::from(alternate)] = true;
-                            }
-                            native.queues.insert(descriptor_key, admitted);
-                        }
-                        let flags = native.queues[&descriptor_key];
-                        if !match queue {
-                            Queue::Regular => flags[0] && !forced,
-                            Queue::Alternate => flags[1] || forced,
-                            Queue::Caster => flags[0],
-                        } {
-                            continue;
-                        }
-                        //14227B410 propagates the ROOT actor payload to every child.
-                        let root = rig.nodes[0].native.as_ref().expect("actor source checked");
-                        let userdata = if caster {
-                            None
-                        } else {
-                            userdata(self.label, root, instance, frame.alpha)?
-                        };
-                        object.update(&world, userdata);
-                        for (part, source) in descriptor.lods[lod].iter().enumerate() {
-                            let key = Key {
-                                mesh: group.mesh,
-                                node: descriptor.node,
-                                lod,
-                                part,
-                                caster,
-                                forced,
+                        let scratch_before = (object.bytes, object.pixel);
+                        let mut submit = || -> Result<(), PrepareError> {
+                            let actor = &actors[descriptor.node];
+                            let world = mesh_pose::multiply(
+                                matrix(&instance_world),
+                                *actor
+                                    .world
+                                    .as_ref()
+                                    .map_err(|why| PrepareError::Actor(invalid(why.clone())))?,
+                            );
+                            let position = [world[3][0] + offset, world[3][1], world[3][2]];
+                            let Some(lod) =
+                                descriptor.lod(position, eye).map_err(PrepareError::Actor)?
+                            else {
+                                return Ok(());
                             };
-                            if let std::collections::btree_map::Entry::Vacant(entry) =
-                                native.parts.entry(key)
-                            {
-                                let selection = if forced && !caster {
-                                    select_alpha(&mut native.library, source)?
-                                } else {
-                                    select(&mut native.library, source, caster)?
+                            for source in &descriptor.lods[lod] {
+                                if let Some(why) =
+                                    self.material_refusals.get(&source.material_index)
+                                {
+                                    return Err(PrepareError::Actor(invalid(why.clone())));
+                                }
+                            }
+                            // No rest palette: 142399990 returns without a played clip;
+                            // 14239B0B0/1422644C0 still upload the allocated bytes.
+                            let skin_pose = descriptor.lods[lod]
+                                .iter()
+                                .any(|source| !source.geometry.skin.is_empty())
+                                .then(|| {
+                                    actor.pose.as_ref().map_err(|why| {
+                                        PrepareError::Actor(invalid(format!("skin: {why}")))
+                                    })
+                                })
+                                .transpose()?;
+                            let descriptor_key = (group.mesh, descriptor.node);
+                            if !native.queues.contains_key(&descriptor_key) {
+                                let mut admitted = [false; 2];
+                                for part in descriptor.lods.iter().flatten() {
+                                    let lit = select(&mut native.library, part, false)?;
+                                    let shadow = select(&mut native.library, part, true)?;
+                                    let (_, alternate) = material_flags(
+                                        &lit.effect
+                                            .source
+                                            .blend(&lit.effect.source.techniques[lit.index]),
+                                        &shadow
+                                            .effect
+                                            .source
+                                            .blend(&shadow.effect.source.techniques[shadow.index]),
+                                        !part.material.diffuse.is_empty(),
+                                    );
+                                    admitted[usize::from(alternate)] = true;
+                                }
+                                native.queues.insert(descriptor_key, admitted);
+                            }
+                            let flags = native.queues[&descriptor_key];
+                            if !match queue {
+                                Queue::Regular => flags[0] && !forced,
+                                Queue::Alternate => flags[1] || forced,
+                                Queue::Caster => flags[0],
+                            } {
+                                return Ok(());
+                            }
+                            //14227B410 propagates the ROOT actor payload to every child.
+                            let root = rig.nodes[0].native.as_ref().ok_or_else(|| {
+                                PrepareError::Actor(invalid("native root actor source unavailable"))
+                            })?;
+                            let userdata = if caster {
+                                None
+                            } else {
+                                userdata(self.label, root, instance, frame.alpha)
+                                    .map_err(PrepareError::Actor)?
+                            };
+                            object.update(&world, userdata);
+                            let (vertex, pixel) = object.upload(userdata.is_some());
+                            let mut prepared = Vec::with_capacity(descriptor.lods[lod].len());
+                            for (part, source) in descriptor.lods[lod].iter().enumerate() {
+                                let key = Key {
+                                    mesh: group.mesh,
+                                    node: descriptor.node,
+                                    lod,
+                                    part,
+                                    caster,
+                                    forced,
                                 };
-                                let source_blend = |s: &Selection| {
-                                    s.effect.source.blend(&s.effect.source.techniques[s.index])
-                                };
-                                let lit = select(&mut native.library, source, false)?;
-                                let shadow = select(&mut native.library, source, true)?;
-                                let (caster_texture, blended) = material_flags(
-                                    &source_blend(&lit),
-                                    &source_blend(&shadow),
-                                    !source.material.diffuse.is_empty(),
-                                );
-                                let pipeline = if caster {
-                                    mesh_shader::Pass::caster(
-                                        &mut native.cache,
-                                        device,
-                                        &selection,
-                                        &source.geometry,
-                                        DEPTH_MAP_FORMAT,
-                                        DEPTH_FORMAT,
-                                    )?
-                                } else {
-                                    mesh_shader::Pass::new(
-                                        &mut native.cache,
-                                        device,
-                                        &selection,
-                                        &source.geometry,
-                                        super::super::scene::SCENE_FORMAT,
-                                        DEPTH_FORMAT,
-                                        inputs.samples,
-                                    )?
-                                };
-                                let mut layouts = mesh_shader::vertex_layouts(
-                                    &selection
+                                if let std::collections::btree_map::Entry::Vacant(entry) =
+                                    native.parts.entry(key)
+                                {
+                                    let selection = if forced && !caster {
+                                        select_alpha(&mut native.library, source)?
+                                    } else {
+                                        select(&mut native.library, source, caster)?
+                                    };
+                                    let source_blend = |s: &Selection| {
+                                        s.effect.source.blend(&s.effect.source.techniques[s.index])
+                                    };
+                                    let lit = select(&mut native.library, source, false)?;
+                                    let shadow = select(&mut native.library, source, true)?;
+                                    let (caster_texture, blended) = material_flags(
+                                        &source_blend(&lit),
+                                        &source_blend(&shadow),
+                                        !source.material.diffuse.is_empty(),
+                                    );
+                                    let pipeline = if caster {
+                                        mesh_shader::Pass::caster(
+                                            &mut native.cache,
+                                            device,
+                                            &selection,
+                                            &source.geometry,
+                                            DEPTH_MAP_FORMAT,
+                                            DEPTH_FORMAT,
+                                        )?
+                                    } else {
+                                        mesh_shader::Pass::new(
+                                            &mut native.cache,
+                                            device,
+                                            &selection,
+                                            &source.geometry,
+                                            super::super::scene::SCENE_FORMAT,
+                                            DEPTH_FORMAT,
+                                            inputs.samples,
+                                        )?
+                                    };
+                                    let compiled = selection
                                         .effect
                                         .compiled(selection.index)
-                                        .map_err(invalid)?
-                                        .vertex
-                                        .inputs,
-                                    source.geometry.uv1,
-                                    !source.geometry.skin.is_empty(),
-                                )?;
-                                // Retained declarations bind 142250C70's compact stride.
-                                layouts[0].stride = source.geometry.stride;
-                                let geometry = match native.geometry.get(&source.geometry_key) {
-                                    Some(geometry) => geometry.clone(),
-                                    None => {
-                                        let stride = if source.geometry.uv1 { 56 } else { 48 };
-                                        let skin: Option<&[u8]> =
-                                            (!source.geometry.skin.is_empty()).then(|| {
-                                                bytemuck::cast_slice(&source.geometry.skin)
-                                            });
-                                        let packed = source.geometry.packed(source.geometry.uv1)?;
-                                        let vertices = native
-                                            .pools
-                                            .entry((stride, skin.is_some()))
-                                            .or_default()
-                                            .place(
-                                                arena,
-                                                wgpu::BufferUsages::VERTEX,
-                                                [stride, 16],
-                                                [Some(bytemuck::cast_slice(&packed)), skin],
-                                                packed.len() as u64 * 4 / stride,
-                                            )?;
-                                        let indices = native.indices.place(
-                                            arena,
-                                            wgpu::BufferUsages::INDEX,
-                                            [4, 0],
-                                            [
-                                                Some(bytemuck::cast_slice(
-                                                    &source.geometry.indices,
-                                                )),
-                                                None,
-                                            ],
-                                            source.geometry.indices.len() as u64,
-                                        )?;
-                                        let geometry = SharedGeometry {
-                                            stride,
-                                            native_stride: source.geometry.stride,
-                                            cpu_vertices: bytemuck::cast_slice(
-                                                &source.geometry.vertices,
-                                            )
-                                            .into(),
-                                            cpu_skin: skin.map(Into::into),
-                                            skin_bones: source
-                                                .geometry
-                                                .skin
-                                                .iter()
-                                                .flat_map(|v| v.indices)
-                                                .map(|i| usize::from(i) + 1)
-                                                .max()
-                                                .unwrap_or(0),
-                                            vertices: (
-                                                vertices.0,
-                                                i32::try_from(vertices.1)
-                                                    .map_err(io::Error::other)?,
-                                            ),
-                                            indices: (
-                                                indices.0,
-                                                u32::try_from(indices.1)
-                                                    .map_err(io::Error::other)?,
-                                            ),
-                                        };
-                                        native
-                                            .geometry
-                                            .insert(source.geometry_key.clone(), geometry.clone());
-                                        geometry
-                                    }
-                                };
-                                let effect = &selection.effect.source;
-                                let technique = &effect.techniques[selection.index];
-                                let mut state =
-                                    shader_pipeline::gpu::State::authored(effect, technique)
                                         .map_err(invalid)?;
-                                state.samplers.retain(|key, _| {
-                                    (0..3).any(|slot| *key == binding(slot, Stage::Pixel))
-                                });
-                                state.samplers.extend(mesh_shader::map_samplers());
-                                entry.insert(Resident {
-                                    retained: shader_scene::Program::new(
-                                        &selection,
-                                        &layouts,
-                                        &state,
-                                        &effect.rasterizer(technique),
-                                        &effect.depth_stencil(technique),
-                                    ),
-                                    geometry,
-                                    pipeline,
-                                    caster_texture,
-                                    blended,
-                                });
-                            }
-                            let gpu = &native.parts[&key];
-                            if !queue.accepts(gpu.blended, forced) {
-                                continue;
-                            }
-                            let material = &self.materials[source.material_index];
-                            for (slot, index) in
-                                [material.diffuse, material.specular, material.normal]
-                                    .into_iter()
-                                    .enumerate()
-                            {
-                                let bound =
-                                    &mut textures[binding(slot as u32, Stage::Pixel) as usize];
-                                if caster && (slot != 0 || !gpu.caster_texture) {
-                                    *bound = None;
-                                    continue;
+                                    let mut layouts = mesh_shader::vertex_layouts(
+                                        &compiled.vertex.inputs,
+                                        source.geometry.uv1,
+                                        !source.geometry.skin.is_empty(),
+                                    )?;
+                                    // Retained declarations bind 142250C70's compact stride.
+                                    layouts[0].stride = source.geometry.stride;
+                                    let geometry = match native.geometry.get(&source.geometry_key) {
+                                        Some(geometry) => geometry.clone(),
+                                        None => {
+                                            let stride = if source.geometry.uv1 { 56 } else { 48 };
+                                            let skin: Option<&[u8]> =
+                                                (!source.geometry.skin.is_empty()).then(|| {
+                                                    bytemuck::cast_slice(&source.geometry.skin)
+                                                });
+                                            let packed = source
+                                                .geometry
+                                                .packed(source.geometry.uv1)
+                                                .map_err(PrepareError::Actor)?;
+                                            let vertices = native
+                                                .pools
+                                                .entry((stride, skin.is_some()))
+                                                .or_default()
+                                                .place(
+                                                    arena,
+                                                    wgpu::BufferUsages::VERTEX,
+                                                    [stride, 16],
+                                                    [Some(bytemuck::cast_slice(&packed)), skin],
+                                                    packed.len() as u64 * 4 / stride,
+                                                )?;
+                                            let indices = native.indices.place(
+                                                arena,
+                                                wgpu::BufferUsages::INDEX,
+                                                [4, 0],
+                                                [
+                                                    Some(bytemuck::cast_slice(
+                                                        &source.geometry.indices,
+                                                    )),
+                                                    None,
+                                                ],
+                                                source.geometry.indices.len() as u64,
+                                            )?;
+                                            let geometry = SharedGeometry {
+                                                stride,
+                                                native_stride: source.geometry.stride,
+                                                cpu_vertices: bytemuck::cast_slice(
+                                                    &source.geometry.vertices,
+                                                )
+                                                .into(),
+                                                cpu_skin: skin.map(Into::into),
+                                                skin_bones: source
+                                                    .geometry
+                                                    .skin
+                                                    .iter()
+                                                    .flat_map(|v| v.indices)
+                                                    .map(|i| usize::from(i) + 1)
+                                                    .max()
+                                                    .unwrap_or(0),
+                                                vertices: (
+                                                    vertices.0,
+                                                    i32::try_from(vertices.1)
+                                                        .map_err(io::Error::other)?,
+                                                ),
+                                                indices: (
+                                                    indices.0,
+                                                    u32::try_from(indices.1)
+                                                        .map_err(io::Error::other)?,
+                                                ),
+                                            };
+                                            native.geometry.insert(
+                                                source.geometry_key.clone(),
+                                                geometry.clone(),
+                                            );
+                                            geometry
+                                        }
+                                    };
+                                    let effect = &selection.effect.source;
+                                    let technique = &effect.techniques[selection.index];
+                                    let mut state =
+                                        shader_pipeline::gpu::State::authored(effect, technique)
+                                            .map_err(invalid)?;
+                                    state.samplers.retain(|key, _| {
+                                        (0..3).any(|slot| *key == binding(slot, Stage::Pixel))
+                                    });
+                                    state.samplers.extend(mesh_shader::map_samplers());
+                                    entry.insert(Resident {
+                                        retained: shader_scene::Program::new(
+                                            &selection,
+                                            &layouts,
+                                            &state,
+                                            &effect.rasterizer(technique),
+                                            &effect.depth_stencil(technique),
+                                        ),
+                                        geometry,
+                                        pipeline,
+                                        required_constants: compiled
+                                            .vertex
+                                            .buffers
+                                            .iter()
+                                            .chain(&compiled.pixel.buffers)
+                                            .map(|buffer| buffer.binding)
+                                            .collect(),
+                                        required_textures: compiled
+                                            .vertex
+                                            .textures
+                                            .iter()
+                                            .chain(&compiled.pixel.textures)
+                                            .map(|(slot, _)| *slot)
+                                            .collect(),
+                                        caster_texture,
+                                        blended,
+                                    });
                                 }
-                                let texture = self.textures[index].as_ref().ok_or_else(|| {
-                                    invalid("native mesh material is not resident")
-                                })?;
-                                *bound = Some(texture.view.clone());
-                            }
-                            let mut buffers: Constants = [None; CONSTANT_BINDINGS];
-                            buffers[binding(0, Stage::Vertex) as usize] = Some(inputs.frames[view]);
-                            buffers[binding(0, Stage::Pixel) as usize] = Some(inputs.frames[view]);
-                            if !caster {
-                                buffers[binding(2, Stage::Pixel) as usize] = Some(inputs.grid);
-                            }
-                            let (vertex, pixel) = object.upload(userdata.is_some());
-                            buffers[binding(1, Stage::Vertex) as usize] = Some(vertex);
-                            buffers[binding(1, Stage::Pixel) as usize] = pixel;
-                            if gpu.geometry.cpu_skin.is_some() {
-                                let pose = actor.pose.as_ref().map_err(|e| {
-                                    invalid(format!(
-                                        "Map shader {}: 1 refused skin {}: {e}",
-                                        self.label, mesh.name
-                                    ))
-                                })?;
-                                if gpu.geometry.skin_bones > pose.bones.len() {
-                                    return Err(invalid(format!(
-                                        "Map shader {}: 1 refused skin {}: vertex reads outside {} initialized bones",
-                                        self.label,
-                                        mesh.name,
-                                        pose.bones.len()
-                                    )));
-                                }
-                                buffers[binding(2, Stage::Vertex) as usize] =
-                                    Some(bytemuck::cast_slice(&pose.bones));
-                            }
-                            let bindings = gpu
-                                .pipeline
-                                .pipeline
-                                .bind_with(
-                                    arena,
-                                    |binding| buffers[binding as usize],
-                                    |binding| textures[binding as usize].as_ref(),
-                                )
-                                .map_err(invalid)?;
-                            if !caster {
-                                pending.record(key, gpu, &buffers, &textures);
-                            }
-                            let same = previous.as_ref().filter(|(last, _)| {
-                                Arc::ptr_eq(
-                                    &native.parts[last].pipeline.pipeline,
-                                    &gpu.pipeline.pipeline,
-                                )
-                            });
-                            if same.is_none() {
-                                gpu.pipeline.begin(pass);
-                            }
-                            let pool = (gpu.geometry.stride, gpu.geometry.cpu_skin.is_some());
-                            if bound_vertices != Some((pool, gpu.geometry.vertices.0)) {
-                                let chunk = &native.pools[&pool].chunks[gpu.geometry.vertices.0];
-                                for (slot, stream) in chunk.streams.iter().enumerate() {
-                                    if let Some(stream) = stream {
-                                        pass.set_vertex_buffer(slot as u32, stream.slice(..));
+                                let gpu = &native.parts[&key];
+                                let material = &self.materials[source.material_index];
+                                for (slot, index) in
+                                    [material.diffuse, material.specular, material.normal]
+                                        .into_iter()
+                                        .enumerate()
+                                {
+                                    let bound =
+                                        &mut textures[binding(slot as u32, Stage::Pixel) as usize];
+                                    if caster && (slot != 0 || !gpu.caster_texture) {
+                                        *bound = None;
+                                        continue;
                                     }
+                                    let texture =
+                                        self.textures[index].as_ref().ok_or_else(|| {
+                                            PrepareError::Actor(invalid(
+                                                "native mesh material is not resident",
+                                            ))
+                                        })?;
+                                    *bound = Some(texture.view.clone());
                                 }
-                                bound_vertices = Some((pool, gpu.geometry.vertices.0));
+                                let mut buffers: Constants = [None; CONSTANT_BINDINGS];
+                                buffers[binding(0, Stage::Vertex) as usize] =
+                                    Some(inputs.frames[view]);
+                                buffers[binding(0, Stage::Pixel) as usize] =
+                                    Some(inputs.frames[view]);
+                                if !caster {
+                                    buffers[binding(2, Stage::Pixel) as usize] = Some(inputs.grid);
+                                }
+                                buffers[binding(1, Stage::Vertex) as usize] = Some(vertex);
+                                buffers[binding(1, Stage::Pixel) as usize] = pixel;
+                                if gpu.geometry.cpu_skin.is_some() {
+                                    let pose = skin_pose.expect("skinned geometry checked above");
+                                    if gpu.geometry.skin_bones > pose.bones.len() {
+                                        return Err(PrepareError::Actor(invalid(format!(
+                                            "skin: vertex reads outside {} initialized bones",
+                                            pose.bones.len()
+                                        ))));
+                                    }
+                                    buffers[binding(2, Stage::Vertex) as usize] =
+                                        Some(bytemuck::cast_slice(&pose.bones));
+                                }
+                                // Actor inputs are checked separately; later arena/device errors are fatal.
+                                gpu.check_bindings(&buffers, &textures)?;
+                                let bindings = gpu
+                                    .pipeline
+                                    .pipeline
+                                    .bind_with(
+                                        arena,
+                                        |binding| buffers[binding as usize],
+                                        |binding| textures[binding as usize].as_ref(),
+                                    )
+                                    .map_err(invalid)?;
+                                if queue.accepts(gpu.blended, forced) {
+                                    prepared.push(PreparedPart {
+                                        key,
+                                        bindings,
+                                        buffers,
+                                        textures: textures.clone(),
+                                        material: source.material_index,
+                                        count: source.geometry.indices.len() as u32,
+                                    });
+                                }
                             }
-                            if bound_indices != Some(gpu.geometry.indices.0) {
-                                let chunk = &native.indices.chunks[gpu.geometry.indices.0];
-                                let indices = chunk.streams[0].as_ref().expect("index stream");
-                                pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
-                                bound_indices = Some(gpu.geometry.indices.0);
+                            // Prepare every part before the first command for this actor.
+                            for PreparedPart {
+                                key,
+                                bindings,
+                                buffers,
+                                textures,
+                                material,
+                                count,
+                            } in prepared
+                            {
+                                let gpu = &native.parts[&key];
+                                if !caster {
+                                    pending.record(key, gpu, &buffers, &textures);
+                                }
+                                let same = previous.as_ref().filter(|(last, _)| {
+                                    Arc::ptr_eq(
+                                        &native.parts[last].pipeline.pipeline,
+                                        &gpu.pipeline.pipeline,
+                                    )
+                                });
+                                if same.is_none() {
+                                    gpu.pipeline.begin(pass);
+                                }
+                                let pool = (gpu.geometry.stride, gpu.geometry.cpu_skin.is_some());
+                                if bound_vertices != Some((pool, gpu.geometry.vertices.0)) {
+                                    let chunk =
+                                        &native.pools[&pool].chunks[gpu.geometry.vertices.0];
+                                    for (slot, stream) in chunk.streams.iter().enumerate() {
+                                        if let Some(stream) = stream {
+                                            pass.set_vertex_buffer(slot as u32, stream.slice(..));
+                                        }
+                                    }
+                                    bound_vertices = Some((pool, gpu.geometry.vertices.0));
+                                }
+                                if bound_indices != Some(gpu.geometry.indices.0) {
+                                    let chunk = &native.indices.chunks[gpu.geometry.indices.0];
+                                    let indices = chunk.streams[0].as_ref().expect("index stream");
+                                    pass.set_index_buffer(
+                                        indices.slice(..),
+                                        wgpu::IndexFormat::Uint32,
+                                    );
+                                    bound_indices = Some(gpu.geometry.indices.0);
+                                }
+                                bindings.bind_after(pass, same.map(|(_, last)| last));
+                                let first = gpu.geometry.indices.1;
+                                pass.draw_indexed(
+                                    first..first + count,
+                                    gpu.geometry.vertices.1,
+                                    0..1,
+                                );
+                                previous = Some((key, bindings));
+                                last_material = Some(material);
+                                drawn += 1;
                             }
-                            bindings.bind_after(pass, same.map(|(_, last)| last));
-                            let first = gpu.geometry.indices.1;
-                            let count = source.geometry.indices.len() as u32;
-                            pass.draw_indexed(first..first + count, gpu.geometry.vertices.1, 0..1);
-                            previous = Some((key, bindings));
-                            drawn += 1;
+                            Ok(())
+                        };
+                        if let Err(why) = submit() {
+                            let why = match why {
+                                PrepareError::Actor(why) => why,
+                                PrepareError::Shared(why) => return Err(why),
+                            };
+                            (object.bytes, object.pixel) = scratch_before;
+                            let name = if descriptor.name == mesh.name {
+                                mesh.name.clone()
+                            } else {
+                                format!("{}/{}", mesh.name, descriptor.name)
+                            };
+                            self.refuse_actor(arena.frame(), index, descriptor.node, &name, why);
                         }
                     }
                 }
             }
         }
         if !caster {
+            // Failed binds must not replace the last submitted material's retained textures.
+            if let Some(material) = last_material {
+                let material = &self.materials[material];
+                for (slot, index) in [material.diffuse, material.specular, material.normal]
+                    .into_iter()
+                    .enumerate()
+                {
+                    textures[binding(slot as u32, Stage::Pixel) as usize] = self.textures[index]
+                        .as_ref()
+                        .map(|texture| texture.view.clone());
+                }
+            }
             pending.apply(&native.parts, textures, &mut object.retained);
             self.drawn.set(self.drawn.get() + drawn);
         }
@@ -1091,6 +1245,7 @@ mod tests {
     #[test]
     fn lod_uses_actor_distance_squared_and_native_last_level_fallback() {
         let mut descriptor = Descriptor {
+            name: "synthetic_lods".into(),
             node: 0,
             distances: vec![4., 100.],
             lods: vec![vec![], vec![], vec![]],
@@ -1177,3 +1332,6 @@ mod tests {
         assert_eq!(packed[3], [7., 11., 13., 1.]);
     }
 }
+
+#[cfg(test)]
+mod dump_tests;

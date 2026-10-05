@@ -93,7 +93,9 @@ impl<'a> Frame<'a> {
     /// Only for draws whose last possible error precedes their first command.
     /// terrain prepares separately; border/river/rail/strait/water/name/sky
     /// adapters collect every binding before begin_render_pass. Mid-encode
-    /// model, tree, arrow, particle, shadow and post errors remain whole-frame.
+    /// tree, arrow, particle, shadow and post errors remain whole-frame.
+    /// Models prepare all parts before drawing; actor content/binding refusals draw
+    /// nothing. Shared library/pipeline/arena/pool/device errors stay whole-frame.
     pub fn run<T>(&mut self, pass: Pass, draw: impl FnOnce() -> io::Result<T>) -> Option<T> {
         if !self.ready(pass) {
             return None;

@@ -47,8 +47,33 @@ pub struct Locals {
 }
 
 pub struct Actor {
-    pub world: Matrix,
+    pub world: Result<Matrix, String>,
     pub pose: Result<Pose, String>,
+}
+
+fn parent_world(
+    rig: &super::entity_animation::Rig,
+    actors: &[Actor],
+    node: &super::entity_animation::Node,
+) -> Result<Matrix, String> {
+    let Some((parent, joint, _)) = &node.parent else {
+        return Ok(IDENTITY);
+    };
+    let actor = &actors[*parent];
+    let source = rig.nodes[*parent]
+        .native
+        .as_ref()
+        .ok_or_else(|| "native parent actor source unavailable".to_owned())?;
+    let joint_index = source
+        .skeleton
+        .iter()
+        .position(|j| j.name == *joint)
+        .ok_or_else(|| format!("native attachment joint {joint:?} unavailable"))?;
+    let pose = actor.pose.as_ref().map_err(Clone::clone)?;
+    Ok(multiply(
+        *actor.world.as_ref().map_err(Clone::clone)?,
+        pose.joints[joint_index],
+    ))
 }
 
 /// Bind matrices stay actor-local. Attachment actors use joint world matrices,
@@ -57,35 +82,19 @@ pub fn actors(
     rig: &super::entity_animation::Rig,
     player: Option<&super::entity_animation::Player>,
     frozen_animation: bool,
-) -> io::Result<Vec<Actor>> {
+) -> Vec<Actor> {
     let mut actors: Vec<Actor> = Vec::with_capacity(rig.nodes.len());
     for (index, node) in rig.nodes.iter().enumerate() {
-        let source = node
-            .native
-            .as_ref()
-            .ok_or_else(|| io::Error::other("native actor source unavailable"))?;
-        let parent = if let Some((parent, joint, _)) = &node.parent {
-            let actor = &actors[*parent];
-            let parent_source = rig.nodes[*parent]
-                .native
-                .as_ref()
-                .expect("earlier source checked");
-            let joint_index = parent_source
-                .skeleton
-                .iter()
-                .position(|j| j.name == *joint)
-                .ok_or_else(|| {
-                    io::Error::other(format!("native attachment joint {joint:?} unavailable"))
-                })?;
-            let pose = actor
-                .pose
-                .as_ref()
-                .map_err(|e| io::Error::other(e.clone()))?;
-            multiply(actor.world, pose.joints[joint_index])
-        } else {
-            IDENTITY
+        let Some(source) = node.native.as_ref() else {
+            let why = "native actor source unavailable".to_owned();
+            actors.push(Actor {
+                world: Err(why.clone()),
+                pose: Err(why),
+            });
+            continue;
         };
-        let world = multiply(parent, scale(source.entity_scale));
+        let world = parent_world(rig, &actors, node)
+            .map(|parent| multiply(parent, scale(source.entity_scale)));
         let pose = if source.skeleton.is_empty() {
             Ok(Pose::default())
         } else {
@@ -106,13 +115,13 @@ pub fn actors(
                 |p| p.native_locals(rig, index),
             );
             locals.and_then(|locals| {
-                let locals = locals.ok_or_else(|| io::Error::other("native skeleton has no played animation;142399610 leaves palette bytes uninitialized"))?;
+                let locals = locals.ok_or_else(|| io::Error::other("native skeleton has no played animation; its palette is uninitialized (142399610/142399990/14239B0B0)"))?;
                 assemble(&source.skeleton, &locals.poses, source.mesh_scale, locals.crossfade)
             }).map_err(|e| e.to_string())
         };
         actors.push(Actor { world, pose });
     }
-    Ok(actors)
+    actors
 }
 
 ///1424E8D50: only the near-linear branch normalizes. Static channels never call it.
