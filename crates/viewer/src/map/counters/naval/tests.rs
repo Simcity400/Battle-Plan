@@ -4,6 +4,28 @@ use replay::{
     rows::{TableId, TableRows, TaskForceCounterInputRow, TaskForceRow},
 };
 
+/// 14127EBF0 filters combat task forces after 141277A00 has bucketed them for models.
+#[test]
+fn combat_task_forces_never_offer_sea_counter_sources() {
+    let skips = crate::map::task_force_visual::MissionSkips::fixture([(7, (0, 0))], []);
+    for combat_references in [i32::MIN, -1, 0, 1, i32::MAX] {
+        let force = replay::rows::TaskForceRow {
+            id: 7,
+            combat_references,
+            ..Default::default()
+        };
+        for kind in [0, ATTACKING, DEFENDING] {
+            let mut report = CounterReport::default();
+            assert_eq!(
+                stays_a_source(&skips, &force, kind, Some(3), &mut report),
+                combat_references <= 0,
+                "combat references {combat_references}, kind {kind}"
+            );
+            assert!(report.unplaced_task_forces.is_empty());
+        }
+    }
+}
+
 /// Runs `body` with a port context over `forces`, every one with default engagement
 /// operands, viewed by the default vision (slot 0).
 fn with_port_context<R>(
