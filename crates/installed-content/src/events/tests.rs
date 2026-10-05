@@ -101,7 +101,7 @@ fn lazy_events_read_nothing_until_demand_and_cache_only_requested_identifiers() 
         ["events/a.txt", "events/unrelated.txt"]
     );
     let parsed = parse(
-        &layers.read_uncovered("events/a.txt").unwrap(),
+        &layers.read("events/a.txt").unwrap(),
         "events/a.txt",
         &KeyNames::default(),
     );
@@ -115,8 +115,6 @@ fn lazy_events_read_nothing_until_demand_and_cache_only_requested_identifiers() 
     assert_eq!(events.cache.lock().unwrap().events.len(), 1);
     assert_eq!(first.titles[0].value.scalar(), Some(b"FIRST".as_slice()));
     assert!(first.refused.is_none());
-    assert_eq!(first.notes.len(), 1);
-    assert!(first.notes[0].contains("events/a.txt:1: UNVERIFIED event_content_coverage"));
     assert_eq!(
         events.get(b"s.2").unwrap().titles[0].value.scalar(),
         Some(b"SECOND".as_slice())

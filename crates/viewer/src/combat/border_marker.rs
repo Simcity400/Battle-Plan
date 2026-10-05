@@ -142,9 +142,6 @@ fn event_description(
     loc: &Localisation,
 ) -> Description {
     let mut out = Description::default();
-    for note in &event.notes {
-        out.refuse(note.clone());
-    }
     if let Some(why) = &event.refused {
         out.refuse(why.clone());
         return out;

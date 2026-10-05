@@ -162,28 +162,41 @@ fn border_marker_empty_enemy_description_has_no_enemy_heading_and_counts_failure
 }
 
 #[test]
-fn event_coverage_note_keeps_text_and_operative_reader_refusal_still_suppresses_it() {
-    let events = installed_content::events::parse(
+fn covered_event_keeps_text_and_operative_reader_refusal_still_suppresses_it() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4-covered-border-events-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(root.join("events")).unwrap();
+    std::fs::write(
+        root.join("events/synthetic.txt"),
         b"add_namespace=s country_event={id=s.1 immediate={custom_effect_tooltip=TEXT}} operative_leader_event={id=s.2 title=TITLE}",
-        "events/synthetic.txt",
-        &installed_content::key_names::KeyNames::default(),
-    );
-    let note = "events/synthetic.txt:1: UNVERIFIED event_content_coverage";
+    )
+    .unwrap();
+    let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let events = installed_content::events::LazyEvents::new(std::sync::Arc::new(layers));
     let render = |key: &[u8]| Ok(String::from_utf8_lossy(key).into_owned());
-    let mut event = events.get(b"s.1").unwrap().clone();
-    event.notes.push(note.into());
-    let text = event_description(&event, &render, &NoIcons, &localisation());
+    let text = event_description(
+        &events.get(b"s.1").unwrap(),
+        &render,
+        &NoIcons,
+        &localisation(),
+    );
     assert_eq!(text.body, "TEXT\n");
-    assert_eq!(text.refused[note], 1);
-    let mut event = events.get(b"s.2").unwrap().clone();
-    event.notes.push(note.into());
-    let text = event_description(&event, &render, &NoIcons, &localisation());
+    assert!(text.refused.is_empty());
+    let text = event_description(
+        &events.get(b"s.2").unwrap(),
+        &render,
+        &NoIcons,
+        &localisation(),
+    );
     assert!(text.body.is_empty());
-    assert_eq!(text.refused[note], 1);
-    assert_eq!(text.refused.values().sum::<usize>(), 2);
+    assert_eq!(text.refused.values().sum::<usize>(), 1);
     assert!(
         text.refused
             .keys()
             .any(|key| key.contains("operative_leader_event"))
     );
+    std::fs::remove_dir_all(root).unwrap();
 }

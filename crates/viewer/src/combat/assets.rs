@@ -742,21 +742,7 @@ impl Assets {
             fonts: native_assets.fonts,
             textures: native_assets.textures,
         };
-        let mut uncovered_portraits = false;
         for name in &wanted {
-            if let Some(facts) = registry.sprite(name.as_bytes()) {
-                let texture = match &facts.kind {
-                    SpriteKind::MaskedShield { shield, .. } => Some(shield.texture1.as_slice()),
-                    SpriteKind::CorneredTile(tile) => Some(tile.texture.as_slice()),
-                    SpriteKind::Progress(progress) => Some(progress.texture1.as_slice()),
-                    SpriteKind::CircularProgress(progress) => Some(progress.texture1.as_slice()),
-                    SpriteKind::Text(text) => Some(text.texture.as_slice()),
-                    _ => facts.kind.plain().map(|plain| plain.texture.as_slice()),
-                };
-                uncovered_portraits |= texture.is_some_and(|texture| {
-                    texture.starts_with(b"gfx/leaders/") || texture.starts_with(b"gfx/texticons/")
-                });
-            }
             if let Some(facts) = registry.sprite(name.as_bytes())
                 && let SpriteKind::Plain(plain) = &facts.kind
                 && plain.texture.starts_with(b"gfx/leaders/")
@@ -766,7 +752,6 @@ impl Assets {
                 && facts.refusals.is_empty()
                 && let Ok(first) = std::str::from_utf8(&plain.texture)
             {
-                uncovered_portraits = true;
                 lazy_sprites.insert(name.clone(), (first.to_owned(), plain.clone()));
                 resident.sprites.remove(name.as_bytes());
             } else {
@@ -833,9 +818,6 @@ impl Assets {
                 "Combat UI: {} leader portrait sprites decode when a window first draws them; one whose texture cannot be read stays empty.",
                 lazy_sprites.len()
             ));
-        }
-        if uncovered_portraits {
-            warnings.push("Combat portraits and inline icons under gfx/leaders and gfx/texticons are outside this recording's content hash coverage; their visual identity is UNVERIFIED without a covered content manifest.".into());
         }
         let equipment = installed_content::equipment::Database::load(layers)?;
         let (convoy_weapon_bound, misreads) =

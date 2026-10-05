@@ -118,7 +118,7 @@ The collector installs the shared allocation-failure callback before bootstrap d
 
 File spools keep record writes ordered while allowing one periodic durability request per segment to run in the background. Pending errors are checked before subsequent writes and on idle polls; a failed segment is abandoned through the existing recovery path. Segment creation, forced boundaries and detach remain synchronous durability barriers. Every outstanding worker is joined before its sink is destroyed. On Windows the durability handle reopens the existing file through its handle, separately from the synchronous writer; no path-based replacement or extra capture-buffer queue is involved.
 
-The replay stores content identity, ordered layer hashes and the coverage policy, not game assets or machine-specific paths. Asset resolution belongs in [installed-content](../installed-content/README.md).
+The replay stores content identity, ordered layer hashes and the coverage policy, not game assets or machine-specific paths. The identity codec preserves older coverage policies; content resolution refuses an unsupported policy instead of reinterpreting its hashes under the current roots. Asset resolution belongs in [installed-content](../installed-content/README.md).
 
 ## Checking changes
 

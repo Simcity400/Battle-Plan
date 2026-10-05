@@ -19,8 +19,6 @@ pub struct Event {
     pub titles: Vec<Item>,
     pub immediate: Vec<Item>,
     pub options: Vec<Vec<Item>>,
-    /// Nonfatal source diagnostics, counted by the tooltip consumer.
-    pub notes: Vec<String>,
     pub refused: Option<String>,
 }
 #[derive(Clone, Debug, Default)]
@@ -419,7 +417,7 @@ impl LazyEvents {
                     index.add(
                         &self
                             .layers
-                            .read_uncovered(&path)
+                            .read(&path)
                             .map_err(|error| format!("{path}: {error}"))?,
                         &path,
                     );
@@ -454,17 +452,11 @@ impl LazyEvents {
             for path in paths {
                 let bytes = self
                     .layers
-                    .read_uncovered(path)
+                    .read(path)
                     .map_err(|error| format!("{path}: {error}"))?;
                 let mut file = parse_selected(&bytes, path, &names, Some(&key));
                 registered |= file.namespaces.contains(&key[..dot]);
                 if let Some(mut event) = file.entries.remove(&key) {
-                    if !crate::content::covered(path) {
-                        event.notes.push(format!(
-                            "{}: UNVERIFIED event_content_coverage: event script bytes are outside recorded identity coverage; resolved layer order is preserved",
-                            event.source
-                        ));
-                    }
                     if found.is_some() {
                         event.refused = Some(format!(
                             "{}: repeated event identifier {}; native registration order is not reconstructed",
