@@ -630,6 +630,7 @@ pub(super) fn hint_character_targets(
                 (cunit_leader::NAME, 32),
                 (cunit_leader::SKILL, 32),
                 (cunit_leader::CHARACTER_TYPE, 8),
+                (cunit_leader::EXILE_COUNTRY, 4),
             ] {
                 if let Some(address) = unit.checked_add(offset) {
                     hint_character_target(address, len, &mut hint);
@@ -1466,8 +1467,8 @@ pub(super) fn copy_unit(
     let kind = parsed.map(|(kind, _)| kind);
     if !dead.units {
         // State scatter in `cunit_leader::read` order: character backlink,
-        // category, experience, skill pointer.
-        let state = take_fixed_fields::<4, false>(
+        // category, experience, skill pointer, exile country.
+        let state = take_fixed_fields::<5, false>(
             job,
             memory,
             [
@@ -1475,9 +1476,10 @@ pub(super) fn copy_unit(
                 cunit_leader::CATEGORY,
                 cunit_leader::EXPERIENCE,
                 cunit_leader::SKILL,
+                cunit_leader::EXILE_COUNTRY,
             ]
             .map(|offset| unit.checked_add(offset)),
-            [8, 4, 8, 8],
+            [8, 4, 8, 8, 4],
             MASK_UNITS,
             &mut dead.units,
         );
@@ -1487,6 +1489,7 @@ pub(super) fn copy_unit(
                 Some(_category),
                 Some(_experience),
                 Some(skill),
+                Some(_exile),
             ] = state
         {
             // These are independent registries: a leader's id is not the

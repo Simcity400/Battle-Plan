@@ -270,18 +270,20 @@ pub(crate) mod tests {
             outcome,
             &mut request.census.payload,
         );
-        cstate::read_names(
+        let names = cstate::read_names(
             memory,
             STATE,
             outcome,
             &mut request.census.payload,
             &mut request.names.bytes,
-        )
-        .outcome
+        );
+        // Run acquires the flags and active border trees after its census.
+        request.visitor.acquire_owned(memory, 0, STATE);
+        names.outcome
     }
 
     #[test]
-    fn one_states_census_matches_serial_rows_and_leaves_flags_for_their_stage() {
+    fn one_states_census_matches_serial_rows_and_acquires_flags_once() {
         let bytes = fixture();
         for capacity in [0, 1, 2] {
             let mut actual = request(capacity);
@@ -293,15 +295,10 @@ pub(crate) mod tests {
             assert_eq!(report.census.result, outcome);
             assert_eq!(actual.census.payload, reference.census.payload);
             assert_eq!(*memory.calls.borrow(), *expected.calls.borrow());
-            assert!(
-                memory
-                    .calls
-                    .borrow()
-                    .iter()
-                    .all(|(at, _)| *at != FIRST + cstate::DEMILITARIZED
-                        && *at != LAST + cstate::DEMILITARIZED)
-            );
+            // The visitor's capture consumes the rows run already acquired.
+            let acquired = memory.calls.borrow().len();
             actual.visitor.capture(&memory, 0, STATE);
+            assert_eq!(memory.calls.borrow().len(), acquired);
             reference.visitor.capture(&expected, 0, STATE);
             assert_eq!(actual.visitor.tables(), reference.visitor.tables());
             assert_eq!(*memory.calls.borrow(), *expected.calls.borrow());
@@ -353,8 +350,11 @@ pub(crate) mod tests {
             let report = actual.run(&memory);
             let outcome = serial(&mut reference, &expected);
             assert_eq!(report.census.result, outcome, "fault {fault}");
+            // A census fault fails the census; a later flag fault fails only
+            // the flags run acquired after it.
             assert!(
-                matches!(report.census.result, Outcome::Unavailable { .. }),
+                matches!(report.census.result, Outcome::Unavailable { .. })
+                    || matches!(actual.visitor.outcomes(), [Outcome::Unavailable { .. }]),
                 "fault {fault}"
             );
             assert_eq!(actual.census.payload, reference.census.payload);

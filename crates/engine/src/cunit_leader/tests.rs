@@ -248,7 +248,7 @@ fn trait_batches_keep_exact_read_ranges_and_reduce_guard_entries() {
             .iter()
             .map(|span| span.1)
             .sum::<usize>(),
-        81 + 4 + 8 + 1 + 1
+        81 + 4 + 8 + 1 + 1 + 4 // + exile country +0xED4
     );
 }
 

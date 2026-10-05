@@ -121,7 +121,7 @@ fn character_target_hints_obey_independent_dead_guards_and_empty_maps() {
                 expected.push((0x4000, 1));
             }
             if !dead.units {
-                expected.extend([(0x4040, 1), (0x4e60, 1), (0x4f48, 1)]);
+                expected.extend([(0x4040, 1), (0x4e60, 1), (0x4f48, 1), (0x4ed4, 1)]);
             }
             assert_eq!(
                 targets(&view(0x2000, count, 0x3000, count, 0x4000), &dead),
@@ -137,7 +137,8 @@ fn character_target_hints_obey_independent_dead_guards_and_empty_maps() {
             (0x4000, 1),
             (0x4040, 1),
             (0x4e60, 1),
-            (0x4f48, 1)
+            (0x4f48, 1),
+            (0x4ed4, 1)
         ]
     );
     // Aliased sentinels remain two independently requested hints.
@@ -149,7 +150,8 @@ fn character_target_hints_obey_independent_dead_guards_and_empty_maps() {
             (0x2000, 1),
             (0x2040, 1),
             (0x2e60, 1),
-            (0x2f48, 1)
+            (0x2f48, 1),
+            (0x2ed4, 1)
         ]
     );
 }
@@ -184,7 +186,7 @@ fn character_target_hints_reject_null_overflow_and_canonical_gap_ranges() {
         let start = source.1.starts[field] as usize;
         source.0.log.bytes[start..start + 8].copy_from_slice(&u64::MAX.to_le_bytes());
         let hinted = targets(&source, &Dead::default());
-        assert_eq!(hinted.len(), if field == 5 { 2 } else { 5 });
+        assert_eq!(hinted.len(), if field == 5 { 2 } else { 6 });
         assert!(!hinted.iter().any(|&(address, _)| address == usize::MAX));
     }
 }
@@ -306,6 +308,7 @@ fn character_fresh_view_hints_observe_no_targets_and_ignore_failed_fields() {
                 (ADDRESS + UNITS[0] + 0x40, 1),
                 (ADDRESS + UNITS[0] + 0xe60, 1),
                 (ADDRESS + UNITS[0] + 0xf48, 1),
+                (ADDRESS + UNITS[0] + 0xed4, 1),
             ]);
         }
         let mut hints = Vec::new();

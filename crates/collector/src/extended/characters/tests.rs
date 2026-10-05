@@ -2374,10 +2374,11 @@ fn character_family_read_cost_stays_at_its_measured_shape() {
     // inputs (three spans, 13 bytes: none is an army leader). Each of
     // the 32 views' name token spans also carries the template pointer
     // (12 bytes, no read); none of these characters has a template.
-    // Gender adds one four-byte span per view in the same scatter.
+    // Gender adds one four-byte span per view in the same scatter, and each
+    // unit leader's state scatter its four-byte exile country (+0xED4).
     assert_eq!(
         (memory.guards.get(), memory.spans.get(), memory.bytes.get()),
-        (588 + 3, 1204 + 9 + 32, 16_872 + 39 + 32 * (12 + 4))
+        (588 + 3, 1204 + 9 + 32 + 3, 16_872 + 39 + 32 * (12 + 4) + 3 * 4)
     );
 }
 
