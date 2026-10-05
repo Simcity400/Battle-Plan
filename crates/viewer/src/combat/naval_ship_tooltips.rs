@@ -55,6 +55,10 @@ fn member_trees(rows: &[replay::rows::NavalModifierBreakdownRow], combat: u64) -
 // 14195F760 (descriptor table 142A0A460) and 1415B43F0.
 super::text::tooltip_keys! {
     NAVAL_COMBAT_INCOMING_UNKNOWN = "NAVAL_COMBAT_INCOMING_UNKNOWN",
+    // 1417DBBE0 calls 1419947D0 between members.
+    SEPARATION_LINE = "SEPARATION_LINE",
+    // CFexShipIcon::vt18_vf0@1417D5260 prepends this for the hidden box.
+    NAVAL_COMBAT_HIDDEN_SUBS = "NAVAL_COMBAT_HIDDEN_SUBS",
     SHIP_AND_TYPE = "SHIP_AND_TYPE",
     SHIP_SUNK_BY = "SHIP_SUNK_BY",
     FEX_STATE_UNINITIALIZED = "FEX_STATE_UNINITIALIZED",
@@ -172,12 +176,13 @@ pub(super) fn bind(
                 icons,
                 loc,
                 Some(&context),
+                Some(&document.recorded_language),
             )
         };
         match built {
-            Ok(text) => set_hover(&mut entry.values, "icon", hover_text(&text), None),
+            Ok(text) => group_hovers(&mut entry.values, hover_text(&text)),
             Err(reasons) => {
-                set_hover(&mut entry.values, "icon", None, None);
+                group_hovers(&mut entry.values, None);
                 for reason in reasons {
                     refusals.push(format!(
                         "Naval combat {id} ship box hover is withheld: {reason}."
@@ -192,6 +197,27 @@ pub(super) fn bind(
     Ok(())
 }
 
+/// 1417CE2A0 installs the same CFexShipIcon observer on the hull, labels,
+/// hidden marker, condition bars, escape progress and both chevrons;
+/// 1417D5260 returns the group text (pride has its separate branch).
+/// Owning each hover prevents a chevron from falling through to its grid's
+/// authored formation explanation.
+fn group_hovers(values: &mut super::Values, text: Option<super::HoverText>) {
+    for key in [
+        "icon",
+        "desc_left",
+        "desc_right",
+        "icon_hidden",
+        "bar_str",
+        "bar_org",
+        "escape_progress",
+        "escape_icon_left",
+        "escape_icon_right",
+    ] {
+        set_hover(values, key, text.clone(), None);
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // The group's recorded rows and text resources.
 fn group_tooltip(
     slots: &[u32],
@@ -202,10 +228,22 @@ fn group_tooltip(
     icons: &dyn TextIcons,
     loc: &Localisation,
     context: Option<&VariantContext<'_>>,
+    recorded_language: Option<&str>,
 ) -> Result<String, Vec<String>> {
-    let mut text = String::new();
+    // 1417D0380 passes column 4 as the hidden-submarine bit; 1417DBBE0
+    // retains it for known boxes. 1417D5260 prepends the warning but still
+    // appends every member's details, for either viewing side.
+    let mut text = if slots
+        .first()
+        .and_then(|slot| ships.get(&(side, *slot)))
+        .is_some_and(|row| super::naval_details::column(row) == Some("hidden"))
+    {
+        builtin(icons, loc, NAVAL_COMBAT_HIDDEN_SUBS, &[]).map_err(|reason| vec![reason])?
+    } else {
+        String::new()
+    };
     let mut refusals = Vec::new();
-    for slot in slots {
+    for (index, slot) in slots.iter().enumerate() {
         let part = (|| {
             let row = ships
                 .get(&(side, *slot))
@@ -215,18 +253,22 @@ fn group_tooltip(
                 .ok_or_else(|| format!("country {} has no Countries row", row.owner))?;
             let tag = std::str::from_utf8(&country.tag)
                 .map_err(|_| format!("country {} tag is not UTF-8", row.owner))?;
-            member_tooltip(
-                row,
-                tag,
-                variants,
-                icons,
-                loc,
-                context,
-                context.map(|context| context.document.recorded_language.as_str()),
-            )
+            member_tooltip(row, tag, variants, icons, loc, context, recorded_language)
         })();
         match part {
             Ok(part) => {
+                if index != 0 {
+                    // 1419947D0 scans backwards over spaces and adds a newline
+                    // only if the preceding non-space byte is not '\n'. It then
+                    // appends the stacked SEPARATION_LINE verbatim.
+                    if !text.trim_end_matches(' ').ends_with('\n') {
+                        text.push('\n');
+                    }
+                    match builtin(icons, loc, SEPARATION_LINE, &[]) {
+                        Ok(separator) => text.push_str(&separator),
+                        Err(reason) => refusals.push(reason),
+                    }
+                }
                 text.push_str(&part);
                 text.push('\n');
             }

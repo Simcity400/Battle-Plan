@@ -9,6 +9,7 @@ fn tooltip_identifiers_use_native_presence_precedence_and_rename_refusal() {
             files.iter().map(|(path, text)| (*path, text.as_bytes())),
             &names,
             None,
+            None,
             |name, items| {
                 stored_block(items)?;
                 Ok(Some(name.to_owned()))
@@ -44,6 +45,7 @@ fn resolved(files: &[(&str, &str)]) -> Vec<Resolved> {
     resolve(
         files.iter().map(|(path, text)| (*path, text.as_bytes())),
         &SCREENING,
+        None,
     )
     .values
 }
@@ -59,6 +61,7 @@ fn blocks(files: &[(&str, &str)]) -> Blocks {
     resolve_blocks(
         files.iter().map(|(path, text)| (*path, text.as_bytes())),
         &["weather_rain_light", "weather_snow"],
+        None,
     )
 }
 
@@ -303,6 +306,53 @@ fn write(root: &Path, files: &[(&str, &str)]) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, text).unwrap();
     }
+}
+
+#[test]
+fn static_modifier_relation_scopes_keep_weather_and_screening_blocks() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_static_modifier_relation_scopes_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    write(
+        &root,
+        &[(
+            "common/modifiers/a.txt",
+            concat!(
+                "weather_rain_light={naval_strike=-0.2 naval_retreat_speed=0.05}\n",
+                "screening_bonus={sortie_efficiency=0.1}\n",
+                "capital_screening_bonus={fighter_sortie_efficiency=0.2}\n",
+                "relation={valid_relation_trigger={FROM={NOT={has_war_with=ROOT}}}}\n",
+                "weather_snow={naval_speed_factor=-0.1}\n",
+            ),
+        )],
+    );
+    let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let blocks = read_blocks(&layers, &["weather_rain_light", "weather_snow"]).unwrap();
+    assert!(blocks.notes.is_empty(), "{:?}", blocks.notes);
+    assert_eq!(
+        blocks.blocks[0]
+            .as_ref()
+            .unwrap()
+            .values
+            .iter()
+            .map(|value| (value.name.as_str(), value.value))
+            .collect::<Vec<_>>(),
+        [("naval_strike", -20_000), ("naval_retreat_speed", 5_000)]
+    );
+    assert_eq!(blocks.blocks[1].as_ref().unwrap().values[0].value, -10_000);
+    assert_eq!(
+        read(&layers, &SCREENING).unwrap().values,
+        [Ok(10_000), Ok(20_000)]
+    );
+    assert_eq!(
+        read_identifiers(&layers, &["weather_rain_light"])
+            .unwrap()
+            .identifiers,
+        [Ok(Some("weather_rain_light".into()))]
+    );
+    fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]

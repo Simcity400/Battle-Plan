@@ -48,6 +48,7 @@
 
 use crate::{
     ResolvedLayers,
+    key_names::{KeyNames, Point},
     modifiers::{self, Undecided},
     parser::{
         self, Item,
@@ -110,11 +111,13 @@ pub struct Identifiers {
 
 pub fn read_identifiers(layers: &ResolvedLayers, names: &[&str]) -> io::Result<Identifiers> {
     let files = layer_files(layers)?;
+    let key_names = layers.key_names()?.at(Point::StaticModifiers);
     let (identifiers, notes) = resolve_with(
         files
             .iter()
             .map(|(path, bytes)| (path.as_str(), bytes.as_slice())),
         names,
+        Some(&key_names),
         None,
         |name, items| {
             // Preserve the same unsupported-content contract as read_blocks.
@@ -129,11 +132,13 @@ pub fn read_identifiers(layers: &ResolvedLayers, names: &[&str]) -> io::Result<I
 /// the content stack.
 pub fn read(layers: &ResolvedLayers, requests: &[Request<'_>]) -> io::Result<Values> {
     let files = layer_files(layers)?;
+    let key_names = layers.key_names()?.at(Point::StaticModifiers);
     Ok(resolve(
         files
             .iter()
             .map(|(path, bytes)| (path.as_str(), bytes.as_slice())),
         requests,
+        Some(&key_names),
     ))
 }
 
@@ -142,11 +147,13 @@ pub fn read(layers: &ResolvedLayers, requests: &[Request<'_>]) -> io::Result<Val
 /// the same precedence and refusal rules as [`read`].
 pub fn read_blocks(layers: &ResolvedLayers, names: &[&str]) -> io::Result<Blocks> {
     let files = layer_files(layers)?;
+    let key_names = layers.key_names()?.at(Point::StaticModifiers);
     Ok(resolve_blocks(
         files
             .iter()
             .map(|(path, bytes)| (path.as_str(), bytes.as_slice())),
         names,
+        Some(&key_names),
     ))
 }
 
@@ -174,7 +181,7 @@ enum Node {
     Modifier(modifiers::Node),
 }
 
-fn read_file(bytes: &[u8]) -> File {
+fn read_file(bytes: &[u8], key_names: Option<&KeyNames>) -> File {
     let mut undecided: Vec<Undecided> = Vec::new();
     // Each definition's position among those read, when it began.
     let mut entries = 0_usize;
@@ -183,7 +190,9 @@ fn read_file(bytes: &[u8]) -> File {
         bytes,
         native::Mode::KeepMark,
         native::Top::File(Node::Top),
-        None,
+        // 1406039B0 reads valid_relation_trigger through LoadBody@1405431C0;
+        // LoadKey@1405434F0 needs the rosters already loaded at 14018F06D.
+        key_names,
         &mut |node, field| {
             let shape = match node {
                 // Every key is a CStaticModifier read by CPersistent::Read,
@@ -222,11 +231,12 @@ fn read_file(bytes: &[u8]) -> File {
 fn resolve<'a>(
     files: impl IntoIterator<Item = (&'a str, &'a [u8])>,
     requests: &[Request<'_>],
+    key_names: Option<&KeyNames>,
 ) -> Values {
     // 140600CF0/140550940: one block lookup establishes the native file and
     // bucket precedence; scalar callers select their key from that block.
     let names: Vec<_> = requests.iter().map(|request| request.modifier).collect();
-    let Blocks { blocks, notes } = resolve_blocks(files, &names);
+    let Blocks { blocks, notes } = resolve_blocks(files, &names, key_names);
     let values = blocks
         .into_iter()
         .zip(requests)
@@ -255,24 +265,29 @@ fn resolve<'a>(
 fn resolve_blocks<'a>(
     files: impl IntoIterator<Item = (&'a str, &'a [u8])>,
     names: &[&str],
+    key_names: Option<&KeyNames>,
 ) -> Blocks {
-    let (blocks, notes) =
-        resolve_with(files, names, modifiers::Modifiers::default(), |_, items| {
-            stored_block(items)
-        });
+    let (blocks, notes) = resolve_with(
+        files,
+        names,
+        key_names,
+        modifiers::Modifiers::default(),
+        |_, items| stored_block(items),
+    );
     Blocks { blocks, notes }
 }
 
 fn resolve_with<'a, T: Clone>(
     files: impl IntoIterator<Item = (&'a str, &'a [u8])>,
     names: &[&str],
+    key_names: Option<&KeyNames>,
     absent: T,
     mut stored: impl FnMut(&str, &[Item]) -> Result<T, String>,
 ) -> (Vec<Result<T, Refusal>>, Vec<String>) {
     let mut blocks = vec![Ok(absent); names.len()];
     let mut notes = Vec::new();
     for (path, bytes) in files {
-        let file = read_file(bytes);
+        let file = read_file(bytes, key_names);
         let refuse = |name: &str, reason: String| Refusal {
             file: path.to_owned(),
             modifier: name.to_owned(),

@@ -22,7 +22,7 @@
 //! (CCharacterTemplateDatabase::InitFromDirectory 1406B0120, bodies
 //! skipped), the resources and then the buildings. Every trigger body the
 //! port reads is read after the buildings ([`Point::Late`]) but the idea
-//! tags', the equipment's and the buildings' own ([`KeyNames::at`]); the
+//! tags', static modifiers', equipment's and buildings' own ([`KeyNames::at`]); the
 //! character bodies are read by PostFinalize (1406B02E0), after the ideas.
 
 use std::{
@@ -84,6 +84,10 @@ pub enum Point {
     /// `common/idea_tags` (140A31EB0), fourth: after the country tags and
     /// the scripted-trigger names only.
     IdeaTags,
+    /// `common/modifiers` at 14018F06D, before resources at 14018F2F6
+    /// and buildings at 14018FAF0: country tags, aliases, character tokens,
+    /// ideologies and scripted-trigger names are already loaded.
+    StaticModifiers,
     /// `common/units/equipment` and `common/buildings` (14067AE90), after
     /// the resources: no building is found (the building database's own
     /// triggers are read while it loads, and no vanilla or mod building
@@ -233,10 +237,13 @@ impl KeyNames {
                 names.effects.modifiers = names.effects.early_modifiers.clone();
                 names.effects.modifiers_gap = names.effects.early_modifiers_gap.clone();
             }
-            Point::BeforeBuildings => {
+            Point::StaticModifiers | Point::BeforeBuildings => {
                 names.sub_units = None;
                 names.counts.buildings.clear();
                 names.province_buildings.clear();
+                if point == Point::StaticModifiers {
+                    names.counts.resources.clear();
+                }
             }
             Point::Late => {}
         }
@@ -441,6 +448,7 @@ mod tests {
             ..KeyNames::default()
         };
         names.counts.buildings.insert(b"arms_factory".to_vec());
+        names.counts.resources.insert(b"steel".to_vec());
         let bare = |key: &[u8], value| load(Some(&names), key, Kind::Bare, value);
         assert_eq!(bare(b"Else_If", Kind::Open), Load::Conditional);
         assert_eq!(bare(b"OR", Kind::Open), Load::Coded(0x2969, Reader::Body));
@@ -488,6 +496,25 @@ mod tests {
         assert_eq!(
             load(Some(&early), b"arms_factory", Kind::Bare, Kind::Open),
             Load::Invalid
+        );
+        let static_modifiers = names.at(Point::StaticModifiers);
+        assert_eq!(
+            load(Some(&static_modifiers), b"FROM", Kind::Bare, Kind::Open),
+            Load::Scope
+        );
+        assert_eq!(
+            load(Some(&static_modifiers), b"GER", Kind::Bare, Kind::Open),
+            Load::Scope
+        );
+        for key in [b"arms_factory".as_slice(), b"steel"] {
+            assert_eq!(
+                load(Some(&static_modifiers), key, Kind::Bare, Kind::Open),
+                Load::Invalid
+            );
+        }
+        assert_eq!(
+            load(Some(&early), b"steel", Kind::Bare, Kind::Open),
+            Load::OneValue
         );
         let tags = names.at(Point::IdeaTags);
         assert_eq!(

@@ -704,7 +704,7 @@ pub(super) fn bind(
 
 // 14195ED00: state is an enum, not a mask. Live formation flags use the
 // 140C2BAD0/BAE0/BAF0 accessors; cached formation_type alone is insufficient.
-fn column(row: &NavalCombatShipRow) -> Option<&'static str> {
+pub(super) fn column(row: &NavalCombatShipRow) -> Option<&'static str> {
     match row.state {
         32 => Some("sunk"),
         4 | 16 => Some("reserve"),

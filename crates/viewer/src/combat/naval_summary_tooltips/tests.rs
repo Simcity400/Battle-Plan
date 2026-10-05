@@ -278,8 +278,8 @@ fn positioning_hover_has_native_heading_terms_and_low_positioning_consequences()
         ("POSITIONING_RECENTLY_JOINED_SHIPS", "Recent $NUM$"),
         ("POSITIONING_PENALTY_INFO", "Penalty"),
         ("BM_ATTACK_VALUE", "Attack $VALUE$"),
-        ("SCREENING_VALUE", "Screen $VALUE$"),
-        ("AA_MODIFIER", "AA $VALUE$"),
+        ("SCREENING_VALUE", "Screen $NUM$"),
+        ("AA_MODIFIER", "AA $NUM$"),
         ("STAT_NAVY_SUB_VISIBILITY", "Sub "),
         ("STAT_NAVY_SUB_VISIBILITY_MOD_DIFF", "$VALUE$"),
     ]
@@ -324,6 +324,73 @@ fn positioning_hover_has_native_heading_terms_and_low_positioning_consequences()
         .unwrap(),
         "Positioning\nBase 0.40\nCountry +0.03\nWeather -0.01\nEscort 0.10\nDetection 0.20\nShip -0.10\nCarrier -0.05\nRecent -0.05\n\nPenalty\nAttack -0.20\nScreen -0.10\nAA -0.30\nSub 0.15\n"
     );
+
+    // Native argument names and formatting directives reproduce both live
+    // Visby penalty blocks; percent substitutions truncate (142233187).
+    let loc: Localisation = [
+        ("POSITIONING_INFO", "Positioning"),
+        ("POSITIONING_PENALTY_INFO", "Penalty"),
+        ("BM_ATTACK_VALUE", "Attack: $VALUE|+=%$"),
+        ("SCREENING_VALUE", "Screening: $NUM|+%$"),
+        ("AA_MODIFIER", "Anti-Air: $NUM|+%$"),
+        ("STAT_NAVY_SUB_VISIBILITY", "Sub Visibility:"),
+        ("STAT_NAVY_SUB_VISIBILITY_MOD_DIFF", " $VALUE|=-1%$"),
+    ]
+    .into_iter()
+    .map(|(key, text)| (key.to_owned(), text.to_owned()))
+    .collect();
+    let defines = installed_content::naval_combat_defines::Defines {
+        positioning_impacts: [50_000, 70_000, 100_000],
+        summary_fixed: {
+            let mut values = [0; 14];
+            values[7] = 50_000;
+            values
+        },
+        ..defines
+    };
+    for (value, expected) in [
+        (
+            87_850,
+            concat!(
+                "Positioning\n\nPenalty\n",
+                "Attack: \u{11}R-6.07%\u{11}!\n",
+                "Screening: \u{11}R-6.07%\u{11}!\n",
+                "Anti-Air: \u{11}R-8.50%\u{11}!\n",
+                "Sub Visibility: \u{11}R+12.1%\u{11}!\n"
+            ),
+        ),
+        (
+            95_000,
+            concat!(
+                "Positioning\n\nPenalty\n",
+                "Attack: \u{11}R-2.50%\u{11}!\n",
+                "Screening: \u{11}R-2.50%\u{11}!\n",
+                "Anti-Air: \u{11}R-3.50%\u{11}!\n",
+                "Sub Visibility: \u{11}R+5.0%\u{11}!\n"
+            ),
+        ),
+    ] {
+        assert_eq!(
+            positioning_description(
+                super::super::naval_positioning::Terms {
+                    value,
+                    base: 0,
+                    escort: 0,
+                    detection: 0,
+                    ship_ratio: 0,
+                    carrier_ratio: 0,
+                    recent_join: 0,
+                    early_defender: false,
+                },
+                "",
+                &defines,
+                &NoIcons,
+                &loc,
+            )
+            .unwrap(),
+            expected
+        );
+    }
 }
 
 #[test]
@@ -475,6 +542,186 @@ fn screen_hover_keeps_country_correction_before_the_zero_screens_message() {
         .unwrap()
         .0,
         "Country: \u{11}G-0.10\u{11}!\nScreens 0.00\n\nNo screens"
+    );
+}
+
+#[test]
+fn screening_hovers_keep_complete_submarine_counts_and_bonuses_without_unneeded_models() {
+    let mut side = NavalCombatSideDetails::default();
+    side.summary.countries = vec![1];
+    side.positioning = 87_850;
+    let ships = (0..8)
+        .map(|slot| replay::rows::NavalCombatShipRow {
+            combat: 42,
+            side: 0,
+            battle_slot: slot,
+            group_index: 0,
+            state: 2,
+            live_ship: 1,
+            formation_flags: 1 << 7,
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+    let defines = installed_content::naval_combat_defines::Defines {
+        summary_fixed: {
+            let mut values = [0; 14];
+            values[7] = 50_000;
+            values[8] = 300_000;
+            values[9] = 200_000;
+            values[10] = 100_000;
+            values[11] = 500_000;
+            values
+        },
+        summary_integer: [0; 3],
+        silhouette_planes: [0; 6],
+        screen_cap_reduction_factor: 0,
+        plane_stacking_penalty_effect: 0,
+        sortie_stance_ratios: vec![],
+        base_carrier_sortie_efficiency: 0,
+        selected_sortie_initial_time: 0,
+        piercing_thresholds: vec![],
+        piercing_critical_values: vec![],
+        positioning_impacts: [0; 3],
+    };
+    // 141C55600's submarine classification does not depend on the carrier
+    // predicate's value. Complete combat rows suffice when Models is absent.
+    let (census, screening, _) = screening_inputs(
+        42,
+        0,
+        &side,
+        Some(&ships),
+        &Available::Unavailable {
+            reason: "recorded model failure",
+        },
+        Some(&defines),
+    )
+    .unwrap();
+    assert_eq!(census.eligible_submarines, 8);
+    assert_eq!(census.screens, 0);
+    assert_eq!(screening.capital, 100_000);
+    assert_eq!(screening.carrier, 100_000);
+    assert!(!screening.country_bonus_applied);
+    let loc: Localisation = [
+        ("SCREENING_TOOLTIP_SCREEN_BOX", "Screening Group: $NUM|%.0H$"),
+        ("SCREENING_TOOLTIP_CAPITAL_BOX", "Battle Line: $NUM|%.0H$"),
+        ("SCREENING_TOOLTIP_CAPITAL_BOX_COMBINED", "Combined: $NUM|%.0H$"),
+        ("SCREENING_TOOLTIP_NO_SCREENS", "No screens warning."),
+        ("SCREENING_TOOLTIP_FOR_CAPITAL_BOX", "Carriers $NUM_CARR|.0H$, convoys $NUM_CONV|.0H$, required $NUM_NEED|.0H$, capitals $NUM_CAPI|.0H$."),
+        ("SCREENING_TOOLTIP_BONUSES_CAPITAL", "Carrier Group bonuses:\n"),
+        ("sortie_bonus", "Sortie efficiency"),
+        ("retreat_bonus", "Retreat speed"),
+    ]
+    .into_iter()
+    .map(|(key, text)| (key.to_owned(), text.to_owned()))
+    .collect();
+    assert_eq!(
+        screening_description(
+            false,
+            &census,
+            &screening,
+            &defines,
+            "",
+            Err("not needed".into()),
+            Err("not needed".into()),
+            &NoIcons,
+            &loc
+        )
+        .unwrap(),
+        (
+            "Screening Group: \u{11}H100%\u{11}!\n\nNo screens warning.".into(),
+            vec![]
+        )
+    );
+    let definitions = [
+        replay::rows::ModifierDefinitionRow {
+            index: 1,
+            name_key: b"sortie_bonus".to_vec(),
+            flags: 3,
+            precision: 0,
+            category_mask: 1,
+            ..Default::default()
+        },
+        replay::rows::ModifierDefinitionRow {
+            index: 2,
+            name_key: b"retreat_bonus".to_vec(),
+            flags: 3,
+            precision: 1,
+            category_mask: 1,
+            ..Default::default()
+        },
+    ];
+    let definitions = Definitions::from_parts(
+        &definitions,
+        &[(b"sortie_bonus", 1), (b"retreat_bonus", 2)],
+        None,
+    );
+    let authored = installed_content::parser::parse(b"sortie_bonus=0.1 retreat_bonus=0.2").unwrap();
+    let authored = installed_content::modifiers::targeted(&authored.items).modifiers;
+    assert_eq!(
+        screening_description(true, &census, &screening, &defines, "", Ok(&authored), Ok(&definitions), &NoIcons, &loc).unwrap(),
+        (concat!("Battle Line: \u{11}H100%\u{11}!\nCombined: \u{11}H100%\u{11}!\n\n",
+            "Carriers \u{11}H0\u{11}!, convoys \u{11}H0\u{11}!, required \u{11}H0\u{11}!, capitals \u{11}H0\u{11}!.\n\n",
+            "Carrier Group bonuses:\nSortie efficiency: \u{11}G+10%\u{11}!\nRetreat speed: \u{11}G+20.0%\u{11}!").into(), vec![])
+    );
+    // The lazy requirement still refuses a member whose carrier predicate
+    // really needs its recorded equipment flags, and any incomplete census.
+    let mut unknown = ships[0].clone();
+    unknown.formation_flags = 0;
+    assert_eq!(
+        screening_inputs(
+            42,
+            0,
+            &side,
+            Some(std::slice::from_ref(&unknown)),
+            &Available::Complete(&[]),
+            Some(&defines)
+        )
+        .err()
+        .as_deref(),
+        Some("current live ship has no ShipModels row")
+    );
+    for (models, expected) in [
+        (
+            Available::Truncated {
+                rows: &[],
+                missing: 17,
+            },
+            "ShipModels is truncated this hour (17 rows not reached)",
+        ),
+        (
+            Available::Unavailable {
+                reason: "recorded model failure",
+            },
+            "ShipModels is unavailable this hour (recorded model failure)",
+        ),
+    ] {
+        assert!(screening_inputs(42, 0, &side, Some(&ships), &models, Some(&defines)).is_ok());
+        assert_eq!(
+            screening_inputs(
+                42,
+                0,
+                &side,
+                Some(std::slice::from_ref(&unknown)),
+                &models,
+                Some(&defines)
+            )
+            .err()
+            .as_deref(),
+            Some(expected),
+        );
+    }
+    assert_eq!(
+        screening_inputs(
+            42,
+            0,
+            &side,
+            None,
+            &Available::Complete(&[]),
+            Some(&defines)
+        )
+        .err()
+        .as_deref(),
+        Some("NavalCombatShips is incomplete")
     );
 }
 

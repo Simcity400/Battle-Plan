@@ -754,6 +754,7 @@ fn apply(
                 bound.color = None;
                 bound.shield = None;
                 bound.texture = None;
+                bound.enabled = None;
             }
             continue;
         };
@@ -836,6 +837,7 @@ fn apply(
                 bound.color = widget.opacity.map(|opacity| [1.0, 1.0, 1.0, opacity]);
                 bound.shield = shield;
                 bound.texture = texture;
+                bound.enabled = widget.enabled;
             }
             Err(why) => count(refused, &path, why),
         }

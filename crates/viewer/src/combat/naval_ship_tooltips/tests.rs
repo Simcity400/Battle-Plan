@@ -2,6 +2,230 @@ use super::*;
 use crate::combat::binding::NoIcons;
 
 #[test]
+fn naval_convoy_chevrons_and_condition_bars_own_the_member_hover() {
+    use crate::map::native_gui::{
+        lifecycle::Tick,
+        tests::{fixture, windows},
+    };
+
+    let mut values = super::super::Values::new();
+    for key in ["escape_icon_left", "escape_icon_right"] {
+        set_hover(&mut values, key, Some("formation explanation".into()), None);
+    }
+    group_hovers(&mut values, Some("convoy escape blocks".into()));
+    for key in [
+        "icon",
+        "bar_str",
+        "bar_org",
+        "escape_progress",
+        "escape_icon_left",
+        "escape_icon_right",
+    ] {
+        assert_eq!(values[key].tooltip.as_deref(), Some("convoy escape blocks"));
+        assert!(values[key].hover_owned);
+    }
+    // Exercise the actual retained hit order: the chevrons overlap a grid
+    // with the formation explanation, but their member callback wins.
+    let windows = windows(
+        br#"guiTypes={
+        containerWindowType={name=navalcombatview size={width=300 height=200} clipping=no
+            gridboxType={name=grid_carrier position={x=20 y=20} size={width=80 height=60}
+                slotsize={width=80 height=60} max_slots_horizontal=1 max_slots_vertical=1}}
+        containerWindowType={name=navalcombat_ship_entry size={width=80 height=60} clipping=no
+            iconType={name=escape_icon_left position={x=4 y=40} spriteType=GFX_even}
+            iconType={name=escape_icon_right position={x=50 y=40} spriteType=GFX_even}}
+    }"#,
+    );
+    let mut bindings = super::super::binding::Bindings::default();
+    let chevrons = values
+        .iter()
+        .filter(|(key, _)| matches!(key.as_str(), "escape_icon_left" | "escape_icon_right"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    bindings.values.insert(
+        "grid_carrier".into(),
+        super::super::Widget {
+            entry_template: Some("navalcombat_ship_entry".into()),
+            entries: vec![chevrons],
+            ..Default::default()
+        },
+    );
+    set_hover(
+        &mut bindings.values,
+        "grid_carrier",
+        Some("formation explanation".into()),
+        None,
+    );
+    let mut gui = super::super::gui::Windows::default();
+    let drawn = gui
+        .draw(
+            &windows,
+            &fixture(),
+            &bindings,
+            1,
+            super::super::Selection::Naval(7),
+            [0.; 2],
+            false,
+            &mut None,
+            [300., 200.],
+            true,
+            Tick { time: 0., dt: 0. },
+            false,
+        )
+        .unwrap();
+    assert!(drawn.refused.is_empty(), "{:?}", drawn.refused);
+    for position in [[24., 60.], [70., 60.]] {
+        let hit = drawn
+            .tooltips
+            .iter()
+            .find(|hit| hit.rect[..2] == position)
+            .unwrap();
+        let point = [
+            hit.rect[0] + hit.rect[2] / 2.,
+            hit.rect[1] + hit.rect[3] / 2.,
+        ];
+        let top = drawn
+            .tooltips
+            .iter()
+            .rev()
+            .find(|hit| super::super::contains(hit.rect, point))
+            .unwrap();
+        assert_eq!(top.text.as_deref(), Some("convoy escape blocks"));
+    }
+    group_hovers(&mut values, None);
+    assert!(
+        values
+            .values()
+            .all(|widget| widget.hover_owned && widget.tooltip.is_none())
+    );
+}
+
+#[test]
+fn naval_convoy_group_keeps_localised_separators_between_all_three_blocks() {
+    let localisation: Localisation = [
+        ("SHIP_AND_TYPE", "convoy"),
+        ("NAVAL_COMBAT_SHIP_TOOLTIP", "member|"),
+        ("FEX_STATE_ON_THE_WAY", "incoming"),
+        ("NAVAL_COMBAT_SHIP_STRENGTH", "HP|"),
+        ("NAVAL_COMBAT_SHIP_ORGANIZATION_FACTOR", "ORG|"),
+        ("NAVAL_COMBAT_HOURS_TO_ARRIVE", "arrival|"),
+        ("SEPARATION_LINE", "stacked divider\n"),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.into(), value.into()))
+    .collect();
+    let ships: Vec<_> = (0..3)
+        .map(|battle_slot| NavalCombatShipRow {
+            battle_slot,
+            owner: 4,
+            state: 4,
+            live_convoy: 1,
+            variant: 7,
+            strength: 100_000,
+            maximum_hit_points: 100_000,
+            base_organisation: 100_000,
+            ..Default::default()
+        })
+        .collect();
+    let by_slot = ships
+        .iter()
+        .map(|row| ((row.side, row.battle_slot), row))
+        .collect();
+    let country = replay::rows::CountryRow {
+        id: 4,
+        tag: b"AAA".to_vec(),
+        ..Default::default()
+    };
+    let variant = VariantDefinitionRow {
+        id: 7,
+        display_name: b"Transport".to_vec(),
+        ..Default::default()
+    };
+    let text = group_tooltip(
+        &[0, 1, 2],
+        0,
+        &by_slot,
+        &BTreeMap::from([(7, &variant)]),
+        &BTreeMap::from([(4, &country)]),
+        &NoIcons,
+        &localisation,
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        text,
+        concat!(
+            "member|\u{11}WHP|\u{11}!ORG|arrival|\n",
+            "stacked divider\n",
+            "member|\u{11}WHP|\u{11}!ORG|arrival|\n",
+            "stacked divider\n",
+            "member|\u{11}WHP|\u{11}!ORG|arrival|\n",
+        )
+    );
+}
+
+#[test]
+fn naval_hidden_submarine_hover_warns_but_keeps_native_member_details() {
+    let mut localisation: Localisation = loc()
+        .iter()
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .chain(std::iter::once((
+            "NAVAL_COMBAT_HIDDEN_SUBS".into(),
+            "unknown position\n".into(),
+        )))
+        .collect();
+    localisation.language = "english".into();
+    let mut row = NavalCombatShipRow {
+        side: 1,
+        battle_slot: 7,
+        owner: 4,
+        ship: 11,
+        live_ship: 1,
+        state: 2,
+        detection_state: 0,
+        formation_flags: 1 << 7,
+        name: b"Recorded hull".to_vec(),
+        type_name: b"Recorded class".to_vec(),
+        base_organisation: 100_000,
+        ..Default::default()
+    };
+    let country = replay::rows::CountryRow {
+        id: 4,
+        tag: b"AAA".to_vec(),
+        ..Default::default()
+    };
+    let build = |row: &NavalCombatShipRow| {
+        group_tooltip(
+            &[7],
+            1,
+            &BTreeMap::from([((1, 7), row)]),
+            &BTreeMap::new(),
+            &BTreeMap::from([(4, &country)]),
+            &NoIcons,
+            &localisation,
+            None,
+            Some("english"),
+        )
+    };
+    let text = build(&row).unwrap();
+    assert_eq!(
+        text,
+        format!(
+            concat!(
+                "unknown position\n",
+                "{}AAA Recorded hull:Recorded class fighting|",
+                "\u{11}RS0.00|\u{11}!O0.00|\n",
+            ),
+            INLINE_FLAG
+        )
+    );
+    row.detection_state = 1;
+    let visible = build(&row).unwrap();
+    assert_eq!(visible, text.strip_prefix("unknown position\n").unwrap());
+}
+
+#[test]
 fn escape_tree_index_keeps_member_identity_native_order_and_shared_borrows() {
     let usage = |combat, side, battle_slot, order| replay::rows::NavalModifierUse {
         combat,
@@ -401,6 +625,7 @@ fn one_unavailable_member_withholds_the_whole_group_and_counts_each_gap() {
         &countries,
         &NoIcons,
         &loc(),
+        None,
         None,
     );
     let errors = result.unwrap_err();

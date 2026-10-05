@@ -2,6 +2,83 @@ use super::*;
 use crate::combat::binding::NoIcons;
 
 #[test]
+fn naval_disengage_requires_viewing_country_on_a_primary_side() {
+    let mut detail = replay::rows::NavalCombatDetailsRow::default();
+    detail.sides[0].summary.countries = vec![12];
+    detail.sides[1].summary.countries = vec![56];
+    let aliases = BTreeMap::from([(12, 340), (56, 560)]);
+    let key = "header_container/disengage";
+    let mut out = Bindings::default();
+    for participant in [340, 560] {
+        bind_naval_disengage(
+            &mut out,
+            7,
+            naval_disengage_state(&detail, &aliases, participant),
+        );
+        assert!(!out.values[key].hidden);
+    }
+    // A spectator's allied/shared vision is irrelevant to 1417D4650.
+    bind_naval_disengage(&mut out, 7, naval_disengage_state(&detail, &aliases, 999));
+    assert!(out.values[key].hidden);
+    assert!(out.refused().is_empty());
+    // A proven defender match survives an unresolved attacker alias.
+    detail.sides[0].summary.countries.push(78);
+    bind_naval_disengage(&mut out, 7, naval_disengage_state(&detail, &aliases, 560));
+    assert!(!out.values[key].hidden);
+    bind_naval_disengage(&mut out, 7, naval_disengage_state(&detail, &aliases, 999));
+    assert!(out.values[key].hidden);
+    assert_eq!(out.refused().values().sum::<usize>(), 1);
+    assert!(
+        out.refused()
+            .keys()
+            .next()
+            .unwrap()
+            .contains("attacker primary country 78")
+    );
+    detail.sides[0].summary.countries.clear();
+    detail.sides[1].summary.countries.clear();
+    assert_eq!(naval_disengage_state(&detail, &aliases, 999), Ok(None));
+}
+
+#[test]
+fn naval_disengage_uses_the_matched_sides_retreat_state() {
+    let mut detail = replay::rows::NavalCombatDetailsRow::default();
+    detail.sides[0].summary.countries = vec![12];
+    detail.sides[1].summary.countries = vec![56];
+    let aliases = BTreeMap::from([(12, 340), (56, 560)]);
+    let key = "header_container/disengage";
+    let mut out = Bindings::default();
+    for side in 0..2 {
+        for retreating in [0, 1, 2] {
+            detail.sides[side].retreating = retreating;
+            detail.sides[1 - side].retreating = u8::from(retreating == 0);
+            bind_naval_disengage(
+                &mut out,
+                7,
+                naval_disengage_state(&detail, &aliases, [340, 560][side]),
+            );
+            assert!(!out.values[key].hidden);
+            assert_eq!(out.values[key].enabled, Some(retreating == 0));
+        }
+    }
+    // 1417D4650 returns the attacker if both primary lists match.
+    detail.sides[0].summary.countries.push(56);
+    detail.sides[0].retreating = 1;
+    detail.sides[1].retreating = 0;
+    assert_eq!(
+        naval_disengage_state(&detail, &aliases, 560),
+        Ok(Some(false))
+    );
+    // A known defender match does not settle which retreat byte applies
+    // if an unresolved attacker alias could match and the states differ.
+    detail.sides[0].summary.countries = vec![78];
+    bind_naval_disengage(&mut out, 7, naval_disengage_state(&detail, &aliases, 560));
+    assert!(out.values[key].hidden);
+    assert_eq!(out.values[key].enabled, None);
+    assert_eq!(out.refused().values().sum::<usize>(), 1);
+}
+
+#[test]
 fn combat_raster_initiative_border_rasterises_before_display_stretch() {
     use crate::map::native_gui::{
         self,

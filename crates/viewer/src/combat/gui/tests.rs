@@ -12,6 +12,79 @@ impl CombatResources for Fixture {
 }
 
 #[test]
+fn combat_button_enabled_binding_draws_native_disabled_state_and_resets() {
+    use super::super::Widget;
+    use crate::map::native_effects::Pixel;
+
+    let windows = windows(
+        br#"guiTypes={containerWindowType={name=view size={width=40 height=20}
+        buttonType={name=disengage spriteType=GFX_four}
+        buttonType={name=short_strip position={x=20 y=0} spriteType=GFX_odd}}}"#,
+    );
+    let resources = fixture();
+    let view = windows.gui_type(b"view").unwrap();
+    let mut instance = Instance::construct(view, [800, 600], &resources).unwrap();
+    instance.gui_show(view, view).unwrap();
+    for enabled in [Some(false), Some(true), Some(false), None] {
+        let values = enabled
+            .map(|enabled| {
+                Values::from([
+                    (
+                        "disengage".into(),
+                        Widget {
+                            enabled: Some(enabled),
+                            ..Default::default()
+                        },
+                    ),
+                    (
+                        "short_strip".into(),
+                        Widget {
+                            enabled: Some(enabled),
+                            ..Default::default()
+                        },
+                    ),
+                ])
+            })
+            .unwrap_or_default();
+        let mut refused = BTreeMap::new();
+        apply(&mut instance, view, &values, &resources, &mut refused);
+        assert!(refused.is_empty(), "{refused:?}");
+        instance
+            .tick(view, &resources, Tick { time: 0., dt: 0. })
+            .unwrap();
+        let layout = instance.layout(view, &resources, None).unwrap().unwrap();
+        assert_eq!(layout.parts.len(), 2);
+        let disabled = enabled == Some(false);
+        for (part, frames) in layout.parts.iter().zip([4., 3.]) {
+            let native_gui::PartKind::Sprite { offsets, .. } = &part.kind else {
+                panic!("expected a button sprite");
+            };
+            // DrawWithStateEffect@14222D0D0: disabled state 4 uses frame 4
+            // when present, otherwise frame 1, and the Disable technique.
+            assert_eq!(
+                offsets[0],
+                if disabled && frames == 4. {
+                    3. / frames
+                } else {
+                    0.
+                }
+            );
+            let Some((Pixel::Sprite(program), ..)) = part.shading.program else {
+                panic!("expected the native button-state program");
+            };
+            assert_eq!(program.grey, disabled);
+        }
+        assert_eq!(
+            instance
+                .control(view, view.path_named("disengage").unwrap())
+                .unwrap()
+                .enabled,
+            enabled
+        );
+    }
+}
+
+#[test]
 fn exile_template_override_belongs_to_its_grid_entry() {
     let values = Values::from([(
         "traits".into(),

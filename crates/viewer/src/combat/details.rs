@@ -1029,6 +1029,9 @@ fn naval(
     flags: &BTreeMap<u32, String>,
     vision: &Vision,
 ) -> io::Result<()> {
+    // 1417DA2F0 hides the controlling-player button when 1417D4650
+    // finds no equivalent viewing country on either primary side list.
+    hide(&mut out.values, "header_container/disengage");
     let details = rows::<tables::NavalCombatDetails>(frame)?;
     if let Some(detail) = details.rows().iter().find(|r| r.combat == id) {
         out.warnings
@@ -1039,6 +1042,11 @@ fn naval(
             .iter()
             .map(|r| (r.id, r.canonical_slot))
             .collect();
+        bind_naval_disengage(
+            out,
+            id,
+            naval_disengage_state(detail, &aliases, vision.ours()),
+        );
         // 1417DA6CB loads CCombat+0x30: compare the viewing country with
         // the defender primary list (+0x38). A match shows the defender skin;
         // otherwise the attacker skin. Both widgets receive the same progress.
@@ -1253,6 +1261,53 @@ fn naval(
         out.warnings.push("Naval: the perspective progress skin, recomputed screening, positioning and AA, ordered side flags and commander name/skills are bound. Forward active air groups and their carrier-grid entries are bound from recorded variants and the stacked equipment registry. Hover capture gaps are reported as counted refusals beside their affected widgets. Phase has no separate scalar widget in navalcombat.gui; retreat/engagement operands are not relabelled as a guessed phase.".into());
     }
     Ok(())
+}
+
+/// 1417D4650/1406D7F90 compare only the two primary country lists against
+/// the viewing country. Allied vision does not admit the retreat button.
+/// 1417DA7CE..1417DA7E9 enables it unless the matched side's +0x120 is set:
+/// CButton::Enable@14229ABB0 / Disable@14229AB10. None hides the button.
+fn naval_disengage_state(
+    detail: &replay::rows::NavalCombatDetailsRow,
+    aliases: &BTreeMap<u32, u32>,
+    viewing_slot: u32,
+) -> Result<Option<bool>, String> {
+    let [attacker, defender] = [0, 1].map(|side| {
+        super::tactics::viewing_side(
+            &detail.sides[side].summary.countries,
+            ["attacker", "defender"][side],
+            aliases,
+            viewing_slot,
+        )
+        .map(|relative| relative == 0)
+    });
+    let enabled = detail.sides.each_ref().map(|side| side.retreating == 0);
+    match (attacker, defender) {
+        // 1417D4650 chooses the attacker first if both primary lists match.
+        (Ok(true), _) => Ok(Some(enabled[0])),
+        (Ok(false), Ok(true)) => Ok(Some(enabled[1])),
+        // An unknown attacker cannot change visibility when the defender
+        // matches, nor the state if both possible sides have the same state.
+        (Err(_), Ok(true)) if enabled[0] == enabled[1] => Ok(Some(enabled[1])),
+        (Ok(false), Ok(false)) => Ok(None),
+        (Err(reason), _) | (_, Err(reason)) => Err(reason),
+    }
+}
+
+fn bind_naval_disengage(out: &mut Bindings, id: u64, state: Result<Option<bool>, String>) {
+    let key = "header_container/disengage";
+    hide(&mut out.values, key);
+    out.values.get_mut(key).unwrap().enabled = None;
+    match state {
+        Ok(Some(enabled)) => {
+            show(&mut out.values, key);
+            out.values.get_mut(key).unwrap().enabled = Some(enabled);
+        }
+        Ok(None) => (),
+        Err(reason) => out.refuse(format!(
+            "Naval combat {id} Disengage button is hidden: {reason}."
+        )),
+    }
 }
 
 /// 1417DA6CB..1417DA74A selects the defender skin when the viewing

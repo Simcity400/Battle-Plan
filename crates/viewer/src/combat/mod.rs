@@ -686,6 +686,8 @@ pub struct Widget {
     pub frame: Option<u32>,
     pub rotation: Option<f32>,
     pub opacity: Option<f32>,
+    /// Runtime button state; absent restores the GUI's authored enabled state.
+    pub enabled: Option<bool>,
     pub hidden: bool,
     pub size: Option<[f32; 2]>,
     pub offset: [f32; 2],
