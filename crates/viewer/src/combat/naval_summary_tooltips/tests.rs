@@ -29,6 +29,49 @@ fn shared_tree_uses_borrow_the_same_decoded_nodes() {
 }
 
 #[test]
+fn flag_damage_summary_includes_naval_bomber_weapon_before_box_categories() {
+    let loc: Localisation = [
+        ("total_damage_dealt", "Total $NUM|0$;"),
+        ("damage_dealt_light_guns", "Light $NUM|0$;"),
+        ("damage_dealt_heavy_guns", "Heavy $NUM|0$;"),
+        ("damage_dealt_air", "Bombers $NUM|0$ ($RATIO|%0$);"),
+        ("damage_dealt_by_box", "BOX;"),
+        ("damage_dealt_screen", "Screens $NUM|0$;"),
+        ("damage_dealt_battle_box", "Capitals $NUM|0$;"),
+        ("damage_dealt_by_ship_types", "TYPES;"),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_owned(), value.to_owned()))
+    .collect();
+    let mut side = NavalCombatSideDetails {
+        total_damage: 42_900_000,
+        ..Default::default()
+    };
+    side.damage_history[0][0] = 4_100_000;
+    side.damage_history[0][1] = 32_200_000;
+    // The native fifth weapon pair sums index 4 across every target box.
+    side.damage_history[0][4] = 4_000_000;
+    side.damage_history[1][4] = 2_500_000;
+    let opponent = NavalCombatSideDetails {
+        original_health: 50_000_000,
+        ..Default::default()
+    };
+    assert_eq!(
+        flag_description(
+            &side,
+            &opponent,
+            &TokenNames::from_rows(&[], true),
+            &SubUnits::default(),
+            Ok("AAA"),
+            &NoIcons,
+            &loc,
+        )
+        .unwrap(),
+        "Total 429;Light 41;Heavy 322;Bombers 65 (15%);\nBOX;Screens 403;Capitals 25;\nTYPES;\n"
+    );
+}
+
+#[test]
 fn flag_damage_summary_uses_native_sections_and_sorted_source_types() {
     let loc: Localisation = [
         ("total_damage_dealt", "T $NUM$ $RATIO$;"),
@@ -325,8 +368,10 @@ fn positioning_hover_has_native_heading_terms_and_low_positioning_consequences()
         "Positioning\nBase 0.40\nCountry +0.03\nWeather -0.01\nEscort 0.10\nDetection 0.20\nShip -0.10\nCarrier -0.05\nRecent -0.05\n\nPenalty\nAttack -0.20\nScreen -0.10\nAA -0.30\nSub 0.15\n"
     );
 
-    // Native argument names and formatting directives reproduce both live
-    // Visby penalty blocks; percent substitutions truncate (142233187).
+    // Native argument names and formatting directives reproduce the Visby
+    // and Rabaul penalty blocks; percent substitutions truncate (142233187).
+    // 142232AB0 honours the content's explicit precision 1: a fixed5 reveal
+    // of 0.22973 displays +22.9%, even while adjacent lines use precision 2.
     let loc: Localisation = [
         ("POSITIONING_INFO", "Positioning"),
         ("POSITIONING_PENALTY_INFO", "Penalty"),
@@ -367,6 +412,16 @@ fn positioning_hover_has_native_heading_terms_and_low_positioning_consequences()
                 "Screening: \u{11}R-2.50%\u{11}!\n",
                 "Anti-Air: \u{11}R-3.50%\u{11}!\n",
                 "Sub Visibility: \u{11}R+5.0%\u{11}!\n"
+            ),
+        ),
+        (
+            77_027,
+            concat!(
+                "Positioning\n\nPenalty\n",
+                "Attack: \u{11}R-11.48%\u{11}!\n",
+                "Screening: \u{11}R-11.48%\u{11}!\n",
+                "Anti-Air: \u{11}R-16.08%\u{11}!\n",
+                "Sub Visibility: \u{11}R+22.9%\u{11}!\n"
             ),
         ),
     ] {

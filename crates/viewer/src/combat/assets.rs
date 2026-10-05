@@ -686,6 +686,9 @@ impl Assets {
                 .is_some_and(|plain| plain.texture.starts_with(b"gfx/leaders/"));
             if name.starts_with(b"GFX_terrain_")
                 || name.starts_with(b"GFX_navalcombat_ship_icon_")
+                // 1417DAA40 resolves the air icon by country/archetype/sprite
+                // at runtime, outside the authored .gui resource names.
+                || name.starts_with(b"GFX_navalcombat_air_icon_")
                 || (name.starts_with(b"GFX_unit_")
                     && (name.ends_with(b"_icon_medium") || name.ends_with(b"_icon_medium_black")))
                 || name.starts_with(b"combat_tactic:")

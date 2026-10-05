@@ -69,7 +69,10 @@ fn outcome(scores: [i64; 2], member: [bool; 2]) -> (&'static str, i32) {
 
 /// 141A1D590 consumes the primary list in order, doing no sorting or
 /// deduplication here: the recorded list is the native country's set.
-fn countries(ids: &[u32], name: &impl Fn(u32) -> Result<String, String>) -> Result<String, String> {
+pub(super) fn countries(
+    ids: &[u32],
+    name: &impl Fn(u32) -> Result<String, String>,
+) -> Result<String, String> {
     ids.iter()
         .map(|id| Ok(format!("\u{11}Y{}\u{11}!", name(*id)?)))
         .collect::<Result<Vec<_>, String>>()
@@ -112,8 +115,19 @@ fn seen(
         )?);
         text.push('\n'); // 1418AC1D0 appends a literal LF after each side.
     }
+    text.push_str(&outlook(icons, loc, scores, member)?);
+    Ok(text)
+}
+
+/// The common outcome/duration tail of 1413CCBC0.
+pub(super) fn outlook(
+    icons: &dyn TextIcons,
+    loc: &Localisation,
+    scores: [i64; 2],
+    member: [bool; 2],
+) -> Result<String, String> {
     let (key, days) = outcome(scores, member);
-    text.push_str(&builtin(icons, loc, key, &[])?);
+    let mut text = builtin(icons, loc, key, &[])?;
     super::text::ensure_newlines(&mut text, 1);
     text.push_str(&builtin(
         icons,
@@ -167,7 +181,7 @@ fn membership(
 }
 
 // 1413CD880: either cached side engaged; unknown is not no-intel.
-fn intel(
+pub(super) fn intel(
     icons: &dyn TextIcons,
     loc: &Localisation,
     flag: Engaged,

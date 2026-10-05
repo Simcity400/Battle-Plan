@@ -33,3 +33,11 @@ membership making the wording relative to the viewer (`1413CCBC0`). Unknown
 engagement, naming operands or score operands produce counted refusals. Border
 conflict effect tails need unrecorded combatant country, state and event operands
 (`1413D69D0`) and are refused while the common lines remain available.
+
+Naval marker hovers (`naval_marker_tooltips.rs`, `1418E2DC0`) add task forces,
+convoys, ordered countries and the viewer's first qualifying naval HQ count.
+Only the background and visible HQ frame buttons receive clicks (`1418E42A0`);
+the balance icons receive hovers. Ship group hovers anchor beside the combat
+window (`1417D47E0`); sunk entries follow the authored grid slots (`1417D05D0`).
+Carrier grouping shares the equipment-pool predicate used by sortie modifiers
+(`14195ED00`, `140C2B7E0`), and runtime air sprites load from the stacked registry.

@@ -39,6 +39,7 @@ fn naval_terrain_prefix_includes_minimum_and_class_before_weather() {
     let category = &mut Arc::make_mut(&mut terrain.terrain).categories[0];
     category.minimum_seazone_dominance = 250 * ONE;
     category.common_adjuster.attack = -10_000;
+    category.common_adjuster.defence = -30_000;
     category.class_adjusters.push(TerrainAdjuster {
         movement: -20_000,
         ..Default::default()
@@ -97,6 +98,8 @@ fn naval_terrain_prefix_includes_minimum_and_class_before_weather() {
         ("STAT_ADJUSTER_MOVEMENT_DIFF", "$VALUE|%0$"),
         ("STAT_ADJUSTER_ATTACK", "Attack "),
         ("STAT_ADJUSTER_ATTACK_DIFF", "$VALUE|%0$"),
+        ("STAT_ADJUSTER_DEFENCE", "Defence "),
+        ("STAT_ADJUSTER_DEFENCE_DIFF", "$VALUE|%0$"),
     ]
     .into_iter()
     .map(|(key, value)| (key.into(), value.into()))
@@ -114,7 +117,7 @@ fn naval_terrain_prefix_includes_minimum_and_class_before_weather() {
         .unwrap();
     assert_eq!(
         text,
-        "\u{11}HDeep Ocean\u{11}!\nDominance 375\n\n\u{11}HHungarian Destroyer\u{11}!\nPositioning: \u{11}G-0\u{11}!\nVisibility: \u{11}R+0\u{11}!\nMovement -20%Attack -10%\n\u{11}HOther ships\u{11}!\nPositioning: \u{11}G-0\u{11}!\nAttack -10%"
+        "\u{11}HDeep Ocean\u{11}!\nDominance 375\n\n\u{11}HHungarian Destroyer\u{11}!\nPositioning: \u{11}G-0\u{11}!\nVisibility: \u{11}R+0\u{11}!\nMovement -20%\nAttack -10%\nDefence -30%\n\n\u{11}HOther ships\u{11}!\nPositioning: \u{11}G-0\u{11}!\nAttack -10%\nDefence -30%\n"
     );
     assert_eq!(dropped.len(), 2);
     assert!(dropped[0].contains("unlisted_common"));

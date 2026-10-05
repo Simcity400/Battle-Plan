@@ -381,6 +381,177 @@ fn adapter_requires_dense_witness_only_for_a_side_that_uses_its_air() {
     );
 }
 
+#[test]
+fn relation_scopes_preserve_zero_sortie_carrier_air_defender_positioning_and_aa() {
+    use replay::rows::{
+        AirWingRow, NavalCombatAirBaseWingHandlesRow, NavalCombatAirEfficiency,
+        NavalCombatAirEfficiencyModifier, NavalShipModifierSource, ShipCounterInputs,
+    };
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_naval_zero_sortie_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(root.join("common/modifiers")).unwrap();
+    std::fs::write(
+        root.join("common/modifiers/fixture.txt"),
+        concat!(
+            "screening_bonus={sortie_efficiency=0.1}\n",
+            "capital_screening_bonus={fighter_sortie_efficiency=0.1}\n",
+            "relation={valid_relation_trigger={FROM={NOT={has_war_with=ROOT}}}}\n",
+        ),
+    )
+    .unwrap();
+    let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let mut warnings = Vec::new();
+    let content = naval_air_groups::Content::load(
+        &layers,
+        &mut warnings,
+        installed_content::equipment::Database::default(),
+    );
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    let members: Vec<_> = (0..5)
+        .map(|index| NavalCombatShipRow {
+            combat: 7,
+            side: u8::from(index == 4),
+            battle_slot: index,
+            ship: 100 + u64::from(index),
+            state: 2,
+            live_ship: 1,
+            formation_flags: if index < 4 { 1 << 22 } else { 1 << 8 },
+            weapon_context: replay::rows::NavalShipWeaponContext {
+                sources: vec![NavalShipModifierSource {
+                    scope: 26,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .collect();
+    let models: Vec<_> = members
+        .iter()
+        .map(|member| ShipModelRow {
+            ship: member.ship,
+            counter: Some(ShipCounterInputs {
+                maximum_organisation: ONE,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .collect();
+    let live_ships: Vec<_> = members
+        .iter()
+        .map(|member| ShipRow {
+            id: member.ship,
+            organisation: 66_666,
+            ..Default::default()
+        })
+        .collect();
+    let bases: Vec<_> = (0..4)
+        .map(|index| AirBaseRow {
+            id: 200 + index,
+            host: 100 + index,
+            ..Default::default()
+        })
+        .collect();
+    let wings: Vec<_> = (0..8)
+        .map(|index| AirWingRow {
+            id: 300 + index,
+            planes: 30,
+            ..Default::default()
+        })
+        .collect();
+    let dense: Vec<_> = (0..4)
+        .map(|index| NavalCombatAirBaseWingHandlesRow {
+            base: 200 + index,
+            wings: vec![300 + index, 304 + index],
+        })
+        .collect();
+    let mut detail = NavalCombatDetailsRow {
+        combat: 7,
+        duration: 24,
+        ..Default::default()
+    };
+    detail.sides[0].capital_screening = ONE;
+    detail.sides[0].carrier_screening = ONE;
+    for index in 0_u32..8 {
+        let mut efficiency = NavalCombatAirEfficiency {
+            source: 3,
+            container_present: 1,
+            base_crowding: ONE,
+            night: ONE,
+            ..Default::default()
+        };
+        efficiency.modifiers[0] = NavalCombatAirEfficiencyModifier {
+            raw: -ONE,
+            present: 1,
+        };
+        detail.sides[0].planes.push(NavalCombatPlane {
+            source: 0,
+            group_index: 0,
+            air_base: 200 + u64::from(index % 4),
+            initial_planes: 30,
+            current_planes: 30,
+            carrier_member_present: 1,
+            carrier_slot: (index % 4) as i32,
+            efficiency,
+            ..Default::default()
+        });
+    }
+    let mut definitions = defines();
+    definitions.summary_fixed[0] = ONE;
+    definitions.summary_fixed[12] = 100 * ONE;
+    // 141609460 evaluates the opposing carrier air even when night makes
+    // every sortie zero. A refused static screening term must not turn that
+    // known zero into a missing defender positioning or AA counter.
+    let positioning = positioning_values(
+        &detail,
+        Some(&members),
+        Keyed::new(&models, |model| model.ship),
+        Some(&bases),
+        Some(&live_ships),
+        DenseBases::new(&dense, &wings),
+        &content,
+        Some(&definitions),
+    );
+    assert_eq!(positioning, [Some(ONE); 2]);
+    assert_eq!(
+        super::super::naval_anti_air::calculate(
+            7,
+            1,
+            positioning[1].unwrap(),
+            &members,
+            50_000,
+            |_| Some(0),
+        ),
+        Ok(0),
+    );
+    let borrowed: Vec<_> = members.iter().collect();
+    let joins = CarrierJoins::new(
+        Some(&borrowed),
+        Some(&bases),
+        Some(&live_ships),
+        Keyed::new(&models, |model| model.ship),
+    );
+    for plane in &detail.sides[0].planes {
+        assert_eq!(
+            naval_air_groups::display_efficiency_parts(
+                plane,
+                &detail.sides[0],
+                0,
+                detail.duration,
+                &joins,
+                &content,
+                Some(&definitions),
+            ),
+            Some((0, 0, 66_666)),
+        );
+    }
+}
+
 /// The owner's design scale doubled: 40,000 ships (with their live rows,
 /// models and carrier air bases) and 100,000 wings of 10 planes (1,000,000
 /// planes) in the bases' dense rows.

@@ -51,7 +51,25 @@ struct Row<'a> {
     key: String,
     template: &'a str,
     values: &'a Values,
-    explicit: Option<([f32; 2], [f32; 2])>,
+    /// Runtime size and optional explicit pixels; None pixels use authored grid slots.
+    explicit: Option<(Option<[f32; 2]>, [f32; 2])>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GridPlacement {
+    Authored,
+    AutomaticNaval,
+    ExplicitNaval,
+}
+
+impl Row<'_> {
+    fn placement(&self) -> GridPlacement {
+        match self.explicit {
+            None => GridPlacement::Authored,
+            Some((None, _)) => GridPlacement::AutomaticNaval,
+            Some((Some(_), _)) => GridPlacement::ExplicitNaval,
+        }
+    }
 }
 
 struct Group<'a> {
@@ -69,6 +87,7 @@ struct Hover {
     region: Region,
     text: Option<super::HoverText>,
     description: Option<super::HoverText>,
+    anchor: super::TooltipAnchor,
 }
 
 fn count(refused: &mut BTreeMap<String, usize>, path: &str, why: impl std::fmt::Display) {
@@ -256,7 +275,22 @@ impl Retained {
                     };
                     let mut rows = Vec::new();
                     let mut dimensions = Vec::new();
+                    let mut placement = None;
                     for (row_index, row) in group.rows.iter().enumerate() {
+                        if grid.kind == Kind::Grid
+                            && let Some(expected) = placement
+                            && row.placement() != expected
+                        {
+                            count(
+                                refused,
+                                &grid.path,
+                                format!(
+                                    "mixed grid placements: expected {expected:?}, found {:?}; entry withheld",
+                                    row.placement()
+                                ),
+                            );
+                            continue;
+                        }
                         match template(windows, row.template) {
                             Ok(template) => {
                                 let key = format!("{}/{}", group.path, row.key);
@@ -288,6 +322,7 @@ impl Retained {
                                     resources,
                                     refused,
                                 );
+                                placement.get_or_insert(row.placement());
                                 dimensions.push(size);
                                 rows.push((row_index, row, template));
                             }
@@ -295,21 +330,19 @@ impl Retained {
                         }
                     }
                     let positioned = if grid.kind == Kind::Grid {
-                        let finalized = if rows
-                            .first()
-                            .is_some_and(|(_, row, _)| row.explicit.is_some())
-                        {
+                        let finalized = if placement == Some(GridPlacement::ExplicitNaval) {
                             let rectangles: Vec<_> = rows
                                 .iter()
                                 .zip(&dimensions)
-                                .map(|((_, row, _), size)| {
-                                    let (offset, raw_size) = row
-                                        .explicit
-                                        .expect("one native naval holder's explicit rows");
-                                    (
+                                .filter_map(|((_, row, _), size)| {
+                                    let Some((Some(offset), raw_size)) = row.explicit else {
+                                        count(refused, &grid.path, "explicit naval grid entry lacks combat-box pixels; entry withheld");
+                                        return None;
+                                    };
+                                    Some((
                                         offset.map(truncate_f32),
                                         size.unwrap_or_else(|| raw_size.map(truncate_f32)),
-                                    )
+                                    ))
                                 })
                                 .collect();
                             self.instance
@@ -317,7 +350,34 @@ impl Retained {
                         } else {
                             let items: Vec<_> =
                                 rows.iter().map(|(_, _, template)| *template).collect();
-                            self.instance.finalize_grid(root, grid, holder, &items)
+                            self.instance
+                                .finalize_grid(root, grid, holder, &items)
+                                .and_then(|finalized| {
+                                    if placement != Some(GridPlacement::AutomaticNaval) {
+                                        return Ok(finalized);
+                                    }
+                                    // 1417D05D0 uses automatic slots for sunk entries but
+                                    // 1417DC8D0 resizes each to its sprite before finalize.
+                                    let rectangles: Vec<_> = finalized
+                                        .items
+                                        .iter()
+                                        .zip(&dimensions)
+                                        .zip(&rows)
+                                        .filter_map(|((&at, size), (_, row, _))| {
+                                            let Some((None, raw_size)) = row.explicit else {
+                                                count(refused, &grid.path, "automatic naval grid entry lacks runtime size; entry withheld");
+                                                return None;
+                                            };
+                                            Some((at, size.unwrap_or_else(|| raw_size.map(truncate_f32))))
+                                        })
+                                        .collect();
+                                    self.instance.finalize_grid_resolved(
+                                        root,
+                                        grid,
+                                        holder,
+                                        &rectangles,
+                                    )
+                                })
                         };
                         match finalized {
                             Ok(finalized) => {
@@ -889,6 +949,7 @@ fn hover_regions(root: &Element, regions: &[Region], values: &Values) -> Vec<Hov
                 region: region.clone(),
                 text: widget.tooltip.clone(),
                 description: widget.tooltip_description.clone(),
+                anchor: widget.tooltip_anchor,
             })
         })
         .collect()
@@ -1017,12 +1078,7 @@ impl Windows {
                     });
                     groups.len() - 1
                 });
-            groups[at].rows.push(Row {
-                key: index.to_string(),
-                template: "navalcombat_ship_entry",
-                values: &row.values,
-                explicit: Some((row.offset, row.size)),
-            });
+            groups[at].rows.push(naval_row(index, row));
         }
         if let Some(prepared) = retained.prepare(
             root,
@@ -1129,6 +1185,7 @@ impl Windows {
                             rect,
                             text: None,
                             description: None,
+                            anchor: super::TooltipAnchor::Pointer,
                         });
                         append_hovers(&mut drawn.tooltips, prepared.hovers, origin);
                     }
@@ -1145,6 +1202,16 @@ impl Windows {
             }
         }
         Ok(drawn)
+    }
+}
+
+fn naval_row(index: usize, row: &super::binding::NavalEntry) -> Row<'_> {
+    Row {
+        key: index.to_string(),
+        // CSunkShipIcon@1417CEF80 and CFexShipIcon@1417CE2A0 share this template.
+        template: "navalcombat_ship_entry",
+        values: &row.values,
+        explicit: Some((row.offset, row.size)),
     }
 }
 
@@ -1173,6 +1240,7 @@ fn append_hovers(target: &mut Vec<TooltipHit>, hovers: Vec<Hover>, origin: [i32;
             rect: region_rect(&hit.region, origin)?,
             text: hit.text,
             description: hit.description,
+            anchor: hit.anchor,
         })
     }));
 }

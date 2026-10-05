@@ -12,7 +12,11 @@ fn naval_convoy_chevrons_and_condition_bars_own_the_member_hover() {
     for key in ["escape_icon_left", "escape_icon_right"] {
         set_hover(&mut values, key, Some("formation explanation".into()), None);
     }
-    group_hovers(&mut values, Some("convoy escape blocks".into()));
+    group_hovers(
+        &mut values,
+        Some("convoy escape blocks".into()),
+        super::super::TooltipAnchor::NavalWindow,
+    );
     for key in [
         "icon",
         "bar_str",
@@ -23,6 +27,10 @@ fn naval_convoy_chevrons_and_condition_bars_own_the_member_hover() {
     ] {
         assert_eq!(values[key].tooltip.as_deref(), Some("convoy escape blocks"));
         assert!(values[key].hover_owned);
+        assert_eq!(
+            values[key].tooltip_anchor,
+            super::super::TooltipAnchor::NavalWindow
+        );
     }
     // Exercise the actual retained hit order: the chevrons overlap a grid
     // with the formation explanation, but their member callback wins.
@@ -91,13 +99,82 @@ fn naval_convoy_chevrons_and_condition_bars_own_the_member_hover() {
             .find(|hit| super::super::contains(hit.rect, point))
             .unwrap();
         assert_eq!(top.text.as_deref(), Some("convoy escape blocks"));
+        assert_eq!(top.anchor, super::super::TooltipAnchor::NavalWindow);
     }
-    group_hovers(&mut values, None);
+    group_hovers(&mut values, None, super::super::TooltipAnchor::NavalWindow);
     assert!(
         values
             .values()
             .all(|widget| widget.hover_owned && widget.tooltip.is_none())
     );
+}
+
+#[test]
+fn naval_sunk_group_keeps_every_separator_native_newlines_and_pointer_anchor() {
+    let base_localisation = loc();
+    let ships: Vec<_> = ["Alpha", "Beta", "Gamma"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| NavalCombatShipRow {
+            side: 1,
+            battle_slot: index as u32,
+            owner: 4,
+            ship: index as u64 + 1,
+            state: 32,
+            name: name.as_bytes().to_vec(),
+            type_name: b"Destroyer".to_vec(),
+            ..Default::default()
+        })
+        .collect();
+    let by_slot = ships
+        .iter()
+        .map(|row| ((row.side, row.battle_slot), row))
+        .collect();
+    let country = replay::rows::CountryRow {
+        id: 4,
+        tag: b"AAA".to_vec(),
+        ..Default::default()
+    };
+    let slots = [0, 1, 2];
+    // 1417DC8D0 adds LF to every member; 1419947D0 does not insert another
+    // before the separator when the preceding non-space byte is already LF.
+    for separator in ["stacked divider\n", "stacked divider"] {
+        let mut localisation: Localisation = base_localisation
+            .iter()
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .chain(std::iter::once((
+                "SEPARATION_LINE".into(),
+                separator.into(),
+            )))
+            .collect();
+        localisation.language = "english".into();
+        let text = group_tooltip(
+            &slots,
+            1,
+            &by_slot,
+            &BTreeMap::new(),
+            &BTreeMap::from([(4, &country)]),
+            &NoIcons,
+            &localisation,
+            None,
+            Some("english"),
+        )
+        .unwrap();
+        assert_eq!(
+            text,
+            format!(
+                "{INLINE_FLAG}AAA \u{11}GAlpha:Destroyer\u{11}!\nsunk\n{separator}{INLINE_FLAG}AAA \u{11}GBeta:Destroyer\u{11}!\nsunk\n{separator}{INLINE_FLAG}AAA \u{11}GGamma:Destroyer\u{11}!\nsunk\n"
+            )
+        );
+        let anchor = group_anchor(&slots, 1, &by_slot);
+        assert_eq!(anchor, super::super::TooltipAnchor::Pointer);
+        let mut values = super::super::Values::new();
+        group_hovers(&mut values, Some(text.clone().into()), anchor);
+        for widget in values.values() {
+            assert_eq!(widget.tooltip.as_deref(), Some(text.as_str()));
+            assert_eq!(widget.tooltip_anchor, super::super::TooltipAnchor::Pointer);
+        }
+    }
 }
 
 #[test]

@@ -26,6 +26,7 @@ pub(crate) mod naval_check;
 mod naval_details;
 mod naval_environment;
 mod naval_escape;
+pub(crate) mod naval_marker_tooltips;
 mod naval_positioning;
 mod naval_screening;
 mod naval_ship_tooltips;
@@ -420,13 +421,13 @@ impl Window {
         self.gui.scroll(target, direction, wheel);
     }
     /// The topmost combat hover, otherwise the map's, on the native tooltip clock.
-    pub fn tooltip(
+    pub(crate) fn tooltip(
         &mut self,
         drawn: Option<&Drawn>,
         assets: &Assets,
         point: Option<[f32; 2]>,
         map: Option<HoverHit<'_>>,
-    ) -> Option<(&str, [f32; 2])> {
+    ) -> Option<(&str, tooltip_painter::TooltipPosition)> {
         let defines = assets.tooltip_defines.as_ref().ok()?;
         let hit = point
             .and_then(|point| {
@@ -442,17 +443,42 @@ impl Window {
                     hit.description.as_deref(),
                     hit.rect,
                     None,
+                    (hit.anchor == TooltipAnchor::NavalWindow)
+                        .then(|| drawn.expect("combat hover has a drawn window").rect),
                 )
             })
-            .or(map);
+            .or_else(|| map.map(|(text, body, rect, province)| (text, body, rect, province, None)));
         self.hover
-            .bind_province(hit.and_then(|(_, _, _, province)| province));
-        self.hover.shown(
-            hit.map(|(text, delayed, rect, _)| (text, delayed, rect)),
-            point,
-            std::time::Instant::now(),
-            defines.timing,
-        )
+            .bind_province(hit.and_then(|(_, _, _, province, _)| province));
+        if let Some((text, delayed, _, _, window)) = hit
+            && (!text.is_empty() || delayed.is_some_and(|text| !text.is_empty()))
+        {
+            self.hover.anchor =
+                window
+                    .zip(point)
+                    .map(|(window, point)| tooltip_painter::TooltipPosition {
+                        point,
+                        naval_window: Some(window),
+                    });
+        }
+        // Explicit anchors retain their position while the hide timer runs (1402A5CFF).
+        let anchor = self.hover.anchor;
+        self.hover
+            .shown(
+                hit.map(|(text, delayed, rect, _, _)| (text, delayed, rect)),
+                point,
+                std::time::Instant::now(),
+                defines.timing,
+            )
+            .map(|(text, point)| {
+                (
+                    text,
+                    anchor.unwrap_or(tooltip_painter::TooltipPosition {
+                        point,
+                        naval_window: None,
+                    }),
+                )
+            })
     }
     /// When the tooltip next changes with a still pointer, for a repaint.
     pub fn tooltip_repaint_after(&self, assets: &Assets) -> Option<std::time::Duration> {
@@ -637,6 +663,16 @@ struct TooltipHit {
     rect: [f32; 4],
     text: Option<HoverText>,
     description: Option<HoverText>,
+    anchor: TooltipAnchor,
+}
+
+/// Producer-specific placement; only CFexShipIcon's group branch supplies a
+/// naval window anchor (1417D5260). Pride, sunk ships and air keep their own default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TooltipAnchor {
+    #[default]
+    Pointer,
+    NavalWindow,
 }
 
 impl Drawn {
@@ -674,6 +710,7 @@ pub struct Widget {
     /// Hover text, and the delayed body shown after its longer delay.
     pub tooltip: Option<HoverText>,
     pub tooltip_description: Option<HoverText>,
+    pub tooltip_anchor: TooltipAnchor,
     /// A dynamic hover builder owns both strings ([`tooltips::set_hover`]):
     /// the window's update (1415C1A60, 1415BF4B0, 1415C0AE0) replaces the
     /// authored `pdx_tooltip` the widget was created with, so the authored

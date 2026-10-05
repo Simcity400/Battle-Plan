@@ -68,6 +68,14 @@ pub(super) struct HoverState {
     /// The next frame's text, kept to reuse its buffer.
     candidate: String,
     point: [f32; 2],
+    pub(super) anchor: Option<TooltipPosition>,
+}
+
+/// Pointer plus the naval producer's combat-window rectangle, in interface pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TooltipPosition {
+    pub(super) point: [f32; 2],
+    pub(super) naval_window: Option<[f32; 4]>,
 }
 
 impl HoverState {
@@ -234,16 +242,82 @@ fn position(point: [f32; 2], size: [f32; 2], extent: [f32; 2], offsets: [i32; 4]
     [x.max(0.0), y.max(0.0)]
 }
 
+/// 1417D47E0 asks 14029FEA0 for CTextBox+0xF8 (the authored maximum
+/// width), chooses the free side of the combat window, and anchors at y+250.
+fn naval_ship_anchor(window: [f32; 4], pointer_x: f32, width: f32, screen_width: f32) -> [f32; 2] {
+    let [x, y, w, _] = window.map(f32::trunc);
+    let left = x - width;
+    let right = x + w;
+    let use_left =
+        (pointer_x.trunc() < x + (w / 2.0).trunc() || screen_width <= right + width) && left > 0.0;
+    [
+        if use_left { left } else { right }.max(0.0),
+        (y + 250.0).max(0.0),
+    ]
+}
+
+fn placed(
+    at: TooltipPosition,
+    size: [f32; 2],
+    extent: [f32; 2],
+    offsets: [i32; 4],
+    wrap_width: f32,
+) -> [f32; 2] {
+    let Some(window) = at.naval_window else {
+        return position(at.point, size, extent, offsets);
+    };
+    let mut at = naval_ship_anchor(window, at.point[0], wrap_width, extent[0]);
+    // 141994D20 sets an absolute anchor and below flag 1. 1402A5CFF
+    // skips pointer offsets; overflowing explicit anchors subtract size+20
+    // from the anchor itself (1402A5F1F/1402A5F82).
+    for axis in 0..2 {
+        at[axis] = at[axis].max(offsets[axis] as f32);
+        if at[axis] > extent[axis] - size[axis] - offsets[axis + 2] as f32 {
+            at[axis] -= size[axis] + 20.0;
+        }
+        at[axis] = at[axis].max(0.0);
+    }
+    at
+}
+
+/// 14029FEA0 reads the authored CTextBox+0xF8. CreateTextBox@142247010
+/// selects defaultTextBox only when ToolTip is absent, not when its type is wrong.
+fn authored_wrap_width(resources: &impl native_gui::Resources) -> Result<f32, native_gui::Refusal> {
+    let element = resources
+        .gui_type(native_gui::text_sprites::TOOLTIP)
+        .or_else(|| resources.gui_type(b"defaultTextBox"))
+        .ok_or_else(|| native_gui::Refusal {
+            path: "ToolTip".into(),
+            kind: native_gui::RefusalKind::NullRead,
+            detail: "authored tooltip wrap width is unavailable: ToolTip and defaultTextBox are absent (142247010, 14029FEA0)".into(),
+        })?;
+    match &element.fields {
+        installed_content::gui::native::Fields::TextSprite(text) => Ok(text.max_width as f32),
+        _ => Err(native_gui::Refusal {
+            path: element.path.clone(),
+            kind: native_gui::RefusalKind::TypeConfusion,
+            detail: "authored tooltip wrap width is unavailable: tooltip template is not a textBoxType (142247010, 14029FEA0)".into(),
+        }),
+    }
+}
+
 pub(crate) fn draw<R: native_gui::Resources + native_gui::Sheets>(
     resources: &R,
     batch: &mut Batch,
     value: &str,
-    point: [f32; 2],
+    point: TooltipPosition,
     extent: [f32; 2],
     defines: &TooltipDefines,
     time: f32,
 ) -> std::collections::BTreeMap<String, usize> {
     let mut refused = std::collections::BTreeMap::new();
+    let wrap_width = match authored_wrap_width(resources) {
+        Ok(width) => width,
+        Err(why) => {
+            gui_windows::count_refused(&mut refused, "ToolTip", &[why]);
+            return refused;
+        }
+    };
     let layout = match native_gui::text_sprites::tooltip(resources, value, time, true) {
         Ok(layout) => layout,
         Err(why) => {
@@ -252,11 +326,12 @@ pub(crate) fn draw<R: native_gui::Resources + native_gui::Sheets>(
         }
     };
     gui_windows::count_noted(&mut refused, "ToolTip", &layout.diagnostics);
-    let at = position(
+    let at = placed(
         point,
         layout.size.map(|v| v as f32),
         extent,
         defines.offsets,
+        wrap_width,
     )
     .map(|v| v as i32);
     batch.at_layer(crate::map::sprites::TOOLTIP_LAYER);

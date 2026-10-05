@@ -515,6 +515,7 @@ pub struct Viewer {
     raid_lane: crate::raid_lane::RaidLane,
     raid_tooltips: map::raids::tooltips::lane::Lane,
     land_marker_tooltips: crate::combat::land_marker_tooltips::Cache,
+    naval_marker_tooltips: crate::combat::naval_marker_tooltips::Cache,
     province_tooltips: map::province_tooltips::Cache,
     tooltip_refused: BTreeMap<String, usize>,
     // counters
@@ -844,6 +845,7 @@ impl Viewer {
             raid_lane: Default::default(),
             raid_tooltips: Default::default(),
             land_marker_tooltips: Default::default(),
+            naval_marker_tooltips: Default::default(),
             province_tooltips: Default::default(),
             tooltip_refused: Default::default(),
             // counters
@@ -953,6 +955,7 @@ impl Viewer {
         self.options.replay = None;
         self.raid_tooltips = Default::default();
         self.land_marker_tooltips = Default::default();
+        self.naval_marker_tooltips = Default::default();
         self.province_tooltips = Default::default();
         self.tooltip_refused.clear();
         self.source = None;
@@ -1372,6 +1375,7 @@ impl Viewer {
         self.document = None;
         self.raid_tooltips = Default::default();
         self.land_marker_tooltips = Default::default();
+        self.naval_marker_tooltips = Default::default();
         self.province_tooltips = Default::default();
         self.tooltip_refused.clear();
         self.source = None;
@@ -1719,6 +1723,31 @@ impl Viewer {
             };
             let text =
                 self.land_marker_tooltips
+                    .request(document, frame, viewer, id, index.as_deref());
+            return Some((text, rect, None));
+        }
+        if let Some((id, rect)) = crate::combat::naval_marker_tooltips::hit(
+            &self.counter_report.naval_marker_hovers,
+            point,
+        ) && let crate::playback::Current::Frame(frame) = document.playback.current()
+        {
+            let viewer = self.overlay_tables.as_ref()?.3.ours();
+            let index = match self
+                .hours
+                .as_ref()
+                .map(|hours| hours.engaged(&self.perspective.country))
+                .transpose()
+            {
+                Ok(index) => index,
+                Err(why) => {
+                    let mut text = map::raids::tooltips::Tooltip::default();
+                    text.refused
+                        .insert(format!("naval marker {id} engaged index: {why}"), 1);
+                    return Some((Arc::new(text), rect, None));
+                }
+            };
+            let text =
+                self.naval_marker_tooltips
                     .request(document, frame, viewer, id, index.as_deref());
             return Some((text, rect, None));
         }

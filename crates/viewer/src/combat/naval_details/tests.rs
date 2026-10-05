@@ -37,6 +37,10 @@ fn forward_land_and_carrier_air_share_the_native_group_rule() {
 #[test]
 fn air_count_uses_current_over_max_and_native_side_colour_order() {
     assert_eq!(
+        air_count_label(0, "AAA", 120, 120, false),
+        format!("\u{11}W {}AAA 120/120\u{11}!", super::super::INLINE_FLAG)
+    );
+    assert_eq!(
         air_count_label(0, "AAA", 3, 7, false),
         format!("\u{11}W {}AAA 3/7\u{11}!", super::super::INLINE_FLAG)
     );
@@ -88,7 +92,7 @@ fn air_entries_bind_before_carrier_ships_on_both_grids() {
                 "battle_window/top_wnd/{}_wnd/grid_carrier",
                 if side == 0 { "left" } else { "right" }
             ),
-            offset: [0.0, heights[&(side, "carrier")]],
+            offset: Some([0.0, heights[&(side, "carrier")]]),
             size: [40.0, 20.0],
             values: Values::new(),
             battle_slots: vec![1],
@@ -260,14 +264,14 @@ fn reveal_and_exact_state_select_boxes() {
         formation_flags: 1 << 7,
         ..Default::default()
     };
-    assert_eq!(column(&row), Some("hidden"));
+    assert_eq!(column(&row, 0), Some("hidden"));
     row.detection_state = 2;
-    assert_eq!(column(&row), Some("visible"));
+    assert_eq!(column(&row, 0), Some("visible"));
     row.state = 32;
     row.live_ship = 0;
-    assert_eq!(column(&row), Some("sunk"));
+    assert_eq!(column(&row, 0), Some("sunk"));
     row.state = 33;
-    assert_eq!(column(&row), None);
+    assert_eq!(column(&row, 0), None);
 }
 #[test]
 fn grouping_normalizes_state_but_preserves_damage() {
@@ -278,15 +282,53 @@ fn grouping_normalizes_state_but_preserves_damage() {
         maximum_hit_points: 100,
         ..Default::default()
     };
-    let healthy = key(&row, 7, false);
+    let healthy = key(&row, 7, false, 0);
     row.state = 2;
-    assert!(healthy == key(&row, 7, false));
+    assert!(healthy == key(&row, 7, false, 0));
     row.strength = 99;
-    assert!(healthy != key(&row, 7, false));
+    assert!(healthy != key(&row, 7, false, 0));
     row.state = 4;
-    let unknown = key(&row, 7, true);
+    let unknown = key(&row, 7, true, 0);
     row.subunit_index = 42;
     row.owner = 8;
     row.strength = 100;
-    assert!(unknown == key(&row, 8, true));
+    assert!(unknown == key(&row, 8, true, 0));
+}
+
+#[test]
+fn carrier_equipment_flags_select_the_carrier_group_before_screen_flags() {
+    use replay::rows::{ShipCounterInputs, ShipModelRow};
+    let mut row = NavalCombatShipRow {
+        state: 2,
+        live_ship: 1,
+        ship: 123,
+        formation_flags: 1 << 8,
+        ..Default::default()
+    };
+    for carrier_flag in [22, 37] {
+        let model = ShipModelRow {
+            ship: row.ship,
+            counter: Some(ShipCounterInputs {
+                positive_equipment_flags: 1 << carrier_flag,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let models = BTreeMap::from([(model.ship, &model)]);
+        let flags = pool_flags(&row, &models, None).unwrap();
+        assert_eq!(column(&row, flags), Some("carrier"));
+        assert_eq!(key(&row, 7, false, flags).unwrap().column, "carrier");
+        row.formation_flags |= 1 << 7;
+        assert_eq!(column(&row, flags), Some("hidden"));
+        row.formation_flags = 1 << 8;
+    }
+    assert_eq!(column(&row, 0), Some("screen"));
+    assert!(
+        pool_flags(&row, &BTreeMap::new(), Some("17 rows not reached"))
+            .unwrap_err()
+            .contains("17 rows not reached")
+    );
+    row.formation_flags = 1 << 22;
+    assert_eq!(pool_flags(&row, &BTreeMap::new(), None), Ok(0));
+    assert_eq!(column(&row, 0), Some("carrier"));
 }

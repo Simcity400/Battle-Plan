@@ -68,6 +68,92 @@ const RECT: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
 const POINT: Option<[f32; 2]> = Some([2.0, 3.0]);
 
 #[test]
+fn naval_tooltip_width_uses_authored_fallback_and_counts_missing_or_wrong_types() {
+    use crate::map::native_gui::tests::{fixture, fixture_with};
+    let read = installed_content::gui::native::read;
+    let fallback = fixture_with(read(
+        br#"guiTypes={textBoxType={name=defaultTextBox maxWidth=375}}"#,
+    ));
+    assert_eq!(authored_wrap_width(&fallback).unwrap(), 375.);
+    let preferred = fixture_with(read(
+        br#"guiTypes={textBoxType={name=ToolTip maxWidth=500}
+            textBoxType={name=defaultTextBox maxWidth=375}}"#,
+    ));
+    assert_eq!(authored_wrap_width(&preferred).unwrap(), 500.);
+    let zero = fixture_with(read(br#"guiTypes={textBoxType={name=ToolTip maxWidth=0}}"#));
+    assert_eq!(authored_wrap_width(&zero).unwrap(), 0.); // An authored zero is native data.
+
+    let wrong = fixture_with(read(
+        br#"guiTypes={containerWindowType={name=ToolTip size={width=500 height=20}}
+            textBoxType={name=defaultTextBox maxWidth=375}}"#,
+    ));
+    for (resources, reason) in [
+        (fixture(), "ToolTip and defaultTextBox are absent"),
+        (wrong, "tooltip template is not a textBoxType"),
+    ] {
+        let mut batch = Batch::default();
+        let refused = draw(
+            &resources,
+            &mut batch,
+            "ship",
+            TooltipPosition {
+                point: [700., 300.],
+                naval_window: Some([600., 100., 900., 650.]),
+            },
+            [2400., 900.],
+            &TooltipDefines {
+                offsets: [0; 4],
+                timing: [0.; 3],
+            },
+            0.,
+        );
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        let (text, count) = refused.first_key_value().unwrap();
+        assert!(
+            text.contains("authored tooltip wrap width is unavailable"),
+            "{text}"
+        );
+        assert!(text.contains(reason), "{text}");
+        assert_eq!(*count, 1);
+        assert!(batch.quads.is_empty());
+    }
+}
+
+#[test]
+fn naval_ship_tooltip_anchors_to_the_free_window_side_at_y_plus_250() {
+    let window = [600., 100., 900., 650.];
+    assert_eq!(naval_ship_anchor(window, 700., 500., 2400.), [100., 350.]);
+    assert_eq!(naval_ship_anchor(window, 1200., 500., 2400.), [1500., 350.]);
+    // A right-side hover moves left when the authored tooltip width cannot fit.
+    assert_eq!(naval_ship_anchor(window, 1200., 500., 1800.), [100., 350.]);
+    // When left touches zero it instead chooses right, even for a left-row hover.
+    assert_eq!(
+        naval_ship_anchor([500., -300., 900., 600.], 600., 500., 2400.),
+        [1400., 0.]
+    );
+    let at = TooltipPosition {
+        point: [700., 500.],
+        naval_window: Some(window),
+    };
+    assert_eq!(
+        placed(at, [420., 100.], [2400., 900.], [0; 4], 500.),
+        [100., 350.]
+    );
+    assert_eq!(
+        placed(at, [420., 700.], [2400., 900.], [0; 4], 500.),
+        [100., 0.]
+    );
+    let right = TooltipPosition {
+        point: [1200., 500.],
+        ..at
+    };
+    assert_eq!(
+        placed(right, [500., 100.], [2400., 900.], [0; 4], 500.),
+        [1500., 350.]
+    );
+}
+
+#[test]
 fn hover_uses_strict_show_and_delayed_deadlines() {
     let start = Instant::now();
     let mut hover = HoverState::default();

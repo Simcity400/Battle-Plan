@@ -222,7 +222,7 @@ fn push_air_entry(
         side,
         unknown: false,
         grid,
-        offset: [combat_box_x(size[0]), *height],
+        offset: Some([combat_box_x(size[0]), *height]),
         size,
         values,
         battle_slots: Vec::new(),
@@ -702,31 +702,44 @@ pub(super) fn bind(
     }
 }
 
-// 14195ED00: state is an enum, not a mask. Live formation flags use the
-// 140C2BAD0/BAE0/BAF0 accessors; cached formation_type alone is insufficient.
-pub(super) fn column(row: &NavalCombatShipRow) -> Option<&'static str> {
-    match row.state {
-        32 => Some("sunk"),
-        4 | 16 => Some("reserve"),
-        1 | 2 | 8 if row.live_convoy != 0 => Some("carrier"),
-        1 | 2 | 8 if row.live_ship != 0 => {
-            let flags = row.formation_flags;
-            if flags & (1 << 7) != 0 {
-                Some(if row.detection_state == 0 {
-                    "hidden"
-                } else {
-                    "visible"
-                })
-            } else if flags & (1 << 8) != 0 {
-                Some("screen")
-            } else if flags & (1 << 39) != 0 || row.is_convoy != 0 {
-                Some("carrier")
-            } else {
-                Some("battle")
-            }
-        }
+// 14195ED00 uses the same display-box predicate as carrier sortie modifiers:
+// 140C2B7E0 tests both the ship and its positive equipment pool's bits 22/37.
+pub(super) fn column(row: &NavalCombatShipRow, pool_flags: u64) -> Option<&'static str> {
+    match super::naval_air_groups::display_box(row, pool_flags) {
+        1 => Some("screen"),
+        2 => Some("battle"),
+        3 => Some("carrier"),
+        4 => Some("hidden"),
+        5 => Some("visible"),
+        6 => Some("sunk"),
+        7 => Some("reserve"),
         _ => None,
     }
+}
+
+fn pool_flags(
+    row: &NavalCombatShipRow,
+    models: &BTreeMap<u64, &replay::rows::ShipModelRow>,
+    incomplete: Option<&str>,
+) -> Result<u64, String> {
+    // These branches of 14195ED00 do not depend on the equipment predicate.
+    if !matches!(row.state, 1 | 2 | 8)
+        || row.live_convoy != 0
+        || row.live_ship == 0
+        || row.formation_flags & ((1 << 7) | (1 << 22) | (1 << 37)) != 0
+    {
+        return Ok(0);
+    }
+    models
+        .get(&row.ship)
+        .and_then(|model| model.counter.as_ref())
+        .map(|counter| counter.positive_equipment_flags)
+        .ok_or_else(|| {
+            incomplete.map_or_else(
+                || format!("ship {} has no ShipModels counter operands", row.ship),
+                |why| format!("ShipModels is incomplete: {why}"),
+            )
+        })
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -741,8 +754,8 @@ struct GroupKey {
     damaged: bool,
     unknown: bool,
 }
-fn key(row: &NavalCombatShipRow, owner: u32, unknown: bool) -> Option<GroupKey> {
-    let column = column(row)?;
+fn key(row: &NavalCombatShipRow, owner: u32, unknown: bool, pool_flags: u64) -> Option<GroupKey> {
+    let column = column(row, pool_flags)?;
     // 1417D9730 collapses all unseen incoming entries in their box. Otherwise
     // it compares cached formation/subunit/convoy, country aliases and damage.
     Some(GroupKey {
@@ -806,6 +819,15 @@ fn active(
         .collect();
     let mut lookup = BTreeMap::new();
     let mut groups: Vec<(GroupKey, Vec<&NavalCombatShipRow>)> = Vec::new();
+    let models = rows::<tables::ShipModels>(frame)?;
+    let by_ship = models.rows().iter().map(|row| (row.ship, row)).collect();
+    let model_gap = match &models {
+        crate::table_access::Available::Complete(_) => None,
+        crate::table_access::Available::Truncated { missing, .. } => {
+            Some(format!("{missing} rows not reached"))
+        }
+        crate::table_access::Available::Unavailable { reason } => Some((*reason).to_owned()),
+    };
     // Incoming live ships whose owner's sharing (1406F3A90) the hour cannot
     // decide, by missing input: their box is unknown, so they are omitted.
     let mut undecided: BTreeMap<SharingUnknown, usize> = BTreeMap::new();
@@ -821,10 +843,21 @@ fn active(
         } else {
             false
         };
+        let pool = match pool_flags(row, &by_ship, model_gap.as_deref()) {
+            Ok(pool) => pool,
+            Err(reason) => {
+                out.refuse(format!(
+                    "NavalCombatShips slot {} combat box is withheld: {reason} (140C2B7E0).",
+                    row.battle_slot
+                ));
+                continue;
+            }
+        };
         let Some(key) = key(
             row,
             aliases.get(&row.owner).copied().unwrap_or(row.owner),
             unknown,
+            pool,
         ) else {
             out.warnings.push(format!(
                 "NavalCombatShips slot {}: state {} has no drawable live combat box; omitted.",
@@ -1026,7 +1059,7 @@ fn active(
             side: key.side,
             unknown: key.unknown,
             grid,
-            offset: [offset_x, *height],
+            offset: entry_offset(key.column, offset_x, *height),
             size: asset,
             values,
             battle_slots: members.iter().map(|row| row.battle_slot).collect(),
@@ -1035,8 +1068,14 @@ fn active(
     }
     out.warnings
         .retain(|w| !w.starts_with("NavalCombatShips: live HP/org bars"));
-    out.warnings.push("Format-22 naval rows: native state/formation/reveal boxes, source0 and retained source1 slots, normalized-state/subunit/formation/country/damaged grouping, copied sprites, native sorted group counts, mean strength/organisation and escape progress are bound. Organisation maxima apply recorded modifiers46/47/27e with default-leader and HQ sources; missing terms in complete captured sources mean zero. UNVERIFIED: native carrier classification also queries embedded equipment flags, pride tint, sunk-strip layout, incoming-entry relation edge cases and remaining flag/text geometry need native operand and per-widget attribution beyond reference07.".into());
+    out.warnings.push("Format-22 naval rows: native state/formation/equipment/reveal boxes, source0 and retained source1 slots, normalized-state/subunit/formation/country/damaged grouping, copied sprites, native sorted group counts, mean strength/organisation and escape progress are bound. Organisation maxima apply recorded modifiers46/47/27e with default-leader and HQ sources; missing terms in complete captured sources mean zero. Sunk entries follow the content grid's slots (1417D05D0). UNVERIFIED: pride tint, incoming-entry relation edge cases and remaining flag/text geometry require live comparison.".into());
     Ok(())
+}
+
+/// 1417D05D0 advances sunk entries by the grid's authored slot direction and
+/// limits. Fighting boxes instead supply explicit pixel offsets (1417D0380).
+pub(super) fn entry_offset(column: &str, x: f32, y: f32) -> Option<[f32; 2]> {
+    (column != "sunk").then_some([x, y])
 }
 /// 1417DBBE0 sets the one-based icon frame to `(left ^ reversed) + 1`, where
 /// `left` is the column's side byte (1 for the attacker's left column) and a

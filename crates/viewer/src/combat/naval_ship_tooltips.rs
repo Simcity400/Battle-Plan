@@ -163,6 +163,7 @@ pub(super) fn bind(
             continue; // Air-group hover ownership is reported by naval_details.
         }
         let side = entry.side;
+        let anchor = group_anchor(&entry.battle_slots, side, &by_slot);
         let built = if entry.unknown {
             // Executable key at 1417DBBE0, resolved through the content stack.
             builtin(icons, loc, NAVAL_COMBAT_INCOMING_UNKNOWN, &[]).map_err(|reason| vec![reason])
@@ -180,9 +181,9 @@ pub(super) fn bind(
             )
         };
         match built {
-            Ok(text) => group_hovers(&mut entry.values, hover_text(&text)),
+            Ok(text) => group_hovers(&mut entry.values, hover_text(&text), anchor),
             Err(reasons) => {
-                group_hovers(&mut entry.values, None);
+                group_hovers(&mut entry.values, None, anchor);
                 for reason in reasons {
                     refusals.push(format!(
                         "Naval combat {id} ship box hover is withheld: {reason}."
@@ -197,12 +198,33 @@ pub(super) fn bind(
     Ok(())
 }
 
+fn group_anchor(
+    slots: &[u32],
+    side: u8,
+    ships: &BTreeMap<(u8, u32), &NavalCombatShipRow>,
+) -> super::TooltipAnchor {
+    if slots
+        .first()
+        .and_then(|slot| ships.get(&(side, *slot)))
+        .is_some_and(|row| row.state == 32)
+    {
+        // CSunkShipIcon@1417DC8D0 has no 141994D20 call.
+        super::TooltipAnchor::Pointer
+    } else {
+        super::TooltipAnchor::NavalWindow // CFexShipIcon@1417D5260.
+    }
+}
+
 /// 1417CE2A0 installs the same CFexShipIcon observer on the hull, labels,
 /// hidden marker, condition bars, escape progress and both chevrons;
 /// 1417D5260 returns the group text (pride has its separate branch).
 /// Owning each hover prevents a chevron from falling through to its grid's
 /// authored formation explanation.
-fn group_hovers(values: &mut super::Values, text: Option<super::HoverText>) {
+fn group_hovers(
+    values: &mut super::Values,
+    text: Option<super::HoverText>,
+    anchor: super::TooltipAnchor,
+) {
     for key in [
         "icon",
         "desc_left",
@@ -215,6 +237,7 @@ fn group_hovers(values: &mut super::Values, text: Option<super::HoverText>) {
         "escape_icon_right",
     ] {
         set_hover(values, key, text.clone(), None);
+        values.entry(key.into()).or_default().tooltip_anchor = anchor;
     }
 }
 
@@ -236,7 +259,8 @@ fn group_tooltip(
     let mut text = if slots
         .first()
         .and_then(|slot| ships.get(&(side, *slot)))
-        .is_some_and(|row| super::naval_details::column(row) == Some("hidden"))
+        // Submarine boxes override every carrier equipment flag (14195ED00).
+        .is_some_and(|row| super::naval_details::column(row, 0) == Some("hidden"))
     {
         builtin(icons, loc, NAVAL_COMBAT_HIDDEN_SUBS, &[]).map_err(|reason| vec![reason])?
     } else {
@@ -258,7 +282,8 @@ fn group_tooltip(
         match part {
             Ok(part) => {
                 if index != 0 {
-                    // 1419947D0 scans backwards over spaces and adds a newline
+                    // Both 1417DBBE0 and sunk builder 1417DC8D0 call 1419947D0.
+                    // It scans backwards over spaces and adds a newline
                     // only if the preceding non-space byte is not '\n'. It then
                     // appends the stacked SEPARATION_LINE verbatim.
                     if !text.trim_end_matches(' ').ends_with('\n') {

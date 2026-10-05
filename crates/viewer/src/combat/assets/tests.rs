@@ -78,7 +78,7 @@ fn tga(width: u16, height: u16) -> Vec<u8> {
 }
 
 #[test]
-fn combat_inline_sprite_substitution_renders_through_loaded_inventory() {
+fn combat_inline_and_naval_air_sprites_render_through_loaded_inventory() {
     use crate::combat::{binding::Bindings, gui_resources, tooltip_painter};
     use crate::map::{native_gui::Resources, sprites::Batch};
 
@@ -111,6 +111,8 @@ fn combat_inline_sprite_substitution_renders_through_loaded_inventory() {
         ("interface/fixture.gui", declaration.into_bytes()),
         ("interface/fixture.gfx", br#"spriteTypes = {
             spriteType = { name = "GFX_fixture_substituted" textureFile = "gfx/icon.tga" }
+            spriteType = { name = "GFX_navalcombat_air_icon_fixture_bomber" textureFile = "gfx/icon.tga" noOfFrames = 2 }
+            spriteType = { name = "GFX_navalcombat_air_icon_fixture_fighter" textureFile = "gfx/icon.tga" noOfFrames = 2 }
         }
         bitmapfonts = { bitmapfont = { name = "fixture_font" path = "gfx/fonts/fixture" } }"#.to_vec()),
         ("map/default.map", br#"definitions = "x" provinces = "x" terrain = "x"
@@ -158,6 +160,15 @@ fn combat_inline_sprite_substitution_renders_through_loaded_inventory() {
         &lazy,
     )
     .unwrap();
+    // The air binder's 1417DAA40 cascade needs loaded sheets for names that
+    // no .gui template declares. Registry facts alone used to hide both icons.
+    for name in [
+        "GFX_navalcombat_air_icon_fixture_bomber",
+        "GFX_navalcombat_air_icon_fixture_fighter",
+    ] {
+        assert_eq!(combat.sprite_size(name), Some([2.0, 4.0]), "{name}");
+        assert!(combat.gui.sheet(name.as_bytes()).is_some(), "{name}");
+    }
     let localisation = installed_content::localisation::read(&shared, "english").unwrap();
     // The same inventory and load calls MapIcons::load_gui uses; no test-only merge.
     let (extra, _) = combat.localisation_assets(&localisation);
@@ -189,7 +200,10 @@ fn combat_inline_sprite_substitution_renders_through_loaded_inventory() {
         &resources,
         &mut batch,
         &text,
-        [0.0; 2],
+        tooltip_painter::TooltipPosition {
+            point: [0.0; 2],
+            naval_window: None,
+        },
         [640.0, 480.0],
         &tooltip_painter::TooltipDefines::read(&defines).unwrap(),
         0.0,

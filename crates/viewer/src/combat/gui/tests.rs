@@ -12,6 +12,158 @@ impl CombatResources for Fixture {
 }
 
 #[test]
+fn combat_mixed_grid_rows_are_counted_without_losing_compatible_entries() {
+    let windows = windows(
+        br#"guiTypes={
+        containerWindowType={name=view size={width=400 height=200}
+            gridBoxType={name=rows size={width=300 height=60}
+                slotsize={width=30 height=20} max_slots_horizontal=3
+                format=UPPER_LEFT add_horizontal=yes}}
+        containerWindowType={name=entry size={width=20 height=10}
+            iconType={name=icon spriteType=GFX_even}}
+    }"#,
+    );
+    let resources = fixture();
+    let root = windows.gui_type(b"view").unwrap();
+    let values = Values::new();
+    let entry_values = Values::from([("icon".into(), super::super::Widget::default())]);
+    let modes = [
+        None,
+        Some((None, [20., 10.])),
+        Some((Some([40., 20.]), [20., 10.])),
+    ];
+    for valid in modes {
+        for invalid in modes.into_iter().filter(|mode| *mode != valid) {
+            let mut retained = Retained::new("view", root, [800, 600], &resources).unwrap();
+            let rows = [valid, invalid, invalid, valid]
+                .into_iter()
+                .enumerate()
+                .map(|(index, explicit)| Row {
+                    key: index.to_string(),
+                    template: "entry",
+                    values: &entry_values,
+                    explicit,
+                })
+                .collect();
+            let mut refused = BTreeMap::new();
+            let prepared = retained
+                .prepare(
+                    root,
+                    &values,
+                    vec![Group {
+                        path: "rows".into(),
+                        rows,
+                    }],
+                    &windows,
+                    &resources,
+                    Tick { time: 0., dt: 0. },
+                    1,
+                    true,
+                    true,
+                    true,
+                    &mut refused,
+                )
+                .unwrap();
+            assert_eq!(refused.len(), 1, "{refused:?}");
+            let (reason, count) = refused.first_key_value().unwrap();
+            assert!(
+                reason.contains(&format!(
+                    "Combat GUI {}: mixed grid placements",
+                    root.path_named("rows").unwrap().path
+                )),
+                "{reason}"
+            );
+            assert_eq!(*count, 2);
+            assert_eq!(
+                retained.places["rows"]
+                    .iter()
+                    .map(|(index, _)| *index)
+                    .collect::<Vec<_>>(),
+                [0, 3],
+            );
+            assert_eq!(prepared.items.len(), 1);
+            assert_eq!(prepared.items[0].len(), 2);
+        }
+    }
+}
+
+#[test]
+fn naval_loss_grid_uses_authored_slots_and_runtime_bounds() {
+    use super::super::{Widget, binding::NavalEntry, naval_details::entry_offset};
+    let windows = windows(
+        br#"guiTypes={
+        containerWindowType={name=navalcombatview size={width=400 height=200}
+            gridBoxType={name=losses size={width=330 height=40}
+                slotsize={width=100 height=27} max_slots_horizontal=3
+                format=UPPER_LEFT add_horizontal=yes}}
+        containerWindowType={name=navalcombat_ship_entry position={x=1 y=0}
+            size={width=1 height=3} iconType={name=icon spriteType=GFX_even}}
+    }"#,
+    );
+    let resources = fixture();
+    let mut bindings = Bindings::default();
+    for index in 0..4 {
+        bindings.naval_entries.push(NavalEntry {
+            side: 0,
+            unknown: false,
+            grid: "losses".into(),
+            offset: entry_offset("sunk", 0.0, index as f32 * 23.0),
+            size: [20.0, 30.0],
+            values: Values::from([("icon".into(), Widget::default())]),
+            battle_slots: vec![index],
+        });
+    }
+    let mut gui = Windows::default();
+    let drawn = gui
+        .draw(
+            &windows,
+            &resources,
+            &bindings,
+            1,
+            Selection::Naval(7),
+            [0.0; 2],
+            false,
+            &mut None,
+            [800.0, 600.0],
+            true,
+            Tick { time: 0.0, dt: 0.0 },
+            false,
+        )
+        .unwrap();
+    assert!(drawn.refused.is_empty(), "{:?}", drawn.refused);
+    assert_eq!(
+        drawn
+            .batch
+            .quads
+            .iter()
+            .map(|quad| quad.exact.as_ref().unwrap().corners[0])
+            .collect::<Vec<_>>(),
+        [[1., 0.], [101., 0.], [201., 0.], [1., 27.]]
+    );
+    let kept = gui.root.as_mut().unwrap();
+    assert_eq!(
+        kept.places["losses"]
+            .iter()
+            .map(|(_, at)| *at)
+            .collect::<Vec<_>>(),
+        [[1, 0], [101, 0], [201, 0], [1, 27]]
+    );
+    let root = windows.gui_type(b"navalcombatview").unwrap();
+    // Runtime sprite size, not the tiny authored entry, determines overflow.
+    let layout = kept
+        .instance
+        .layout_with_regions(root, &resources, None, true)
+        .unwrap()
+        .unwrap();
+    let region = layout
+        .regions
+        .iter()
+        .find(|region| region.path.ends_with(".losses"))
+        .unwrap();
+    assert_eq!(&region.rect[2..], &[330., 57.]);
+}
+
+#[test]
 fn combat_button_enabled_binding_draws_native_disabled_state_and_resets() {
     use super::super::Widget;
     use crate::map::native_effects::Pixel;
@@ -422,7 +574,7 @@ fn combat_prepare_sizes_escape_entries_from_the_native_drawable() {
                 key: "0".into(),
                 template: "entry",
                 values: &row,
-                explicit: Some(([0.0; 2], [20.0, 10.0])),
+                explicit: Some((Some([0.0; 2]), [20.0, 10.0])),
             }],
         }];
         retained
