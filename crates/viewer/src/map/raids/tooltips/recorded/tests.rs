@@ -254,6 +254,107 @@ fn trigger_inversion_indentation_custom_override_and_named_unsupported_leaf() {
 }
 
 #[test]
+fn raid_tooltip_regression_special_project_requirement_uses_native_name_and_inversion() {
+    use super::super::super::tests::put;
+    let mut assets = assets();
+    assets.tooltip.projects = Ok(installed_content::special_projects::Catalog {
+        projects: [(
+            "oilfield".into(),
+            installed_content::special_projects::Project {
+                name: Some("project_name".into()),
+                ..Default::default()
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    });
+    let mut frame = frame();
+    put::<tables::CountryAppearance>(
+        &mut frame,
+        vec![replay::rows::CountryAppearanceRow {
+            country: 10,
+            ..Default::default()
+        }],
+    );
+    put::<tables::Politics>(
+        &mut frame,
+        vec![replay::rows::PoliticsRow {
+            country: 10,
+            ..Default::default()
+        }],
+    );
+    put::<tables::Projects>(
+        &mut frame,
+        vec![replay::rows::ProjectRow {
+            owner: 10,
+            definition_id: 100,
+            started: 0,
+            completed: 0,
+            ..Default::default()
+        }],
+    );
+    let world = World::new(&frame, assets.facts()).unwrap();
+    let loc: Localisation = [
+        ("TRIGGER_FULLFILLED_PREFIX", "+"),
+        ("TRIGGER_UNFULLFILLED_PREFIX", "-"),
+        ("TRIGGER_IS_SPECIAL_PROJECT_COMPLETED", "finished $PROJECT$"),
+        (
+            "TRIGGER_IS_NOT_SPECIAL_PROJECT_COMPLETED",
+            "unfinished $PROJECT$",
+        ),
+        ("project_name", "synthetic project"),
+        ("GER_project_name", "synthetic country name"),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.into(), value.into()))
+    .collect();
+    let context = Context {
+        assets: &assets,
+        world: &world,
+        loc: &loc,
+        recorded_language: &loc.language,
+        scripted_content: &Err("no scripted content in this test".into()),
+        ours: 0,
+        countries: installed_content::country_names::CountryNames::read(&frame, &loc),
+        flag_exists: &|_| true,
+        scripted: Default::default(),
+    };
+    let scope = Scopes::of(Scope::Country(0));
+    let lines = context.trigger_text(
+        &triggers("is_special_project_completed=sp:oilfield NOT={is_special_project_completed=sp:oilfield}"),
+        scope,
+        "test",
+    );
+    assert_eq!(
+        lines[0].1.as_deref(),
+        Ok("-finished \u{11}Ysynthetic country name\u{11}! (synthetic project)\n")
+    );
+    assert_eq!(
+        lines[1].1.as_deref(),
+        Ok("+unfinished \u{11}Ysynthetic country name\u{11}! (synthetic project)\n")
+    );
+    let absent = context.trigger_text(
+        &triggers("is_special_project_completed=sp:commando"),
+        scope,
+        "test",
+    );
+    assert_eq!(absent[0].1.as_deref(), Ok("-finished \n"));
+    let lines = context.trigger_text(
+        &triggers("is_special_project_completed=var:project"),
+        scope,
+        "test",
+    );
+    assert!(
+        lines[0]
+            .1
+            .as_ref()
+            .unwrap_err()
+            .contains("sp: project operand")
+    );
+}
+
+#[test]
 fn custom_tooltip_uses_shared_scope_expansion_and_native_negative_key() {
     with_context(|context| {
         let scopes = Scopes {

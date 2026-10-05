@@ -196,6 +196,25 @@ impl Context<'_, '_> {
                     ],
                 )
             }
+            "is_special_project_completed" => {
+                let name = scalar
+                    .and_then(|value| value.strip_prefix("sp:"))
+                    .ok_or("special project tooltip requires an sp: project operand")?;
+                let Scope::Country(country) = scopes.this else {
+                    return Err("special project tooltip THIS is not a country".into());
+                };
+                // 1404A1410: project name record +40 and string PROJECT;
+                // the negative key follows inversion, not completion.
+                localise(
+                    self.loc,
+                    if invert {
+                        "TRIGGER_IS_NOT_SPECIAL_PROJECT_COMPLETED"
+                    } else {
+                        "TRIGGER_IS_SPECIAL_PROJECT_COMPLETED"
+                    },
+                    &[("PROJECT", Arg::Text(&self.project_name(name, country)?))],
+                )
+            }
             "custom_override_tooltip" | "custom_trigger_tooltip" => {
                 let Some(children) = trigger.value.items() else {
                     return Err("custom trigger tooltip requires block".into());
@@ -220,6 +239,57 @@ impl Context<'_, '_> {
                 self.scoped_text(&key, scopes)
             }
             name => Err(format!("unsupported native trigger text form {name}")),
+        }
+    }
+
+    fn project_name(&self, name: &str, country: u32) -> Result<String> {
+        // 1405382B0 -> 1414700A0 looks up identity without a started/completed gate.
+        let token = self.world.token_of(name.as_bytes())?;
+        let rows = self
+            .world
+            .frame()
+            .complete::<tables::Projects>()
+            .map_err(|e| e.to_string())?;
+        if token.is_none()
+            || !rows.iter().any(|row| {
+                Some(row.definition_id) == token && self.world.slot(row.owner) == Some(country)
+            })
+        {
+            // 1404A1410's unresolved operand is CScopedVariable+0xB0;
+            // an sp: operand leaves this constructor-default string empty.
+            return Ok(String::new());
+        }
+        let catalog = self.assets.tooltip.projects.as_ref()?;
+        if let Some(reason) = &catalog.unsettled {
+            return Err(format!("special project catalog: {reason}"));
+        }
+        let (token_name, project) = catalog
+            .projects
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .ok_or_else(|| format!("special project {name} has no content definition"))?;
+        if let Some(reason) = &project.refusal {
+            return Err(format!("special project {token_name}: {reason}"));
+        }
+        let key = project.name.as_ref().unwrap_or(token_name);
+        let tag = &self
+            .countries
+            .operands(country)
+            .ok_or("project country naming operands absent")?
+            .as_ref()?
+            .tag;
+        let override_key = format!("{tag}_{key}");
+        let scopes = Scopes::of(Scope::Country(country));
+        let base = self.scoped_text(key, scopes)?;
+        // 140FCDDF0 -> 140A81BB0 -> 14146B1D0 selects TAG_key;
+        // 140A81510/140A81880 build the yellow tooltip name record.
+        if self.loc.get(&override_key).is_some() {
+            Ok(format!(
+                "\u{11}Y{}\u{11}! ({base})",
+                self.scoped_text(&override_key, scopes)?
+            ))
+        } else {
+            Ok(format!("\u{11}Y{base}\u{11}!"))
         }
     }
 }

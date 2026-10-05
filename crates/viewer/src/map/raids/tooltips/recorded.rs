@@ -28,8 +28,41 @@ pub fn build(
     ours: u32,
     key: &Key,
 ) -> Tooltip {
-    let assets = &content.icons.raids;
-    let loc = &content.names.localisation;
+    let flag_exists = |key: &str| content.icons.counters.flags.contains(key);
+    build_from(Inputs {
+        assets: &content.icons.raids,
+        frame,
+        ours,
+        key,
+        loc: &content.names.localisation,
+        recorded_language: &content.recorded_language,
+        scripted_content: &content.scripted,
+        flag_exists: &flag_exists,
+    })
+}
+
+pub(crate) struct Inputs<'a> {
+    pub assets: &'a RaidAssets,
+    pub frame: &'a DecodedFrame,
+    pub ours: u32,
+    pub key: &'a Key,
+    pub loc: &'a Localisation,
+    pub recorded_language: &'a str,
+    pub scripted_content: &'a Result<dashboard::scripted_text::ScriptedContent>,
+    pub flag_exists: &'a dyn Fn(&str) -> bool,
+}
+
+pub(crate) fn build_from(input: Inputs<'_>) -> Tooltip {
+    let Inputs {
+        assets,
+        frame,
+        ours,
+        key,
+        loc,
+        recorded_language,
+        scripted_content,
+        flag_exists,
+    } = input;
     let world = match World::new(frame, assets.facts()) {
         Ok(world) => world,
         Err(reason) => {
@@ -38,15 +71,14 @@ pub fn build(
             return out;
         }
     };
-    let flag_exists = |key: &str| content.icons.counters.flags.contains(key);
     let context = Context {
         assets,
         world: &world,
         loc,
-        recorded_language: &content.recorded_language,
-        scripted_content: &content.scripted,
+        recorded_language,
+        scripted_content,
         ours,
-        flag_exists: &flag_exists,
+        flag_exists,
         scripted: Default::default(),
         countries: installed_content::country_names::CountryNames::read(frame, loc),
     };

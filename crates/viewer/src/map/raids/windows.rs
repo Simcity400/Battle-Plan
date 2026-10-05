@@ -258,6 +258,204 @@ mod tests {
     use super::*;
     use crate::map::native_gui::lifecycle::Instance;
 
+    fn hover_tooltip(offer: bool) {
+        use super::super::tests::{frame, put, registered_command_power};
+        use installed_content::localisation::Localisation;
+        use replay::rows::{RaidTargetRow, RaidTooltipOperandRow};
+
+        let mut assets = assets();
+        assets
+            .tooltip
+            .state_names
+            .insert(10, Ok("example_place".into()));
+        if !offer {
+            assets.catalog.types[0].tooltip.target_loc_key = "example_target".into();
+        }
+        assets.catalog.types[0].tooltip.days_to_prepare = 2;
+        assets.catalog.types[0].command_power_raw = 200_000;
+        let mut frame = frame();
+        let scope = RaidScope {
+            state: 10,
+            ..Default::default()
+        };
+        put::<tables::Raids>(
+            &mut frame,
+            vec![RaidRow {
+                id: 7,
+                reference_type: 84,
+                phase: 2,
+                preparation_hours: 24,
+                ..Default::default()
+            }],
+        );
+        put::<tables::RaidTargets>(
+            &mut frame,
+            vec![RaidTargetRow {
+                id: 7,
+                reference_type: 84,
+                raid_type: 100,
+                scope: scope.clone(),
+                ..Default::default()
+            }],
+        );
+        let raid = 7u64 << 32 | 84;
+        put::<tables::RaidTooltipOperands>(
+            &mut frame,
+            [
+                (engine::raid_tooltip_operands::REFERENCES, 0),
+                (engine::raid_tooltip_operands::REFERENCES, 1),
+                (
+                    engine::raid_tooltip_operands::NAME,
+                    engine::raid_tooltip_operands::ARMY_RESOLVED,
+                ),
+                (
+                    engine::raid_tooltip_operands::NAME,
+                    engine::raid_tooltip_operands::WING_RESOLVED,
+                ),
+            ]
+            .map(|(kind, key)| RaidTooltipOperandRow {
+                raid,
+                kind,
+                key,
+                ..Default::default()
+            })
+            .into(),
+        );
+        put::<tables::CountryCommandPower>(&mut frame, registered_command_power([0, 1]));
+        let loc: Localisation = [
+            ("example_place", "Example"),
+            ("example_target", "\u{a3}unpreloaded deposit $LOCATION$"),
+            ("raid_type_oilfield", "Synthetic mission"),
+            ("raid_inst_item_desc", "$TYPE$ -> $TARGET$"),
+            ("RAID_INST_PHASE_PREPARING", "In progress"),
+            ("raid_inst_progress_desc", "$PHASE$ $PROGRESS|%0$"),
+            ("tooltip_raid_view_details_prompt", "Inspect"),
+            (
+                "raid_insufficient_command_power",
+                "Missing \u{a3}unpreloaded $COST|0$",
+            ),
+        ]
+        .map(|(key, text)| (key.into(), text.into()))
+        .into_iter()
+        .collect();
+        let key = if offer {
+            tooltips::Key::Offer(
+                vec![offers::TooltipTarget {
+                    scope,
+                    types: vec![0],
+                }]
+                .into(),
+            )
+        } else {
+            tooltips::Key::Raid {
+                id: 7,
+                reference_type: 84,
+                incoming: false,
+            }
+        };
+        let windows = native_gui::tests::windows(DRAW_GUI);
+        let mut resources = native_gui::tests::fixture_with(native::read(br#"guiTypes = {
+            textBoxType = { name = ToolTip font = Main_14 maxWidth = 400 borderSize = { x = 2 y = 2 } }
+        }"#));
+        resources.add_sprite("GFX_on_map_raids_icons_frame_strip", [52, 52], 6);
+        resources.add_sprite("glyph", [32, 32], 1);
+        resources.add_sprite("plus", [32, 32], 1);
+        // GUI loading uses this production inventory. A declared sprite omitted
+        // from it refuses the native text bake.
+        let inventory = windows.assets(&loc);
+        if inventory.sprites.contains(b"GFX_unpreloaded".as_slice()) {
+            resources.add_sprite("GFX_unpreloaded", [12, 12], 1);
+        }
+        let context = crate::map::native_resources::Context {
+            resources: &resources,
+            windows: &windows,
+            viewport: [2048, 1152],
+            time: Some(0.),
+        };
+        let prepared = PreparedRaids {
+            placed: vec![Placed {
+                screen: [100., 200.],
+                icon: RaidIcon {
+                    province: 1,
+                    frame: if offer { 0 } else { 2 },
+                    enabled: !offer,
+                    glyph: Some("glyph".into()),
+                    plus: false,
+                    tooltip: Some(key.clone()),
+                },
+            }],
+            report: Default::default(),
+        };
+        let mut hits = Vec::new();
+        let mut report = RaidReport::default();
+        let mut batch = Batch::default();
+        assert_eq!(
+            prepared.draw(
+                &context,
+                assets.priority,
+                &mut crate::map::icon_windows::PoolView::default(),
+                &mut batch,
+                &mut hits,
+                &mut report
+            ),
+            1
+        );
+        assert!(report.reasons.is_empty(), "{:?}", report.reasons);
+        assert_eq!(hits[0].origin, [125., 175.]);
+        assert_eq!(hits[0].size, [52., 52.]);
+        // Interactive pointer conversion: undo monitor stretch and GUI scale.
+        let raster = crate::map::ui_scale::Raster {
+            ui_scale: 1.25,
+            stretch: 1.5,
+        };
+        let cursor = [150., 200.].map(|pixel| pixel * raster.screen_scale());
+        let point = crate::map::ui_scale::to_interface(
+            cursor.map(|pixel| pixel / raster.stretch),
+            raster.ui_scale,
+        );
+        let hit = hits
+            .iter()
+            .rev()
+            .find(|hit| hit.contains(point))
+            .expect("raid owns hover");
+        assert_eq!(hit.key, key);
+        let tooltip = tooltips::build_from(tooltips::Inputs {
+            assets: &assets,
+            frame: &frame,
+            ours: if offer { 1 } else { 0 },
+            key: &hit.key,
+            loc: &loc,
+            recorded_language: &loc.language,
+            scripted_content: &Err("no scripted substitutions in this fixture".into()),
+            flag_exists: &|_| true,
+        });
+        assert!(!tooltip.title.is_empty(), "{:?}", tooltip.refused);
+        assert!(tooltip.title.contains("\u{13}unpreloaded"), "{tooltip:?}");
+        let layout = native_gui::text_sprites::tooltip(&resources, &tooltip.title, 1., true)
+            .expect("hovered raid produces a native tooltip drawable");
+        let bake = layout
+            .parts
+            .iter()
+            .find_map(|part| match &part.kind {
+                native_gui::PartKind::TextSprite { bake, .. } => Some(bake),
+                _ => None,
+            })
+            .expect("native tooltip text bake");
+        assert!(bake.size.iter().all(|size| *size > 0));
+        assert!(!bake.glyphs.is_empty());
+        assert_eq!(bake.inline.len(), 1);
+    }
+
+    #[test]
+    fn raid_tooltip_regression_active_hover_loads_substituted_target_icon() {
+        hover_tooltip(false);
+    }
+
+    #[test]
+    fn raid_tooltip_regression_disabled_offer_hover_loads_diagnostic_icon() {
+        hover_tooltip(true);
+    }
+
     #[test]
     fn native_raid_draw_and_hover_follow_the_map_anchor() {
         let resources = draw_resources();

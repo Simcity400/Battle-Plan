@@ -1,7 +1,7 @@
 //! Line order and conditions, apart from content and recorded-input joins.
 use super::Tooltip;
 use crate::combat::text::localise;
-use engine::craid_instance::{OUTCOME_KEYS, PHASE_KEYS, outcome_key, phase_key};
+use engine::craid_instance::{outcome_key, phase_key};
 use installed_content::localisation::Argument as Arg;
 use installed_content::localisation::Localisation;
 
@@ -396,40 +396,37 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
     out
 }
 
-crate::combat::text::tooltip_keys! {
-    TOOLTIP_RAID_RESULT = "tooltip_raid_result",
-    TOOLTIP_RAID_VIEW_DETAILS_PROMPT = "tooltip_raid_view_details_prompt",
-    TOOLTIP_RAID_CLOSE_REPORT_PROMPT = "tooltip_raid_close_report_prompt",
-    TOOLTIP_RAID_WARNING_HEADER = "tooltip_raid_warning_header",
-    TOOLTIP_RAID_WARNING_DESCRIPTION = "tooltip_raid_warning_description",
-    TOOLTIP_RAID_WARNING_SUCCESS_CHANCE_HEADER = "tooltip_raid_warning_success_chance_header",
-    TOOLTIP_RAID_WARNING_COUNTERPLAY_HEADER = "tooltip_raid_warning_counterplay_header",
-    RAID_INST_ITEM_DESC = "raid_inst_item_desc",
-    RAID_INST_PROGRESS_DESC = "raid_inst_progress_desc",
-    TOOLTIP_LAUNCH_BUTTON_DISABLED = "tooltip_launch_button_disabled",
-    TOOLTIP_LAUNCH_BUTTON_RIGHT_CLICK = "tooltip_launch_button_right_click",
-    TOOLTIP_POTENTIAL_TARGET_ENTRY = "TOOLTIP_POTENTIAL_TARGET_ENTRY",
-    TOOLTIP_POTENTIAL_TARGET_ENTRY_NOT_ALLOWED = "TOOLTIP_POTENTIAL_TARGET_ENTRY_NOT_ALLOWED",
-    TOOLTIP_TARGET_FACILITY_PROJECT_UNKNOWN_DESC = "TOOLTIP_TARGET_FACILITY_PROJECT_UNKNOWN_DESC",
-    TOOLTIP_TARGET_FACILITY_ONGOING_PROJECT_DESC = "TOOLTIP_TARGET_FACILITY_ONGOING_PROJECT_DESC",
-    TOOLTIP_TARGET_FACILITY_NO_ONGOING_PROJECT_DESC = "TOOLTIP_TARGET_FACILITY_NO_ONGOING_PROJECT_DESC",
-    TOOLTIP_POTENTIAL_TARGET_ENTRY_INTEL = "TOOLTIP_POTENTIAL_TARGET_ENTRY_INTEL",
-    TOOLTIP_POTENTIAL_TARGET_MULTIPLE_RAIDS = "TOOLTIP_POTENTIAL_TARGET_MULTIPLE_RAIDS",
-    TOOLTIP_POTENTIAL_TARGET_RAID_HEADER_ALLOWED = "TOOLTIP_POTENTIAL_TARGET_RAID_HEADER_ALLOWED",
-    TOOLTIP_POTENTIAL_TARGET_RAID_HEADER_NOT_ALLOWED = "TOOLTIP_POTENTIAL_TARGET_RAID_HEADER_NOT_ALLOWED",
-    RAID_TYPE_RESCUE_CAPTURED_GENERAL_CAPTIVE_LINE = "raid_type_rescue_captured_general_captive_line",
-    TOOLTIP_POTENTIAL_TARGET_RAID_DESC = "TOOLTIP_POTENTIAL_TARGET_RAID_DESC",
-    TOOLTIP_POTENTIAL_TARGET_LAUNCH_CONDITION = "TOOLTIP_POTENTIAL_TARGET_LAUNCH_CONDITION",
-    RAID_RANGE_FACTOR_TOOLTIP = "RAID_RANGE_FACTOR_TOOLTIP",
-    TOOLTIP_RAID_ONLY_LAUNCH_ONCE = "tooltip_raid_only_launch_once",
-    RAID_SHIFT_CLICK_QUICK_START = "RAID_SHIFT_CLICK_QUICK_START",
-}
-
-/// The raid rules' literal keys (141E72380, 141617380, 141612FC0).
-pub(crate) fn keys() -> impl Iterator<Item = &'static str> {
-    TOOLTIP_KEYS
-        .iter()
-        .copied()
-        .chain(PHASE_KEYS)
-        .chain(OUTCOME_KEYS)
-}
+const TOOLTIP_RAID_RESULT: &str = "tooltip_raid_result";
+const TOOLTIP_RAID_VIEW_DETAILS_PROMPT: &str = "tooltip_raid_view_details_prompt";
+const TOOLTIP_RAID_CLOSE_REPORT_PROMPT: &str = "tooltip_raid_close_report_prompt";
+const TOOLTIP_RAID_WARNING_HEADER: &str = "tooltip_raid_warning_header";
+const TOOLTIP_RAID_WARNING_DESCRIPTION: &str = "tooltip_raid_warning_description";
+const TOOLTIP_RAID_WARNING_SUCCESS_CHANCE_HEADER: &str =
+    "tooltip_raid_warning_success_chance_header";
+const TOOLTIP_RAID_WARNING_COUNTERPLAY_HEADER: &str = "tooltip_raid_warning_counterplay_header";
+const RAID_INST_ITEM_DESC: &str = "raid_inst_item_desc";
+const RAID_INST_PROGRESS_DESC: &str = "raid_inst_progress_desc";
+const TOOLTIP_LAUNCH_BUTTON_DISABLED: &str = "tooltip_launch_button_disabled";
+const TOOLTIP_LAUNCH_BUTTON_RIGHT_CLICK: &str = "tooltip_launch_button_right_click";
+const TOOLTIP_POTENTIAL_TARGET_ENTRY: &str = "TOOLTIP_POTENTIAL_TARGET_ENTRY";
+const TOOLTIP_POTENTIAL_TARGET_ENTRY_NOT_ALLOWED: &str =
+    "TOOLTIP_POTENTIAL_TARGET_ENTRY_NOT_ALLOWED";
+const TOOLTIP_TARGET_FACILITY_PROJECT_UNKNOWN_DESC: &str =
+    "TOOLTIP_TARGET_FACILITY_PROJECT_UNKNOWN_DESC";
+const TOOLTIP_TARGET_FACILITY_ONGOING_PROJECT_DESC: &str =
+    "TOOLTIP_TARGET_FACILITY_ONGOING_PROJECT_DESC";
+const TOOLTIP_TARGET_FACILITY_NO_ONGOING_PROJECT_DESC: &str =
+    "TOOLTIP_TARGET_FACILITY_NO_ONGOING_PROJECT_DESC";
+const TOOLTIP_POTENTIAL_TARGET_ENTRY_INTEL: &str = "TOOLTIP_POTENTIAL_TARGET_ENTRY_INTEL";
+const TOOLTIP_POTENTIAL_TARGET_MULTIPLE_RAIDS: &str = "TOOLTIP_POTENTIAL_TARGET_MULTIPLE_RAIDS";
+const TOOLTIP_POTENTIAL_TARGET_RAID_HEADER_ALLOWED: &str =
+    "TOOLTIP_POTENTIAL_TARGET_RAID_HEADER_ALLOWED";
+const TOOLTIP_POTENTIAL_TARGET_RAID_HEADER_NOT_ALLOWED: &str =
+    "TOOLTIP_POTENTIAL_TARGET_RAID_HEADER_NOT_ALLOWED";
+const RAID_TYPE_RESCUE_CAPTURED_GENERAL_CAPTIVE_LINE: &str =
+    "raid_type_rescue_captured_general_captive_line";
+const TOOLTIP_POTENTIAL_TARGET_RAID_DESC: &str = "TOOLTIP_POTENTIAL_TARGET_RAID_DESC";
+const TOOLTIP_POTENTIAL_TARGET_LAUNCH_CONDITION: &str = "TOOLTIP_POTENTIAL_TARGET_LAUNCH_CONDITION";
+const RAID_RANGE_FACTOR_TOOLTIP: &str = "RAID_RANGE_FACTOR_TOOLTIP";
+const TOOLTIP_RAID_ONLY_LAUNCH_ONCE: &str = "tooltip_raid_only_launch_once";
+const RAID_SHIFT_CLICK_QUICK_START: &str = "RAID_SHIFT_CLICK_QUICK_START";

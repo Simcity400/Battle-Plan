@@ -19,6 +19,7 @@ pub struct Content {
     pub state_names: BTreeMap<u32, Result<String, String>>,
     pub terrain_names: Result<Vec<String>, String>,
     pub unit_names: Result<installed_content::raids::names::Groups, String>,
+    pub projects: Result<installed_content::special_projects::Catalog, String>,
 }
 impl Default for Content {
     fn default() -> Self {
@@ -32,6 +33,7 @@ impl Default for Content {
             state_names: BTreeMap::new(),
             terrain_names: Err("terrain definitions unavailable".into()),
             unit_names: Err("unit name content unavailable".into()),
+            projects: Err("special project content unavailable".into()),
         }
     }
 }
@@ -60,6 +62,7 @@ impl Content {
             intel: intel::Defines::read(d),
             speed,
             unit_names: installed_content::raids::names::Groups::read(layers).map_err(|e| e.to_string()),
+            projects: installed_content::special_projects::Catalog::read(layers).map_err(|e| e.to_string()),
             prepare_days: d
                 .int32("NRaids", "BASE_DAYS_TO_PREPARE")
                 .map_err(|e| e.to_string()),

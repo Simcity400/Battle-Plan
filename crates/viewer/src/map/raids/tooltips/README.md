@@ -7,6 +7,15 @@ A coalescing worker builds text for one requested hour,
 perspective and content object; the same icon keeps its last text while the next
 hour's builds. No simulation or localisation work runs per frame.
 
+The raid frame owns hover even when disabled (`1418D7751`, `1418D81D0`,
+`1416295A0`); its drawn rectangle supplies the hit region (`14222C220`).
+Inline lookup/draw (`14162E880`, `14162EFE0`) reads the expanded text. The map
+loader therefore harvests inline sprites from every localisation entry in
+`NativeWindows::assets`, the production inventory shared by GUI loading and
+hover tests. This includes runtime-selected scripted, project and country text.
+An unloaded declared inline sprite refuses the whole tooltip layout; outer
+keys alone do not suffice. Missing assets retain their named, counted refusals.
+
 ## Native evidence
 
 The addresses below refer to the supported executable in `engine::build`.
@@ -84,6 +93,13 @@ launchable_from with source-country ROOT. Addresses: `140A8DDF0`, `140A8C500`,
 `140A8C360`, `140A8D3F0`, `1414D7630`, `140A8D6D0`, `140A8D8D0`. Failed script
 blocks have `raid_tooltip_trigger_title(TITLE)` before their mode-1 trigger text
 (`140A8F290`, `14053FCC0`).
+
+Special-project requirement text follows `1404A1410`: the recorded country's
+project identity selects the content narrative name, country-prefixed override
+and scripted expansion (`140FCDDF0`, `140A81BB0`, `14146B1D0`); its tooltip name
+record uses `140A81510`/`140A81880`. Pool lookup (`1405382B0`, `1414700A0`)
+does not gate names on started/completed status. An unresolved `sp:` operand
+keeps the native empty fallback. Other operand forms are refused by name.
 
 Requirement text (`141618D30`, `141579E40`) lists equipment before battalions.
 `1415790B0` uses `raid_unit_requirements_equipment_header(EQUIPMENT, AMOUNT)`,

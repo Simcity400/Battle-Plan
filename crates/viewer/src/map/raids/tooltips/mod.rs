@@ -17,7 +17,8 @@ mod success;
 use super::offers::TooltipTarget;
 use crate::combat::text::ensure_newlines;
 pub use recorded::build;
-pub(crate) use rules::keys;
+#[cfg(test)]
+pub(crate) use recorded::{Inputs, build_from};
 use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
