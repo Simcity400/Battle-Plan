@@ -490,16 +490,70 @@ impl Context<'_, '_> {
             .iter()
             .filter(|r| self.world.slot(r.country) == Some(owner) && r.province == province)
             .min_by_key(|r| r.ordinal);
-        match program.and_then(|r| r.project_definition) {
+        match program.and_then(|r| r.project_definition.map(|token| (r, token))) {
             None => Ok(rules::Facility::Idle),
-            Some(token) => {
+            Some((program, token)) => {
                 let key = self
                     .world
                     .token(token)?
                     .ok_or("ongoing project definition token is absent")?;
                 let key = std::str::from_utf8(key).map_err(|e| e.to_string())?;
-                Ok(rules::Facility::Project(localise(self.loc, key, &[])))
+                // The reader authenticates the selected project's +1C against
+                // this program owner; no daily project-history join is needed.
+                let owner = self
+                    .world
+                    .slot(program.owner)
+                    .ok_or("ongoing project owner is absent")?;
+                Ok(rules::Facility::Project(
+                    self.project_tooltip_name(key, owner),
+                ))
             }
+        }
+    }
+    fn project_tooltip_name(&self, name: &str, country: u32) -> Result<String> {
+        let catalog = self.assets.tooltip.projects.as_ref()?;
+        if let Some(reason) = &catalog.unsettled {
+            return Err(format!("special project catalog: {reason}"));
+        }
+        let (default, project) = catalog
+            .projects
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .ok_or_else(|| format!("special project {name} has no content definition"))?;
+        if let Some(reason) = &project.refusal {
+            return Err(format!("special project {default}: {reason}"));
+        }
+        // 140FCDDF0 -> 140A81BB0/14146B580: nonempty narrative name,
+        // otherwise template+238 (140A852A0); then TAG_key. 140FCADC0
+        // stores template+18 at project+20: name record is template+1F0.
+        let key = project
+            .name
+            .as_deref()
+            .filter(|key| !key.is_empty())
+            .unwrap_or(default);
+        let tag = std::str::from_utf8(
+            self.world
+                .tag(country)
+                .ok_or("project country tag is absent")?,
+        )
+        .map_err(|e| e.to_string())?;
+        let prefixed = format!("{tag}_{key}");
+        let selected = if self.loc.get(&prefixed).is_some() {
+            &prefixed
+        } else {
+            key
+        };
+        let scopes = Scopes::of(Scope::Country(country));
+        let text = self.scoped_text(selected, scopes)?;
+        // 1416151F0 takes record +40: 140A81510 appends the default
+        // in parentheses when keys differ; 140A81880 only wraps yellow.
+        if selected == default {
+            Ok(format!("\u{11}Y{text}\u{11}!"))
+        } else {
+            Ok(format!(
+                "\u{11}Y{text}\u{11}! ({})",
+                self.scoped_text(default, scopes)?
+            ))
         }
     }
     fn scopes(&self, scope: &RaidScope) -> Result<Scopes> {
@@ -715,8 +769,9 @@ impl Context<'_, '_> {
                 assigned_unit: if ended || incoming {
                     Ok(None)
                 } else {
-                    super::names::Name::new(frame, raid)
-                        .and_then(|name| name.assigned(&self.assets.tooltip, self.loc))
+                    super::names::Name::new(frame, raid).and_then(|name| {
+                        name.assigned(&self.assets.tooltip, self.loc, self.recorded_language)
+                    })
                 },
                 owner: self.countries.name(raid.parent_slot),
                 success: chance.success,

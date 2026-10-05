@@ -498,7 +498,7 @@ impl Context<'_, '_> {
                 "raid_unit_not_yet_at_source",
                 (|| {
                     let name = super::super::names::Name::new(self.world.frame(), raid)?
-                        .description(&self.assets.tooltip, self.loc)?;
+                        .description(&self.assets.tooltip, self.loc, self.recorded_language)?;
                     localise(
                         self.loc,
                         "raid_unit_not_yet_at_source",

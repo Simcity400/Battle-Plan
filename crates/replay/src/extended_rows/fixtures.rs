@@ -419,6 +419,7 @@ sample_struct!(RaidCounterOperative {
 fixture!(RaidIntelInputRow, |key| {country: key as u32}, {strategic_present: u8, country_defense: i64, crypto_strength: Option<i64>, operatives: Vec<RaidCounterOperative>});
 fixture!(RaidAirScoreRow, |key| {country: (key >> 32) as u32, region: key as u32}, {friendly: i64, enemy: i64});
 fixture!(RaidTooltipOperandRow, |key| {raid: (key >> 32) as u64, ordinal: key as u32}, {kind: u32, key: u32, raw: i64});
+
 impl Fixture for CharacterRoleTraitRow {
     fn fixture(key: u128, tick: usize) -> Self {
         Self {

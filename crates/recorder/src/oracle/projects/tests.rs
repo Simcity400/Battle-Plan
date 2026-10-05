@@ -549,6 +549,157 @@ fn tooltip_operand_oracle_checks_references_ordinals_and_missing_census() {
     assert_eq!(compare(&frame).differences.len(), 2);
 }
 
+#[test]
+fn tooltip_operand_oracle_compares_wing_name_bytes_and_reports_capture_failures() {
+    use engine::raid_tooltip_operands::*;
+    use replay::rows::RaidTooltipOperandRow;
+    let (mut frame, mut pack, _) = raid_fixture();
+    let raid = pack.raids.as_mut().unwrap()[0]
+        .instances
+        .first_mut()
+        .unwrap();
+    raid.id = (6_u64 << 32) | 84;
+    let id = raid.id;
+    let wing = (7_u64 << 32) | 69;
+    raid.air_wing = Some(wing);
+    let name = b"A\x80BCDEFG\xffZ";
+    let mut air = installed_content::save::air::Pack::default();
+    air.wings.push(installed_content::save::air::Wing {
+        id: wing,
+        name: Some(name.to_vec()),
+        accidents: None,
+        experience: installed_content::save::Decimal::parse(b"0").unwrap(),
+        equipment: installed_content::save::air::EquipmentPool {
+            entries: Vec::new(),
+            allow_zero: false,
+        },
+        ace: None,
+    });
+    let run = |frame: &mut DecodedFrame,
+               air: &installed_content::save::air::Pack,
+               name_rows: Vec<(u32, i64)>| {
+        let mut rows = vec![
+            (REFERENCES, 0, 0),
+            (REFERENCES, 1, wing as i64),
+            (NAME, ARMY_RESOLVED, 0),
+            (NAME, WING_RESOLVED, 1),
+        ];
+        rows.extend(
+            name_rows
+                .into_iter()
+                .map(|(key, raw)| (WING_NAME, key, raw)),
+        );
+        *frame.tables[TableId::RaidTooltipOperands.index()] =
+            TableView::Complete(TableRows::RaidTooltipOperands(
+                rows.into_iter()
+                    .enumerate()
+                    .map(|(ordinal, (kind, key, raw))| RaidTooltipOperandRow {
+                        raid: id,
+                        ordinal: ordinal as u32,
+                        kind,
+                        key,
+                        raw,
+                    })
+                    .collect(),
+            ));
+        let mut report = Report::default();
+        compare_raid_tooltip_operands(frame, &pack, &BTreeMap::new(), air, &mut report).unwrap();
+        report
+    };
+    let chunks = |name: &[u8]| {
+        let mut rows = vec![(u32::MAX, name.len() as i64)];
+        rows.extend(name.chunks(8).enumerate().map(|(index, chunk)| {
+            let mut padded = [0; 8];
+            padded[..chunk.len()].copy_from_slice(chunk);
+            (index as u32, i64::from_le_bytes(padded))
+        }));
+        rows
+    };
+    let exact = chunks(name);
+    let report = run(&mut frame, &air, exact.clone());
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(
+        !report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("wing name"))
+    );
+    let mut mismatch = exact.clone();
+    mismatch[1].1 ^= 1;
+    assert_eq!(run(&mut frame, &air, mismatch).differences.len(), 1);
+    let mut length = exact.clone();
+    length[0].1 += 1;
+    assert_eq!(run(&mut frame, &air, length).differences.len(), 1);
+    let mut missing = exact.clone();
+    missing.pop();
+    assert_eq!(run(&mut frame, &air, missing).differences.len(), 1);
+    let mut padding = exact;
+    padding.last_mut().unwrap().1 |= 1 << 24;
+    assert_eq!(run(&mut frame, &air, padding).differences.len(), 1);
+    for code in -5..=-1 {
+        let report = run(&mut frame, &air, vec![(u32::MAX, code)]);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        let failures: Vec<_> = report
+            .limitations
+            .iter()
+            .filter(|(reason, _)| reason.contains("raid wing name unavailable"))
+            .collect();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].1.len(), 1);
+        assert!(failures[0].0.contains(wing_name_error(code)));
+    }
+    assert_eq!(run(&mut frame, &air, Vec::new()).differences.len(), 3);
+    air.wings[0].name = Some(Vec::new());
+    assert!(run(&mut frame, &air, chunks(b"")).differences.is_empty());
+    air.wings[0].name = None;
+    let report = run(&mut frame, &air, chunks(b""));
+    assert_eq!(report.differences.len(), 1);
+    air.wings.push(air.wings[0].clone());
+    let duplicate = run(&mut frame, &air, chunks(b""));
+    assert_eq!(duplicate.differences.len(), 1);
+    assert!(format!("{:?}", duplicate.differences).contains("duplicate saved wing ID"));
+
+    let mut second = pack.raids.as_ref().unwrap()[0].instances[0].clone();
+    second.id = (8_u64 << 32) | 84;
+    second.air_wing = Some((8_u64 << 32) | 69);
+    pack.raids.as_mut().unwrap()[0]
+        .instances
+        .push(second.clone());
+    let mut other_wing = air.wings[0].clone();
+    other_wing.id = second.air_wing.unwrap();
+    other_wing.name = Some(b"Other".to_vec());
+    air.wings.push(other_wing);
+    let TableView::Complete(TableRows::RaidTooltipOperands(rows)) =
+        &mut *frame.tables[TableId::RaidTooltipOperands.index()]
+    else {
+        panic!("missing name rows")
+    };
+    let mut other_rows = rows.clone();
+    other_rows.retain(|row| row.kind != WING_NAME);
+    for row in &mut other_rows {
+        row.raid = second.id;
+        if row.kind == REFERENCES && row.key == 1 {
+            row.raw = second.air_wing.unwrap() as i64;
+        }
+    }
+    other_rows.extend(
+        chunks(b"Wrong")
+            .into_iter()
+            .enumerate()
+            .map(|(index, (key, raw))| RaidTooltipOperandRow {
+                raid: second.id,
+                ordinal: 4 + index as u32,
+                kind: WING_NAME,
+                key,
+                raw,
+            }),
+    );
+    rows.extend(other_rows);
+    let mut isolated = Report::default();
+    compare_raid_tooltip_operands(&frame, &pack, &BTreeMap::new(), &air, &mut isolated).unwrap();
+    assert_eq!(isolated.differences.len(), 2, "{:?}", isolated.differences);
+}
+
 /// A complete but empty RaidEquipment beside a saved prepared raid with
 /// equipment and nukes is a difference: the census is checked from the
 /// save's side too, not only from the recorded rows.

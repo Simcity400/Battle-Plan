@@ -26,6 +26,7 @@ use crate::{
 };
 
 const CAMPAIGN: &[u8] = b"synthetic-campaign-native-values";
+
 const HOURS: usize = 2_000;
 // Native handles retain the type in the low word and the instance id in the high word.
 const DIVISION_A: u64 = (0x8000_0041_u64 << 32) | 53;

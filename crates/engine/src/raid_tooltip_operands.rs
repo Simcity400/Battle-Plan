@@ -51,6 +51,9 @@ pub const SUBUNIT_ACTIVE: u32 = 32;
 /// The only row of a raid whose operands could not be read; the other
 /// raids keep theirs.
 pub const UNREADABLE: u32 = 33;
+/// Stored wing text: length at u32::MAX, chunks at zero-based keys.
+/// A negative length is a NameReadError code, with no chunks.
+pub const WING_NAME: u32 = 34;
 /// 141084940 passes these static lexer tokens to GetTokenString for names.
 pub const NUCLEAR_BOMB_TOKEN: u32 = 0x4bf0;
 pub const THERMONUCLEAR_BOMB_TOKEN: u32 = 0x4bf1;
@@ -64,9 +67,49 @@ pub const ARMY_RESOLVED: u32 = 0x1000;
 pub const WING_RESOLVED: u32 = 0x1001;
 pub const UNIT_RAID_REFERENCE: u32 = 0x1002;
 pub const UNIT_RAID_RESOLVED: u32 = 0x1003;
-pub const WING_NAME_LENGTH: u32 = 0x1004;
 pub const SOURCE_SHIP_RESOLVED: u32 = 0x1005;
 pub const SOURCE_AIR_BASE_KIND: u32 = 0x1006;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i64)]
+pub enum NameReadError {
+    Header = -1,
+    NullPointer = -2,
+    Terminator = -3,
+    Overflow = -4,
+    Unreadable = -5,
+}
+
+impl NameReadError {
+    pub const fn code(self) -> i64 {
+        self as i64
+    }
+    pub fn from_code(code: i64) -> Option<Self> {
+        [
+            Self::Header,
+            Self::NullPointer,
+            Self::Terminator,
+            Self::Overflow,
+            Self::Unreadable,
+        ]
+        .into_iter()
+        .find(|error| error.code() == code)
+    }
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::Header => "native string length exceeds capacity or capacity is invalid",
+            Self::NullPointer => "native string data pointer is null",
+            Self::Terminator => "native string terminator is invalid",
+            Self::Overflow => "native string address, length or chunk index overflows",
+            Self::Unreadable => "native string header or bytes are unreadable",
+        }
+    }
+}
+
+pub fn wing_name_error(code: i64) -> &'static str {
+    NameReadError::from_code(code)
+        .map(NameReadError::reason)
+        .unwrap_or("unsupported wing-name read failure code")
+}
 // CONTEXT keys name the source word, never a calculated value.
 pub const TARGET_PROVINCE: u32 = 0;
 pub const TARGET_REGION: u32 = 1;

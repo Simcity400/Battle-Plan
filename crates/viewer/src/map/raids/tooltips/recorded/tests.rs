@@ -42,6 +42,10 @@ fn facility_threshold_is_strict_and_first_program_controls_project_text() {
             required,
             ..Default::default()
         });
+        assets.tooltip.projects = Ok(installed_content::special_projects::Catalog {
+            projects: [("oilfield".into(), Default::default())].into(),
+            ..Default::default()
+        });
         let mut frame = frame();
         put::<tables::RaidFacilities>(
             &mut frame,
@@ -50,6 +54,7 @@ fn facility_threshold_is_strict_and_first_program_controls_project_text() {
                     country: 11,
                     ordinal: 0,
                     province: 3,
+                    owner: 11,
                     project_definition: first_project,
                     ..Default::default()
                 },
@@ -61,6 +66,20 @@ fn facility_threshold_is_strict_and_first_program_controls_project_text() {
                     ..Default::default()
                 },
             ],
+        );
+        put::<tables::CountryAppearance>(
+            &mut frame,
+            vec![replay::rows::CountryAppearanceRow {
+                country: 11,
+                ..Default::default()
+            }],
+        );
+        put::<tables::Politics>(
+            &mut frame,
+            vec![replay::rows::PoliticsRow {
+                country: 11,
+                ..Default::default()
+            }],
         );
         let world = World::new(&frame, assets.facts()).unwrap();
         let loc: Localisation = [("oilfield".into(), "Viewer project".into())]
@@ -99,9 +118,112 @@ fn facility_threshold_is_strict_and_first_program_controls_project_text() {
             )
             | (0, None, rules::Facility::Idle) => {}
             (0, Some(100), rules::Facility::Project(text)) => {
-                assert_eq!(text, Ok("Viewer project".into()))
+                assert_eq!(text, Ok("\u{11}YViewer project\u{11}!".into()))
             }
             _ => panic!("wrong facility threshold or program selection"),
+        }
+    }
+}
+
+#[test]
+fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_name() {
+    use super::super::super::tests::put;
+    for narrative in [None, Some("narrative"), Some("")] {
+        for country_override in [true, false] {
+            let mut assets = assets();
+            assets
+                .buildings
+                .types
+                .get_mut("dam")
+                .unwrap()
+                .specializations
+                .push("test".into());
+            assets.tooltip.intel = Ok(intel::Defines::default());
+            assets.tooltip.projects = Ok(installed_content::special_projects::Catalog {
+                projects: [(
+                    "oilfield".into(),
+                    installed_content::special_projects::Project {
+                        name: narrative.map(Into::into),
+                        ..Default::default()
+                    },
+                )]
+                .into(),
+                ..Default::default()
+            });
+            let mut frame = frame();
+            // The project owner's country supplies the naming scope, even when
+            // its program occurs in the target controller's roster.
+            put::<tables::RaidFacilities>(
+                &mut frame,
+                vec![replay::rows::RaidFacilityRow {
+                    country: 11,
+                    owner: 10,
+                    province: 3,
+                    project_definition: Some(100),
+                    ..Default::default()
+                }],
+            );
+            put::<tables::CountryAppearance>(
+                &mut frame,
+                vec![replay::rows::CountryAppearanceRow {
+                    country: 10,
+                    name_tag: b"ENG".to_vec(),
+                    ..Default::default()
+                }],
+            );
+            put::<tables::Politics>(
+                &mut frame,
+                vec![replay::rows::PoliticsRow {
+                    country: 10,
+                    ..Default::default()
+                }],
+            );
+            let world = World::new(&frame, assets.facts()).unwrap();
+            let loc: Localisation = [
+                ("oilfield", "Default project"),
+                ("GER_oilfield", "Country project [ROOT.GetTag]"),
+                ("narrative", "Narrative project"),
+                ("GER_narrative", "Country narrative [ROOT.GetTag]"),
+            ]
+            .into_iter()
+            .filter(|(key, _)| country_override || !key.starts_with("GER_"))
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect();
+            let scripted = Ok(scripted_content());
+            let context = Context {
+                assets: &assets,
+                world: &world,
+                loc: &loc,
+                recorded_language: "german",
+                scripted_content: &scripted,
+                ours: 1,
+                countries: installed_content::country_names::CountryNames::read(&frame, &loc),
+                flag_exists: &|_| true,
+                scripted: Default::default(),
+            };
+            let scope = RaidScope {
+                building_type: 200,
+                building_flags: 1,
+                building_location: 3,
+                ..Default::default()
+            };
+            let rules::Facility::Project(name) = context
+                .facility(&scope, &std::cell::OnceCell::from(Ok(0)))
+                .unwrap()
+            else {
+                panic!("ongoing project is absent");
+            };
+            assert_eq!(
+                name.unwrap(),
+                match (narrative, country_override) {
+                    (Some("narrative"), true) =>
+                        "\u{11}YCountry narrative GER\u{11}! (Default project)",
+                    (Some("narrative"), false) =>
+                        "\u{11}YNarrative project\u{11}! (Default project)",
+                    (_, true) => "\u{11}YCountry project GER\u{11}! (Default project)",
+                    (_, false) => "\u{11}YDefault project\u{11}!",
+                }
+            );
         }
     }
 }
@@ -304,6 +426,7 @@ fn raid_tooltip_regression_special_project_requirement_uses_native_name_and_inve
             "unfinished $PROJECT$",
         ),
         ("project_name", "synthetic project"),
+        ("oilfield", "synthetic default name"),
         ("GER_project_name", "synthetic country name"),
     ]
     .into_iter()
@@ -328,11 +451,11 @@ fn raid_tooltip_regression_special_project_requirement_uses_native_name_and_inve
     );
     assert_eq!(
         lines[0].1.as_deref(),
-        Ok("-finished \u{11}Ysynthetic country name\u{11}! (synthetic project)\n")
+        Ok("-finished \u{11}Ysynthetic country name\u{11}! (synthetic default name)\n")
     );
     assert_eq!(
         lines[1].1.as_deref(),
-        Ok("+unfinished \u{11}Ysynthetic country name\u{11}! (synthetic project)\n")
+        Ok("+unfinished \u{11}Ysynthetic country name\u{11}! (synthetic default name)\n")
     );
     let absent = context.trigger_text(
         &triggers("is_special_project_completed=sp:commando"),

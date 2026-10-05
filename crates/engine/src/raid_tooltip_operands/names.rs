@@ -1,6 +1,6 @@
-//! 1414536D0 takes the army before the wing. Never copy the cached name
-//! (+60) or a programmatic override (+88): refresh 1409B4C40 localises and
-//! loses their provenance. Preserve the authored group key and user bytes.
+//! 1414536D0 takes the army before the wing. CNameGroupMember's cached name
+//! (+60) and programmatic override (+88) lose provenance when 1409B4C40 localises;
+//! preserve the authored group key and user bytes.
 use super::*;
 use crate::{cname_group_member as member, msvc_string};
 
@@ -9,36 +9,89 @@ fn string(
     at: usize,
     kind: u32,
     sink: &mut Sink<'_>,
-) -> Result<(), &'static str> {
-    let len = field::<u64>(memory, at, msvc_string::LENGTH)?;
-    let capacity = field::<u64>(memory, at, msvc_string::CAPACITY)?;
-    if len > capacity || capacity < 15 {
-        return Err("raid name string header invalid");
+) -> Result<(), NameReadError> {
+    use NameReadError::{Header, NullPointer, Overflow, Terminator, Unreadable};
+    let len = field::<u64>(memory, at, msvc_string::LENGTH).map_err(|_| Unreadable)?;
+    let capacity = field::<u64>(memory, at, msvc_string::CAPACITY).map_err(|_| Unreadable)?;
+    if len > capacity || capacity < msvc_string::INLINE_CAPACITY {
+        return Err(Header);
     }
-    let source = if capacity == 15 {
+    let source = if capacity == msvc_string::INLINE_CAPACITY {
         at
     } else {
-        field::<u64>(memory, at, 0)? as usize
+        field::<u64>(memory, at, 0).map_err(|_| Unreadable)? as usize
     };
-    let len = usize::try_from(len).map_err(|_| "raid name length overflow")?;
-    if field::<u8>(memory, source, len)? != 0 {
-        return Err("raid name terminator invalid");
+    if source == 0 {
+        return Err(NullPointer);
     }
-    sink.push(kind, u32::MAX, len as i64)?;
+    let len = usize::try_from(len).map_err(|_| Overflow)?;
+    let raw_len = i64::try_from(len).map_err(|_| Overflow)?;
+    let copied = len.checked_add(1).ok_or(Overflow)?;
+    source.checked_add(copied).ok_or(Overflow)?;
+    let count = len.div_ceil(8).checked_add(1).ok_or(Overflow)?;
+    let end = sink.required.checked_add(count).ok_or(Overflow)?;
+    let ordinal = sink
+        .ordinal
+        .checked_add(u32::try_from(count).map_err(|_| Overflow)?)
+        .ok_or(Overflow)?;
+    if end <= sink.rows.len() {
+        // Reuse unpublished integer rows as byte scratch. Pack backwards so
+        // writing a row cannot overwrite bytes of a chunk still to be read.
+        // SAFETY: count rows hold at least len+1 bytes; only a successful
+        // copy's initialized prefix is read, and every Row field accepts all bits.
+        unsafe {
+            let rows = sink.rows.as_mut_ptr().add(sink.required);
+            {
+                let scratch = std::slice::from_raw_parts_mut(
+                    rows.cast::<std::mem::MaybeUninit<u8>>(),
+                    copied,
+                );
+                let bytes =
+                    crate::memory::read_slice_uninit(memory, source, scratch).ok_or(Unreadable)?;
+                if bytes[len] != 0 {
+                    return Err(Terminator);
+                }
+            }
+            for index in (0..count - 1).rev() {
+                let mut bytes = [0; 8];
+                std::ptr::copy_nonoverlapping(
+                    rows.cast::<u8>().add(index * 8),
+                    bytes.as_mut_ptr(),
+                    (len - index * 8).min(8),
+                );
+                rows.add(index + 1).write(Row {
+                    raid: sink.raid,
+                    ordinal: sink.ordinal + index as u32 + 1,
+                    kind,
+                    key: index as u32,
+                    raw: i64::from_le_bytes(bytes),
+                });
+            }
+            rows.write(Row {
+                raid: sink.raid,
+                ordinal: sink.ordinal,
+                kind,
+                key: u32::MAX,
+                raw: raw_len,
+            });
+        }
+        sink.required = end;
+        sink.ordinal = ordinal;
+        return Ok(());
+    }
+    // A shortage still counts full demand and preserves the readable prefix;
+    // it has no complete row buffer to borrow for the bulk copy.
+    if field::<u8>(memory, source, len).map_err(|_| Unreadable)? != 0 {
+        return Err(Terminator);
+    }
+    sink.push(kind, u32::MAX, raw_len).map_err(|_| Overflow)?;
     for offset in (0..len).step_by(8) {
         let mut bytes = [0; 8];
-        let length = (len - offset).min(8);
-        let at = source
-            .checked_add(offset)
-            .ok_or("raid name address overflow")?;
-        if !crate::read_slice(memory, at, &mut bytes[..length]) {
-            return Err("raid name bytes unreadable");
+        if !crate::read_slice(memory, source + offset, &mut bytes[..(len - offset).min(8)]) {
+            return Err(Unreadable);
         }
-        sink.push(
-            kind,
-            u32::try_from(offset / 8).map_err(|_| "raid name chunk index overflow")?,
-            i64::from_le_bytes(bytes),
-        )?;
+        sink.push(kind, (offset / 8) as u32, i64::from_le_bytes(bytes))
+            .map_err(|_| Overflow)?;
     }
     Ok(())
 }
@@ -67,13 +120,18 @@ pub(super) fn capture(
         i64::from(creference_registry::resolve(m, base, reference)?.is_some()),
     )?;
     let Some(army) = army else {
-        // 140F51FB0 stores both player rename and generated 140F48F90 output
-        // here; no distinction or original random choice survives.
-        return sink.push(
-            NAME,
-            WING_NAME_LENGTH,
-            field::<u64>(m, wing.unwrap(), 0x9a8)? as i64,
-        );
+        // 1414536D0 -> 140F4B8F0 reads primary+998. 140F51FB0 assigns the
+        // MSVC string: inline/heap at +998, length +9A8, capacity +9B0.
+        // Generated 140F48F90 and rename 141932C30 use the same setter, with
+        // no provenance flag. 140AE3750 gets null param7 (140F4903F); its
+        // selected number/key and 140AE49D0's unused-name choice are lost.
+        // PLAN #164: viewer uses the recording language for this stored text.
+        let first = (sink.required, sink.ordinal);
+        if let Err(error) = string(m, wing.unwrap() + 0x998, WING_NAME, sink) {
+            (sink.required, sink.ordinal) = first;
+            sink.push(WING_NAME, u32::MAX, error.code())?;
+        }
+        return Ok(());
     };
     let p = field::<u64>(m, army, 0x340)? as usize; // CArmy::GetName 140C72F00.
     member(m, base, p, NAME, NAME_GROUP, CUSTOM_NAME, sink)
@@ -102,7 +160,7 @@ fn member(
     sink.push(scalar, member::OVERRIDE_NAME_LENGTH as u32, len as i64)?;
     if len != 0 {
         return if programmatic == 0 {
-            string(m, p + member::OVERRIDE_NAME, custom_kind, sink)
+            string(m, p + member::OVERRIDE_NAME, custom_kind, sink).map_err(NameReadError::reason)
         } else {
             Ok(())
         };
@@ -155,7 +213,7 @@ fn member(
     };
     if group != 0 {
         context::authenticate(m, base, group, 0x0291_f568)?; // CNameGroup::vf4.
-        string(m, group + 8, group_kind, sink)?; // raw key, serializer 140B977F0.
+        string(m, group + 8, group_kind, sink).map_err(NameReadError::reason)?; // raw key, serializer 140B977F0.
     }
     Ok(())
 }
@@ -193,6 +251,188 @@ pub(super) fn source(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn raid_wing_name_capture_preserves_sso_heap_and_live_sized_demand() {
+        for text in [
+            b"User $name$".to_vec(),
+            b"Generated Squadron".to_vec(),
+            vec![b'x'; 4097],
+            vec![b'A', 0xff, 0, b'B'],
+            Vec::new(),
+        ] {
+            let wing = 64usize;
+            let name = wing + 0x998;
+            let heap = 4096usize;
+            let mut bytes = vec![0; heap + text.len() + 1];
+            let source = if text.len() <= 15 {
+                name
+            } else {
+                bytes[name..name + 8].copy_from_slice(&(heap as u64).to_le_bytes());
+                heap
+            };
+            bytes[source..source + text.len()].copy_from_slice(&text);
+            bytes[name + 16..name + 24].copy_from_slice(&(text.len() as u64).to_le_bytes());
+            bytes[name + 24..name + 32].copy_from_slice(&(text.len().max(15) as u64).to_le_bytes());
+            let memory = crate::memory::SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            };
+            let mut rows = vec![Row::default(); 5 + text.len().div_ceil(8)];
+            let mut sink = Sink {
+                rows: &mut rows,
+                required: 0,
+                raid: 1,
+                ordinal: 0,
+            };
+            let previous = crate::read_counts::ReadCounts::take_current();
+            let counted = crate::memory::CountedMemory::new(crate::memory::SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            });
+            capture(&counted, 0, None, Some(wing), &mut sink).unwrap();
+            let counts = crate::read_counts::ReadCounts::take_current();
+            previous.add_current();
+            assert_eq!(counts.copy_calls, if text.len() <= 15 { 4 } else { 5 });
+            assert_eq!(sink.required, 5 + text.len().div_ceil(8));
+            assert_eq!(rows[4].key, u32::MAX);
+            let recorded: Vec<_> = rows[5..]
+                .iter()
+                .flat_map(|row| {
+                    assert_eq!(row.kind, WING_NAME);
+                    row.raw.to_le_bytes()
+                })
+                .take(text.len())
+                .collect();
+            assert_eq!(recorded, text);
+            for (index, row) in rows[5..].iter().enumerate() {
+                assert_eq!(row.key, index as u32);
+            }
+            let mut sink = Sink {
+                rows: &mut [],
+                required: 0,
+                raid: 1,
+                ordinal: 0,
+            };
+            capture(&memory, 0, None, Some(wing), &mut sink).unwrap();
+            assert_eq!(sink.required, rows.len());
+        }
+    }
+    #[test]
+    fn raid_wing_name_capture_scales_to_5000_selected_wings() {
+        let count = 5000usize;
+        let stride = 0xa40usize;
+        let mut bytes = vec![0; 64 + count * stride];
+        for index in 0..count {
+            let name = 64 + index * stride + 0x998;
+            bytes[name..name + 4].copy_from_slice(b"Wing");
+            bytes[name + 16..name + 24].copy_from_slice(&4u64.to_le_bytes());
+            bytes[name + 24..name + 32].copy_from_slice(&15u64.to_le_bytes());
+        }
+        let previous = crate::read_counts::ReadCounts::take_current();
+        let memory = crate::memory::CountedMemory::new(crate::memory::SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        });
+        let mut rows = vec![Row::default(); count * 6];
+        let mut sink = Sink {
+            rows: &mut rows,
+            required: 0,
+            raid: 0,
+            ordinal: 0,
+        };
+        for index in 0..count {
+            sink.raid = (index as u64 + 1) << 32 | 84;
+            sink.ordinal = 0;
+            capture(&memory, 0, None, Some(64 + index * stride), &mut sink).unwrap();
+        }
+        assert_eq!(sink.required, count * 6);
+        let counts = crate::read_counts::ReadCounts::take_current();
+        previous.add_current();
+        assert_eq!(counts.copy_calls, count as u64 * 4);
+        for (index, rows) in rows.chunks_exact(6).enumerate() {
+            assert_eq!(rows[5].raid, (index as u64 + 1) << 32 | 84);
+            assert_eq!(rows[5].raw.to_le_bytes(), *b"Wing\0\0\0\0");
+        }
+    }
+    #[test]
+    fn raid_wing_name_failures_keep_one_named_operand_and_no_partial_chunks() {
+        let wing = 64usize;
+        let name = wing + 0x998;
+        for (len, capacity, pointer, terminated, expected) in [
+            (16u64, 15u64, 4096u64, true, 1),
+            (0, 14, 4096, true, 1),
+            (3, 31, 0, true, 2),
+            (3, 31, 4096, false, 3),
+            (3, 31, u64::MAX - 1, true, 4),
+            (3, 31, 5000, true, 5),
+        ] {
+            let mut bytes = vec![0; 4100];
+            bytes[name..name + 8].copy_from_slice(&pointer.to_le_bytes());
+            bytes[name + 16..name + 24].copy_from_slice(&len.to_le_bytes());
+            bytes[name + 24..name + 32].copy_from_slice(&capacity.to_le_bytes());
+            bytes[4099] = u8::from(!terminated);
+            let mut rows = [Row::default(); 9];
+            let mut sink = Sink {
+                rows: &mut rows,
+                required: 0,
+                raid: 1,
+                ordinal: 0,
+            };
+            capture(
+                &crate::memory::SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
+                0,
+                None,
+                Some(wing),
+                &mut sink,
+            )
+            .unwrap();
+            assert_eq!(sink.required, 5);
+            assert_eq!(
+                (rows[4].kind, rows[4].key, rows[4].raw),
+                (WING_NAME, u32::MAX, -expected)
+            );
+            assert!(!wing_name_error(-expected).contains("unsupported"));
+        }
+        struct ShortCopy;
+        impl Memory for ShortCopy {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                let wing = 64usize;
+                if address == wing + 0xa2c {
+                    output.fill(0);
+                    return true;
+                }
+                if address == wing + 0x9a8 {
+                    output.copy_from_slice(&9u64.to_le_bytes());
+                    return true;
+                }
+                if address == wing + 0x9b0 {
+                    output.copy_from_slice(&15u64.to_le_bytes());
+                    return true;
+                }
+                if address == wing + 0x998 {
+                    output.fill(b'a');
+                    return false;
+                }
+                false
+            }
+        }
+        let mut rows = [Row::default(); 9];
+        let mut sink = Sink {
+            rows: &mut rows,
+            required: 0,
+            raid: 1,
+            ordinal: 0,
+        };
+        capture(&ShortCopy, 0, None, Some(wing), &mut sink).unwrap();
+        assert_eq!(sink.required, 5);
+        assert_eq!(
+            (rows[4].key, rows[4].raw),
+            (u32::MAX, NameReadError::Unreadable.code())
+        );
+    }
     #[test]
     fn chunks_preserve_utf8_bytes_and_report_full_demand_without_truncation() {
         let mut bytes = vec![0; 128];

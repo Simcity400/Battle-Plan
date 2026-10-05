@@ -64,6 +64,10 @@ pub struct EquipmentPool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Wing {
     pub id: u64,
+    /// F539B0 writes primary+998 as `name` outside checksum mode.
+    /// 1424ADF40 -> 1424AF5A0 escapes quotes/backslashes; the parser decodes them.
+    /// Missing text remains distinct from a successfully saved empty name.
+    pub name: Option<Vec<u8>>,
     /// F539B0 emits accidents only when signed-positive.
     pub accidents: Option<i32>,
     pub experience: Decimal,
@@ -229,6 +233,7 @@ fn parse_equipment(fields: &[Item]) -> io::Result<EquipmentPool> {
 fn parse_wing(fields: &[Item]) -> io::Result<Wing> {
     Ok(Wing {
         id: object_id(fields)?,
+        name: bytes(fields, b"name")?,
         accidents: field(fields, b"air_accidents")?
             .map(|v| integer(scalar(v)?))
             .transpose()?,
@@ -391,6 +396,32 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
 mod tests {
     use super::*;
     use crate::parser;
+
+    #[test]
+    fn wing_name_preserves_exact_bytes_and_distinguishes_empty_from_absent() {
+        let parse_name = |text: &[u8]| {
+            let doc = parser::parse(text).unwrap();
+            parse_wing(&doc.items).unwrap().name
+        };
+        let fields = b"id={id=1 type=69} experience=0 equipment={allow_zero_entries=no}";
+        assert_eq!(parse_name(fields), None);
+        let mut empty = fields.to_vec();
+        empty.extend_from_slice(br#" name="""#);
+        assert_eq!(parse_name(&empty), Some(Vec::new()));
+        let mut bytes = fields.to_vec();
+        bytes.extend_from_slice(b" name=\"A\x80\xffB\"");
+        assert_eq!(parse_name(&bytes), Some(b"A\x80\xffB".to_vec()));
+        let mut escaped = fields.to_vec();
+        escaped.extend_from_slice(br#" name="User \"quoted\" \\wing""#);
+        assert_eq!(
+            parse_name(&escaped),
+            Some(br#"User "quoted" \wing"#.to_vec())
+        );
+        let mut duplicate = fields.to_vec();
+        duplicate.extend_from_slice(br#" name="A" name="B""#);
+        let doc = parser::parse(&duplicate).unwrap();
+        assert!(parse_wing(&doc.items).is_err());
+    }
 
     #[test]
     fn base_anchors_preserve_null_host_and_signed_fields_without_inventing_location() {

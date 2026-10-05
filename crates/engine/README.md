@@ -22,6 +22,8 @@ The pre-rewrite implementation is retained at Git tag `archive/pre-rewrite-2026-
 
 The struct files hold offsets, native widths and evidence. Do not recreate the old registry, table-count or format-version catalogs here. A stored field, a calculated getter and a renderer cache are different sources; a similar-looking save value does not make them interchangeable.
 
+Raid naming, capture and save comparison follow the [raid tooltip contract](../viewer/src/map/raids/tooltips/README.md).
+
 ## Adding or changing a reader
 
 Built-in modifier names live in [modifier_keys/builtins.rs](src/modifier_keys/builtins.rs), with each native registration callsite; the fixed-key constants in [modifier_keys.rs](src/modifier_keys.rs) take their names from that catalog. Hard-coded static lexer tokens are listed in [fixed_layout.rs](src/fixed_layout.rs). Its check confirms, through the witnessed lexer dictionary, that every built-in row spells its script name, that the gap row after the built-ins is default-constructed, and that each token is within the static range and spells its name. A mismatch anywhere in the built-in layout fails every fixed key by name. Dynamic definitions remain sized and resolved from live data.

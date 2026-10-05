@@ -2816,6 +2816,7 @@ fn air_and_naval_oracle_compares_native_values_and_slot_identity() {
     let ace = (7_u64 << 32) | 4713;
     saved.air.wings.push(save::air::Wing {
         id: wing,
+        name: None,
         accidents: None,
         experience: Decimal::parse(b"0").unwrap(),
         equipment: save::air::EquipmentPool {
@@ -3607,6 +3608,7 @@ fn ace_range_inputs_match_the_saved_rosters_and_wing_references() {
     ];
     save.air.wings.push(save::air::Wing {
         id: wing,
+        name: None,
         accidents: None,
         experience: Decimal::parse(b"0").unwrap(),
         equipment: save::air::EquipmentPool {

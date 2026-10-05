@@ -84,7 +84,7 @@ A naval side's saved `last_leader` is not the commander the game shows. A load r
 
 The counter oracle compares each country's ordered `volunteers_sent` handles with SentVolunteers, including nulls and duplicates. Reordering, missing or extra references are differences; noncontiguous recorded ordinals are a comparison failure. The reader and comparison have synthetic coverage; fresh-save agreement and the collector smoke check must be exercised together on the coordinated game run.
 
-The raid tooltip comparisons cover facility program order and project links, saved intel and cryptology scalars, cooldown days and raid reference witnesses; raw army strength and organisation and wing experience have their own save comparisons. The save omits the regional air scores (`CStrategicAir::vf2@140C57230`), the runtime success and name operands and the definition pointer order, so those remain named oracle limitations. Check them with matched native and viewer hover pairs for active, incoming and target icons.
+Raid naming, capture and save comparison follow the [raid tooltip contract](../viewer/src/map/raids/tooltips/README.md).
 
 ## Live checks and performance
 

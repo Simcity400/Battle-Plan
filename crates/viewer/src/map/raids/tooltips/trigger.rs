@@ -259,38 +259,7 @@ impl Context<'_, '_> {
             // an sp: operand leaves this constructor-default string empty.
             return Ok(String::new());
         }
-        let catalog = self.assets.tooltip.projects.as_ref()?;
-        if let Some(reason) = &catalog.unsettled {
-            return Err(format!("special project catalog: {reason}"));
-        }
-        let (token_name, project) = catalog
-            .projects
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case(name))
-            .ok_or_else(|| format!("special project {name} has no content definition"))?;
-        if let Some(reason) = &project.refusal {
-            return Err(format!("special project {token_name}: {reason}"));
-        }
-        let key = project.name.as_ref().unwrap_or(token_name);
-        let tag = &self
-            .countries
-            .operands(country)
-            .ok_or("project country naming operands absent")?
-            .as_ref()?
-            .tag;
-        let override_key = format!("{tag}_{key}");
-        let scopes = Scopes::of(Scope::Country(country));
-        let base = self.scoped_text(key, scopes)?;
-        // 140FCDDF0 -> 140A81BB0 -> 14146B1D0 selects TAG_key;
-        // 140A81510/140A81880 build the yellow tooltip name record.
-        if self.loc.get(&override_key).is_some() {
-            Ok(format!(
-                "\u{11}Y{}\u{11}! ({base})",
-                self.scoped_text(&override_key, scopes)?
-            ))
-        } else {
-            Ok(format!("\u{11}Y{base}\u{11}!"))
-        }
+        self.project_tooltip_name(name, country)
     }
 }
 

@@ -65,6 +65,8 @@ Built-in game variables are computed by the game on demand, not stored, and are 
 
 Stored old country names and agency names are text in the recording client's language, which the content identity records.
 
+Raid naming, capture and save comparison follow the [raid tooltip contract](../viewer/src/map/raids/tooltips/README.md).
+
 InvasionPreparations' route path-cost operands have no save comparator; the oracle reports that limit explicitly. CountryFactories' group fields also have no text-save counterpart; the [oracle](../recorder/README.md#inspect-and-compare) compares levels only with saved building inputs.
 
 LogisticsEquipment holds the daily update's stored balance; the Logistics screen recomputes it from live demand, so it can differ later in the day. The screen's category rows also add incoming lend-lease, which is not recorded. ProductionLines records the average efficiency and its maximum-factory clamp, but not the per-factory efficiencies.

@@ -53,7 +53,17 @@ operative roster, unique operative identities, descending contributions and
 successive stacking factors. Cryptology uses the shared native predicate in
 [dashboard/cryptology.rs](../../../../../dashboard/src/cryptology.rs).
 Facility selection uses the first country program at the target province and
-its active project definition; the definition key is localised in the viewer.
+its active project definition. The hourly row's authenticated project owner
+supplies the naming country; the daily project history is not needed.
+`1416151F0` takes the tooltip name record at +40 from `140FCDDF0`.
+Constructor `140FCADC0` stores template+18 at project+20, so the name record
+read at definition+1D8 is template+1F0. Its default string at +48 is
+template+238, where `140A852A0` installs the definition token. Then
+`140A81BB0`/`14146B580` select the content's nonempty narrative name or
+definition key, then `14146B1D0` tries the owner's own tag prefix. Both selected
+and default keys expand in that owner's default country scope in the viewer's
+language. `140A81510` wraps the selected name yellow and appends the default in
+parentheses when the keys differ; `140A81880` only wraps yellow otherwise.
 The captive name uses the leader's original +20 input: `140C16FB0` localises it
 into +40, which `141612FC0` reads. A character script ID is not its name.
 
@@ -133,10 +143,52 @@ Every refused occurrence is stored as a line name plus reason and counted;
 independent lines remain visible. The viewer diagnostics expose these counts. A
 raid whose operands were unreadable when recorded has a single `UNREADABLE`
 row; its operand and naming lines are refused, and other raids keep theirs.
-Irrecoverable cases include generated wing names with no retained original key
-or user/generated provenance (`140F51FB0`), programmatic name overrides with lost localisation provenance, random fallback names without the
-selected choice (`1409B4CE0`). These are not replaced with names in the
-recording client's language.
+The selected active raid wing name (`1414536D0` -> `140F4B8F0`) uses the
+shared `dashboard::scripted_text::stored_text` rule, also used by ship names.
+`140F48F90` passes a null selected-number pointer to `140AE3750` (assembly
+`140F4903F`); the `140AE2990`/`140AE49D0` fallback chooses against the used-name
+registry. Both generators and player rename `141932C30` use `140F51FB0`, which
+keeps neither the original key/number nor a rename marker. The exact stored
+bytes therefore draw verbatim only when recording and viewer languages match;
+the existing content identity supplies the recording language.
+
+The [engine reader](../../../../../engine/src/raid_tooltip_operands/names.rs)
+reads primary+998: inline storage or data pointer, length +9A8, capacity +9B0.
+Capacity 15 selects inline storage; larger capacity selects the heap pointer
+(`140F51FB0`). Live length must fit capacity; the reader checks pointer and
+arithmetic, copies length plus terminator in one payload read when rows fit,
+and validates the terminator. No chosen name-length cap is imposed. The
+existing hourly non-ended raid walk captures only the native selected wing
+(army before wing). Its existing row buffer grows off-thread from full demand;
+a shortage keeps a readable prefix and withholds the incomplete table.
+
+The existing string layout carries the name in its own operand family: length
+at the reserved length key, then zero-based packed eight-byte chunks with final
+zero padding. A negative length carries the shared `NameReadError` code and
+replaces all chunks. Family/error codes and byte contracts live in the
+[engine](../../../../../engine/src/raid_tooltip_operands.rs) and
+[row contract](../../../../../replay/src/extended_rows/raids_projects.rs);
+the existing collector projection and kind/key/raw codec preserve them unchanged.
+An empty name retains zero length. Missing or malformed operands, failed reads,
+invalid UTF-8 and language mismatch refuse the line by name and count it.
+The outer `tooltip_launch_button_right_click` supplies the native green prompt,
+white connector and yellow name through the viewer's localisation.
+
+The [text-save oracle](../../../../../recorder/src/oracle/projects/raids.rs)
+compares the selected wing's stored length, bytes and final-chunk padding with
+saved `name` (`CAirWing::vf2@140F539B0`, secondary+988 = primary+998).
+`CWriter::WriteString@1424ADF40` -> `1424AF5A0` escapes backslashes and quotes
+with `String_ReplaceAllCString@1424B7F40`; the
+[save parser](../../../../../installed-content/src/save/air.rs) decodes both. Missing
+saved text differs from an empty name. Duplicate selected saved IDs produce a
+counted difference while other raids remain comparable. Capture failures are
+named limitations; saved naming inputs, provenance and language have no
+independent comparator. The native writer stops at an embedded NUL; a stored
+length extending beyond it produces a real save difference, never a waiver.
+Regional air scores, runtime success operands and definition pointer order also
+have no text-save counterpart. Other irrecoverable naming cases remain
+programmatic overrides with lost provenance and random division/ship fallback
+names without the selected choice (`1409B4CE0`).
 
 A state's display name (`1409CC380`) is its custom name (`CState+0x38`, stored
 localised by `set_state_name` `140310B50`), else its owner name (`CState+0xE8`,
@@ -180,10 +232,10 @@ catalogue here.
 
 ## Verification
 
-Viewer tests cover the outer tooltip branches, fixed formatting, success
-mapping and counterplay, intel arithmetic, native-order equipment maps, naming
+Viewer tests cover the facility's country override, narrative/default selection
+and scripted name scope without a daily project join, the outer tooltip branches,
+fixed formatting, success mapping and counterplay, intel arithmetic, native-order equipment maps, naming
 bytes and content merges; the engine readers' tests cover memory faults and
 capacity demand. The recorder
 oracle compares saved references and available raw scalars and reports the
-runtime-only remainder explicitly. Live fresh-save agreement, hover appearance
-and gameplay cost require the coordinator's matched capture and smoke run.
+runtime-only remainder explicitly.
