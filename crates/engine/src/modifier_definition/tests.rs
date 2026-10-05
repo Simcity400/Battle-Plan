@@ -1,6 +1,15 @@
 use super::*;
 use std::collections::BTreeMap;
 
+#[test]
+fn checked_definition_memo_capacity_overflow_returns_oom() {
+    let error = match DefinitionMemo::try_with_capacity(usize::MAX) {
+        Ok(_) => panic!("impossible memo capacity accepted"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::OutOfMemory);
+}
+
 const BASE: usize = 0x140000000;
 const TABLE: usize = 0x2000;
 const KEY: u32 = 0x54;

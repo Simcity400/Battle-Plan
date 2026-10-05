@@ -1,7 +1,6 @@
 //! Hourly game-thread sampling with an independent recoverable spool writer.
 
-// The decode-worker calibration snapshot grows one small object per moved
-// family; keep the `json!` muncher comfortably below its expansion limit.
+// Borrowed status objects expand one field per captured family.
 #![recursion_limit = "512"]
 
 #[cfg(not(all(windows, target_arch = "x86_64", target_env = "msvc")))]
@@ -15,6 +14,9 @@ mod acquisition_jobs;
 mod acquisition_states;
 mod acquisition_wars;
 mod advisor_changes;
+mod allocation;
+#[cfg(test)]
+mod allocation_failure_tests;
 #[cfg(feature = "callback_profile")]
 mod callback_profile;
 mod combat_log_prune;
@@ -48,6 +50,7 @@ mod sampling;
 mod slicing;
 mod snapshot_plan;
 mod spooling;
+mod status;
 mod status_writer;
 mod table_capture;
 #[cfg(test)]

@@ -176,9 +176,10 @@ impl Memory for World {
 /// The Ordinary job's country roster over `world`: an authenticated
 /// census, as the callback prepares it.
 fn roster(world: &World) -> engine::country_memory::Cache {
-    let mut cache = engine::country_memory::Cache::with_capacity(
+    let mut cache = engine::country_memory::Cache::try_with_capacity(
         engine::country_memory::Cache::cells_for_countries(8192, 1024),
-    );
+    )
+    .unwrap();
     cache.prepare(world, 0, GAME);
     world.calls.store(0, Ordering::Relaxed);
     cache
@@ -892,6 +893,31 @@ fn roomy() -> Capacities {
     }
 }
 
+pub(super) fn allocation_failure_exercise(arm: impl FnOnce(), disarm: impl FnOnce()) {
+    let built = world(&Shape::small());
+    let mut capacities = roomy();
+    arm();
+    let scope = crate::allocation::enter(crate::allocation::Phase::Extended);
+    let mut captured = Captured::with_capacities(&capacities);
+    for _ in 0..3 {
+        if crate::allocation::failed() {
+            break;
+        }
+        captured.reset();
+        captured.capture(&built.world, 0, GAME);
+        if crate::allocation::failed() {
+            break;
+        }
+        std::hint::black_box(captured.tables());
+        if crate::allocation::failed() {
+            break;
+        }
+        captured.grow(&mut capacities);
+    }
+    drop(scope);
+    disarm();
+}
+
 /// Everything a walk publishes: tables, outcomes, and the demand of every
 /// arena and census.
 #[derive(Debug, PartialEq)]
@@ -1074,6 +1100,105 @@ fn family_walk_publishes_the_reference_tables() {
             .iter()
             .any(|side| side.divisions.iter().any(|d| !d.entries.is_empty()))
     );
+}
+
+#[test]
+fn reserve_breakdown_sources_preserve_reads_rows_and_pool_bytes() {
+    fn original(
+        world: &World,
+        captured: &Captured,
+    ) -> Vec<replay::rows::ReserveModifierBreakdownRow> {
+        let countries = ccountry::Reader::new(world, 0, GAME).unwrap();
+        let mut sources = std::collections::BTreeMap::new();
+        for row in &captured.divisions.rows[..captured.divisions.outcome.len()] {
+            if row.role != 2 {
+                continue;
+            }
+            let owners = engine::read::<[u8; 8]>(world, row.pointer + cunit::ROSTER_OWNER).unwrap();
+            let own = u32::from_le_bytes(owners[..4].try_into().unwrap());
+            let expeditionary = u32::from_le_bytes(owners[4..].try_into().unwrap());
+            let owner = if expeditionary as i32 > 0 {
+                expeditionary
+            } else {
+                own
+            };
+            if let std::collections::btree_map::Entry::Vacant(entry) =
+                sources.entry((0, owner as u64))
+            {
+                let country = countries.resolve(owner).unwrap();
+                entry.insert(country.pointer + ccountry::MODIFIER_ACCUMULATOR);
+            }
+            let kind = row.context.leader_modifier_kind;
+            if kind != 0
+                && let std::collections::btree_map::Entry::Vacant(entry) =
+                    sources.entry((kind, row.stats.commander))
+            {
+                let accumulator = engine::carmy_leader::movement_accumulator(world, 0, row.pointer)
+                    .unwrap()
+                    .unwrap();
+                entry.insert(accumulator);
+            }
+        }
+        let mut rows = Vec::new();
+        for ((kind, owner), address) in sources {
+            rows.push(replay::rows::ReserveModifierBreakdownRow {
+                kind,
+                owner,
+                nodes: engine::modifier_breakdown::tree(
+                    world,
+                    0,
+                    address,
+                    engine::modifier_keys::LAND_REINFORCE_RATE,
+                )
+                .unwrap(),
+            });
+        }
+        rows
+    }
+
+    let mut shape = Shape::small();
+    shape.owners = 6;
+    let built = world(&shape);
+    let mut captured = Captured::with_capacities(&roomy());
+    let (outcomes, _) = captured.pass(&built.world, 0, GAME);
+    captured.divisions.outcome = outcomes[1];
+    assert!(matches!(outcomes[1], Outcome::Rows { .. }));
+    let before = captured.allocated_bytes();
+    *built.world.log.lock().unwrap() = Some(Vec::new());
+    captured.capture_breakdowns(&built.world, 0, GAME);
+    let current_reads = built.world.log.lock().unwrap().take().unwrap();
+    *built.world.log.lock().unwrap() = Some(Vec::new());
+    let reference = original(&built.world, &captured);
+    let original_reads = built.world.log.lock().unwrap().take().unwrap();
+    assert_eq!(current_reads, original_reads);
+    assert_eq!(captured.breakdowns, reference);
+    assert!(
+        !reference.len().is_power_of_two(),
+        "fixture must cover amortized headroom"
+    );
+    assert_eq!(captured.breakdowns.capacity(), reference.capacity());
+    let requests = captured.divisions.rows[..outcomes[1].len()]
+        .iter()
+        .filter(|row| row.role == 2)
+        .map(|row| 1 + usize::from(row.context.leader_modifier_kind != 0))
+        .sum::<usize>();
+    assert!(
+        requests > reference.len(),
+        "fixture must include repeated sources"
+    );
+    let retained = reference.capacity() * size_of::<replay::rows::ReserveModifierBreakdownRow>()
+        + reference
+            .iter()
+            .map(|row| {
+                row.nodes.capacity() * size_of::<engine::modifier_breakdown::Node>()
+                    + row
+                        .nodes
+                        .iter()
+                        .map(|node| node.name.capacity())
+                        .sum::<usize>()
+            })
+            .sum::<usize>();
+    assert_eq!(captured.allocated_bytes(), before + retained);
 }
 
 fn reason(outcome: Outcome) -> &'static str {
@@ -1505,7 +1630,7 @@ fn stages(w: &World, memory: &impl Memory, tables: [u64; N]) -> Vec<(&'static st
                     cland_combat::read_modifiers_context(memory, 0, source).unwrap();
                 }
                 if stage >= 3 {
-                    images.capture(memory, members.pointers);
+                    images.capture(memory, members.pointers).unwrap();
                 }
                 if stage >= 4 {
                     cland_combat::visit_units(

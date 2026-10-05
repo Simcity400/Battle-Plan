@@ -8,6 +8,7 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows, grow_capacity},
 };
+use engine::allocation::{copy_vec, owned_vec};
 use engine::{Memory, country_tactic_unlocks as native, walk::Outcome};
 use replay::{
     cadence::{SKIPPED_REASON, should_walk},
@@ -173,9 +174,9 @@ impl Captured {
             rows,
             |row| CountryTacticUnlockRow {
                 country: row.country,
-                unlocked_tactic_ids: self.unlocks.first
-                    [row.unlock_start..row.unlock_start + row.unlock_count]
-                    .to_vec(),
+                unlocked_tactic_ids: owned_vec(copy_vec(
+                    &self.unlocks.first[row.unlock_start..row.unlock_start + row.unlock_count],
+                )),
             },
         )]
     }

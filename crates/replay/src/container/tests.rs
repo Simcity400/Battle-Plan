@@ -9,6 +9,96 @@ use crate::{
 
 const CAMPAIGN: &[u8] = b"container-test-campaign";
 
+#[test]
+fn partial_capture_trailer_retains_prefix_gap_and_list_metadata() {
+    for failed_hour in [Some(3), None] {
+        let mut captured = records(1, &[1, 2]);
+        if let Some(hour) = failed_hour {
+            captured.push(Record::Gap(Gap {
+                branch: 1,
+                first_hour: hour,
+                last_hour: hour,
+                reason: "collector allocation failed".into(),
+            }));
+        }
+        let partial = ControlRecord::Partial {
+            session: 1,
+            reason: "collector allocation failed (phase 2, code 1)".into(),
+            failed_hour,
+        };
+        captured.push(Record::Control(partial.clone()));
+        captured.push(Record::Control(ControlRecord::Detach {
+            session: 1,
+            last_hour: Some(2),
+        }));
+        let replay = Replay::from_records(CAMPAIGN.into(), &[captured]).unwrap();
+        assert!(replay.is_partial());
+        assert_eq!(replay.partial(), Some(&partial));
+        assert_eq!(replay.gaps.len(), usize::from(failed_hour.is_some()));
+        assert!(matches!(replay.seek(1, 2).unwrap(), SeekResult::Frame(_)));
+        if let Some(hour) = failed_hour {
+            assert!(
+                matches!(replay.seek(1, hour).unwrap(), SeekResult::Gap { reason, .. } if reason == "collector allocation failed")
+            );
+        }
+        let reopened = Replay::open(replay.bytes().to_vec()).unwrap();
+        assert_eq!(reopened.partial(), Some(&partial));
+        let mut source = std::io::Cursor::new(replay.bytes());
+        assert_eq!(
+            Replay::read_partial_from(&mut source, replay.bytes().len() as u64).unwrap(),
+            Some(partial)
+        );
+        let mut damaged = replay.bytes().to_vec();
+        damaged[replay.trailer_start + 4] ^= 1;
+        let length = damaged.len() as u64;
+        assert!(Replay::read_partial_from(&mut std::io::Cursor::new(damaged), length).is_err());
+    }
+}
+
+#[test]
+fn partial_capture_can_end_a_loaded_branch_before_its_first_frame() {
+    let prefix = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2])]).unwrap();
+    let history = prefix.into_history().unwrap();
+    let mut tracker = history.tracker_for(&history.sessions[0]).unwrap();
+    let failed_hour = -7;
+    let start = tracker
+        .observe(None, failed_hour, Some(123), &[])
+        .unwrap()
+        .start
+        .unwrap();
+    assert_eq!(start.reason, BranchReason::LoadSignal);
+    assert_eq!(start.loaded_hour, None);
+    assert_eq!(start.parent, Parentage::Unknown);
+    let lost_branch = start.id;
+    let mut captured = records(1, &[1, 2]);
+    captured.extend([
+        Record::BranchStart(start),
+        Record::Gap(Gap {
+            branch: lost_branch,
+            first_hour: failed_hour,
+            last_hour: failed_hour,
+            reason: "collector allocation failed".into(),
+        }),
+        Record::Control(ControlRecord::Partial {
+            session: 1,
+            reason: "collector allocation failed".into(),
+            failed_hour: Some(failed_hour),
+        }),
+        Record::Control(ControlRecord::Detach {
+            session: 1,
+            last_hour: None,
+        }),
+    ]);
+    let replay = Replay::from_records(CAMPAIGN.into(), &[captured]).unwrap();
+    assert_eq!(replay.index.len(), 1);
+    assert_eq!(replay.branches.len(), 2);
+    assert!(matches!(replay.seek(1, 2).unwrap(), SeekResult::Frame(_)));
+    assert!(
+        matches!(replay.seek(lost_branch, failed_hour).unwrap(), SeekResult::Gap { reason, .. } if reason == "collector allocation failed")
+    );
+    assert!(Replay::open(replay.bytes().to_vec()).unwrap().is_partial());
+}
+
 fn session(id: u64) -> SessionStart {
     SessionStart {
         id,

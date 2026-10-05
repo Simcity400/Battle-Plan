@@ -11,7 +11,8 @@ use super::{
 use crate::{division_census::UnitInputs, map_capture::Orders};
 use engine::{Memory, walk::Outcome};
 use replay::{frame::TABLE_COUNT, rows::TableId};
-use std::{mem::size_of, sync::Arc};
+use std::mem::size_of;
+use std::sync::Arc;
 
 impl Captured {
     pub(crate) fn naval_breakdown_status(&self) -> naval_details::BreakdownStatus {
@@ -389,7 +390,7 @@ impl Captured {
         packs.naval_raw = naval_raw;
         packs.ticks = [0; TABLE_COUNT];
         crate::acquisition_jobs::LateRequest {
-            inputs: self.unit_inputs.as_ref().map(Arc::clone),
+            inputs: self.unit_inputs.clone(),
             base,
             game_state: state,
             hour,
@@ -545,8 +546,11 @@ impl OrdinaryPacks {
     }
     /// Placeholders the extended capture holds while the pool owns the real
     /// packs. Only the reusable box allocates; the hourly exchange is a swap.
-    pub(super) fn spare() -> Box<Self> {
-        Box::new(Self {
+    pub(super) fn spare() -> Option<Box<Self>> {
+        if crate::allocation::failed() {
+            return None;
+        }
+        Some(Box::new(Self {
             combat_details: combat_details::Captured::vacant(),
             naval_details: naval_details::Captured::vacant(),
             naval_result_details: naval_result_details::Captured::vacant(),
@@ -562,10 +566,11 @@ impl OrdinaryPacks {
             saved_event_targets: saved_event_targets::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
             failure: None,
-        })
+        }))
     }
 
     pub(crate) fn capture(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
+        let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
         let mut ticks = [0; TABLE_COUNT];
         macro_rules! pack {
             ($($pack:ident),+ $(,)?) => {$(
@@ -660,11 +665,14 @@ impl RaidTargetPacks {
         size_of::<Self>() + self.raid_target_statuses.allocated_bytes()
     }
 
-    pub(super) fn spare() -> Box<Self> {
-        Box::new(Self {
+    pub(super) fn spare() -> Option<Box<Self>> {
+        if crate::allocation::failed() {
+            return None;
+        }
+        Some(Box::new(Self {
             raid_target_statuses: raid_target_statuses::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
-        })
+        }))
     }
 
     pub(crate) fn capture(
@@ -675,6 +683,7 @@ impl RaidTargetPacks {
         hour: i32,
         force_full: bool,
     ) {
+        let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
         let mut ticks = [0; TABLE_COUNT];
         let cost = self
             .raid_target_statuses
@@ -695,11 +704,14 @@ impl RaidStatePacks {
         size_of::<Self>() + self.raid_state_inputs.allocated_bytes()
     }
 
-    pub(super) fn spare() -> Box<Self> {
-        Box::new(Self {
+    pub(super) fn spare() -> Option<Box<Self>> {
+        if crate::allocation::failed() {
+            return None;
+        }
+        Some(Box::new(Self {
             raid_state_inputs: raid_state_inputs::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
-        })
+        }))
     }
 
     pub(crate) fn capture(
@@ -711,6 +723,7 @@ impl RaidStatePacks {
         force_full: bool,
         stores: &mut RaidStateStores,
     ) {
+        let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
         let mut ticks = [0; TABLE_COUNT];
         let cost = self.raid_state_inputs.capture_sliced(
             memory,
@@ -739,11 +752,14 @@ impl RaidLaunchPacks {
         size_of::<Self>() + self.raid_launch_inputs.allocated_bytes()
     }
 
-    pub(super) fn spare() -> Box<Self> {
-        Box::new(Self {
+    pub(super) fn spare() -> Option<Box<Self>> {
+        if crate::allocation::failed() {
+            return None;
+        }
+        Some(Box::new(Self {
             raid_launch_inputs: raid_launch_inputs::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
-        })
+        }))
     }
 
     pub(crate) fn capture(
@@ -755,6 +771,7 @@ impl RaidLaunchPacks {
         force_full: bool,
         store: &mut crate::slicing::SliceFingerprints,
     ) {
+        let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
         let mut ticks = [0; TABLE_COUNT];
         let cost = self.raid_launch_inputs.capture_sliced(
             memory,
@@ -815,8 +832,11 @@ impl SlowPacks {
             + self.naval_mission_inputs.allocated_bytes()
     }
 
-    pub(super) fn spare() -> Box<Self> {
-        Box::new(Self {
+    pub(super) fn spare() -> Option<Box<Self>> {
+        if crate::allocation::failed() {
+            return None;
+        }
+        Some(Box::new(Self {
             map_names: map_names::Captured::vacant(),
             division_templates: division_templates::Captured::vacant(),
             visibility: visibility::Captured::vacant(),
@@ -833,7 +853,7 @@ impl SlowPacks {
             country_tactic_unlocks: country_tactic_unlocks::Captured::vacant(),
             naval_mission_inputs: naval_mission_inputs::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
-        })
+        }))
     }
 
     pub(crate) fn capture(
@@ -845,6 +865,7 @@ impl SlowPacks {
         force_full: bool,
         stores: &mut SlowStores,
     ) {
+        let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
         let mut ticks = [0; TABLE_COUNT];
         macro_rules! staggered {
             ($($pack:ident),+ $(,)?) => {$(
@@ -932,8 +953,11 @@ impl LatePacks {
             + self.orders.allocated_bytes()
     }
 
-    pub(super) fn spare() -> Box<Self> {
-        Box::new(Self {
+    pub(super) fn spare() -> Option<Box<Self>> {
+        if crate::allocation::failed() {
+            return None;
+        }
+        Some(Box::new(Self {
             leader_portraits: leader_portraits::Captured::vacant(),
             leader_paths: leader_paths::Captured::vacant(),
             air: air::Captured::vacant(),
@@ -944,7 +968,7 @@ impl LatePacks {
             orders: Orders::vacant(),
             naval_raw: false,
             ticks: [0; TABLE_COUNT],
-        })
+        }))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -958,6 +982,7 @@ impl LatePacks {
         inputs: Option<&UnitInputs>,
         air_scores: &mut engine::raid_air_scores::Held,
     ) {
+        let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
         let mut ticks = [0; TABLE_COUNT];
         let cost = self.leader_portraits.capture(
             memory,
@@ -1034,13 +1059,16 @@ impl GatedPacks {
             + self.construction.allocated_bytes()
     }
 
-    pub(super) fn spare() -> Box<Self> {
-        Box::new(Self {
+    pub(super) fn spare() -> Option<Box<Self>> {
+        if crate::allocation::failed() {
+            return None;
+        }
+        Some(Box::new(Self {
             fog: fog::Captured::vacant(),
             projects: projects::Captured::vacant(),
             construction: construction::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
-        })
+        }))
     }
 
     pub(crate) fn capture(
@@ -1051,6 +1079,7 @@ impl GatedPacks {
         hour: i32,
         force_full: bool,
     ) {
+        let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
         let mut ticks = [0; TABLE_COUNT];
         scatter(
             &fog::TABLES,

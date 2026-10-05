@@ -57,18 +57,19 @@ pub(super) fn record(samples: [[u64; WIDTH]; 2]) {
         slot.ready.store(1, Ordering::Release);
     }
 }
-pub(crate) fn status() -> serde_json::Value {
-    let samples: Vec<_> = SLOTS
-        .iter()
-        .take(NEXT.load(Ordering::Relaxed).min(LIMIT))
-        .filter(|slot| slot.ready.load(Ordering::Acquire) != 0)
-        .map(|slot| {
+pub(crate) fn status() -> impl serde::Serialize {
+    let reserved = NEXT.load(Ordering::Relaxed).min(LIMIT);
+    let ready = std::array::from_fn::<_, LIMIT, _>(|index| {
+        index < reserved && SLOTS[index].ready.load(Ordering::Acquire) != 0
+    });
+    let samples = crate::status::sequence(SLOTS.iter().zip(ready).filter_map(|(slot, ready)| {
+        ready.then(|| {
             slot.fields
                 .each_ref()
                 .map(|field| field.load(Ordering::Relaxed))
         })
-        .collect();
-    serde_json::json!({
+    }));
+    crate::status::status!({
         "columns_per_section": ["wall_ticks", "thread_cycles", "read_characters", "reused_characters",
             "planned", "plan_wall_ticks", "plan_thread_cycles", "plan_result", "stop_address", "stop_len", "characters"],
         "section_order": ["historical", "generated"],

@@ -4,6 +4,7 @@ use crate::{
     spooling::table,
     table_capture::{CaptureRows, grow_capacity, grow_vec},
 };
+use engine::allocation::{default_vec, owned_vec};
 use engine::{Memory, corders_group, walk::Outcome};
 use replay::{
     frame::TableView,
@@ -39,7 +40,7 @@ impl Captured {
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(capacity.rows),
-            roots: vec![Default::default(); capacity.rows],
+            roots: owned_vec(default_vec(capacity.rows)),
             required: 0,
         }
     }

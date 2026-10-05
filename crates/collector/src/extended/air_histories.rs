@@ -37,7 +37,7 @@ use crate::{
 use engine::{
     Memory,
     air_kamikaze::{self as native, WindowState},
-    ccountry,
+    allocation, ccountry,
     walk::Outcome,
 };
 use replay::{
@@ -139,8 +139,21 @@ impl Capacities {
 }
 
 /// Raise `list`'s capacity to `capacity`.
-fn reserve<T>(list: &mut Vec<T>, capacity: usize) {
-    list.reserve(capacity.saturating_sub(list.len()));
+fn reserve<T>(list: &mut Vec<T>, capacity: usize) -> Result<(), &'static str> {
+    let additional = capacity.saturating_sub(list.len());
+    allocation::reserve(list, additional).map_err(|_| "collector allocation failed")
+}
+
+fn reserve_pushes<T>(list: &mut Vec<T>, count: usize) -> Result<(), &'static str> {
+    allocation::reserve_push_batch(list, count).map_err(|_| "collector allocation failed")
+}
+
+fn push<T>(list: &mut Vec<T>, value: T) -> Result<(), &'static str> {
+    if list.len() == list.capacity() {
+        reserve_pushes(list, 1)?;
+    }
+    list.push(value);
+    Ok(())
 }
 
 /// One copied window, its channels at `offset` in the staged channels.
@@ -220,19 +233,20 @@ pub(crate) struct Staging {
 impl Staging {
     fn with_capacities(capacity: &Capacities) -> Self {
         let mut staging = Self::default();
-        staging.reserve(capacity);
+        let _ = staging.reserve(capacity);
         staging
     }
 
-    fn reserve(&mut self, capacity: &Capacities) {
-        reserve(&mut self.regions, capacity.regions);
-        reserve(&mut self.added, capacity.regions);
-        reserve(&mut self.replaced, capacity.countries);
-        reserve(&mut self.removed, capacity.countries);
-        reserve(&mut self.advances, capacity.histories);
-        reserve(&mut self.windows, capacity.histories);
-        reserve(&mut self.channels, capacity.channels);
+    fn reserve(&mut self, capacity: &Capacities) -> Result<(), &'static str> {
+        reserve(&mut self.regions, capacity.regions)?;
+        reserve(&mut self.added, capacity.regions)?;
+        reserve(&mut self.replaced, capacity.countries)?;
+        reserve(&mut self.removed, capacity.countries)?;
+        reserve(&mut self.advances, capacity.histories)?;
+        reserve(&mut self.windows, capacity.histories)?;
+        reserve(&mut self.channels, capacity.channels)?;
         self.capacity = Some(*capacity);
+        Ok(())
     }
 
     /// A new frame: no regions yet.
@@ -262,12 +276,16 @@ impl Staging {
 
     /// The AirMissions job's regions and verdict; fails only when the
     /// buffers cannot grow.
-    fn open(&mut self, regions: &[u64], held: &[u64], verdict: Verdict) -> Result<(), &'static str> {
-        const FAILED: &str = "naval-patrol history staging allocation failed";
+    fn open(
+        &mut self,
+        regions: &[u64],
+        held: &[u64],
+        verdict: Verdict,
+    ) -> Result<(), &'static str> {
         self.regions.clear();
         self.added.clear();
-        self.regions.try_reserve(regions.len()).map_err(|_| FAILED)?;
-        self.added.try_reserve(regions.len()).map_err(|_| FAILED)?;
+        reserve(&mut self.regions, regions.len())?;
+        reserve(&mut self.added, regions.len())?;
         self.regions.extend_from_slice(regions);
         self.added.extend(
             regions
@@ -311,8 +329,14 @@ impl Staging {
         let Self {
             windows, channels, ..
         } = self;
+        reserve_pushes(windows, histories.len())?;
         native::history_windows(memory, base, histories, scratch, |at, state, copied| {
             let (slot, region) = found[at];
+            let count = channels
+                .len()
+                .checked_add(copied.len())
+                .ok_or("air history channel count overflow")?;
+            reserve(channels, count)?;
             windows.push(Window {
                 slot,
                 region,
@@ -392,13 +416,19 @@ pub(crate) fn supply(
     if parts.is_empty() {
         return;
     }
+    if reserve(&mut opening.regions, regions.len()).is_err() {
+        opening.complete = false;
+        for part in parts {
+            part.input = Input::Failed("collector allocation failed");
+        }
+        return;
+    }
     let quiet = changes.quiet();
     let sites = [changes.site(0), changes.site(1)];
     let complete = std::mem::replace(&mut opening.complete, false);
     // A site with no calls since touched none of its receivers.
-    let site = |index: usize| {
-        complete && sites[index].is_some() && sites[index] == opening.sites[index]
-    };
+    let site =
+        |index: usize| complete && sites[index].is_some() && sites[index] == opening.sites[index];
     let verdict = Verdict {
         complete,
         quiet: complete && quiet.is_some() && quiet == opening.quiet && regions == opening.regions,
@@ -426,7 +456,7 @@ struct HistoryCertificate {
     sequence: Sequence,
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct CountryCertificate {
     root: usize,
     sequence: Sequence,
@@ -492,9 +522,9 @@ impl Certificates {
     /// Presize every list the part's job fills; a country's histories grow
     /// when it first holds one. In the job, which owns them, once per
     /// capacity change.
-    fn reserve(&mut self, capacity: &Capacities) {
+    fn reserve(&mut self, capacity: &Capacities) -> Result<(), &'static str> {
         if self.reserved == *capacity {
-            return;
+            return Ok(());
         }
         let Self {
             roots,
@@ -509,17 +539,22 @@ impl Certificates {
             &mut scratch.extend,
             &mut scratch.targets,
         ] {
-            reserve(list, capacity.countries);
+            reserve(list, capacity.countries)?;
         }
-        reserve(&mut scratch.addresses, capacity.histories);
-        reserve(&mut scratch.doubted, capacity.histories);
-        reserve(&mut scratch.found, capacity.histories);
-        reserve(&mut scratch.sequences, capacity.histories);
+        reserve(&mut scratch.addresses, capacity.histories)?;
+        reserve(&mut scratch.doubted, capacity.histories)?;
+        reserve(&mut scratch.found, capacity.histories)?;
+        reserve(&mut scratch.sequences, capacity.histories)?;
         if countries.len() < capacity.countries {
+            reserve(countries, capacity.countries)?;
             countries.resize_with(capacity.countries, Default::default);
         }
-        scratch.windows.size();
+        scratch
+            .windows
+            .size()
+            .map_err(|_| "collector allocation failed")?;
         self.reserved = *capacity;
+        Ok(())
     }
 }
 
@@ -561,8 +596,11 @@ pub(crate) fn stage(
         Input::Missing => State::Failed("naval-patrol history regions not supplied"),
         Input::Failed(reason) => State::Failed(reason),
         Input::Supplied => {
-            if let Some(capacity) = staging.capacity {
-                certificates.reserve(&capacity);
+            if let Some(capacity) = staging.capacity
+                && let Err(reason) = certificates.reserve(&capacity)
+            {
+                staging.fail(reason);
+                return;
             }
             let (regions, added) = (
                 std::mem::take(&mut staging.regions),
@@ -583,7 +621,10 @@ pub(crate) fn stage(
         }
     };
     staging.ticks = qpc().saturating_sub(begin).max(0) as u64;
-    if cfg!(feature = "history_verify") && staging.input == Input::Supplied {
+    if cfg!(feature = "history_verify")
+        && staging.input == Input::Supplied
+        && !allocation::capture_stopped()
+    {
         let Staging {
             regions, verify, ..
         } = staging;
@@ -621,7 +662,8 @@ fn stage_part(
         scratch,
         ..
     } = certificates;
-    staging.slots = native::country_air_roots(memory, base, game_state, part, PARTS, &mut scratch.roots)?;
+    staging.slots =
+        native::country_air_roots(memory, base, game_state, part, PARTS, &mut scratch.roots)?;
     staging.owned = scratch.roots.len();
     // A quiet hour may skip the part only when every receiver it holds is
     // watched: a refused one must still be read afresh every hour.
@@ -647,6 +689,7 @@ fn stage_part(
     let [roots_quiet, histories_quiet] = verdict.sites;
     std::mem::swap(roots, &mut scratch.roots);
     if countries.len() < roots.len() {
+        reserve(countries, roots.len())?;
         countries.resize_with(roots.len(), Default::default);
     }
     // Slots the registry no longer has certify nothing if it grows again.
@@ -661,6 +704,12 @@ fn stage_part(
         list.clear();
     }
     scratch.doubted.clear();
+    let removed = roots
+        .iter()
+        .zip(countries.iter())
+        .filter(|(root, country)| **root == 0 && (country.root != 0 || !verdict.complete))
+        .count();
+    reserve_pushes(&mut staging.removed, removed)?;
     let counts = &mut staging.counts;
     for (index, (&root, country)) in roots.iter().zip(countries.iter_mut()).enumerate() {
         if root == 0 {
@@ -682,7 +731,7 @@ fn stage_part(
             && sequence == country.sequence)
         {
             country.reset(root, sequence);
-            scratch.read.push(index);
+            push(&mut scratch.read, index)?;
             continue;
         }
         counts.reused += 1;
@@ -691,7 +740,7 @@ fn stage_part(
                 .histories
                 .retain(|history| regions.binary_search(&u64::from(history.region)).is_ok());
             if !added.is_empty() {
-                scratch.extend.push(index);
+                push(&mut scratch.extend, index)?;
             }
         }
         for (at, history) in country.histories.iter_mut().enumerate() {
@@ -707,24 +756,28 @@ fn stage_part(
                 (Some((epoch, old)), Some((current, new)))
                     if epoch == current && new > old && (new - old) % 2 == 0 =>
                 {
-                    staging
-                        .advances
-                        .push((slot(index), history.region, (new - old) / 2));
+                    push(
+                        &mut staging.advances,
+                        (slot(index), history.region, (new - old) / 2),
+                    )?;
                     history.sequence = now;
                     counts.advanced += 1;
                 }
-                _ => scratch.doubted.push((index, at, now)),
+                _ => push(&mut scratch.doubted, (index, at, now))?,
             }
         }
     }
     counts.refreshed = scratch.doubted.len() as u64;
     counts.read = scratch.read.len() as u64;
+    reserve(&mut staging.replaced, scratch.read.len())?;
     staging
         .replaced
         .extend(scratch.read.iter().map(|&index| slot(index)));
     // Histories whose count was not observed, copied on their own.
     scratch.addresses.clear();
     scratch.found.clear();
+    reserve_pushes(&mut scratch.addresses, scratch.doubted.len())?;
+    reserve_pushes(&mut scratch.found, scratch.doubted.len())?;
     for &(index, at, sequence) in &scratch.doubted {
         let history = &mut countries[index].histories[at];
         history.sequence = sequence;
@@ -740,10 +793,15 @@ fn stage_part(
     )?;
     // Countries copied afresh, authenticated first, in every wanted region;
     // unchanged ones in the newly wanted regions.
-    for (list, wanted, fresh) in [(&scratch.read, regions, true), (&scratch.extend, added, false)]
-    {
+    for (list, wanted, fresh) in [
+        (&scratch.read, regions, true),
+        (&scratch.extend, added, false),
+    ] {
         scratch.targets.clear();
-        scratch.targets.extend(list.iter().map(|&index| roots[index]));
+        reserve(&mut scratch.targets, list.len())?;
+        scratch
+            .targets
+            .extend(list.iter().map(|&index| roots[index]));
         if fresh && !list.is_empty() {
             let readers = ccountry::Reader::new(memory, base, game_state)?;
             native::authenticate_roots(memory, base, &readers, &scratch.targets, |at| {
@@ -759,9 +817,9 @@ fn stage_part(
             &mut scratch.sequences,
         );
         native::region_slots(memory, &scratch.targets, wanted, |at, region, history| {
-            sequences.push(changes.sequence(history));
-            addresses.push(history);
-            found.push((slot(list[at]), region));
+            push(sequences, changes.sequence(history))?;
+            push(addresses, history)?;
+            push(found, (slot(list[at]), region))?;
             Ok(())
         })?;
         staging.copy_windows(
@@ -771,6 +829,12 @@ fn stage_part(
             &scratch.found,
             &mut scratch.windows,
         )?;
+        for found in scratch.found.chunk_by(|a, b| a.0 == b.0) {
+            reserve_pushes(
+                &mut countries[found[0].0 as usize / PARTS].histories,
+                found.len(),
+            )?;
+        }
         for ((&(slot, region), &history), &sequence) in scratch
             .found
             .iter()
@@ -827,7 +891,11 @@ impl Captured {
 
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
-            + self.parts.iter().map(Staging::allocated_bytes).sum::<usize>()
+            + self
+                .parts
+                .iter()
+                .map(Staging::allocated_bytes)
+                .sum::<usize>()
     }
 
     /// Spool thread: grow from this hour's copies, then size the watches
@@ -843,7 +911,9 @@ impl Captured {
             capacity.observe(part);
         }
         for part in &mut self.parts {
-            part.reserve(capacity);
+            if part.reserve(capacity).is_err() {
+                return;
+            }
         }
     }
 
@@ -929,10 +999,19 @@ impl Captured {
 
     fn decode_into(&mut self, held: &mut Held) {
         self.staged = false;
-        let mut fingerprints = held
-            .fingerprints
-            .take()
-            .unwrap_or_else(|| Box::new(SliceFingerprints::new()));
+        let mut fingerprints = match held.fingerprints.take() {
+            Some(fingerprints) => fingerprints,
+            None => {
+                let fingerprints = SliceFingerprints::new();
+                if allocation::capture_stopped() {
+                    self.rows.fail(Outcome::Unavailable {
+                        reason: "collector allocation failed",
+                    });
+                    return;
+                }
+                Box::new(fingerprints)
+            }
+        };
         self.apply(held, &mut fingerprints);
         held.fingerprints = Some(fingerprints);
     }
@@ -958,19 +1037,31 @@ impl Captured {
             counts.add(&part.counts);
         }
         history_changes::record(&counts);
-        held.apply(self.parts.iter());
-        if cfg!(feature = "history_verify") {
-            let fresh: Option<Vec<&Staging>> = self
+        if held.apply(self.parts.iter()).is_err() {
+            self.rows.fail(Outcome::Unavailable {
+                reason: "collector allocation failed",
+            });
+            self.selection.invalidate(fingerprints);
+            return;
+        }
+        if cfg!(feature = "history_verify")
+            && self
                 .parts
                 .iter()
-                .map(|part| part.verify.as_deref().filter(|verify| verify.completed()))
-                .collect();
-            if let Some(fresh) = fresh {
-                let mut copy = Held::new();
-                copy.apply(fresh.into_iter());
-                if !copy.same(held) {
-                    history_changes::mismatch();
-                }
+                .all(|part| part.verify.as_deref().is_some_and(Staging::completed))
+        {
+            let mut copy = Held::new();
+            if copy
+                .apply(self.parts.iter().filter_map(|part| part.verify.as_deref()))
+                .is_err()
+            {
+                self.rows.fail(Outcome::Unavailable {
+                    reason: "collector allocation failed",
+                });
+                return;
+            }
+            if !copy.same(held) {
+                history_changes::mismatch();
             }
         }
         let begin = qpc();
@@ -999,7 +1090,7 @@ impl Captured {
     }
 }
 
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Default, PartialEq, Eq)]
 struct History {
     region: u32,
     state: WindowState,
@@ -1008,18 +1099,25 @@ struct History {
 }
 
 impl History {
-    fn new(region: u32, state: WindowState, channels: &[[i64; 2]]) -> Self {
-        let records = channels
+    fn new(region: u32, state: WindowState, channels: &[[i64; 2]]) -> Result<Self, &'static str> {
+        let count = channels
             .iter()
-            .enumerate()
-            .filter(|(_, channels)| **channels != [0, 0])
-            .map(|(slot, &channels)| (slot as u32, channels))
-            .collect();
-        Self {
+            .filter(|&&channels| channels != [0, 0])
+            .count();
+        let mut records = Vec::new();
+        reserve_pushes(&mut records, count)?;
+        records.extend(
+            channels
+                .iter()
+                .enumerate()
+                .filter(|(_, channels)| **channels != [0, 0])
+                .map(|(slot, &channels)| (slot as u32, channels)),
+        );
+        Ok(Self {
             region,
             state,
             records,
-        }
+        })
     }
 
     /// Apply `advances` calls of `1415050B0`: each moves the current slot
@@ -1040,7 +1138,7 @@ impl History {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct HeldCountry {
     /// By region.
     histories: Vec<History>,
@@ -1071,16 +1169,21 @@ impl Held {
     }
 
     /// Apply one hour's parts, every one of which completed.
-    fn apply<'a>(&mut self, parts: impl Iterator<Item = &'a Staging> + Clone) {
+    fn apply<'a>(
+        &mut self,
+        parts: impl Iterator<Item = &'a Staging> + Clone,
+    ) -> Result<(), &'static str> {
         // An hour every part reused changes nothing, its regions included.
         let Some(copied) = parts.clone().find(|part| part.state == State::Copied) else {
-            return;
+            return Ok(());
         };
         let slots = parts.clone().map(|part| part.slots).max().unwrap_or(0);
         if self.countries.len() != slots {
-            self.countries.resize(slots, HeldCountry::default());
+            reserve(&mut self.countries, slots)?;
+            self.countries.resize_with(slots, HeldCountry::default);
         }
         self.changed.clear();
+        reserve(&mut self.changed, slots)?;
         self.changed.resize(slots, false);
         let regions = &copied.regions;
         for (country, changed) in self.countries.iter_mut().zip(&mut self.changed) {
@@ -1108,12 +1211,17 @@ impl Held {
             for window in &part.windows {
                 let channels =
                     &part.channels[window.offset..window.offset + window.state.capacity as usize];
-                let history = History::new(window.region, window.state, channels);
+                let history = History::new(window.region, window.state, channels)?;
                 let histories = &mut self.countries[window.slot as usize].histories;
                 match histories.binary_search_by_key(&window.region, |history| history.region) {
                     Ok(at) if histories[at] == history => continue,
                     Ok(at) => histories[at] = history,
-                    Err(at) => histories.insert(at, history),
+                    Err(at) => {
+                        if histories.len() == histories.capacity() {
+                            reserve_pushes(histories, 1)?;
+                        }
+                        histories.insert(at, history);
+                    }
                 }
                 self.changed[window.slot as usize] = true;
             }
@@ -1124,24 +1232,61 @@ impl Held {
                 country.generation = self.generation;
             }
         }
+        Ok(())
     }
 
     /// Whether both hold the same histories.
     fn same(&self, other: &Self) -> bool {
-        let held = |held: &Self| {
-            held.countries
+        self.countries
+            .iter()
+            .enumerate()
+            .filter(|(_, country)| !country.histories.is_empty())
+            .map(|(slot, country)| (slot, &country.histories))
+            .eq(other
+                .countries
                 .iter()
                 .enumerate()
                 .filter(|(_, country)| !country.histories.is_empty())
-                .map(|(slot, country)| (slot, country.histories.clone()))
-                .collect::<Vec<_>>()
-        };
-        held(self) == held(other)
+                .map(|(slot, country)| (slot, &country.histories)))
     }
 
     /// Expand the selected countries' entries in country, region and
     /// summation order, growing the buffer here on the decode thread.
-    fn publish(&self, selection: &SliceSelection, output: &mut Vec<AirNavalPatrolHistoryRow>) -> Outcome {
+    fn publish(
+        &self,
+        selection: &SliceSelection,
+        output: &mut Vec<AirNavalPatrolHistoryRow>,
+    ) -> Outcome {
+        let needed = self
+            .countries
+            .iter()
+            .enumerate()
+            .filter(|(slot, _)| selection.contains(*slot as u32))
+            .flat_map(|(_, country)| &country.histories)
+            .try_fold(0usize, |count, history| {
+                let emitted = history
+                    .state
+                    .order()
+                    .filter(|(_, record)| {
+                        history
+                            .records
+                            .binary_search_by_key(&(*record as u32), |&(slot, _)| slot)
+                            .is_ok()
+                    })
+                    .count();
+                count.checked_add(emitted)
+            });
+        let Some(needed) = needed else {
+            return Outcome::Unavailable {
+                reason: "air held history row count overflow",
+            };
+        };
+        let additional = needed.saturating_sub(output.len());
+        if reserve_pushes(output, additional).is_err() {
+            return Outcome::Unavailable {
+                reason: "collector allocation failed",
+            };
+        }
         let mut len = 0;
         for (slot, country) in self.countries.iter().enumerate() {
             if !selection.contains(slot as u32) {
@@ -1176,8 +1321,88 @@ impl Held {
 }
 
 #[cfg(test)]
+pub(crate) fn allocation_failure_exercise() {
+    let capacity = Capacities {
+        rows: 4,
+        countries: 3,
+        histories: 2,
+        channels: 6,
+        regions: 2,
+    };
+    let mut part = Staging::with_capacities(&capacity);
+    if crate::allocation::failed() {
+        return;
+    }
+    part.regions.extend_from_slice(&[7, 9]);
+    part.channels
+        .extend_from_slice(&[[1, 0], [0, 0], [2, 4], [0, 0], [3, 0], [0, 5]]);
+    part.windows.extend_from_slice(&[
+        Window {
+            slot: 1,
+            region: 7,
+            state: WindowState {
+                history: 0,
+                capacity: 3,
+                current: 2,
+                wrapped: true,
+            },
+            offset: 0,
+        },
+        Window {
+            slot: 2,
+            region: 9,
+            state: WindowState {
+                history: 0,
+                capacity: 3,
+                current: 2,
+                wrapped: true,
+            },
+            offset: 3,
+        },
+    ]);
+    part.slots = 3;
+    part.state = State::Copied;
+    let mut held = Held::new();
+    if held.apply(std::iter::once(&part)).is_err() {
+        return;
+    }
+    let mut selection = SliceSelection::new(true);
+    if crate::allocation::failed() {
+        return;
+    }
+    selection.reset(0, true);
+    let mut output = Vec::new();
+    let outcome = held.publish(&selection, &mut output);
+    if crate::allocation::failed() {
+        return;
+    }
+    let _ = table::<tables::AirNavalPatrolHistories, _>(outcome, &output, Clone::clone);
+    if crate::allocation::failed() {
+        return;
+    }
+    // The next part inserts another region into an existing country's held list.
+    part.windows[0].region = 9;
+    part.windows.truncate(1);
+    let _ = held.apply(std::iter::once(&part));
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    fn qword(image: &mut [u8], at: usize, value: u64) {
+        image[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn dword(image: &mut [u8], at: usize, value: u32) {
+        image[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn vector(image: &mut [u8], at: usize, data: usize, count: u32) {
+        qword(image, at, data as u64);
+        dword(image, at + 8, count);
+        dword(image, at + 12, count);
+    }
 
     fn state(current: u32, wrapped: bool) -> WindowState {
         WindowState {
@@ -1191,17 +1416,17 @@ mod tests {
     #[test]
     fn an_advance_zeroes_each_new_current_record_and_wraps() {
         let channels = [[1, 0], [2, 0], [0, 0], [4, 4], [5, 0]];
-        let mut history = History::new(7, state(3, false), &channels);
+        let mut history = History::new(7, state(3, false), &channels).unwrap();
         // Current 3 -> 4 -> 0: records 4 and 0 are zeroed and the window wraps.
         history.advance(2);
         assert_eq!(history.state, state(0, true));
         assert_eq!(history.records, [(1, [2, 0]), (3, [4, 4])]);
         // A whole lap zeroes every record, the old current one last.
-        let mut lap = History::new(7, state(3, true), &channels);
+        let mut lap = History::new(7, state(3, true), &channels).unwrap();
         lap.advance(5);
         assert_eq!(lap.state, state(3, true));
         assert!(lap.records.is_empty());
-        let mut short = History::new(7, state(3, true), &channels);
+        let mut short = History::new(7, state(3, true), &channels).unwrap();
         short.advance(4);
         assert_eq!(short.records, [(3, [4, 4])]);
     }
@@ -1213,19 +1438,213 @@ mod tests {
         held.countries = vec![
             HeldCountry::default(),
             HeldCountry {
-                histories: vec![History::new(7, state(3, true), &channels)],
+                histories: vec![History::new(7, state(3, true), &channels).unwrap()],
                 generation: 1,
             },
         ];
         let mut selection = SliceSelection::new(true);
         selection.reset(0, true);
         let mut rows = Vec::new();
-        assert_eq!(held.publish(&selection, &mut rows), Outcome::Rows { len: 4 });
+        assert_eq!(
+            held.publish(&selection, &mut rows),
+            Outcome::Rows { len: 4 }
+        );
         let order: Vec<_> = rows
             .iter()
             .map(|row| (row.index, row.enemy_ships_sunk_raw))
             .collect();
         assert_eq!(order, [(0, 4), (1, 5), (2, 1), (3, 2)]);
+    }
+
+    #[test]
+    fn reused_histories_do_not_grow_empty_copy_or_advance_lists() {
+        const BASE: usize = 0x1_0000_0000;
+        const GAME_STATE: usize = 0x100;
+        const MANAGER: usize = 0x800;
+        const ROOTS: usize = 0xa00;
+        let mut image = vec![0; 0x1000];
+        qword(
+            &mut image,
+            GAME_STATE + engine::cgame_state::STRATEGIC_AIR_MANAGER,
+            MANAGER as u64,
+        );
+        qword(
+            &mut image,
+            MANAGER,
+            (BASE + engine::cstrategic_air_manager::VTABLE_RVA) as u64,
+        );
+        vector(
+            &mut image,
+            MANAGER + engine::cstrategic_air_manager::COUNTRY_AIR,
+            ROOTS,
+            (PARTS + 1) as u32,
+        );
+        let mut certificates = Certificates::new();
+        certificates.reserve(&Capacities::default()).unwrap();
+        certificates.roots.extend_from_slice(&[0xc00, 0xc80]);
+        for (index, country) in certificates.countries.iter_mut().take(2).enumerate() {
+            qword(
+                &mut image,
+                ROOTS + index * PARTS * 8,
+                (0xc00 + index * 0x80) as u64,
+            );
+            country.root = 0xc00 + index * 0x80;
+            country.sequence = Some((1, 2));
+            country.histories = (0..90)
+                .map(|region| HistoryCertificate {
+                    region,
+                    history: 0x1000 + region as usize,
+                    sequence: Some((1, 2)),
+                })
+                .collect();
+        }
+        let memory = engine::memory::SliceMemory {
+            base: 0,
+            bytes: &image,
+        };
+        for mut staging in [
+            Staging::default(),
+            Staging::with_capacities(&Capacities::default()),
+        ] {
+            let removed = staging.removed.capacity();
+            let advances = staging.advances.capacity();
+            assert_eq!(
+                stage_part(
+                    &memory,
+                    BASE,
+                    GAME_STATE,
+                    0,
+                    (
+                        &[],
+                        &[],
+                        Verdict {
+                            complete: true,
+                            sites: [true; 2],
+                            ..Verdict::default()
+                        }
+                    ),
+                    &history_changes::Unobserved,
+                    &mut certificates,
+                    &mut staging,
+                ),
+                Ok(State::Copied),
+            );
+            assert!(staging.removed.is_empty());
+            assert!(staging.advances.is_empty());
+            assert_eq!(staging.removed.capacity(), removed);
+            assert_eq!(staging.advances.capacity(), advances);
+        }
+    }
+
+    #[test]
+    fn copied_windows_and_published_rows_keep_sequential_push_growth() {
+        const BASE: usize = 0x1_0000_0000;
+        const HISTORY: usize = 0x100;
+        const WINDOW: usize = 0x200;
+        const RECORDS: usize = 0x300;
+        const RECORD: usize = 0x400;
+        const VALUES: usize = 0x500;
+        let mut image = vec![0; 0x1000];
+        qword(
+            &mut image,
+            HISTORY,
+            (BASE + engine::cloop_history::VTABLE_RVA) as u64,
+        );
+        dword(
+            &mut image,
+            HISTORY + engine::cloop_history::FIELD_COUNT,
+            engine::cloop_history::air_stats::FIELD_COUNT,
+        );
+        qword(
+            &mut image,
+            HISTORY + engine::cloop_history::DAILY_WINDOW,
+            WINDOW as u64,
+        );
+        qword(
+            &mut image,
+            WINDOW,
+            (BASE + engine::loop_history_window::VTABLE_RVA) as u64,
+        );
+        vector(
+            &mut image,
+            WINDOW + engine::loop_history_window::RECORDS,
+            RECORDS,
+            1,
+        );
+        dword(
+            &mut image,
+            WINDOW + engine::loop_history_window::CAPACITY,
+            1,
+        );
+        image[WINDOW + engine::loop_history_window::WRAPPED] = 1;
+        qword(&mut image, RECORDS, RECORD as u64);
+        qword(&mut image, RECORD, VALUES as u64);
+        qword(
+            &mut image,
+            VALUES + native::ENEMY_SHIPS_SUNK * engine::loop_history_record_fields::VALUE_STRIDE,
+            1,
+        );
+        let memory = engine::memory::SliceMemory {
+            base: 0,
+            bytes: &image,
+        };
+        let mut staging = Staging::with_capacities(&Capacities::default());
+        let histories = vec![HISTORY; 500];
+        let found: Vec<_> = (0..500).map(|region| (0, region)).collect();
+        let mut expected = Vec::with_capacity(staging.windows.capacity());
+        staging
+            .copy_windows(
+                &memory,
+                BASE,
+                &histories,
+                &found,
+                &mut native::WindowScratch::new(),
+            )
+            .unwrap();
+        for window in &staging.windows {
+            expected.push(*window);
+        }
+        assert_eq!(staging.windows.len(), 500);
+        assert_eq!(staging.windows.capacity(), expected.capacity());
+        staging.slots = 1;
+        staging.state = State::Copied;
+        staging.regions.extend(0..500);
+        let mut held = Held::new();
+        held.apply(std::iter::once(&staging)).unwrap();
+        let mut selection = SliceSelection::new(true);
+        selection.reset(0, true);
+        let mut output = vec![AirNavalPatrolHistoryRow::default(); 8];
+        assert_eq!(
+            held.publish(&selection, &mut output),
+            Outcome::Rows { len: 500 }
+        );
+        let mut expected = vec![AirNavalPatrolHistoryRow::default(); 8];
+        for row in &output[8..] {
+            expected.push(row.clone());
+        }
+        assert_eq!(output.capacity(), expected.capacity());
+    }
+
+    #[test]
+    fn publish_reserves_only_records_in_the_current_window() {
+        let channels = [[1, 0]; 5];
+        let mut held = Held::new();
+        held.countries.push(HeldCountry {
+            histories: vec![History::new(7, state(1, false), &channels).unwrap()],
+            generation: 1,
+        });
+        let mut selection = SliceSelection::new(true);
+        selection.reset(0, true);
+        let mut rows = Vec::new();
+        assert_eq!(
+            held.publish(&selection, &mut rows),
+            Outcome::Rows { len: 1 }
+        );
+        let mut expected = Vec::new();
+        for row in &rows[..1] {
+            expected.push(row.clone());
+        }
+        assert_eq!(rows.capacity(), expected.capacity());
     }
 
     #[test]
@@ -1294,7 +1713,12 @@ pub(crate) mod hour {
         }
 
         /// The AirMissions job opens the hour on `frame`.
-        pub(crate) fn supply(&mut self, frame: &mut Captured, regions: &[u64], changes: &impl Changes) {
+        pub(crate) fn supply(
+            &mut self,
+            frame: &mut Captured,
+            regions: &[u64],
+            changes: &impl Changes,
+        ) {
             supply(&mut frame.parts, Ok(regions), changes, &mut self.opening);
         }
 
@@ -1314,13 +1738,29 @@ pub(crate) mod hour {
                 std::thread::scope(|scope| {
                     for (part, (staging, certificates)) in parts.enumerate() {
                         scope.spawn(move || {
-                            stage(memory, base, game_state, part, changes, certificates, staging)
+                            stage(
+                                memory,
+                                base,
+                                game_state,
+                                part,
+                                changes,
+                                certificates,
+                                staging,
+                            )
                         });
                     }
                 });
             } else {
                 for (part, (staging, certificates)) in parts.enumerate() {
-                    stage(memory, base, game_state, part, changes, certificates, staging);
+                    stage(
+                        memory,
+                        base,
+                        game_state,
+                        part,
+                        changes,
+                        certificates,
+                        staging,
+                    );
                 }
             }
             let wall = started.elapsed();
@@ -1344,7 +1784,15 @@ pub(crate) mod hour {
                 if part == refused {
                     refuse(staging);
                 } else {
-                    stage(memory, base, game_state, part, changes, certificates, staging);
+                    stage(
+                        memory,
+                        base,
+                        game_state,
+                        part,
+                        changes,
+                        certificates,
+                        staging,
+                    );
                 }
             }
             frame.staged = true;

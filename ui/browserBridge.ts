@@ -8,6 +8,8 @@ import { createInterface } from 'node:readline';
 import type { Plugin } from 'vite';
 import { listReplayFolder, savedReplayFolder, saveReplayFolder } from './replayLibrary.ts';
 import { BROWSER_BRIDGE_BUSY } from './src/generated/dashboard.ts';
+import type { PartialRecording } from './src/generated/dashboard.ts';
+import type { ReplayLibrary } from './src/dashboard/client.ts';
 
 const runFile = promisify(execFile);
 
@@ -84,6 +86,23 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     if (childPath.startsWith('..') || path.isAbsolute(childPath)) throw new Error('Choose a recording inside the configured recordings folder.');
     return { target, relative: childPath.replaceAll('\\', '/') };
   };
+  const recordingSummaries = async (library: ReplayLibrary, signal: AbortSignal) => {
+    for (let first = 0; first < library.files.length;) {
+      const paths: string[] = [];
+      let bytes = 0;
+      while (first + paths.length < library.files.length) {
+        const target = library.files[first + paths.length].path;
+        const size = Buffer.byteLength(JSON.stringify(target)) + 1;
+        if (paths.length && (bytes + size > 56 * 1024 || paths.length >= 128)) break;
+        paths.push(target); bytes += size;
+      }
+      const partials = await send({ type: 'recordingSummaries', paths }, signal) as (PartialRecording | null)[];
+      if (!Array.isArray(partials) || partials.length !== paths.length) throw new Error('Incomplete recording summaries');
+      for (let index = 0; index < paths.length; index++) library.files[first + index].partial = partials[index];
+      first += paths.length;
+    }
+    return library;
+  };
   return {
     name: 'hoi4-browser-recordings', apply: 'serve',
     configureServer(server) {
@@ -123,7 +142,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
           for await (const chunk of request) { body += chunk; if (Buffer.byteLength(body) > 64 * 1024) throw new Error('Recording request too large'); }
           const input = JSON.parse(body);
           if (input.type === 'library') {
-            response.end(JSON.stringify(await listReplayFolder(recordingsRoot, controller.signal))); return;
+            response.end(JSON.stringify(await recordingSummaries(await listReplayFolder(recordingsRoot, controller.signal), controller.signal))); return;
           }
           if (input.type === 'contentFolders') {
             await loadContentConfig();
@@ -158,7 +177,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
             if (typeof input.folder !== 'string' || input.folder.length > 32000) throw new Error('Choose a replay folder.');
             const library = await saveReplayFolder(input.folder);
             recordingsRoot = library.folder!;
-            response.end(JSON.stringify(library)); return;
+            response.end(JSON.stringify(await recordingSummaries(library, controller.signal))); return;
           }
           let command: Record<string, unknown>;
           await loadContentConfig();

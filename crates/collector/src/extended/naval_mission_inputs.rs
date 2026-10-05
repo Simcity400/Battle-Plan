@@ -15,8 +15,9 @@ use crate::{
     sampling::qpc,
     slicing::{SliceFingerprints, SliceSelection},
     spooling::table,
-    table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
+    table_capture::{Arena, CaptureRows, grow_capacity},
 };
+use engine::allocation::{copy_vec, filled, owned_vec, reserve, resize_default};
 use engine::{
     Memory, ccountry, cfleet, creference_registry, cstrategic_navy_manager, cweather_manager,
     modifier_accumulator::{self as accumulator, Value},
@@ -226,17 +227,23 @@ impl Captured {
             census: Arena::new(size(capacity.census)),
             ledgers: CaptureRows::new(size(capacity.ledgers)),
             entries: Arena::new(size(capacity.entries)),
-            scratch: vec![0; size(capacity.entries)],
+            scratch: owned_vec(filled(size(capacity.entries), 0)),
             countries: CaptureRows::new(size(capacity.countries)),
             hubs: Arena::new(size(capacity.hubs)),
             commanders: CaptureRows::new(size(capacity.commanders)),
             named: Arena {
-                first: vec![NO_COUNTRY; size(Self::named_capacity(capacity))],
+                first: owned_vec(filled(size(Self::named_capacity(capacity)), NO_COUNTRY)),
                 len: 0,
                 required: 0,
             },
-            keys: vec![0; size(capacity.task_forces).max(size(capacity.headquarters))],
-            weather: vec![(0, [Value::default(); 4]); size(capacity.task_forces)],
+            keys: owned_vec(filled(
+                size(capacity.task_forces).max(size(capacity.headquarters)),
+                0,
+            )),
+            weather: owned_vec(filled(
+                size(capacity.task_forces),
+                (0, [Value::default(); 4]),
+            )),
             selection: SliceSelection::new(storage),
         }
     }
@@ -292,7 +299,11 @@ impl Captured {
         self.census.grow(&mut capacity.census);
         self.ledgers.grow(&mut capacity.ledgers);
         self.entries.grow(&mut capacity.entries);
-        grow_vec(&mut self.scratch, capacity.entries);
+        if self.scratch.len() < capacity.entries
+            && resize_default(&mut self.scratch, capacity.entries).is_err()
+        {
+            return;
+        }
         self.countries.grow(&mut capacity.countries);
         self.hubs.grow(&mut capacity.hubs);
         self.commanders.grow(&mut capacity.commanders);
@@ -300,13 +311,19 @@ impl Captured {
         grow_capacity(&mut named, self.named.required);
         grow_capacity(&mut named, Self::named_capacity(capacity));
         if self.named.first.len() < named {
+            let extra = named - self.named.first.len();
+            if reserve(&mut self.named.first, extra).is_err() {
+                return;
+            }
             self.named.first.resize(named, NO_COUNTRY);
         }
-        grow_vec(
-            &mut self.keys,
-            capacity.task_forces.max(capacity.headquarters),
-        );
-        grow_vec(&mut self.weather, capacity.task_forces);
+        let keys = capacity.task_forces.max(capacity.headquarters);
+        if self.keys.len() < keys && resize_default(&mut self.keys, keys).is_err() {
+            return;
+        }
+        if self.weather.len() < capacity.task_forces {
+            let _ = resize_default(&mut self.weather, capacity.task_forces);
+        }
     }
 
     /// The countries whose family rows this frame's read replaced.
@@ -831,7 +848,9 @@ impl Captured {
                     weather_coordination,
                     weather_raiding,
                     leader: row.leader,
-                    headquarters: arena[t.headquarters..t.headquarters + row.headquarters].to_vec(),
+                    headquarters: owned_vec(copy_vec(
+                        &arena[t.headquarters..t.headquarters + row.headquarters],
+                    )),
                     range_fleet: row.range_fleet,
                     range_begin: row.range[0],
                     range_end: row.range[1],
@@ -846,7 +865,7 @@ impl Captured {
                 NavalMissionLedgerRow {
                     owner: row.owner,
                     region: row.region,
-                    task_forces: arena[row.first..row.first + row.count].to_vec(),
+                    task_forces: owned_vec(copy_vec(&arena[row.first..row.first + row.count])),
                     ring: row.ring,
                     positive: row.counted.positive,
                     total: row.counted.total,
@@ -878,7 +897,9 @@ impl Captured {
                         range,
                         range_factor,
                         underway,
-                        hubs: self.hubs.first[row.hubs..row.hubs + row.hub_count].to_vec(),
+                        hubs: owned_vec(copy_vec(
+                            &self.hubs.first[row.hubs..row.hubs + row.hub_count],
+                        )),
                     }
                 },
             ),

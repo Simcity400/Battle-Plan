@@ -177,14 +177,14 @@ fn shared_complete_rows_match_owned_wire_and_adopt_each_validated_refresh() {
                 assert_eq!(Arc::strong_count(allocation), 2);
             }
             if let Some(previous) = previous_rows.take() {
-                if std::sync::Weak::ptr_eq(
+                if Weak::ptr_eq(
                     &previous,
                     &Arc::downgrade(&allocations[TableId::Countries.index()]),
                 ) {
                     assert!(reuse_allocation);
-                    assert!(std::sync::Weak::upgrade(&previous).is_some());
+                    assert!(Weak::upgrade(&previous).is_some());
                 } else {
-                    assert!(std::sync::Weak::upgrade(&previous).is_none());
+                    assert!(Weak::upgrade(&previous).is_none());
                 }
             }
             previous_rows = Some(Arc::downgrade(&allocations[TableId::Countries.index()]));
@@ -356,8 +356,9 @@ fn shared_committed_identity_checks_clock_mutation_table_and_encoder_reset() {
     let countries = Arc::clone(countries);
     encoder.encode_input(first, false).unwrap();
     let revision = encoder.revision;
-    let mut mutated = Arc::clone(&countries);
-    let rows = Arc::make_mut(&mut mutated)
+    let mut mutated = Arc::new(countries.try_clone().unwrap());
+    let rows = Arc::get_mut(&mut mutated)
+        .unwrap()
         .rows_mut::<tables::Countries>()
         .unwrap();
     rows.push(rows[0].clone());
@@ -2291,4 +2292,49 @@ fn duplicate_canonical_country_slots_are_ambiguous_in_snapshots_and_deltas() {
         actual.tables[TableId::Provinces.index()],
         expected.tables[TableId::Provinces.index()]
     );
+}
+
+#[test]
+fn prepared_record_keeps_baselines_until_complete_spool_write() {
+    let mut encoder = FrameEncoder::new();
+    let mut pending = encoder.prepare_bytes(source(1, 100).into(), false).unwrap();
+    assert_eq!(encoder.state.last_hour, None);
+    assert_eq!(encoder.revision, 0);
+    assert!(encoder.state.tables.iter().all(Option::is_none));
+    let encoded = pending.take_frame();
+    assert_eq!(encoded.decode().unwrap().hour, 100);
+    // An abandoned record cannot become a baseline for the next record.
+    drop(pending);
+    let mut retry = encoder.prepare_bytes(source(1, 101).into(), false).unwrap();
+    assert!(retry.frame().decode().unwrap().keyframe);
+    let _written = retry.take_frame();
+    encoder.commit(retry).unwrap();
+    assert_eq!(encoder.state.last_hour, Some(101));
+    assert_eq!(encoder.revision, 1);
+    assert!(
+        !encoder
+            .prepare_bytes(source(1, 102).into(), false)
+            .unwrap()
+            .frame()
+            .decode()
+            .unwrap()
+            .keyframe
+    );
+}
+
+#[test]
+fn checked_table_clones_preserve_recorded_fields() {
+    for tick in 0..4 {
+        for table in TableId::ALL {
+            if let Some(rows) = rows::sample_extended_table(table, tick) {
+                assert_eq!(rows.try_clone().unwrap(), rows, "{table:?} tick {tick}");
+            }
+        }
+    }
+    for view in source(1, 100).tables {
+        let TableView::Complete(rows) = &*view else {
+            unreachable!()
+        };
+        assert_eq!(rows.try_clone().unwrap(), *rows);
+    }
 }

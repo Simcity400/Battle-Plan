@@ -71,17 +71,14 @@ struct Slot {
 }
 
 struct Storage {
-    slots: Box<[Slot]>,
+    slots: Vec<Slot>,
 }
 impl Storage {
-    /// Off-thread; an allocation failure leaves the current log installed.
+    /// Off-thread; checked allocation failure terminates capture.
     fn new(capacity: usize) -> Option<Box<Self>> {
-        let mut slots = Vec::new();
-        slots.try_reserve_exact(capacity).ok()?;
+        let mut slots = engine::allocation::vec(capacity).ok()?;
         slots.resize_with(capacity, Slot::default);
-        Some(Box::new(Self {
-            slots: slots.into_boxed_slice(),
-        }))
+        Some(Box::new(Self { slots }))
     }
 }
 
@@ -170,7 +167,7 @@ static BASE: AtomicUsize = AtomicUsize::new(0);
 /// The next entry the hourly drain hands over; only the callback moves it.
 static CONSUMED: &AtomicU64 = &OBSERVATION.consumed;
 /// Why the hooks are not installed, when they are not.
-static UNHOOKED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static UNHOOKED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 /// `[credits, deliveries from a ProduceEquipment, other deliveries, entries,
 /// inexact entries, drains, entries handed over, overflowed logs, unobserved
 /// drains, failed producer reads]`.
@@ -389,12 +386,12 @@ pub fn drain(output: &mut [Entry]) -> Result<Drained, &'static str> {
     )
 }
 
-pub fn status() -> serde_json::Value {
+pub fn status() -> impl serde::Serialize {
     let counters = COUNTERS
         .each_ref()
         .map(|value| value.load(Ordering::Relaxed));
-    let mut status = output_hooks::status(&OBSERVATION, &UNHOOKED, None);
-    status.as_object_mut().unwrap().extend(serde_json::json!({
+    let base = output_hooks::status::<0>(&OBSERVATION, &UNHOOKED, None);
+    base.join(crate::status::status!({
         "capacity": CAPACITY.load(Ordering::Acquire),
         "swaps": SWAPS.load(Ordering::Relaxed),
         "failed_offers": FAILED_OFFERS.load(Ordering::Relaxed),
@@ -409,8 +406,7 @@ pub fn status() -> serde_json::Value {
         "unobserved_drains": counters[8],
         "failed_producer_reads": counters[9],
         "scope": "cumulative since attach; credits count every ProduceEquipment, other_deliveries the rocket line's and any other caller's (never paired); an entry is a tick that credited, delivered or was not exact"
-    }).as_object().unwrap().clone());
-    status
+    }))
 }
 
 pub struct Hooks {
@@ -424,7 +420,7 @@ impl Hooks {
         presize(lines);
         install_offered();
         let domain = output_hooks::Domain {
-            name: "production line",
+            sentinel_error: "production line sentinel differs",
             failure: output_hooks::Failure::Propagate,
             observation: &OBSERVATION,
             base: &BASE,
@@ -444,7 +440,7 @@ impl Hooks {
                     ],
                     domain,
                     if LOG.load(Ordering::SeqCst).is_null() {
-                        Err("production line log allocation failed".into())
+                        Err("production line log allocation failed")
                     } else {
                         Ok(())
                     },
@@ -452,10 +448,10 @@ impl Hooks {
             },
         }
     }
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         self.shared.set_enabled(enabled)
     }
-    pub fn executable_ranges(&self) -> Vec<Range<usize>> {
+    pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
         self.shared.executable_ranges()
     }
 }
@@ -631,8 +627,12 @@ mod tests {
         reset_log_for_test(8);
         let population = 70_000;
         let before = drained(0).0.unwrap();
-        let swaps = status()["swaps"].as_u64().unwrap();
-        let overflows = status()["overflowed_logs"].as_u64().unwrap();
+        let swaps = serde_json::to_value(status()).unwrap()["swaps"]
+            .as_u64()
+            .unwrap();
+        let overflows = serde_json::to_value(status()).unwrap()["overflowed_logs"]
+            .as_u64()
+            .unwrap();
         presize(population);
         let offered = LOG_SWAP.lock().unwrap().next.as_deref().unwrap() as *const Storage;
         presize(population);
@@ -640,10 +640,13 @@ mod tests {
             LOG_SWAP.lock().unwrap().next.as_deref().unwrap() as *const Storage,
             offered
         );
-        assert_eq!(status()["capacity"], 8);
+        assert_eq!(serde_json::to_value(status()).unwrap()["capacity"], 8);
         install_offered();
-        assert_eq!(status()["capacity"], population * 2);
-        assert_eq!(status()["swaps"], swaps + 1);
+        assert_eq!(
+            serde_json::to_value(status()).unwrap()["capacity"],
+            population * 2
+        );
+        assert_eq!(serde_json::to_value(status()).unwrap()["swaps"], swaps + 1);
         assert!(LOG_SWAP.lock().unwrap().retired.is_some());
         collect();
         assert!(LOG_SWAP.lock().unwrap().retired.is_none());
@@ -657,7 +660,10 @@ mod tests {
         assert_eq!(entries, expected);
         assert!(after.complete());
         assert_eq!((after.epoch, after.first), (before.epoch, before.cursor));
-        assert_eq!(status()["overflowed_logs"], overflows);
+        assert_eq!(
+            serde_json::to_value(status()).unwrap()["overflowed_logs"],
+            overflows
+        );
         assert!(drained(1).1.is_empty());
         observe_for_test(false);
     }
@@ -673,28 +679,34 @@ mod tests {
         }
         presize(20);
         install_offered();
-        assert_eq!(status()["capacity"], 8);
+        assert_eq!(serde_json::to_value(status()).unwrap()["capacity"], 8);
         assert!(LOG_SWAP.lock().unwrap().next.is_some());
         let (first, mut entries) = drained(2);
         let first = first.unwrap();
         install_offered();
-        assert_eq!(status()["capacity"], 8);
+        assert_eq!(serde_json::to_value(status()).unwrap()["capacity"], 8);
         let (last, rest) = drained(2);
         let last = last.unwrap();
         entries.extend(rest);
         let writer = Call::enter();
         install_offered();
-        assert_eq!(status()["capacity"], 8);
+        assert_eq!(serde_json::to_value(status()).unwrap()["capacity"], 8);
         assert!(LOG_SWAP.lock().unwrap().next.is_some());
         drop(writer);
         install_offered();
-        assert_eq!(status()["capacity"], capacity_for_lines(20));
+        assert_eq!(
+            serde_json::to_value(status()).unwrap()["capacity"],
+            capacity_for_lines(20)
+        );
         assert!(LOG_SWAP.lock().unwrap().retired.is_some());
         // Until the spool collects the old log, another swap would free it
         // on the game thread and must wait too.
         presize(2000);
         install_offered();
-        assert_eq!(status()["capacity"], capacity_for_lines(20));
+        assert_eq!(
+            serde_json::to_value(status()).unwrap()["capacity"],
+            capacity_for_lines(20)
+        );
         collect();
         install_offered();
         collect();
@@ -932,16 +944,21 @@ mod tests {
         let a = Line::new(0x41_0000_0021, 0xa_0000_0046, 0);
         let (before, _) = drained(1);
         let before = before.unwrap();
-        let overflows = status()["overflowed_logs"].as_u64().unwrap();
+        let overflows = serde_json::to_value(status()).unwrap()["overflowed_logs"]
+            .as_u64()
+            .unwrap();
         for _ in 0..=CAPACITY.load(Ordering::Acquire) {
             produce_for_test(a.address(), NAVAL, 1, None);
         }
         presize(20);
         install_offered();
-        assert_eq!(status()["capacity"], 8);
+        assert_eq!(serde_json::to_value(status()).unwrap()["capacity"], 8);
         let (result, entries) = drained(4);
         let overflowed = result.unwrap();
-        assert_eq!(status()["overflowed_logs"], overflows + 1);
+        assert_eq!(
+            serde_json::to_value(status()).unwrap()["overflowed_logs"],
+            overflows + 1
+        );
         assert!(entries.is_empty());
         assert!(overflowed.first > before.first + before.copied as u64);
         assert_eq!(overflowed.first, overflowed.cursor);
@@ -1017,11 +1034,8 @@ mod tests {
             &memory,
             0,
             &[&CREDIT, &DELIVERY].map(output_hooks::Site::from),
-            "production line",
+            "production line sentinel differs",
         );
-        assert_eq!(
-            hooks.err().as_deref(),
-            Some("production line credit sentinel differs")
-        );
+        assert_eq!(hooks.err(), Some("production line sentinel differs"));
     }
 }

@@ -7,6 +7,7 @@ use crate::{
     slicing::{SliceFingerprints, SliceSelection},
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
+use engine::allocation::{copy_vec, default_vec, owned_vec, reserve, reserve_push_batch};
 use engine::{
     Memory, ccombat_tactic, ccountry, cdecision_status, cdynamic_modifier_container,
     cnational_focus_progress, cpolitical_party, cpolitical_status, cresearch_slot, ctechnology,
@@ -18,7 +19,7 @@ use engine::{
 use replay::rows::TableRows;
 use replay::{
     frame::{TableInput, TableView},
-    rows::{self, TableId, TableSchema, tables},
+    rows::{self, RowCodec, TableId, TableSchema, tables},
 };
 use std::mem::size_of;
 
@@ -459,7 +460,7 @@ impl Captured {
             focus: CaptureRows::new(capacity.rows[0]),
             completed: CaptureRows::new(capacity.rows[1]),
             technologies: CaptureRows::new(capacity.rows[2]),
-            technology_pointers: vec![0; capacity.rows[2]],
+            technology_pointers: owned_vec(default_vec(capacity.rows[2])),
             slots: CaptureRows::new(capacity.rows[3]),
             definitions: CaptureRows::new(capacity.rows[4]),
             politics: CaptureRows::new(capacity.rows[5]),
@@ -493,7 +494,7 @@ impl Captured {
             party_countries: Arena::new(capacity.party_countries),
             idea_countries: Arena::new(capacity.idea_countries),
             decision_countries: Arena::new(capacity.decision_countries),
-            dictionary: vec![ctechnology_template::Entry::default(); capacity.dictionary],
+            dictionary: owned_vec(default_vec(capacity.dictionary)),
             dictionary_required: 0,
             focus_raw_mode: false,
             research_loaned: false,
@@ -907,6 +908,9 @@ impl Captured {
             if roster.count as usize != self.balances.outcome.len() {
                 return Err("power balance modifier breakdown roster count mismatch");
             }
+            reserve_push_batch(&mut self.breakdowns, roster.count as usize)
+                .map_err(crate::allocation::io)
+                .map_err(|_| "collector allocation failed")?;
             for record in 0..roster.count {
                 let address = roster
                     .element(record, power_balance_record::STRIDE)
@@ -1378,7 +1382,7 @@ fn acquire(
             .filter(|entry| entry.copied)
             .count();
         b.definitions.clear();
-        let copied = if b.definitions.try_reserve(count).is_err() {
+        let copied = if reserve(b.definitions, count).is_err() {
             Outcome::Unavailable {
                 reason: "technology definition row allocation failed",
             }
@@ -1475,8 +1479,8 @@ pub(crate) use focus::{FocusCopyContext, FocusCopyReport, FocusJob, copy_focus_r
 fn valid<T>(arena: &[T], start: usize, len: usize) -> bool {
     start.checked_add(len).is_some_and(|end| end <= arena.len())
 }
-fn copy_span<T: Clone>(arena: &[T], start: usize, len: usize) -> Vec<T> {
-    arena[start..start + len].to_vec()
+fn copy_span<T: Copy>(arena: &[T], start: usize, len: usize) -> Vec<T> {
+    owned_vec(copy_vec(&arena[start..start + len]))
 }
 fn view<S: TableSchema, R>(
     captured: &CaptureRows<R>,
@@ -1523,6 +1527,32 @@ impl Captured {
 
     pub(crate) fn table_inputs(&self) -> [TableInput; N] {
         self.tables().map(TableInput::Sampled)
+    }
+
+    fn breakdowns_table(&self) -> TableView {
+        let clone_failed = std::cell::Cell::new(false);
+        let view = crate::spooling::table::<tables::PowerBalanceModifierBreakdowns, _>(
+            self.breakdown_outcome,
+            &self.breakdowns,
+            |row| {
+                if clone_failed.get() {
+                    return Default::default();
+                }
+                match row.try_clone() {
+                    Ok(row) => row,
+                    Err(error) => {
+                        crate::allocation::observe(&error);
+                        clone_failed.set(true);
+                        Default::default()
+                    }
+                }
+            },
+        );
+        if clone_failed.get() {
+            crate::spooling::unavailable("power balance modifier breakdown copy failed")
+        } else {
+            view
+        }
     }
 
     fn technologies_table(&self) -> TableView {
@@ -1799,7 +1829,7 @@ impl Captured {
                     index: r.slot.index,
                     technology_handle: r.slot.technology_handle,
                     technology_present: r.slot.technology_present,
-                    token: r.token.as_bytes().to_vec(),
+                    token: owned_vec(copy_vec(r.token.as_bytes())),
                     classifier: r.classifier,
                     level: r.level,
                     progress_raw: r.progress_raw,
@@ -1824,7 +1854,7 @@ impl Captured {
                     technology_handle: r.technology_handle,
                     id: r.value.id,
                     resolved: r.resolved,
-                    name: r.value.name.as_bytes().to_vec(),
+                    name: owned_vec(copy_vec(r.value.name.as_bytes())),
                     ahead_reduction_raw: r.value.ahead_reduction_raw,
                     speed_bonus_raw: r.value.speed_bonus_raw,
                     cost_reduction_raw: r.cost_reduction_raw,
@@ -1917,7 +1947,7 @@ impl Captured {
                     auxiliary: r.auxiliary,
                     count: r.count,
                     source_id: r.source_id,
-                    name: r.name.as_bytes().to_vec(),
+                    name: owned_vec(copy_vec(r.name.as_bytes())),
                 },
             )),
             wrap(view::<tables::PartyLeaders, _>(
@@ -1932,13 +1962,63 @@ impl Captured {
                     role: r.role,
                 },
             )),
-            wrap(crate::spooling::table::<
-                tables::PowerBalanceModifierBreakdowns,
-                _,
-            >(
-                self.breakdown_outcome, &self.breakdowns, Clone::clone
-            )),
+            wrap(self.breakdowns_table()),
         ]
+    }
+}
+
+/// Build before arming the allocator; conversion follows the populated spool path.
+#[cfg(test)]
+pub(crate) fn allocation_failure_fixture() -> impl FnOnce() -> bool {
+    let mut captured = Captured::vacant();
+    captured.breakdowns = vec![rows::PowerBalanceModifierBreakdownRow {
+        record: 7,
+        sources: vec![b"first source".to_vec(), b"second source".to_vec()],
+        daily: vec![
+            rows::ModifierBreakdownNode {
+                children: 1,
+                value: 11,
+                name: b"daily root".to_vec(),
+            },
+            rows::ModifierBreakdownNode {
+                children: 0,
+                value: 12,
+                name: b"daily leaf".to_vec(),
+            },
+        ],
+        weekly: vec![rows::ModifierBreakdownNode {
+            children: 0,
+            value: 21,
+            name: b"weekly root".to_vec(),
+        }],
+    }];
+    captured.breakdown_outcome = Outcome::Rows { len: 1 };
+    move || {
+        let view = captured.breakdowns_table();
+        if crate::allocation::failed() {
+            return matches!(view, TableView::Unavailable { .. });
+        }
+        let TableView::Complete(TableRows::PowerBalanceModifierBreakdowns(converted)) = view else {
+            return false;
+        };
+        let [row] = converted.as_slice() else {
+            return false;
+        };
+        row.record == 7
+            && row.sources.len() == 2
+            && row.sources[0] == b"first source"
+            && row.sources[1] == b"second source"
+            && row.daily.len() == 2
+            && row.daily[0].children == 1
+            && row.daily[0].value == 11
+            && row.daily[0].name == b"daily root"
+            && row.daily[1].children == 0
+            && row.daily[1].value == 12
+            && row.daily[1].name == b"daily leaf"
+            && row.weekly.len() == 1
+            && row.weekly[0].children == 0
+            && row.weekly[0].value == 21
+            && row.weekly[0].name == b"weekly root"
     }
 }
 

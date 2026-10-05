@@ -87,11 +87,12 @@ fn unit_scale_moving() {
             },
         );
         let mut geometry =
-            cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
+            cprovince::GeometryPacket::try_with_capacities(cprovince::GeometryCapacities {
                 provinces: shape.countries + 1,
                 neighbour_entries: 0,
-            });
-        let mut packet = carmy::MovementPacket::new(shape.divisions, shape.divisions);
+            })
+            .unwrap();
+        let mut packet = carmy::MovementPacket::try_new(shape.divisions, shape.divisions).unwrap();
         measure(
             "DivisionMovement25Percent",
             shape,
@@ -251,11 +252,12 @@ fn unit_scale_capture() {
         );
         let inputs = census.unit_inputs().unwrap();
         let mut geometry =
-            cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
+            cprovince::GeometryPacket::try_with_capacities(cprovince::GeometryCapacities {
                 provinces: shape.countries + 1,
                 neighbour_entries: 0,
-            });
-        let mut movement = carmy::MovementPacket::new(shape.divisions, 0);
+            })
+            .unwrap();
+        let mut movement = carmy::MovementPacket::try_new(shape.divisions, 0).unwrap();
         measure(
             "DivisionMovementIdle",
             shape,
@@ -281,7 +283,7 @@ fn unit_scale_capture() {
                 );
             },
         );
-        let mut status = carmy::StatusPacket::new(shape.divisions);
+        let mut status = carmy::StatusPacket::new(shape.divisions).unwrap();
         measure(
             "DivisionStatusIdle",
             shape,
@@ -331,7 +333,7 @@ fn unit_scale_capture() {
         );
         use crate::extended::air;
         let charged = || {
-            crate::raw_memory::diagnostics()["current"]["total_capacity_lower_bound_bytes"]
+            serde_json::to_value(crate::raw_memory::diagnostics()).unwrap()["current"]["total_capacity_lower_bound_bytes"]
                 .as_u64()
                 .unwrap()
         };

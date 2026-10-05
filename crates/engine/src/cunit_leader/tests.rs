@@ -15,7 +15,7 @@ fn portrait_tag_memo_holds_one_cell_per_country_and_expires_each_walk() {
     memo.begin(5_001);
     assert!(memo.cell(4_999).is_none());
     assert_eq!(memo.required(), 5_001);
-    memo.grow();
+    memo.grow().unwrap();
     memo.begin(5_001);
     // Slots that shared a cell in the old 64-entry memo stay separate.
     for slot in [1, 65, 4_097, 5_000] {

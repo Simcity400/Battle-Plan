@@ -1,4 +1,5 @@
 use super::*;
+use engine::allocation::{default_vec, filled, owned_vec, resize};
 
 #[derive(Debug)]
 pub(crate) struct OwnedFogJob<R> {
@@ -24,8 +25,8 @@ impl<R: Default + Copy> Default for OwnedFogJob<R> {
 impl<R: Default + Copy> OwnedFogJob<R> {
     pub(super) fn with_storage(rows: usize, provinces: usize) -> Self {
         let mut job = Self {
-            rows: vec![R::default(); rows],
-            provinces: vec![0; provinces],
+            rows: owned_vec(default_vec(rows)),
+            provinces: owned_vec(filled(provinces, 0)),
             outcome: Outcome::Rows { len: 0 },
             provinces_len: 0,
             required_provinces: 0,
@@ -64,11 +65,15 @@ impl<R: Default + Copy> OwnedFogJob<R> {
     }
     /// Called only during worker-side recycling.
     pub fn grow(&mut self) {
-        if self.row_limit > self.rows.len() {
-            self.rows.resize(self.row_limit, R::default());
+        if self.row_limit > self.rows.len()
+            && resize(&mut self.rows, self.row_limit, R::default()).is_err()
+        {
+            return;
         }
-        if self.province_limit > self.provinces.len() {
-            self.provinces.resize(self.province_limit, 0);
+        if self.province_limit > self.provinces.len()
+            && resize(&mut self.provinces, self.province_limit, 0).is_err()
+        {
+            return;
         }
         self.update_capacity_charge();
     }
@@ -76,10 +81,12 @@ impl<R: Default + Copy> OwnedFogJob<R> {
         if self.grow_for_next() {
             crate::raw::publish_growth(
                 std::any::type_name::<R>(),
-                serde_json::json!({
-                    "row_capacity": self.rows.len(), "required_rows": self.row_limit,
-                    "province_capacity": self.provinces.len(), "required_provinces": self.province_limit,
-                }),
+                crate::raw::Growth::Fog {
+                    row_capacity: self.rows.len(),
+                    required_rows: self.row_limit,
+                    province_capacity: self.provinces.len(),
+                    required_provinces: self.province_limit,
+                },
             );
         }
     }

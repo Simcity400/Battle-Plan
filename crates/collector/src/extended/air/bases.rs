@@ -1,4 +1,10 @@
 use super::*;
+use engine::allocation;
+
+fn reserve_to<T>(rows: &mut Vec<T>, len: usize) -> std::io::Result<()> {
+    let additional = len.saturating_sub(rows.len());
+    allocation::reserve(rows, additional)
+}
 
 // ===========================================================================
 // Hourly shared bases/registrations/aces split (AirBases,
@@ -83,8 +89,13 @@ pub(crate) struct AirBasesJob {
 
 impl AirBasesJob {
     pub fn new() -> Self {
-        let seen_links = Vec::with_capacity(crate::country_scale::census_rows(1024));
-        let seen_link_index = vec![usize::MAX; seen_links.capacity()];
+        let mut seen_links = Vec::new();
+        let mut census = Vec::new();
+        let capacity = crate::country_scale::census_rows(1024);
+        let _ = allocation::reserve(&mut seen_links, capacity);
+        let _ = allocation::reserve(&mut census, capacity);
+        let seen_link_index =
+            allocation::owned_vec(allocation::filled(seen_links.capacity(), usize::MAX));
         let mut job = Self {
             // Late-campaign worst case is 396 bases with 5,148 registration
             // rows plus wing vectors and 57 aces with names (appendix
@@ -94,7 +105,7 @@ impl AirBasesJob {
             game_state: 0,
             registration_demand: None,
             aces_active: false,
-            census: Vec::with_capacity(crate::country_scale::census_rows(1024)),
+            census,
             seen_links,
             seen_link_index,
             required_census: 0,
@@ -128,7 +139,7 @@ impl AirBasesJob {
     pub fn grow(&mut self) {
         fn grow_to<T>(rows: &mut Vec<T>, required: usize) {
             if required > rows.capacity() {
-                rows.reserve_exact(required - rows.len());
+                let _ = allocation::reserve_exact(rows, required - rows.len());
             } else {
                 crate::raw::double_capacity(rows);
             }
@@ -136,8 +147,11 @@ impl AirBasesJob {
         self.log.grow();
         grow_to(&mut self.census, self.required_census);
         grow_to(&mut self.seen_links, self.required_links);
-        self.seen_link_index
-            .resize(self.seen_links.capacity(), usize::MAX);
+        let capacity = self.seen_links.capacity();
+        if reserve_to(&mut self.seen_link_index, capacity).is_err() {
+            return;
+        }
+        self.seen_link_index.resize(capacity, usize::MAX);
         self.seen_link_index.fill(usize::MAX);
         self.update_capacity_charge();
     }
@@ -147,8 +161,11 @@ impl AirBasesJob {
     pub fn presize_countries(&mut self) {
         let census = crate::country_scale::reserve_census(&mut self.census);
         if crate::country_scale::reserve_census(&mut self.seen_links) {
-            self.seen_link_index
-                .resize(self.seen_links.capacity(), usize::MAX);
+            let capacity = self.seen_links.capacity();
+            if reserve_to(&mut self.seen_link_index, capacity).is_err() {
+                return;
+            }
+            self.seen_link_index.resize(capacity, usize::MAX);
             self.seen_link_index.fill(usize::MAX);
         } else if !census {
             return;
@@ -205,9 +222,9 @@ pub(crate) struct AirBasesMemoReport {
 // raw_memory's generic payload/index scope. No per-frame/pool memo allocation.
 static AIR_BASES_MEMO_MEMORY: crate::raw_memory::Tracker = crate::raw_memory::Tracker::new();
 
-pub(crate) fn air_bases_memo_memory() -> serde_json::Value {
+pub(crate) fn air_bases_memo_memory() -> impl serde::Serialize {
     let snapshot = AIR_BASES_MEMO_MEMORY.snapshot();
-    serde_json::json!({
+    crate::status::status!({
         "scope": "one worker-owned AirBases memo; actual input and native-output vector capacities, retained across misses",
         "input_capacity_bytes": snapshot.current.payload_vectors,
         "native_output_capacity_bytes": snapshot.current.auxiliary_vectors,
@@ -385,6 +402,16 @@ impl AirBasesMemo {
         // Range validation is memo work too, even when it rejects an install.
         let install_started = qpc();
         if report.eligible && air.bases_memo_complete() && fog.registrations_memo_complete() {
+            if reserve_to(&mut self.spans, job.log.spans.len()).is_err()
+                || reserve_to(&mut self.bytes, job.log.bytes.len()).is_err()
+                || reserve_to(&mut self.bases, air.bases.outcome.len()).is_err()
+                || (job.aces_active
+                    && (reserve_to(&mut self.aces, air.aces.outcome.len()).is_err()
+                        || reserve_to(&mut self.names, air.names.len).is_err()))
+            {
+                self.invalidate();
+                return report;
+            }
             self.spans.clear();
             self.spans.extend_from_slice(&job.log.spans);
             self.bytes.clear();

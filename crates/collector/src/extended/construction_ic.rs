@@ -9,9 +9,12 @@
 //! lines ended and which were created after the observation began. The table shares
 //! the census's daily slot: off it, the spool carries the last publication, until a
 //! day's output goes unobserved.
+use super::output_continuity::OutputMap;
 pub(crate) use super::output_continuity::holds_publication;
 use super::output_continuity::{self, Progress, Reasons, State};
 use crate::construction_ic::{Drained, Entry};
+use crate::spooling::unavailable;
+use engine::allocation::{collect_vec, mul, owned_vec, reserve_map};
 use replay::{
     BranchId,
     frame::{TableInput, TableView},
@@ -20,7 +23,7 @@ use replay::{
         TableRows,
     },
 };
-use std::collections::BTreeMap;
+use std::io;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ConstructionLineOutput];
@@ -107,7 +110,9 @@ impl Totals {
         captured: &Captured,
         tables: &mut [TableInput],
     ) {
-        self.observe(branch, hour, captured);
+        if self.observe(branch, hour, captured).is_err() {
+            return;
+        }
         let published = self.publish(
             hour,
             &tables[TableId::BuildingConstruction.index()],
@@ -122,7 +127,7 @@ impl Totals {
         self.shared.written(held_publication);
     }
 
-    fn observe(&mut self, branch: BranchId, hour: i32, captured: &Captured) {
+    fn observe(&mut self, branch: BranchId, hour: i32, captured: &Captured) -> io::Result<()> {
         let progress = self.shared.observe(
             branch,
             hour,
@@ -137,15 +142,17 @@ impl Totals {
         match progress {
             Progress::Restart => {}
             Progress::Entries(range) => {
+                reserve_map(&mut self.shared.lines, mul(range.len(), 2)?)?;
                 for entry in &captured.handed_over()[range] {
                     if let Err(reason) = add(&mut self.shared.lines, entry, hour) {
-                        self.shared.state = State::Withheld(reason.into());
+                        self.shared.state = State::Withheld(reason);
                         break;
                     }
                 }
             }
             Progress::None => {}
         }
+        Ok(())
     }
 
     fn publish(&mut self, hour: i32, buildings: &TableInput, railways: &TableInput) -> TableView {
@@ -172,9 +179,7 @@ impl Totals {
         let (buildings, railways) = match (buildings, railways) {
             (Census::Rows(buildings), Census::Rows(railways)) => (buildings, railways),
             (Census::Skipped, Census::Skipped) => {
-                return TableView::Unavailable {
-                    reason: replay::cadence::SKIPPED_REASON.into(),
-                };
+                return unavailable(replay::cadence::SKIPPED_REASON);
             }
             (Census::Missing(reason), _) | (_, Census::Missing(reason)) => {
                 return unavailable(reason);
@@ -186,9 +191,9 @@ impl Totals {
                 "construction output before this hour's sample is still in the log",
             );
         }
-        TableView::Complete(TableRows::ConstructionLineOutput(
+        TableView::Complete(TableRows::ConstructionLineOutput(owned_vec(
             self.rows(hour, since_hour, buildings, railways),
-        ))
+        )))
     }
 
     fn rows(
@@ -197,14 +202,21 @@ impl Totals {
         since_hour: i32,
         buildings: &[BuildingConstructionRow],
         railways: &[RailwayConstructionRow],
-    ) -> Vec<ConstructionLineOutputRow> {
-        let live: BTreeMap<u64, bool> = buildings
-            .iter()
-            .map(|row| (row.id, false))
-            .chain(railways.iter().map(|row| (row.id, true)))
-            .collect();
+    ) -> io::Result<Vec<ConstructionLineOutputRow>> {
+        let mut live: OutputMap<bool> = OutputMap::default();
+        reserve_map(
+            &mut live,
+            engine::allocation::add(buildings.len(), railways.len())?,
+        )?;
+        for row in buildings {
+            live.insert(row.id, false);
+        }
+        for row in railways {
+            live.insert(row.id, true);
+        }
         self.shared
-            .prepare_publication(hour, live.keys().copied(), |line| line.ended);
+            .prepare_publication(hour, live.keys().copied(), |line| line.ended)?;
+        reserve_map(&mut self.shared.lines, live.len())?;
         let baseline = &self.shared.census;
         // Every live line has a row; linked partners retain an unknown share.
         for (&handle, &railway) in &live {
@@ -214,37 +226,34 @@ impl Totals {
                 ..Line::default()
             });
         }
-        self.shared
-            .lines
-            .iter_mut()
-            .map(|(&handle, line)| {
-                line.ended = !live.contains_key(&handle);
-                // Absent from the first census and first seen after it: created
-                // after that census, so every day of its life was observed.
-                let observed_since_creation =
-                    baseline.observed_since_creation(handle, line.first_hour);
-                ConstructionLineOutputRow {
-                    line: handle,
-                    railway: line.railway,
-                    construction_raw: line.construction,
-                    bank_raw: line.bank,
-                    carry_raw: line.carry,
-                    exact: !line.instant_seen && !line.unknown_share,
-                    repair_raw: line.repair,
-                    instant_raw: line.instant,
-                    ticks: line.ticks,
-                    repair_ticks: line.repair_ticks,
-                    since_hour,
-                    observed_since_creation,
-                    linked: line.linked,
-                    ended: line.ended,
-                }
-            })
-            .collect()
+        let mut rows = collect_vec(self.shared.lines.iter_mut().map(|(&handle, line)| {
+            line.ended = !live.contains_key(&handle);
+            // Absent from the first census and first seen after it: created
+            // after that census, so every day of its life was observed.
+            let observed_since_creation = baseline.observed_since_creation(handle, line.first_hour);
+            ConstructionLineOutputRow {
+                line: handle,
+                railway: line.railway,
+                construction_raw: line.construction,
+                bank_raw: line.bank,
+                carry_raw: line.carry,
+                exact: !line.instant_seen && !line.unknown_share,
+                repair_raw: line.repair,
+                instant_raw: line.instant,
+                ticks: line.ticks,
+                repair_ticks: line.repair_ticks,
+                since_hour,
+                observed_since_creation,
+                linked: line.linked,
+                ended: line.ended,
+            }
+        }))?;
+        rows.sort_unstable_by_key(|row| row.line);
+        Ok(rows)
     }
 }
 
-fn add(lines: &mut BTreeMap<u64, Line>, entry: &Entry, hour: i32) -> Result<(), &'static str> {
+fn add(lines: &mut OutputMap<Line>, entry: &Entry, hour: i32) -> Result<(), &'static str> {
     let line = lines.entry(entry.line).or_insert_with(|| Line {
         first_hour: hour,
         railway: entry.railway,
@@ -299,12 +308,6 @@ fn add(lines: &mut BTreeMap<u64, Line>, entry: &Entry, hour: i32) -> Result<(), 
         secondary.unknown_share = true;
     }
     Ok(())
-}
-
-fn unavailable(reason: &str) -> TableView {
-    TableView::Unavailable {
-        reason: reason.into(),
-    }
 }
 
 #[cfg(test)]

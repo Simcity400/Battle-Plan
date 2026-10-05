@@ -4,6 +4,7 @@ use crate::{
     spooling::table,
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
+use engine::allocation::{copy_vec, owned_vec};
 use engine::{Memory, saved_event_targets as native, walk::Outcome};
 use replay::{
     frame::TableView,
@@ -69,7 +70,9 @@ impl Captured {
             &self.rows.rows,
             |r| GlobalSavedEventTargetRow {
                 ordinal: r.ordinal,
-                name: self.text.first[r.name_start..r.name_start + r.name_len].to_vec(),
+                name: owned_vec(copy_vec(
+                    &self.text.first[r.name_start..r.name_start + r.name_len],
+                )),
                 state: r.state,
                 country: r.country,
                 character: r.character,

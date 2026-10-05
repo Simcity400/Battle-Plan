@@ -1,14 +1,20 @@
 //! Branch continuity and written-publication rules shared by output captures.
 use crate::{
     output_log::Drained,
+    spooling::unavailable,
     table_capture::{grow_capacity, grow_vec},
 };
-use engine::walk::Outcome;
+use engine::{
+    allocation::{collect_vec, default_vec, owned_vec},
+    walk::Outcome,
+};
 use replay::{
     BranchId,
     frame::{TableInput, TableView},
 };
-use std::{collections::BTreeMap, marker::PhantomData, ops::Range};
+use std::{collections::HashMap, io, marker::PhantomData, ops::Range};
+
+pub(super) type OutputMap<L> = HashMap<u64, L>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
@@ -35,7 +41,7 @@ pub struct Captured<O: Observation> {
 impl<O: Observation> Captured<O> {
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
-            entries: vec![O::Entry::default(); capacity.entries],
+            entries: owned_vec(default_vec(capacity.entries)),
             drained: None,
             observation: PhantomData,
         }
@@ -58,9 +64,7 @@ impl<O: Observation> Captured<O> {
         }]
     }
     pub fn tables(&self) -> [TableView; 1] {
-        [TableView::Unavailable {
-            reason: O::ASSEMBLED_BY_SPOOL.into(),
-        }]
+        [unavailable(O::ASSEMBLED_BY_SPOOL)]
     }
     /// Allocation-free hand-over at the clocked callback.
     pub fn drain(&mut self) {
@@ -90,17 +94,17 @@ pub struct Totals<L> {
     pub(super) state: State,
     pub(super) complete: bool,
     pub(super) census: Baseline,
-    pub(super) lines: BTreeMap<u64, L>,
+    pub(super) lines: OutputMap<L>,
     publication_written: bool,
 }
 impl<L> Default for Totals<L> {
     fn default() -> Self {
         Self {
             branch: None,
-            state: State::Withheld("no frame observed yet".into()),
+            state: State::Withheld("no frame observed yet"),
             complete: false,
             census: Baseline::default(),
-            lines: BTreeMap::new(),
+            lines: OutputMap::default(),
             publication_written: false,
         }
     }
@@ -137,15 +141,18 @@ impl<L> Totals<L> {
     pub(super) fn prepare_publication(
         &mut self,
         hour: i32,
-        handles: impl Iterator<Item = u64>,
+        handles: impl ExactSizeIterator<Item = u64>,
         ended: impl Fn(&L) -> bool,
-    ) {
-        self.census
-            .0
-            .get_or_insert_with(|| (hour, handles.collect()));
+    ) -> io::Result<()> {
+        if self.census.0.is_none() {
+            let mut baseline = collect_vec(handles)?;
+            baseline.sort_unstable();
+            self.census.0 = Some((hour, baseline));
+        }
         if std::mem::take(&mut self.publication_written) {
             self.lines.retain(|_, line| !ended(line));
         }
+        Ok(())
     }
 }
 #[derive(Debug, Default)]
@@ -164,7 +171,7 @@ pub enum State {
         next: u64,
         since_hour: i32,
     },
-    Withheld(String),
+    Withheld(&'static str),
 }
 pub struct Reasons {
     pub first: &'static str,
@@ -194,8 +201,8 @@ pub fn observe(
                 next: d.cursor,
                 since_hour: hour,
             },
-            Some(Err(reason)) => State::Withheld(reason.into()),
-            None => State::Withheld(reasons.first.into()),
+            Some(Err(reason)) => State::Withheld(reason),
+            None => State::Withheld(reasons.first),
         };
         *complete = true;
         return Progress::Restart;
@@ -215,7 +222,7 @@ pub fn observe(
         Some(Err(reason)) => reason,
         None => reasons.absent,
     };
-    *state = State::Withheld(reason.into());
+    *state = State::Withheld(reason);
     Progress::None
 }
 

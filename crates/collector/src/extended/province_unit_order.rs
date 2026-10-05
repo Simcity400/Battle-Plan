@@ -4,6 +4,7 @@ use crate::{
     spooling::table,
     table_capture::{Arena, CaptureRows},
 };
+use engine::allocation::{copy_vec, owned_vec};
 use engine::{Memory, cprovince, walk::Outcome};
 use replay::{
     frame::TableView,
@@ -116,8 +117,12 @@ impl Captured {
             &self.rows.rows,
             |r| ProvinceUnitOrderRow {
                 province: r.province,
-                mixed: self.arena.first[r.mixed[0]..r.mixed[0] + r.mixed[1]].to_vec(),
-                naval: self.arena.first[r.naval[0]..r.naval[0] + r.naval[1]].to_vec(),
+                mixed: owned_vec(copy_vec(
+                    &self.arena.first[r.mixed[0]..r.mixed[0] + r.mixed[1]],
+                )),
+                naval: owned_vec(copy_vec(
+                    &self.arena.first[r.naval[0]..r.naval[0] + r.naval[1]],
+                )),
             },
         )]
     }

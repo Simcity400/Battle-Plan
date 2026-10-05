@@ -5,6 +5,7 @@ use crate::{
     spooling::unavailable,
     table_capture::{Arena, CaptureRows},
 };
+use engine::allocation::{collect_vec, copy_vec, owned_vec, reserve};
 use engine::{Memory, ccountry_supply_system, supply_node, supply_train_entry, walk::Outcome};
 use replay::{
     frame::TableInput,
@@ -80,7 +81,9 @@ impl Part {
         Self {
             nodes: CaptureRows::new(c.nodes),
             paths: Arena::new(c.paths),
-            provinces: supply_node::ProvinceMemo::with_scratch(),
+            provinces: supply_node::ProvinceMemo::with_scratch()
+                .map_err(crate::allocation::io)
+                .unwrap_or_default(),
         }
     }
     pub(crate) fn vacant() -> Self {
@@ -113,7 +116,8 @@ impl Part {
         let _reads = crate::read_accounting::table(TableId::SupplyNodes);
         let begin = qpc();
         self.reset();
-        self.provinces.begin(memory, context.base, context.game_state);
+        self.provinces
+            .begin(memory, context.base, context.game_state);
         let nodes = supply_node::walk_part(
             memory,
             context.base,
@@ -292,7 +296,10 @@ impl Captured {
         for part in &self.parts {
             match part.nodes.outcome {
                 Outcome::Unavailable { reason } => {
-                    return [Outcome::Unavailable { reason }, self.trains.countries.outcome];
+                    return [
+                        Outcome::Unavailable { reason },
+                        self.trains.countries.outcome,
+                    ];
                 }
                 Outcome::Rows { len: rows } => len += rows,
                 Outcome::Truncated {
@@ -338,14 +345,21 @@ impl Captured {
         if let Outcome::Unavailable { reason } = outcome {
             return unavailable(reason).into();
         }
-        if self.parts.iter().any(|part| part.nodes.outcome.len() > part.nodes.rows.len()) {
+        if self
+            .parts
+            .iter()
+            .any(|part| part.nodes.outcome.len() > part.nodes.rows.len())
+        {
             return unavailable("walker row count exceeds allocated buffer").into();
         }
         // Parent provinces can belong to another country's companion. Preserve
         // those authenticated edges without imposing same-country closure.
         // Order only row references; the projection retains a permutation and
         // validates it against the current full keys on every refresh.
-        let mut rows = Vec::with_capacity(outcome.len());
+        let mut rows = Vec::new();
+        if reserve(&mut rows, outcome.len()).is_err() {
+            return unavailable("collector allocation failed").into();
+        }
         for part in &self.parts {
             let Some(source) = part.nodes.rows.get(..part.nodes.outcome.len()) else {
                 return unavailable("walker row count exceeds allocated buffer").into();
@@ -354,22 +368,33 @@ impl Captured {
                 return unavailable("supply paths exceed captured arena").into();
             };
             for row in source {
-                let Some(path) = row.route.start.checked_add(row.route.len)
-                    .and_then(|end| paths.get(row.route.start..end)) else {
+                let Some(path) = row
+                    .route
+                    .start
+                    .checked_add(row.route.len)
+                    .and_then(|end| paths.get(row.route.start..end))
+                else {
                     return unavailable("supply route exceeds captured path arena").into();
                 };
                 rows.push((row, path));
             }
         }
         project_table::<tables::SupplyNodes, _>(
-            projection, outcome, &rows,
+            projection,
+            outcome,
+            &rows,
             |(r, _)| (r.country as u128) << 32 | r.index as u128,
             |(r, path), previous| {
-                r.country == previous.country && r.index == previous.index
-                    && r.province == previous.province && r.kind == previous.kind
-                    && r.flag == previous.flag && r.available == previous.available
-                    && r.consumed == previous.consumed && r.parent == previous.parent
-                    && r.route.from == previous.route_from && r.route.to == previous.route_to
+                r.country == previous.country
+                    && r.index == previous.index
+                    && r.province == previous.province
+                    && r.kind == previous.kind
+                    && r.flag == previous.flag
+                    && r.available == previous.available
+                    && r.consumed == previous.consumed
+                    && r.parent == previous.parent
+                    && r.route.from == previous.route_from
+                    && r.route.to == previous.route_to
                     && r.route.break_after == previous.break_after
                     && *path == previous.path
             },
@@ -385,7 +410,7 @@ impl Captured {
                 route_from: r.route.from,
                 route_to: r.route.to,
                 break_after: r.route.break_after,
-                path: path.to_vec(),
+                path: owned_vec(copy_vec(path)),
             },
         )
     }
@@ -422,7 +447,9 @@ impl Captured {
                 .then_some((runs, values))
         };
         if rows.iter().any(|r| {
-            r.entries_start.checked_add(r.entries_len).is_none_or(|end| end > entries.len())
+            r.entries_start
+                .checked_add(r.entries_len)
+                .is_none_or(|end| end > entries.len())
                 || access_of(r).is_none()
         }) {
             return unavailable("train row exceeds captured payload arena").into();
@@ -441,44 +468,45 @@ impl Captured {
             let (runs, mut values) = access_of(r).expect("checked above");
             SparseBytes {
                 len: r.access_count,
-                runs: runs
-                    .iter()
-                    .map(|[start, len]| {
-                        let (head, rest) = values.split_at(*len as usize);
-                        values = rest;
-                        ByteRun {
-                            start: *start,
-                            bytes: head.to_vec(),
-                        }
-                    })
-                    .collect(),
+                runs: owned_vec(collect_vec(runs.iter().map(|[start, len]| {
+                    let (head, rest) = values.split_at(*len as usize);
+                    values = rest;
+                    ByteRun {
+                        start: *start,
+                        bytes: owned_vec(copy_vec(head)),
+                    }
+                }))),
             }
         };
         project_table::<tables::TrainInventory, _>(
-            projection, outcome, rows,
+            projection,
+            outcome,
+            rows,
             |r| r.country as u128,
             |r, previous| {
-                r.country == previous.country && r.node_count == previous.node_count
+                r.country == previous.country
+                    && r.node_count == previous.node_count
                     && r.entries_len == previous.allocations.len()
-                    && entries[r.entries_start..r.entries_start + r.entries_len].iter()
+                    && entries[r.entries_start..r.entries_start + r.entries_len]
+                        .iter()
                         .zip(&previous.allocations)
-                        .all(|(entry, prior)| entry.variant == prior.variant && entry.count == prior.count)
+                        .all(|(entry, prior)| {
+                            entry.variant == prior.variant && entry.count == prior.count
+                        })
                     && same_access(r, &previous.controller_access)
             },
-            |r| {
-                TrainInventoryRow {
-                    country: r.country,
-                    node_count: r.node_count,
-                    allocations: entries
-                        [r.entries_start..r.entries_start + r.entries_len]
+            |r| TrainInventoryRow {
+                country: r.country,
+                node_count: r.node_count,
+                allocations: owned_vec(collect_vec(
+                    entries[r.entries_start..r.entries_start + r.entries_len]
                         .iter()
                         .map(|e| TrainAllocation {
                             variant: e.variant,
                             count: e.count,
-                        })
-                        .collect(),
-                    controller_access: sparse_access(r),
-                }
+                        }),
+                )),
+                controller_access: sparse_access(r),
             },
         )
     }
@@ -489,7 +517,12 @@ mod tests {
     use super::*;
     fn projection_fixture() -> Captured {
         let capacities = Capacities {
-            nodes: 2, countries: 1, paths: 4, entries: 3, access: 3, access_runs: 2,
+            nodes: 2,
+            countries: 1,
+            paths: 4,
+            entries: 3,
+            access: 3,
+            access_runs: 2,
         };
         let mut capture = Captured::with_capacities(&capacities);
         // Exercise merging and reordering independently of production's
@@ -498,11 +531,20 @@ mod tests {
         for (part, country) in capture.parts.iter_mut().zip([3, 1, 4, 2]) {
             part.nodes.outcome = Outcome::Rows { len: 1 };
             part.nodes.rows[0] = supply_node::Row {
-                country, index: 0, province: country + 10, kind: u32::MAX,
-                flag: 255, available: i64::MIN, consumed: i64::MAX, parent: -1,
+                country,
+                index: 0,
+                province: country + 10,
+                kind: u32::MAX,
+                flag: 255,
+                available: i64::MIN,
+                consumed: i64::MAX,
+                parent: -1,
                 route: engine::supply_route::Row {
-                    from: 1, to: u16::MAX, break_after: 255,
-                    start: 0, len: 3,
+                    from: 1,
+                    to: u16::MAX,
+                    break_after: 255,
+                    start: 0,
+                    len: 3,
                 },
             };
             part.paths.first[..3].copy_from_slice(&[country, 0, country]);
@@ -512,13 +554,29 @@ mod tests {
         }
         capture.trains.countries.outcome = Outcome::Rows { len: 1 };
         capture.trains.countries.rows[0] = ccountry_supply_system::TrainRow {
-            country: 99, node_count: u32::MAX, entries_start: 0, entries_len: 3,
-            access_count: 3, runs_start: 0, runs_len: 1, values_start: 0, values_len: 2,
+            country: 99,
+            node_count: u32::MAX,
+            entries_start: 0,
+            entries_len: 3,
+            access_count: 3,
+            runs_start: 0,
+            runs_len: 1,
+            values_start: 0,
+            values_len: 2,
         };
         capture.trains.entries.first.copy_from_slice(&[
-            supply_train_entry::Row { variant: 0, count: i32::MIN },
-            supply_train_entry::Row { variant: u64::MAX, count: i32::MAX },
-            supply_train_entry::Row { variant: 0, count: 0 },
+            supply_train_entry::Row {
+                variant: 0,
+                count: i32::MIN,
+            },
+            supply_train_entry::Row {
+                variant: u64::MAX,
+                count: i32::MAX,
+            },
+            supply_train_entry::Row {
+                variant: 0,
+                count: 0,
+            },
         ]);
         capture.trains.entries.len = 3;
         // The native array [0, 255, 128]: one run of two nonzero bytes at 1.
@@ -536,7 +594,9 @@ mod tests {
 
         let frame = |branch, hour, inputs: [TableInput; N]| {
             let mut frame = FrameInput {
-                branch, hour, metrics: Metrics::default(),
+                branch,
+                hour,
+                metrics: Metrics::default(),
                 tables: std::array::from_fn(|_| unavailable("fixture table").into()),
             };
             for (table, input) in TABLES.into_iter().zip(inputs) {
@@ -548,14 +608,14 @@ mod tests {
         for change in 0..38 {
             let mut current = projection_fixture();
             match change {
-                0 => {},
+                0 => {}
                 1 => current.parts.swap(0, 1),
                 2 => {
                     let part = &mut current.parts[0];
                     part.paths.first.copy_within(0..3, 1);
                     part.paths.len = 4;
                     part.nodes.rows[0].route.start = 1;
-                },
+                }
                 3 => current.parts[0].nodes.rows[0].country ^= 16,
                 4 => current.parts[0].nodes.rows[0].index ^= 1,
                 5 => current.parts[0].nodes.rows[0].province ^= 1,
@@ -579,16 +639,32 @@ mod tests {
                 23 => current.trains.countries.rows[0].access_count += 1,
                 24 => current.trains.access.first[1] ^= 64,
                 25 => current.trains.entries.first.swap(0, 1),
-                26 => current.parts[0].nodes.outcome = Outcome::Unavailable { reason: "node fault" },
-                27 => current.trains.countries.outcome = Outcome::Truncated { len: 1, unread_rows: 1 },
-                28 => current.parts[0].nodes.outcome = Outcome::Truncated { len: 1, unread_rows: 7 },
+                26 => {
+                    current.parts[0].nodes.outcome = Outcome::Unavailable {
+                        reason: "node fault",
+                    }
+                }
+                27 => {
+                    current.trains.countries.outcome = Outcome::Truncated {
+                        len: 1,
+                        unread_rows: 1,
+                    }
+                }
+                28 => {
+                    current.parts[0].nodes.outcome = Outcome::Truncated {
+                        len: 1,
+                        unread_rows: 7,
+                    }
+                }
                 29 => current.parts[0].nodes.rows[0].route.start = usize::MAX,
                 30 => current.trains.countries.rows[0].entries_start = usize::MAX,
-                31 => current.parts[1].nodes.rows[0].country = current.parts[0].nodes.rows[0].country,
+                31 => {
+                    current.parts[1].nodes.rows[0].country = current.parts[0].nodes.rows[0].country
+                }
                 32 => current.parts[0].nodes.outcome = Outcome::Rows { len: 3 },
                 33 => current.parts[0].paths.len = 2,
                 34 => current.trains.entries.len = 2,
-                35..=37 => {},
+                35..=37 => {}
                 _ => unreachable!(),
             }
             let branch = if change == 35 { 2 } else { 1 };
@@ -605,7 +681,11 @@ mod tests {
             projection_fixture().table_inputs(Some(&mut projection));
             let inputs = current.table_inputs(Some(&mut projection));
             if change < 3 {
-                assert!(inputs.iter().all(|input| matches!(input, TableInput::ComparedEqual(_))));
+                assert!(
+                    inputs
+                        .iter()
+                        .all(|input| matches!(input, TableInput::ComparedEqual(_)))
+                );
             }
             if change == 26 {
                 assert!(matches!(inputs[1], TableInput::ComparedEqual(_)));
@@ -614,8 +694,12 @@ mod tests {
                 assert!(matches!(inputs[0], TableInput::ComparedEqual(_)));
             }
             assert_eq!(
-                projected.encode_input(frame(branch, hour, inputs), force).unwrap(),
-                reference.encode_input(frame(branch, hour, current.table_inputs(None)), force).unwrap(),
+                projected
+                    .encode_input(frame(branch, hour, inputs), force)
+                    .unwrap(),
+                reference
+                    .encode_input(frame(branch, hour, current.table_inputs(None)), force)
+                    .unwrap(),
                 "change {change}",
             );
         }
@@ -802,9 +886,18 @@ mod tests {
                     .iter()
                     .all(|t| matches!(t, TableView::Unavailable { .. }))
             );
-            assert_eq!((owned.parts[0].paths.len, owned.parts[0].paths.required), (1, 9));
-            assert_eq!((owned.trains.entries.len, owned.trains.entries.required), (1, 6));
-            assert_eq!((owned.trains.access.len, owned.trains.access.required), (2, 2));
+            assert_eq!(
+                (owned.parts[0].paths.len, owned.parts[0].paths.required),
+                (1, 9)
+            );
+            assert_eq!(
+                (owned.trains.entries.len, owned.trains.entries.required),
+                (1, 6)
+            );
+            assert_eq!(
+                (owned.trains.access.len, owned.trains.access.required),
+                (2, 2)
+            );
             frame = owned;
             frame.grow(&mut capacity);
             expected.grow(&mut expected_capacity);
@@ -867,9 +960,18 @@ mod tests {
                     .iter()
                     .all(|t| matches!(t, TableView::Unavailable { .. }))
             );
-            assert_eq!((owned.parts[0].paths.len, owned.parts[0].paths.required), (0, 0));
-            assert_eq!((owned.trains.entries.len, owned.trains.entries.required), (0, 0));
-            assert_eq!((owned.trains.access.len, owned.trains.access.required), (0, 0));
+            assert_eq!(
+                (owned.parts[0].paths.len, owned.parts[0].paths.required),
+                (0, 0)
+            );
+            assert_eq!(
+                (owned.trains.entries.len, owned.trains.entries.required),
+                (0, 0)
+            );
+            assert_eq!(
+                (owned.trains.access.len, owned.trains.access.required),
+                (0, 0)
+            );
             assert_eq!(allocations(&owned), before);
         }
     }

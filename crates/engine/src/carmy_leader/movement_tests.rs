@@ -193,7 +193,7 @@ fn primary_prefix_rejects_changed_headers_and_preserves_owned_byte_accounting_on
         Err("movement assigned members changed")
     );
     cache.clear();
-    cache.grow(16, 8);
+    cache.grow(16, 8).unwrap();
     let allocated = cache.allocated_bytes();
     assert_eq!(
         allocated,
@@ -202,7 +202,7 @@ fn primary_prefix_rejects_changed_headers_and_preserves_owned_byte_accounting_on
             + cache.chunks.capacity() * std::mem::size_of::<PrimaryChunk>()
             + cache.index.capacity() * std::mem::size_of::<u32>()
     );
-    cache.grow(1, 1);
+    cache.grow(1, 1).unwrap();
     assert_eq!(cache.allocated_bytes(), allocated);
     assert_eq!(cache.resolve(&source, 0, member), Ok(0));
     cache.clear();

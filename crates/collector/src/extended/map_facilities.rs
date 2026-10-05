@@ -2,9 +2,10 @@
 //! floating-harbour deployment records and the special-facility flags of program provinces.
 use crate::{
     sampling::qpc,
-    spooling::{table, table_iter},
+    spooling::{table, table_iter, unavailable},
     table_capture::CaptureRows,
 };
+use engine::allocation::collect_vec;
 use engine::{Memory, ccountry_supply_system, special_facility_flags, walk::Outcome};
 use replay::{
     frame::TableView,
@@ -12,7 +13,10 @@ use replay::{
 };
 
 pub const N: usize = 2;
-pub const TABLES: [TableId; N] = [TableId::FloatingHarborDeployments, TableId::FacilityMapFlags];
+pub const TABLES: [TableId; N] = [
+    TableId::FloatingHarborDeployments,
+    TableId::FacilityMapFlags,
+];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -94,14 +98,23 @@ impl Captured {
     pub fn tables(&self) -> [TableView; N] {
         let [deployments, facilities] = self.outcomes();
         // Two programs can name one province; its flag is one byte, so the first reading stands.
-        let mut flagged: Vec<&special_facility_flags::Row> = self
-            .facilities
-            .rows
-            .get(..facilities.len())
-            .unwrap_or_default()
-            .iter()
-            .collect();
-        flagged.sort_by_key(|row| row.province);
+        let mut flagged: Vec<&special_facility_flags::Row> = match collect_vec(
+            self.facilities
+                .rows
+                .get(..facilities.len())
+                .unwrap_or_default()
+                .iter(),
+        ) {
+            Ok(flagged) => flagged,
+            Err(_) => {
+                return [
+                    unavailable("collector allocation failed"),
+                    unavailable("collector allocation failed"),
+                ];
+            }
+        };
+        // Owned row addresses preserve the first captured occurrence without sort scratch.
+        flagged.sort_unstable_by_key(|row| (row.province, std::ptr::from_ref(*row) as usize));
         flagged.dedup_by_key(|row| row.province);
         let facilities = match facilities {
             Outcome::Rows { .. } => Outcome::Rows { len: flagged.len() },
@@ -168,5 +181,29 @@ mod tests {
         );
         capture.facilities.outcome = Outcome::Unavailable { reason: "test" };
         assert!(matches!(capture.tables()[1], TableView::Unavailable { .. }));
+    }
+    #[test]
+    fn repeated_facility_province_keeps_first_captured_flag() {
+        let count = 256;
+        let mut captured = Captured::with_capacities(&Capacities {
+            deployments: 0,
+            facilities: count,
+        });
+        for (index, row) in captured.facilities.rows.iter_mut().enumerate() {
+            *row = special_facility_flags::Row {
+                province: if index % 3 == 0 { 7 } else { 3 },
+                flag: index as u8,
+            };
+        }
+        captured.facilities.outcome = Outcome::Rows { len: count };
+        let TableView::Complete(TableRows::FacilityMapFlags(rows)) = &captured.tables()[1] else {
+            panic!("facility flags unavailable");
+        };
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.province, row.flag))
+                .collect::<Vec<_>>(),
+            [(3, 1), (7, 0)]
+        );
     }
 }

@@ -211,7 +211,7 @@ mod tests {
     }
 
     fn snapshot(bytes: &[u8], cells: usize) -> Arc<Cache> {
-        let mut storage = Arc::new(Cache::with_capacity(cells));
+        let mut storage = Arc::new(Cache::try_with_capacity(cells).unwrap());
         Cache::prepare_shared(&mut storage, &SliceMemory { base: 0, bytes }, 0, GS).unwrap()
     }
 

@@ -146,11 +146,21 @@ impl OwnedDetails {
             capacities[10],
         ];
         Self {
-            equipment: vec![cequipment_variant_pool::DivisionRow::default(); required[0]],
-            groups: vec![carmy_upgrades_requests::Row::default(); required[1]],
-            requests: vec![army_upgrade_request_row::Row::default(); required[2]],
-            deliveries: vec![cupgrade_delivery::Row::default(); required[3]],
-            produced: vec![cupgrade_delivery::ProducedRow::default(); required[4]],
+            equipment: engine::allocation::owned_vec(engine::allocation::default_vec::<
+                cequipment_variant_pool::DivisionRow,
+            >(required[0])),
+            groups: engine::allocation::owned_vec(engine::allocation::default_vec::<
+                carmy_upgrades_requests::Row,
+            >(required[1])),
+            requests: engine::allocation::owned_vec(engine::allocation::default_vec::<
+                army_upgrade_request_row::Row,
+            >(required[2])),
+            deliveries: engine::allocation::owned_vec(engine::allocation::default_vec::<
+                cupgrade_delivery::Row,
+            >(required[3])),
+            produced: engine::allocation::owned_vec(engine::allocation::default_vec::<
+                cupgrade_delivery::ProducedRow,
+            >(required[4])),
             outcomes: [EMPTY; 5],
             acquired_bytes: [0; 5],
             required,

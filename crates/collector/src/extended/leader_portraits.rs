@@ -4,6 +4,7 @@ use crate::{
     sampling::qpc,
     table_capture::CaptureRows,
 };
+use engine::allocation::{copy_vec, owned_vec};
 use engine::{Memory, corders_group::Root, cunit_leader, walk::Outcome};
 use replay::{
     frame::TableInput,
@@ -36,7 +37,8 @@ pub struct Captured {
 }
 impl Captured {
     pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
-        self.rows.fail(super::failed_capture(TABLES[0], hour, force_full, reason));
+        self.rows
+            .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
         self.sources.fail(self.rows.outcome);
     }
 
@@ -123,9 +125,9 @@ impl Captured {
             |r| LeaderPortraitRow {
                 leader: r.leader,
                 character: r.character,
-                portrait_c0: r.strings[0].as_bytes().to_vec(),
-                portrait_e0: r.strings[1].as_bytes().to_vec(),
-                portrait_100: r.strings[2].as_bytes().to_vec(),
+                portrait_c0: owned_vec(copy_vec(r.strings[0].as_bytes())),
+                portrait_e0: owned_vec(copy_vec(r.strings[1].as_bytes())),
+                portrait_100: owned_vec(copy_vec(r.strings[2].as_bytes())),
             },
         )]
     }
@@ -204,7 +206,10 @@ mod tests {
             &memory,
             0,
             &[],
-            Outcome::Truncated { len: 0, unread_rows: 2 },
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 2,
+            },
         );
         assert!(matches!(capture.outcomes()[0], Outcome::Unavailable { .. }));
         assert_eq!(capture.sources(), None);

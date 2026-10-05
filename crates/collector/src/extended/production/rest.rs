@@ -72,7 +72,7 @@ impl ProductionRestJob {
             // above that so steady state never overflows.
             log,
             game_state: 0,
-            census: Vec::with_capacity(crate::country_scale::census_rows(512)),
+            census: owned_vec(vec(crate::country_scale::census_rows(512))),
             capacity_charge: crate::raw_memory::Charge::default(),
         };
         job.update_capacity_charge();

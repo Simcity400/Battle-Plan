@@ -27,9 +27,11 @@ use crate::rows::{
     StateDynamicModifierRow, StateResourceInputRow, StateResourceRow, StockpileArchetypeRow,
     TableId, TableRows,
 };
+use crate::{codec::invalid_static as invalid, rows::RowCodec};
+use engine::allocation;
 use std::io;
 
-pub trait SlicedRow: Clone {
+pub trait SlicedRow: RowCodec {
     /// The slice owner: a native country ID, canonical country slot or native
     /// state ID. It must be
     /// the most significant part of the row key, so one owner's rows are
@@ -159,14 +161,7 @@ macro_rules! dispatch {
             (TableRows::NavalMissionCommanders($old), TableRows::NavalMissionCommanders($new)) => {
                 Ok(TableRows::NavalMissionCommanders($body?))
             }
-            (previous, fresh) => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "cannot merge {:?} rows into {:?}",
-                    fresh.table(),
-                    previous.table()
-                ),
-            )),
+            _ => Err(invalid("cannot merge different sliced table types")),
         }
     };
 }
@@ -187,23 +182,22 @@ pub fn merge_slice(
         (previous, &fresh)
     {
         if new.windows(2).any(|pair| pair[0].key() >= pair[1].key()) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "keyed sliced read is not in key order",
-            ));
+            return Err(invalid("keyed sliced read is not in key order"));
         }
-        let mut rows = Vec::with_capacity(old.len().max(new.len()));
+        let mut rows = allocation::vec(allocation::add(old.len(), new.len())?)?;
         let mut old = old.iter().peekable();
         let mut new = new.iter().peekable();
         loop {
             match (old.peek(), new.peek()) {
-                (Some(a), Some(b)) if a.key() < b.key() => rows.push(old.next().unwrap().clone()),
+                (Some(a), Some(b)) if a.key() < b.key() => {
+                    rows.push(RowCodec::try_clone(old.next().unwrap())?)
+                }
                 (Some(a), Some(b)) if a.key() == b.key() => {
                     old.next();
-                    rows.push(new.next().unwrap().clone());
+                    rows.push(RowCodec::try_clone(new.next().unwrap())?);
                 }
-                (_, Some(_)) => rows.push(new.next().unwrap().clone()),
-                (Some(_), None) => rows.push(old.next().unwrap().clone()),
+                (_, Some(_)) => rows.push(RowCodec::try_clone(new.next().unwrap())?),
+                (Some(_), None) => rows.push(RowCodec::try_clone(old.next().unwrap())?),
                 (None, None) => return Ok(TableRows::TechnologyDefinitions(rows)),
             }
         }
@@ -218,12 +212,11 @@ pub fn merge_slice(
         if new.iter().any(|row| !read(row.owner()))
             || new.windows(2).any(|pair| key(&pair[0]) >= key(&pair[1]))
         {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
+            return Err(invalid(
                 "sliced read holds an unread owner's row or is not in key order",
             ));
         }
-        let mut rows = Vec::with_capacity(old.len() + new.len());
+        let mut rows = allocation::vec(allocation::add(old.len(), new.len())?)?;
         let mut old = old
             .iter()
             .filter(|row| !read(row.owner()) && live(row.owner()))
@@ -231,15 +224,14 @@ pub fn merge_slice(
         let mut new = new.into_iter().peekable();
         loop {
             match (old.peek(), new.peek()) {
-                (Some(a), Some(b)) if key(a) < key(b) => rows.push(old.next().unwrap().clone()),
+                (Some(a), Some(b)) if key(a) < key(b) => {
+                    rows.push(RowCodec::try_clone(old.next().unwrap())?)
+                }
                 (Some(a), Some(b)) if key(a) == key(b) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "sliced read repeats a kept row's key",
-                    ));
+                    return Err(invalid("sliced read repeats a kept row's key"));
                 }
                 (_, Some(_)) => rows.push(new.next().unwrap()),
-                (Some(_), None) => rows.push(old.next().unwrap().clone()),
+                (Some(_), None) => rows.push(RowCodec::try_clone(old.next().unwrap())?),
                 (None, None) => return Ok(rows),
             }
         }
@@ -279,10 +271,16 @@ pub fn replaces_whole(fresh: &TableRows) -> bool {
 
 /// The distinct owners of a sliced table's rows, ascending.
 pub fn owners(rows: &TableRows) -> Vec<u32> {
-    fn collect<R: SlicedRow>(rows: &[R]) -> Vec<u32> {
-        let mut owners: Vec<u32> = rows.iter().map(SlicedRow::owner).collect();
+    try_owners(rows).expect("sliced owner allocation failed")
+}
+
+/// Checked owner enumeration for collector-owned threads.
+pub fn try_owners(rows: &TableRows) -> io::Result<Vec<u32>> {
+    fn collect<R: SlicedRow>(rows: &[R]) -> io::Result<Vec<u32>> {
+        let mut owners = allocation::vec(rows.len())?;
+        owners.extend(rows.iter().map(SlicedRow::owner));
         owners.dedup();
-        owners
+        Ok(owners)
     }
     match rows {
         TableRows::ResearchTechnologies(rows) => collect(rows),
@@ -307,7 +305,7 @@ pub fn owners(rows: &TableRows) -> Vec<u32> {
         TableRows::CountryStabilityLines(rows) => collect(rows),
         TableRows::NavalMissionCountries(rows) => collect(rows),
         TableRows::NavalMissionCommanders(rows) => collect(rows),
-        _ => Vec::new(),
+        _ => Ok(Vec::new()),
     }
 }
 

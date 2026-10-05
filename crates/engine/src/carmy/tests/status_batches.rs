@@ -24,6 +24,7 @@ fn packet(manpower: usize) -> carmy::StatusPacket {
         manpower,
         ..carmy::StatusCapacities::new(2)
     })
+    .unwrap()
 }
 
 #[test]

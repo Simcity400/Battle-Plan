@@ -6,8 +6,23 @@ pub fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
+/// Collector error paths cannot allocate even for a static diagnostic.
+pub fn invalid_static(message: &'static str) -> io::Error {
+    if engine::allocation::capture_active() {
+        io::Error::from(io::ErrorKind::InvalidData)
+    } else {
+        invalid(message)
+    }
+}
+
 pub fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> io::Result<()> {
-    let length = u32::try_from(bytes.len()).map_err(|_| invalid("byte field exceeds u32"))?;
+    let length =
+        u32::try_from(bytes.len()).map_err(|_| invalid_static("byte field exceeds u32"))?;
+    let additional = bytes
+        .len()
+        .checked_add(4)
+        .ok_or_else(engine::allocation::oom)?;
+    engine::allocation::reserve(out, additional)?;
     out.extend_from_slice(&length.to_le_bytes());
     out.extend_from_slice(bytes);
     Ok(())
@@ -49,7 +64,7 @@ impl<'a> Decoder<'a> {
     }
     pub fn take(&mut self, length: usize) -> io::Result<&'a [u8]> {
         if length > self.bytes.len() {
-            return Err(invalid("truncated field"));
+            return Err(invalid_static("truncated field"));
         }
         let (head, tail) = self.bytes.split_at(length);
         self.bytes = tail;
@@ -59,7 +74,7 @@ impl<'a> Decoder<'a> {
         if self.bytes.is_empty() {
             Ok(())
         } else {
-            Err(invalid("trailing bytes"))
+            Err(invalid_static("trailing bytes"))
         }
     }
     number!(u8, u8);
@@ -75,40 +90,42 @@ impl<'a> Decoder<'a> {
             let byte = self.u8()?;
             let payload = byte & 0x7f;
             if index == 18 && (payload > 3 || byte & 0x80 != 0) {
-                return Err(invalid("varint exceeds u128"));
+                return Err(invalid_static("varint exceeds u128"));
             }
             value |= u128::from(payload) << (index * 7);
             if byte & 0x80 == 0 {
                 if index != 0 && payload == 0 {
-                    return Err(invalid("noncanonical overlong varint"));
+                    return Err(invalid_static("noncanonical overlong varint"));
                 }
                 return Ok(value);
             }
         }
-        Err(invalid("varint exceeds u128"))
+        Err(invalid_static("varint exceeds u128"))
     }
 
     pub fn bool(&mut self) -> io::Result<bool> {
         match self.u8()? {
             0 => Ok(false),
             1 => Ok(true),
-            _ => Err(invalid("invalid boolean")),
+            _ => Err(invalid_static("invalid boolean")),
         }
     }
     /// Bound collection allocation by the bytes actually present before allocating.
     pub fn count(&mut self, minimum_item_bytes: usize) -> io::Result<usize> {
         let n = self.u32()? as usize;
         if minimum_item_bytes == 0 || n > self.remaining() / minimum_item_bytes {
-            return Err(invalid("collection length exceeds remaining payload"));
+            return Err(invalid_static(
+                "collection length exceeds remaining payload",
+            ));
         }
         Ok(n)
     }
     pub fn bytes(&mut self) -> io::Result<Vec<u8>> {
         let n = self.u32()? as usize;
-        Ok(self.take(n)?.to_vec())
+        engine::allocation::copy_vec(self.take(n)?)
     }
     pub fn string(&mut self) -> io::Result<String> {
-        String::from_utf8(self.bytes()?).map_err(|_| invalid("invalid UTF-8 string"))
+        String::from_utf8(self.bytes()?).map_err(|_| invalid_static("invalid UTF-8 string"))
     }
 }
 

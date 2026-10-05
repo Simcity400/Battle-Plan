@@ -11,6 +11,84 @@ use std::{
 };
 
 #[test]
+fn metadata_partial_marker_keeps_the_failure_separate_from_known_and_unknown_hour_gaps() {
+    use replay::{
+        branches::Gap,
+        container::SeekResult,
+        spool::{ControlRecord, Record},
+    };
+    for failed_hour in [Some(1017), None] {
+        let mut records = records(1, vec![source(1, 1000, Some(1))]);
+        if let Some(hour) = failed_hour {
+            records.push(Record::Gap(Gap {
+                branch: 1,
+                first_hour: hour,
+                last_hour: hour,
+                reason: "collector allocation failed".into(),
+            }));
+        }
+        records.push(Record::Control(ControlRecord::Partial {
+            session: 1,
+            reason: "collector allocation failed".into(),
+            failed_hour,
+        }));
+        records.push(Record::Control(ControlRecord::Detach {
+            session: 1,
+            last_hour: Some(1000),
+        }));
+        let replay = Arc::new(Replay::from_records(CAMPAIGN.into(), &[records]).unwrap());
+        let metadata = crate::metadata::read(
+            &replay,
+            Path::new("partial.battleplan"),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(
+            metadata.partial,
+            Some(crate::PartialRecording {
+                session_id: "1".into(),
+                reason: "collector allocation failed".into(),
+                failed_hour,
+            })
+        );
+        assert_eq!(
+            metadata.branches[0].gaps.len(),
+            usize::from(failed_hour.is_some())
+        );
+        assert_eq!(metadata.branches[0].last_hour, failed_hour.unwrap_or(1000));
+        assert!(matches!(
+            replay.seek(1, 1000).unwrap(),
+            SeekResult::Frame(_)
+        ));
+        if failed_hour.is_some() {
+            assert_eq!(metadata.branches[0].gaps[0].first_hour, 1017);
+            assert_eq!(
+                metadata.branches[0].gaps[0].reason,
+                "collector allocation failed"
+            );
+            assert!(matches!(
+                replay.seek(1, 1017).unwrap(),
+                SeekResult::Gap { .. }
+            ));
+        }
+    }
+    let replay = Arc::new(
+        Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(1, vec![source(1, 1000, Some(1))])],
+        )
+        .unwrap(),
+    );
+    let metadata = crate::metadata::read(
+        &replay,
+        Path::new("healthy.battleplan"),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(metadata.partial, None);
+}
+
+#[test]
 fn metadata_skips_an_unavailable_first_census_warns_on_bad_links_and_stops_when_cancelled() {
     let mut first = source(1, 100, Some(1));
     *first.tables[TableId::Countries.index()] = TableView::Unavailable {

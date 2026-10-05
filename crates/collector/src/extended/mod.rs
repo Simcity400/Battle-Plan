@@ -10,14 +10,18 @@ use crate::{
     table_capture::{CaptureRows, grow_capacity, grow_vec},
 };
 use engine::{
-    Memory, cair_wing, carmy, cequipment_variant, cequipment_variant_pool::DivisionSource,
+    Memory,
+    allocation::{copy_vec, filled, owned_vec},
+    cair_wing, carmy, cequipment_variant,
+    cequipment_variant_pool::DivisionSource,
     walk::Outcome,
 };
 use replay::{
     frame::{TABLE_COUNT, TableInput},
     rows::TableId,
 };
-use std::{mem::size_of, sync::Arc};
+use std::mem::size_of;
+use std::sync::Arc;
 
 #[cfg(test)]
 pub(crate) mod bench_world;
@@ -44,7 +48,23 @@ const DIVISION_SOURCE_TABLES: [TableId; 10] = [
     TableId::DivisionEtaInputs,
     TableId::ArmyIconInputs,
 ];
-pub type ReadGroup = (&'static str, TableId, Vec<TableId>);
+const DIVISION_GROUP_MEMBERS: [TableId; DIVISION_SOURCE_TABLES.len() + 1] = {
+    let mut members = [TableId::Divisions; DIVISION_SOURCE_TABLES.len() + 1];
+    let mut index = 0;
+    while index < DIVISION_SOURCE_TABLES.len() {
+        members[index + 1] = DIVISION_SOURCE_TABLES[index];
+        index += 1;
+    }
+    members
+};
+pub type ReadGroup = (&'static str, TableId, &'static [TableId]);
+#[derive(Clone, Copy)]
+struct ReadGroupData {
+    name: &'static str,
+    anchor: TableId,
+    members: [TableId; TABLE_COUNT],
+    len: usize,
+}
 
 /// One hour's raid reads that were torn or refused (`status.json`
 /// `raid_reads`).
@@ -195,20 +215,20 @@ macro_rules! packs {
                     ship_models_report: None,
                     ordinary_ticks: None,
                     ordinary_failure: None,
-                    ordinary_spare: Some(OrdinaryPacks::spare()),
+                    ordinary_spare: OrdinaryPacks::spare(),
                     slow_ticks: None,
-                    slow_spare: Some(SlowPacks::spare()),
+                    slow_spare: SlowPacks::spare(),
                     raid_state_ticks: None,
-                    raid_state_spare: Some(RaidStatePacks::spare()),
+                    raid_state_spare: RaidStatePacks::spare(),
                     raid_launch_ticks: None,
-                    raid_launch_spare: Some(RaidLaunchPacks::spare()),
+                    raid_launch_spare: RaidLaunchPacks::spare(),
                     raid_targets_ticks: None,
-                    raid_targets_spare: Some(RaidTargetPacks::spare()),
+                    raid_targets_spare: RaidTargetPacks::spare(),
                     late_ticks: None,
-                    late_spare: Some(LatePacks::spare()),
-                    missions_spare: Some(Box::new(air::Captured::vacant())),
+                    late_spare: LatePacks::spare(),
+                    missions_spare: if crate::allocation::failed() { None } else { Some(Box::new(air::Captured::vacant())) },
                     gated_ticks: None,
-                    gated_spare: Some(GatedPacks::spare()),
+                    gated_spare: GatedPacks::spare(),
                     registry: Registry::new(capacity.variant_registry),
                     air_root: None, overhead: [0; TABLE_COUNT],
                 };
@@ -239,15 +259,16 @@ macro_rules! packs {
             }
             /// Spool-thread metadata for this buffer's native row and scratch
             /// allocations. Excludes core tables, encoded frames and queues.
-            pub fn allocated_by_pack(&self) -> Vec<(&'static str, usize)> {
-                vec![
+            pub fn allocated_by_pack(&self) -> std::io::Result<Vec<(&'static str, usize)>> {
+                copy_vec(&[
                     $((stringify!($pack), self.$pack.allocated_bytes()),)+
                     ("division_sources", self.divisions.allocated_bytes()),
                     ("variant_registry", self.registry.allocated_bytes()),
                     ("acquisition_spares", self.spare_bytes()),
-                ]
+                ])
             }
             pub fn grow(&mut self, capacity: &mut Capacities) {
+                let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
                 $(self.$pack.grow(&mut capacity.$pack);)+
                 self.divisions.grow(&mut capacity.division_sources);
                 self.division_presentation.reserve_sources(capacity.division_sources);
@@ -259,11 +280,14 @@ macro_rules! packs {
                 destination: &mut [TableInput; TABLE_COUNT],
                 conversion: &mut crate::spooling::SpoolConversion<'_, '_>,
             ) -> [i64; PACK_NAMES.len()] {
+                let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
                 let mut costs = [0; PACK_NAMES.len()];
                 let mut slots = costs.iter_mut();
                 $(let started = qpc();
+                if crate::allocation::failed() { return costs; }
                 for (id, view) in $pack::TABLES.into_iter().zip(spool_inputs!($pack, self.$pack, conversion)) { destination[id.index()] = view; }
                 *slots.next().unwrap() = qpc() - started;)+
+                if crate::allocation::failed() { return costs; }
                 if let Some(reason) = self.ordinary_failure {
                     for &id in OrdinaryPacks::TABLES.iter().flat_map(|tables| tables.iter()) {
                         destination[id.index()] = TableInput::Sampled(replay::frame::TableView::Unavailable { reason: reason.into() });
@@ -282,27 +306,68 @@ macro_rules! packs {
                 output
             }
         }
-        /// Off-thread metadata. Sum members, including physically shared work
-        /// charged to a pack's anchor, rather than counting that work twice.
-        pub fn read_groups() -> Vec<ReadGroup> {
-            let mut groups = Vec::new();
-            $(for &(name, anchor, members) in $pack::READ_GROUPS {
-                // This graph also consumes the shared division census, so
-                // report it once in the combined source group below.
-                if $pack::TABLES[anchor] == TableId::ArmyUpgradeGroups { continue; }
-                groups.push((name, $pack::TABLES[anchor], members.iter().map(|&index| $pack::TABLES[index]).collect()));
+        const READ_GROUP_COUNT: usize = {
+            let mut count = 5;
+            $(let mut group = 0;
+            while group < $pack::READ_GROUPS.len() {
+                if $pack::TABLES[$pack::READ_GROUPS[group].1].index() != TableId::ArmyUpgradeGroups.index() { count += 1; }
+                group += 1;
             })+
-            groups.push(("divisions, coverage counts, equipment, upgrades, movement, counter status and ETA inputs", TableId::Divisions,
-                std::iter::once(TableId::Divisions).chain(DIVISION_SOURCE_TABLES).collect()));
-            groups.push(("country census, appearance and supply trains", TableId::Countries,
-                vec![TableId::Countries, TableId::CountryAppearance, TableId::SupplyNodes, TableId::TrainInventory]));
-            groups.push(("ship census and model operands", TableId::Ships,
-                vec![TableId::Ships, TableId::ShipModels]));
-            groups.push(("states and hourly state flags", TableId::States,
-                vec![TableId::States, TableId::StateFlags]));
-            groups.push(("army order census, plan operands, group plans, front sections and invasion preparations", TableId::ArmyOrders,
-                vec![TableId::ArmyOrders, TableId::ArmyOrderPlans, TableId::OrdersGroupPlans, TableId::Fronts, TableId::InvasionPreparations]));
+            count
+        };
+        static READ_GROUP_DATA: [ReadGroupData; READ_GROUP_COUNT] = {
+            let empty = ReadGroupData { name: "", anchor: TableId::LexicalTokens,
+                members: [TableId::LexicalTokens; TABLE_COUNT], len: 0 };
+            let mut groups = [empty; READ_GROUP_COUNT];
+            let mut next = 0;
+            $(let mut group = 0;
+            while group < $pack::READ_GROUPS.len() {
+                let (name, anchor, members) = $pack::READ_GROUPS[group];
+                // Count the shared division graph only in its combined source group.
+                if $pack::TABLES[anchor].index() != TableId::ArmyUpgradeGroups.index() {
+                    let mut data = empty;
+                    data.name = name;
+                    data.anchor = $pack::TABLES[anchor];
+                    data.len = members.len();
+                    let mut member = 0;
+                    while member < members.len() {
+                        data.members[member] = $pack::TABLES[members[member]];
+                        member += 1;
+                    }
+                    groups[next] = data;
+                    next += 1;
+                }
+                group += 1;
+            })+
+            let extra: [(&str, TableId, &[TableId]); 5] = [
+                ("divisions, coverage counts, equipment, upgrades, movement, counter status and ETA inputs", TableId::Divisions,
+                    &DIVISION_GROUP_MEMBERS),
+                ("country census, appearance and supply trains", TableId::Countries,
+                    &[TableId::Countries, TableId::CountryAppearance, TableId::SupplyNodes, TableId::TrainInventory]),
+                ("ship census and model operands", TableId::Ships, &[TableId::Ships, TableId::ShipModels]),
+                ("states and hourly state flags", TableId::States, &[TableId::States, TableId::StateFlags]),
+                ("army order census, plan operands, group plans, front sections and invasion preparations", TableId::ArmyOrders,
+                    &[TableId::ArmyOrders, TableId::ArmyOrderPlans, TableId::OrdersGroupPlans, TableId::Fronts, TableId::InvasionPreparations]),
+            ];
+            let mut group = 0;
+            while group < extra.len() {
+                let (name, anchor, members) = extra[group];
+                let mut data = empty;
+                data.name = name;
+                data.anchor = anchor;
+                data.len = members.len();
+                let mut member = 0;
+                while member < members.len() { data.members[member] = members[member]; member += 1; }
+                groups[next] = data;
+                next += 1;
+                group += 1;
+            }
+            assert!(next == READ_GROUP_COUNT);
             groups
+        };
+        /// Borrow the metadata graph; status never allocates its fixed catalogue.
+        pub fn read_groups() -> impl ExactSizeIterator<Item = ReadGroup> + Clone {
+            READ_GROUP_DATA.iter().map(|group| (group.name, group.anchor, &group.members[..group.len]))
         }
     };
 }
@@ -556,7 +621,7 @@ impl Captured {
                 hour,
                 force_full,
             },
-            inputs: self.unit_inputs.as_ref().map(Arc::clone),
+            inputs: self.unit_inputs.clone(),
             captured: std::mem::replace(
                 &mut self.division_presentation,
                 division_presentation::Captured::vacant(),
@@ -643,7 +708,7 @@ impl Captured {
                 span,
                 partition,
             },
-            inputs: self.unit_inputs.as_ref().map(Arc::clone),
+            inputs: self.unit_inputs.clone(),
             captured,
             range,
         }
@@ -1785,7 +1850,7 @@ impl Captured {
         // Synthetic direct-walk fixtures supply the same typed request that a
         // worker owns in production. Production assembly never acquires it.
         if self.ordinary_ticks.is_none() && self.ordinary_failure.is_none() {
-            let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+            let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
             let mut request = self.take_ordinary_request(&countries, base, game_state);
             request.packs.capture(memory, base, game_state);
             self.restore_ordinary_request(request, None);
@@ -1842,6 +1907,7 @@ impl Captured {
         current_hour: i32,
         force_full: bool,
     ) -> [u64; TABLE_COUNT] {
+        let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
         let mut ticks = [0; TABLE_COUNT];
         macro_rules! ordinary {
             ($($pack:ident),+ $(,)?) => {$(
@@ -1992,6 +2058,7 @@ impl Captured {
         orders: &mut Orders,
         ticks: &mut [u64; TABLE_COUNT],
     ) {
+        let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
         if let Some(done) = self.late_ticks.replace([0; TABLE_COUNT]) {
             for (total, cost) in ticks.iter_mut().zip(done) {
                 *total += cost;
@@ -2202,7 +2269,7 @@ pub(crate) struct Divisions {
 impl Divisions {
     fn new(capacity: usize) -> Self {
         Self {
-            first: vec![Default::default(); capacity],
+            first: owned_vec(filled(capacity, Default::default())),
             seen: 0,
             outcome: MISSING,
             required: 0,
@@ -2319,3 +2386,82 @@ fn bounded_registry(outcome: Outcome, capacity: usize) -> Outcome {
 }
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) fn output_allocation_failure_exercise(arm: impl FnOnce(), disarm: impl FnOnce()) {
+    use replay::frame::TableView;
+    use replay::rows::{BuildingConstructionRow, ProductionLineRow, TableRows};
+    let capacity = output_continuity::Capacities { entries: 4 };
+    let mut construction = construction_ic::Captured::with_capacities(&capacity);
+    let mut production = line_output::Captured::with_capacities(&capacity);
+    let mut construction_totals = construction_ic::Totals::default();
+    let mut production_totals = line_output::Totals::default();
+    let mut tables = std::array::from_fn::<_, TABLE_COUNT, _>(|_| {
+        TableInput::Sampled(TableView::Unavailable {
+            reason: String::new(),
+        })
+    });
+    tables[TableId::BuildingConstruction.index()] =
+        TableInput::Sampled(TableView::Complete(TableRows::BuildingConstruction(vec![
+            BuildingConstructionRow {
+                id: 17,
+                ..Default::default()
+            },
+        ])));
+    tables[TableId::RailwayConstruction.index()] = TableInput::Sampled(TableView::Complete(
+        TableRows::RailwayConstruction(Vec::new()),
+    ));
+    tables[TableId::ProductionLines.index()] =
+        TableInput::Sampled(TableView::Complete(TableRows::ProductionLines(vec![
+            ProductionLineRow {
+                handle: 29,
+                country: 5001,
+                ..Default::default()
+            },
+        ])));
+    arm();
+    let scope = crate::allocation::enter(crate::allocation::Phase::Spool);
+    for hour in 0..3 {
+        let copied = usize::from(hour != 0);
+        let drained = crate::output_log::Drained {
+            epoch: 1,
+            first: (hour - 1).max(0) as u64,
+            cursor: hour as u64,
+            copied,
+            pending: copied,
+        };
+        let construction_entry = crate::construction_ic::Entry {
+            line: 17,
+            amount: 40,
+            ..Default::default()
+        };
+        let production_entry = crate::line_output::Entry {
+            line: 29,
+            country: 5001,
+            variant: hour as u64,
+            units: 1,
+            exact: true,
+            ..Default::default()
+        };
+        construction.set_drained_for_test(
+            Ok(drained),
+            &std::slice::from_ref(&construction_entry)[..copied],
+        );
+        production.set_drained_for_test(
+            Ok(drained),
+            &std::slice::from_ref(&production_entry)[..copied],
+        );
+        construction_totals.assemble(1, hour, &construction, &mut tables);
+        if crate::allocation::failed() {
+            break;
+        }
+        production_totals.assemble(1, hour, &production, &mut tables);
+        if crate::allocation::failed() {
+            break;
+        }
+        construction_totals.written(true);
+        production_totals.written(true);
+    }
+    drop(scope);
+    disarm();
+}

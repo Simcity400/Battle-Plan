@@ -6,19 +6,31 @@
 
 use std::io;
 
-use crate::codec::{Decoder, invalid};
+use crate::codec::{Decoder, invalid_static as invalid};
+use engine::allocation;
 
 pub(crate) trait Value: Sized {
     /// Lower bound for every encoding of this type, including absent/empty values.
     const MINIMUM_ENCODED_BYTES: usize;
 
-    fn encode(&self, output: &mut Vec<u8>) -> io::Result<()>;
+    fn encoded_bytes(&self) -> io::Result<usize>;
+    fn encoded_many_bytes(values: &[Self]) -> io::Result<usize> {
+        values.iter().try_fold(0, |size, value| {
+            allocation::add(size, Value::encoded_bytes(value)?)
+        })
+    }
+    fn try_clone(&self) -> io::Result<Self>;
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()>;
+    fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        allocation::reserve(output, self.encoded_bytes()?)?;
+        self.encode_reserved(output)
+    }
     fn decode(input: &mut Decoder<'_>) -> io::Result<Self>;
 
     /// The default handles structured elements; byte values override it to copy once.
     fn encode_many(values: &[Self], output: &mut Vec<u8>) -> io::Result<()> {
         for value in values {
-            value.encode(output)?;
+            value.encode_reserved(output)?;
         }
         Ok(())
     }
@@ -26,10 +38,7 @@ pub(crate) trait Value: Sized {
     /// Validate the declared count before allocating the final owning collection.
     fn decode_many(count: usize, input: &mut Decoder<'_>) -> io::Result<Vec<Self>> {
         check_count(count, Self::MINIMUM_ENCODED_BYTES, input.remaining())?;
-        let mut values = Vec::new();
-        values
-            .try_reserve_exact(count)
-            .map_err(|_| invalid("nested collection allocation failed"))?;
+        let mut values = allocation::vec(count)?;
         for _ in 0..count {
             values.push(Self::decode(input)?);
         }
@@ -40,10 +49,14 @@ pub(crate) trait Value: Sized {
 /// Object-safe adapter for a borrowed native complex field. Its caller owns any
 /// outer byte-length prefix and can write/fill that prefix around this direct append.
 pub(crate) trait EncodeValue {
+    fn encoded_bytes(&self) -> io::Result<usize>;
     fn encode_value(&self, output: &mut Vec<u8>) -> io::Result<()>;
 }
 
 impl<T: Value> EncodeValue for T {
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        Value::encoded_bytes(self)
+    }
     fn encode_value(&self, output: &mut Vec<u8>) -> io::Result<()> {
         self.encode(output)
     }
@@ -63,7 +76,10 @@ macro_rules! integer {
         $(impl Value for $ty {
             const MINIMUM_ENCODED_BYTES: usize = size_of::<Self>();
 
-            fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
+            fn encoded_bytes(&self) -> io::Result<usize> { Ok(size_of::<Self>()) }
+            fn encoded_many_bytes(values: &[Self]) -> io::Result<usize> { allocation::mul(values.len(), size_of::<Self>()) }
+            fn try_clone(&self) -> io::Result<Self> { Ok(*self) }
+            fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
                 output.extend_from_slice(&self.to_le_bytes());
                 Ok(())
             }
@@ -82,7 +98,16 @@ integer!(i8, u16, i16, u32, i32, u64, i64);
 impl Value for u8 {
     const MINIMUM_ENCODED_BYTES: usize = 1;
 
-    fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        Ok(1)
+    }
+    fn encoded_many_bytes(values: &[Self]) -> io::Result<usize> {
+        Ok(values.len())
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(*self)
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
         output.push(*self);
         Ok(())
     }
@@ -98,10 +123,7 @@ impl Value for u8 {
 
     fn decode_many(count: usize, input: &mut Decoder<'_>) -> io::Result<Vec<Self>> {
         let bytes = input.take(count)?;
-        let mut values = Vec::new();
-        values
-            .try_reserve_exact(count)
-            .map_err(|_| invalid("nested byte collection allocation failed"))?;
+        let mut values = allocation::vec(count)?;
         values.extend_from_slice(bytes);
         Ok(values)
     }
@@ -110,7 +132,16 @@ impl Value for u8 {
 impl Value for bool {
     const MINIMUM_ENCODED_BYTES: usize = 1;
 
-    fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        Ok(1)
+    }
+    fn encoded_many_bytes(values: &[Self]) -> io::Result<usize> {
+        Ok(values.len())
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(*self)
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
         output.push(u8::from(*self));
         Ok(())
     }
@@ -122,13 +153,24 @@ impl Value for bool {
 
 impl<T: Value> Value for Option<T> {
     const MINIMUM_ENCODED_BYTES: usize = 1;
-
-    fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        allocation::add(
+            1,
+            match self {
+                Some(value) => Value::encoded_bytes(value)?,
+                None => 0,
+            },
+        )
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        self.as_ref().map(Value::try_clone).transpose()
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
         match self {
             None => output.push(0),
             Some(value) => {
                 output.push(1);
-                value.encode(output)?;
+                value.encode_reserved(output)?;
             }
         }
         Ok(())
@@ -145,8 +187,17 @@ impl<T: Value> Value for Option<T> {
 
 impl<T: Value> Value for Vec<T> {
     const MINIMUM_ENCODED_BYTES: usize = 4;
-
-    fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        allocation::add(4, T::encoded_many_bytes(self)?)
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        let mut values = allocation::vec(self.len())?;
+        for value in self {
+            values.push(Value::try_clone(value)?);
+        }
+        Ok(values)
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
         let count = u32::try_from(self.len())
             .map_err(|_| invalid("nested collection count exceeds u32"))?;
         // A nonempty zero-width collection cannot be bounded by its payload.
@@ -169,7 +220,17 @@ impl<T: Value> Value for Vec<T> {
 impl<T: Value, const N: usize> Value for [T; N] {
     const MINIMUM_ENCODED_BYTES: usize = T::MINIMUM_ENCODED_BYTES.saturating_mul(N);
 
-    fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        T::encoded_many_bytes(self)
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        let mut values = std::array::from_fn::<_, N, _>(|_| None);
+        for (target, value) in values.iter_mut().zip(self) {
+            *target = Some(Value::try_clone(value)?);
+        }
+        Ok(values.map(|value| value.expect("all array elements cloned")))
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
         T::encode_many(self, output)
     }
 
@@ -195,8 +256,16 @@ macro_rules! value_struct {
             const MINIMUM_ENCODED_BYTES: usize = 0_usize
                 $(.saturating_add(<$field_ty as $crate::value::Value>::MINIMUM_ENCODED_BYTES))*;
 
-            fn encode(&self, output: &mut Vec<u8>) -> std::io::Result<()> {
-                $(<$field_ty as $crate::value::Value>::encode(&self.$field, output)?;)*
+            fn encoded_bytes(&self) -> std::io::Result<usize> {
+                let size = 0;
+                $(let size = engine::allocation::add(size, <$field_ty as $crate::value::Value>::encoded_bytes(&self.$field)?)?;)*
+                Ok(size)
+            }
+            fn try_clone(&self) -> std::io::Result<Self> {
+                Ok(Self { $($field: <$field_ty as $crate::value::Value>::try_clone(&self.$field)?,)* })
+            }
+            fn encode_reserved(&self, output: &mut Vec<u8>) -> std::io::Result<()> {
+                $(<$field_ty as $crate::value::Value>::encode_reserved(&self.$field, output)?;)*
                 Ok(())
             }
 

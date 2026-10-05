@@ -185,7 +185,7 @@ fn packet_route_staging_grows_off_capture_and_survives_reuse() {
         let mut geometry = cprovince::GeometryPacket::default();
         geometry.begin(&source, 0, GS).unwrap();
         let paths = length as usize * 2;
-        packet.reserve(1, paths);
+        packet.reserve(1, paths).unwrap();
         let allocated = packet.allocated_bytes();
         let outcome = carmy::capture_movement_inputs(
             &source,
@@ -206,7 +206,7 @@ fn packet_route_staging_grows_off_capture_and_survives_reuse() {
             (77..77 + length).collect::<Vec<_>>()
         );
         packet.clear();
-        packet.reserve(1, paths);
+        packet.reserve(1, paths).unwrap();
         assert_eq!(packet.allocated_bytes(), allocated);
     }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use engine::allocation::{owned_vec, reserve_map, vec};
 
 #[derive(Debug, Clone)]
 pub(super) struct TraitDefinition {
@@ -30,11 +31,12 @@ pub(super) struct TraitDefinitions {
 impl TraitDefinitions {
     pub(super) fn new() -> Self {
         let mut value = Self {
-            entries: Vec::with_capacity(4096),
-            by_address: std::collections::HashMap::with_capacity(4096),
+            entries: owned_vec(vec(4096)),
+            by_address: std::collections::HashMap::default(),
             log: crate::raw::RawLog::new(32768, 1 << 20),
             ..Self::default()
         };
+        let _ = reserve_map(&mut value.by_address, 4096);
         value.update_charge();
         value
     }
@@ -68,11 +70,13 @@ impl TraitDefinitions {
     pub(super) fn grow(&mut self) {
         if self.overflowed {
             crate::raw::double_capacity(&mut self.entries);
-            self.by_address.reserve(
-                self.entries
-                    .capacity()
-                    .saturating_sub(self.by_address.len()),
-            );
+            let additional = self
+                .entries
+                .capacity()
+                .saturating_sub(self.by_address.len());
+            if reserve_map(&mut self.by_address, additional).is_err() {
+                return;
+            }
             self.update_charge();
         }
         self.log.grow();
@@ -316,8 +320,8 @@ impl TraitCapture {
     pub(super) fn new() -> Self {
         let mut value = Self {
             definitions: TraitDefinitions::new(),
-            vectors: std::array::from_fn(|_| Vec::with_capacity(4096)),
-            occurrences: [Vec::with_capacity(4096), Vec::with_capacity(32768)],
+            vectors: std::array::from_fn(|_| owned_vec(vec(4096))),
+            occurrences: [owned_vec(vec(4096)), owned_vec(vec(32768))],
             ..Self::default()
         };
         value.update_charge();

@@ -5,6 +5,7 @@ use crate::{
     spooling::unavailable,
     table_capture::{Arena, CaptureRows},
 };
+use engine::allocation::{copy_vec, map_slice, owned_vec, reserve_exact};
 use engine::{Memory, ccharacter, walk::Outcome};
 #[cfg(test)]
 use replay::frame::TableView;
@@ -62,6 +63,10 @@ pub struct Part {
 }
 impl Part {
     fn new(c: &Capacities) -> Self {
+        let Some((spans, bytes)) = c.rows.checked_mul(5).zip(c.rows.checked_mul(48)) else {
+            let _ = crate::allocation::oom();
+            return Self::vacant();
+        };
         Self {
             rows: CaptureRows::new(c.rows),
             arena: Arena::new(c.arena),
@@ -69,8 +74,10 @@ impl Part {
                 c.rows
             } else {
                 0
-            }),
-            plan: crate::snapshot_plan::SnapshotPlan::new(c.rows * 5, c.rows * 48),
+            })
+            .map_err(crate::allocation::io)
+            .unwrap_or_else(|_| engine::portrait_cache::Cache::empty()),
+            plan: crate::snapshot_plan::SnapshotPlan::new(spans, bytes),
             certified: None,
         }
     }
@@ -78,7 +85,7 @@ impl Part {
         Self {
             rows: CaptureRows::new(0),
             arena: Arena::new(0),
-            cache: engine::portrait_cache::Cache::new(0),
+            cache: engine::portrait_cache::Cache::empty(),
             plan: crate::snapshot_plan::SnapshotPlan::new(0, 0),
             certified: None,
         }
@@ -88,14 +95,22 @@ impl Part {
         self.arena.reset();
     }
     pub(crate) fn allocated_bytes(&self) -> usize {
-        self.rows.allocated_bytes() + self.arena.allocated_bytes() + self.cache.allocated_bytes()
+        self.rows.allocated_bytes()
+            + self.arena.allocated_bytes()
+            + self.cache.allocated_bytes()
             + self.plan.allocated_bytes()
     }
     fn grow(&mut self, c: &mut Capacities) {
         self.rows.grow(&mut c.rows);
         self.arena.grow(&mut c.arena);
-        if cfg!(feature = "portrait_changes") {
-            self.cache.grow(c.rows);
+        if cfg!(feature = "portrait_changes")
+            && self
+                .cache
+                .grow(c.rows)
+                .map_err(crate::allocation::io)
+                .is_err()
+        {
+            return;
         }
         self.plan.prepare();
     }
@@ -107,7 +122,13 @@ impl Part {
         part: usize,
         census: Option<&engine::ccharacter_manager::PortraitCensus>,
     ) -> u64 {
-        self.capture_observed(memory, context, part, census, &crate::portrait_changes::Observer)
+        self.capture_observed(
+            memory,
+            context,
+            part,
+            census,
+            &crate::portrait_changes::Observer,
+        )
     }
 
     fn capture_observed(
@@ -129,13 +150,21 @@ impl Part {
             let last = rows.len() * (part + 1) / PARTS;
             self.cache.matches_census(&rows[first..last])
         });
-        let certified = !cfg!(feature = "portrait_verify") && before.is_some()
-            && same_census && self.certified.is_some_and(|previous| previous.scope == scope
-                && (Some(previous.revision) == before || self.cache.unchanged(observer)));
+        let certified = !cfg!(feature = "portrait_verify")
+            && before.is_some()
+            && same_census
+            && self.certified.is_some_and(|previous| {
+                previous.scope == scope
+                    && (Some(previous.revision) == before || self.cache.unchanged(observer))
+            });
         if self.plan.begin(memory, certified) {
             if before == observer.quiet_revision() {
                 let acquired = self.certified.expect("certified previous rows").acquired;
-                self.certified = before.map(|revision| Certificate { scope, revision, acquired });
+                self.certified = before.map(|revision| Certificate {
+                    scope,
+                    revision,
+                    acquired,
+                });
                 self.rows.outcome = acquired.outcome;
                 self.arena.len = acquired.len;
                 self.arena.required = acquired.required;
@@ -146,24 +175,28 @@ impl Part {
                 });
                 crate::portrait_changes::record_planned_part();
             } else {
-                self.rows.outcome = Outcome::Unavailable { reason: "character portrait mutated during acquisition" };
+                self.rows.outcome = Outcome::Unavailable {
+                    reason: "character portrait mutated during acquisition",
+                };
                 self.invalidate();
             }
             let ticks = qpc().saturating_sub(begin).max(0) as u64;
             crate::portrait_changes::record_work(true, ticks);
             return ticks;
         }
-        let observation = cfg!(feature = "portrait_changes").then_some((
-            &mut self.cache,
-            observer,
-        ));
+        let observation = cfg!(feature = "portrait_changes").then_some((&mut self.cache, observer));
         let acquired = ccharacter::walk_portraits(
             &self.plan.view(memory),
             context.base,
             context.game_state,
             &mut self.rows.rows,
             &mut self.arena.first,
-            ccharacter::PortraitWalk { part, parts: PARTS, observation, census },
+            ccharacter::PortraitWalk {
+                part,
+                parts: PARTS,
+                observation,
+                census,
+            },
         );
         if cfg!(feature = "portrait_changes") {
             crate::portrait_changes::record(self.cache.counts);
@@ -176,14 +209,23 @@ impl Part {
         // trace would silently keep rereading those contents on every later
         // "unchanged" pass. Prepare only a fully reused walk: its native trace
         // then contains exactly the fresh ownership/header dependencies.
-        let reusable_trace = complete && cfg!(feature = "portrait_changes")
-            && !cfg!(feature = "portrait_verify") && self.cache.counts.read_characters == 0;
+        let reusable_trace = complete
+            && cfg!(feature = "portrait_changes")
+            && !cfg!(feature = "portrait_verify")
+            && self.cache.counts.read_characters == 0;
         if !self.plan.finish(reusable_trace) {
-            self.rows.outcome = Outcome::Unavailable { reason: "character portrait prepared prefix differs" };
+            self.rows.outcome = Outcome::Unavailable {
+                reason: "character portrait prepared prefix differs",
+            };
             self.cache.invalidate();
         }
-        self.certified = before.filter(|_| complete && before == observer.quiet_revision())
-            .map(|revision| Certificate { scope, revision, acquired });
+        self.certified = before
+            .filter(|_| complete && before == observer.quiet_revision())
+            .map(|revision| Certificate {
+                scope,
+                revision,
+                acquired,
+            });
         let ticks = qpc().saturating_sub(begin).max(0) as u64;
         crate::portrait_changes::record_work(false, ticks);
         ticks
@@ -320,7 +362,10 @@ impl Captured {
         }
         // Each share is sorted by character; merge them into the order one
         // walk produces and apply its duplicate check across shares.
-        let mut rows = Vec::with_capacity(outcome.len());
+        let mut rows = Vec::new();
+        if reserve_exact(&mut rows, outcome.len()).is_err() {
+            return [unavailable("collector allocation failed").into()];
+        }
         for part in &self.parts {
             let Some(source) = part.rows.rows.get(..part.rows.outcome.len()) else {
                 return [unavailable("walker row count exceeds allocated buffer").into()];
@@ -368,16 +413,16 @@ impl Captured {
             },
             |(part, r)| CharacterPortraitRow {
                 character: r.character,
-                portraits: part.arena.first[r.portraits[0]..r.portraits[0] + r.portraits[1]]
-                    .iter()
-                    .map(|p| replay::rows::CharacterPortrait {
+                portraits: owned_vec(map_slice(
+                    &part.arena.first[r.portraits[0]..r.portraits[0] + r.portraits[1]],
+                    |p| replay::rows::CharacterPortrait {
                         category: p.category,
                         size: p.size,
                         is_set: p.is_set,
                         kind: p.kind,
-                        identity: p.identity.as_bytes().to_vec(),
-                    })
-                    .collect(),
+                        identity: owned_vec(copy_vec(p.identity.as_bytes())),
+                    },
+                )),
             },
         )]
     }
@@ -395,11 +440,21 @@ mod owned_tests {
         use std::cell::{Cell, RefCell};
         struct Observer(Cell<u64>);
         impl engine::portrait_cache::Changes for Observer {
-            fn revision(&self, _: usize) -> Option<(u64, u64)> { Some((1, self.0.get())) }
-            fn quiet_revision(&self) -> Option<(u64, u64)> { Some((1, self.0.get())) }
-            fn verify(&self) -> bool { false }
+            fn revision(&self, _: usize) -> Option<(u64, u64)> {
+                Some((1, self.0.get()))
+            }
+            fn quiet_revision(&self) -> Option<(u64, u64)> {
+                Some((1, self.0.get()))
+            }
+            fn verify(&self) -> bool {
+                false
+            }
         }
-        struct Source<'a> { bytes: &'a [u8], calls: RefCell<Vec<(usize, usize)>>, fault: Option<usize> }
+        struct Source<'a> {
+            bytes: &'a [u8],
+            calls: RefCell<Vec<(usize, usize)>>,
+            fault: Option<usize>,
+        }
         impl Memory for Source<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 self.calls.borrow_mut().push((address, output.len()));
@@ -408,11 +463,14 @@ mod owned_tests {
         }
         let mut bytes = kit::mapped_fixture();
         let roster = Roster::read(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE).unwrap();
-        let mut census = PortraitCensus::new(4);
+        let mut census = PortraitCensus::try_new(4).unwrap();
         census.begin(kit::BASE, kit::GAME_STATE);
         for index in 0..roster.count() {
             let entry = roster.at(&kit::memory(&bytes), index).unwrap();
-            census.push(PortraitIdentity { pointer: entry.pointer, character: entry.id });
+            census.push(PortraitIdentity {
+                pointer: entry.pointer,
+                character: entry.id,
+            });
         }
         census.finish(roster.count() as usize);
         let pointer = census.rows(kit::BASE, kit::GAME_STATE).unwrap()[0].pointer;
@@ -420,11 +478,15 @@ mod owned_tests {
         let entry = bytes.len();
         bytes.resize(entry + engine::character_portrait_entry::STRIDE, 0);
         let offset = header - kit::GAME_STATE;
-        bytes[offset..offset + 8].copy_from_slice(&((kit::GAME_STATE + entry) as u64).to_le_bytes());
+        bytes[offset..offset + 8]
+            .copy_from_slice(&((kit::GAME_STATE + entry) as u64).to_le_bytes());
         bytes[offset + 8..offset + 12].copy_from_slice(&1_u32.to_le_bytes());
         bytes[offset + 12..offset + 16].copy_from_slice(&1_u32.to_le_bytes());
         bytes[entry + 0x28..entry + 0x30].copy_from_slice(&15_u64.to_le_bytes());
-        let context = CaptureContext { base: kit::BASE, game_state: kit::GAME_STATE };
+        let context = CaptureContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+        };
         let mut capacities = Capacities { rows: 4, arena: 4 };
         let mut part = Part::new(&capacities);
         let observer = Observer(Cell::new(0));
@@ -432,20 +494,35 @@ mod owned_tests {
             bytes[entry + 8] = version;
             observer.0.set(u64::from(version));
             for pass in 0..3 {
-                let source = Source { bytes: &bytes, calls: RefCell::new(vec![]), fault: None };
+                let source = Source {
+                    bytes: &bytes,
+                    calls: RefCell::new(vec![]),
+                    fault: None,
+                };
                 // Three roster entries: share 1 contains exactly the first one.
                 part.capture_observed(&source, context, 1, Some(&census), &observer);
                 assert_eq!(part.rows.outcome, Outcome::Rows { len: 1 });
                 assert_eq!(part.arena.first[0].is_set, version);
-                if pass == 0 { assert!(source.calls.borrow().len() > 1); }
-                else { assert_eq!(*source.calls.borrow(), [(header, 16)]); }
+                if pass == 0 {
+                    assert!(source.calls.borrow().len() > 1);
+                } else {
+                    assert_eq!(*source.calls.borrow(), [(header, 16)]);
+                }
                 part.grow(&mut capacities);
             }
         }
-        let source = Source { bytes: &bytes, calls: RefCell::new(vec![]), fault: Some(header) };
+        let source = Source {
+            bytes: &bytes,
+            calls: RefCell::new(vec![]),
+            fault: Some(header),
+        };
         part.capture_observed(&source, context, 1, Some(&census), &observer);
         assert!(matches!(part.rows.outcome, Outcome::Unavailable { .. }));
-        assert_eq!(*source.calls.borrow(), [(header, 16)], "failed prepared header must not be retried");
+        assert_eq!(
+            *source.calls.borrow(),
+            [(header, 16)],
+            "failed prepared header must not be retried"
+        );
     }
 
     #[test]

@@ -9,11 +9,15 @@ use crate::{
     table_capture::{Arena, CaptureRows, bounded, grow_vec},
 };
 use engine::{
-    Memory, ccountry, ccountry_experience_status, ccountry_fuel_status, ccountry_resources,
-    ccountry_supply_system, cgame_state, cpdx_array::Array, cpurchase_contract, cresource_exchange,
-    cstrategic_resource, disrupted_supply_bucket, foreign_homebase_node, fuel_consumer_data,
-    fuel_history_entry, hub_motorization_entry, market_contract_manager, msvc_string,
-    sprovince_supply_data, supply_node_record, walk::Outcome,
+    Memory,
+    allocation::{copy_vec, filled, owned_vec},
+    ccountry, ccountry_experience_status, ccountry_fuel_status, ccountry_resources,
+    ccountry_supply_system, cgame_state,
+    cpdx_array::Array,
+    cpurchase_contract, cresource_exchange, cstrategic_resource, disrupted_supply_bucket,
+    foreign_homebase_node, fuel_consumer_data, fuel_history_entry, hub_motorization_entry,
+    market_contract_manager, msvc_string, sprovince_supply_data, supply_node_record,
+    walk::Outcome,
 };
 use replay::{
     frame::TableInput,
@@ -135,8 +139,14 @@ impl Captured {
             purchases: CaptureRows::new(capacity.rows[9]),
             fuel_consumers: CaptureRows::new(capacity.rows[10]),
             sources: Arena::new(capacity.foreign_sources),
-            exchange_scratch: vec![cresource_exchange::Membership::default(); capacity.rows[8]],
-            purchase_scratch: vec![cpurchase_contract::Membership::default(); capacity.rows[9]],
+            exchange_scratch: owned_vec(filled(
+                capacity.rows[8],
+                cresource_exchange::Membership::default(),
+            )),
+            purchase_scratch: owned_vec(filled(
+                capacity.rows[9],
+                cpurchase_contract::Membership::default(),
+            )),
             rest_raw_mode: false,
             resources_active: false,
             definitions_slot: false,
@@ -622,7 +632,9 @@ impl Captured {
                 hours: r.hours,
                 decay: r.decay,
                 base: r.base,
-                source: self.sources.first[r.source_start..r.source_start + r.source_len].to_vec(),
+                source: owned_vec(copy_vec(
+                    &self.sources.first[r.source_start..r.source_start + r.source_len],
+                )),
             },
         )
     }

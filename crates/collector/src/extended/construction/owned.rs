@@ -37,7 +37,7 @@ impl Captured {
         let started = qpc();
         let settings_error = if job.settings_required > self.settings.rows.len() {
             let additional = job.settings_required - self.settings.rows.len();
-            match self.settings.rows.try_reserve(additional) {
+            match reserve(&mut self.settings.rows, additional) {
                 Ok(()) => {
                     self.settings
                         .rows
@@ -53,7 +53,7 @@ impl Captured {
             Some("occupation law byte demand overflow")
         } else if job.law_bytes_required > self.law_bytes.first.len() {
             let additional = job.law_bytes_required - self.law_bytes.first.len();
-            match self.law_bytes.first.try_reserve(additional) {
+            match reserve(&mut self.law_bytes.first, additional) {
                 Ok(()) => {
                     self.law_bytes.first.resize(job.law_bytes_required, 0);
                     None
@@ -184,7 +184,7 @@ impl ConstructionRestJob {
             // so steady state never overflows.
             log: RawLog::new(1 << 17, 8 << 20),
             game_state: 0,
-            census: Vec::with_capacity(crate::country_scale::census_rows(512)),
+            census: owned_vec(vec(crate::country_scale::census_rows(512))),
             settings_required: 0,
             law_bytes_required: 0,
             law_demand_overflowed: false,
@@ -1007,6 +1007,7 @@ fn copy_pdx_visit(
         .checked_add(max as usize)?
         .checked_add(1)?;
     let mut live = Vec::new();
+    reserve_exact(&mut live, size as usize).ok()?;
     for index in 0..span {
         let addr = data.checked_add(index.saturating_mul(pdx_robin_hood_bucket::STRIDE))?;
         let Some(b_start) = cspan(log, memory, Some(addr), 24, mask) else {
@@ -1029,6 +1030,10 @@ fn copy_pdx_visit(
         ))
         .ok()
         .filter(|&v| v != 0)?;
+        // A corrupt header cannot admit more entries than the checked batch.
+        if live.len() == size as usize {
+            return None;
+        }
         live.push((key, value));
         if log.overflowed {
             return None;

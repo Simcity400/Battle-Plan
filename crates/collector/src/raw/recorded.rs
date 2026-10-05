@@ -15,8 +15,8 @@ static INDEX_REBUILD_NS: AtomicU64 = AtomicU64::new(0);
 static INDEX_REUSED_SPANS: AtomicU64 = AtomicU64::new(0);
 static INDEX_REBUILT_SPANS: AtomicU64 = AtomicU64::new(0);
 
-pub(crate) fn index_diagnostics() -> serde_json::Value {
-    serde_json::json!({
+pub(crate) fn index_diagnostics() -> impl serde::Serialize {
+    crate::status::status!({
         "scope": "shared raw indexes since attach; preparation only, not row decoding",
         "reuses": INDEX_REUSES.load(Ordering::Relaxed),
         "rebuilds": INDEX_REBUILDS.load(Ordering::Relaxed),
@@ -160,21 +160,18 @@ impl RecordedIndex {
         (cursor.get() != usize::MAX).then_some(cursor)
     }
 
-    fn grow_slots(&mut self, spans: &[Span]) {
+    fn grow_slots(&mut self, spans: &[Span]) -> std::io::Result<()> {
         let size = if self.slots.is_empty() {
             8
         } else {
-            self.slots
-                .len()
-                .checked_mul(2)
-                .expect("raw index bucket count overflow")
+            self.slots.len().saturating_mul(2)
         };
         // Allocations and the temporary old table live only on the worker.
         // The retained-capacity diagnostic excludes transient realloc overlap.
-        let old = std::mem::replace(
-            &mut self.slots,
-            vec![std::cell::Cell::new(usize::MAX); size],
-        );
+        let mut slots = Vec::new();
+        engine::allocation::reserve_exact(&mut slots, size)?;
+        slots.resize(size, std::cell::Cell::new(usize::MAX));
+        let old = std::mem::replace(&mut self.slots, slots);
         for cursor in old {
             let current = cursor.get();
             if current != usize::MAX {
@@ -185,6 +182,7 @@ impl RecordedIndex {
                 self.slots[slot].set(current);
             }
         }
+        Ok(())
     }
 
     fn update_capacity_charge(&mut self) {
@@ -199,7 +197,7 @@ impl RecordedIndex {
         });
     }
 
-    pub(super) fn prepare(&mut self, spans: &[Span], has_bulk: bool) -> bool {
+    pub(super) fn prepare(&mut self, spans: &[Span], has_bulk: bool) -> std::io::Result<bool> {
         if self.has_bulk == has_bulk
             && self.shape.len() == spans.len()
             && self
@@ -211,7 +209,19 @@ impl RecordedIndex {
             for &(slot, first) in &self.repeated {
                 self.slots[slot].set(first);
             }
-            return true;
+            return Ok(true);
+        }
+        // Every following append is bounded by the span census. Reserve the
+        // whole batch before changing the reusable index's logical shape.
+        let additional = spans.len().saturating_sub(self.next.len());
+        engine::allocation::reserve(&mut self.next, additional)?;
+        let additional = spans.len().saturating_sub(self.repeated.len());
+        engine::allocation::reserve(&mut self.repeated, additional)?;
+        let additional = spans.len().saturating_sub(self.shape.len());
+        engine::allocation::reserve(&mut self.shape, additional)?;
+        if has_bulk {
+            let additional = spans.len().saturating_sub(self.bulk.len());
+            engine::allocation::reserve(&mut self.bulk, additional)?;
         }
         self.slots.fill(std::cell::Cell::new(usize::MAX));
         self.distinct = 0;
@@ -228,7 +238,7 @@ impl RecordedIndex {
             self.shape.push((span.addr, span.len, span.ok, span.bulk));
             self.mark_exact_length(span.len);
             if self.slots.is_empty() {
-                self.grow_slots(spans);
+                self.grow_slots(spans)?;
             }
             let mut slot = self
                 .slot(spans, span.addr, span.len)
@@ -238,7 +248,7 @@ impl RecordedIndex {
                 // At most half full. Repeated observations must not trigger
                 // growth, even when their count dwarfs the distinct key count.
                 if self.distinct == self.slots.len() / 2 {
-                    self.grow_slots(spans);
+                    self.grow_slots(spans)?;
                     slot = self
                         .slot(spans, span.addr, span.len)
                         .expect("grown raw index must have an empty bucket");
@@ -282,12 +292,13 @@ impl RecordedIndex {
             }
         }
         self.update_capacity_charge();
-        false
+        Ok(false)
     }
 }
 
 impl<'a> Recorded<'a> {
     pub fn build<const N: usize>(log: &'a RawLog<N>) -> Self {
+        let _phase = crate::allocation::enter(crate::allocation::Phase::Raw);
         let started = std::time::Instant::now();
         let mut index = log
             .index
@@ -297,7 +308,21 @@ impl<'a> Recorded<'a> {
                 capacity_charge: crate::raw_memory::Charge::empty_on(log.capacity_charge.tracker()),
                 ..Default::default()
             });
-        let reused = index.prepare(&log.spans, log.has_bulk);
+        let reused = match index.prepare(&log.spans, log.has_bulk) {
+            Ok(reused) => reused,
+            Err(_) => {
+                // Owned replay reads fail closed; no partially built cursor
+                // can certify a complete frame after allocation failure.
+                return Self {
+                    index: RecordedIndex::default(),
+                    recycle: &log.index,
+                    spans: &[],
+                    bytes: &[],
+                    next_exact: std::cell::Cell::new(0),
+                    last_bulk: std::cell::Cell::new(usize::MAX),
+                };
+            }
+        };
         let ns = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         let (count, ticks, spans) = if reused {
             (&INDEX_REUSES, &INDEX_REUSE_NS, &INDEX_REUSED_SPANS)

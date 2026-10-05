@@ -10,6 +10,7 @@ use crate::{
     spooling::{table, table_iter, unavailable},
     table_capture::{Arena, CaptureRows},
 };
+use engine::allocation::{copy_vec, owned_vec, reserve_exact};
 use engine::{Memory, advisor_tokens, ccountry_characters as native, walk::Outcome};
 use replay::{
     cadence::{SKIPPED_REASON, should_walk},
@@ -189,8 +190,16 @@ impl Captured {
                 memory,
                 base,
                 game_state,
-                if active { &mut self.active.rows } else { &mut [] },
-                if retired { &mut self.retired.rows } else { &mut [] },
+                if active {
+                    &mut self.active.rows
+                } else {
+                    &mut []
+                },
+                if retired {
+                    &mut self.retired.rows
+                } else {
+                    &mut []
+                },
             );
             self.active.outcome = active_outcome;
             self.retired.outcome = retired_outcome;
@@ -258,7 +267,10 @@ impl Captured {
         let Some(rows) = self.tokens.rows.get(..self.tokens.outcome.len()) else {
             return unavailable("advisor token row count invalid");
         };
-        let mut keys = Vec::with_capacity(rows.len());
+        let mut keys = Vec::new();
+        if reserve_exact(&mut keys, rows.len()).is_err() {
+            return unavailable("collector allocation failed");
+        }
         for row in rows {
             match row
                 .start
@@ -278,7 +290,7 @@ impl Captured {
             keys.iter().enumerate(),
             |(ordinal, key)| AdvisorTokenRow {
                 ordinal: ordinal as u32,
-                token: key.to_vec(),
+                token: owned_vec(copy_vec(key)),
             },
         )
     }
@@ -286,11 +298,8 @@ impl Captured {
         let Some(bytes) = self.bytes.first.get(..self.bytes.len) else {
             return unavailable("hired advisor string arena invalid");
         };
-        let text = |start: usize, len: usize| {
-            start
-                .checked_add(len)
-                .and_then(|end| bytes.get(start..end))
-        };
+        let text =
+            |start: usize, len: usize| start.checked_add(len).and_then(|end| bytes.get(start..end));
         let Some(rows) = self.rows.rows.get(..self.rows.outcome.len()) else {
             return unavailable("hired advisor row count invalid");
         };
@@ -304,8 +313,8 @@ impl Captured {
             country: row.country,
             ordinal: row.ordinal,
             character: row.character,
-            idea: text(row.idea_start, row.idea_len).unwrap().to_vec(),
-            slot: text(row.slot_start, row.slot_len).unwrap().to_vec(),
+            idea: owned_vec(copy_vec(text(row.idea_start, row.idea_len).unwrap())),
+            slot: owned_vec(copy_vec(text(row.slot_start, row.slot_len).unwrap())),
         })
     }
 }
@@ -381,7 +390,8 @@ mod tests {
             slot_len: 0,
         };
         captured.rows.outcome = Outcome::Rows { len: 2 };
-        let [TableView::Complete(TableRows::HiredAdvisors(rows)), _, _, _] = captured.tables() else {
+        let [TableView::Complete(TableRows::HiredAdvisors(rows)), _, _, _] = captured.tables()
+        else {
             panic!("complete hired advisors");
         };
         assert_eq!(rows[0].idea, b"idea\0");
@@ -495,7 +505,8 @@ mod tests {
             captured.tokens.rows[index] = advisor_tokens::Row { start, len };
         }
         captured.tokens.outcome = Outcome::Rows { len: 3 };
-        let [_, _, TableView::Complete(TableRows::AdvisorTokens(rows)), _] = captured.tables() else {
+        let [_, _, TableView::Complete(TableRows::AdvisorTokens(rows)), _] = captured.tables()
+        else {
             panic!("complete advisor tokens");
         };
         assert_eq!(
@@ -505,9 +516,15 @@ mod tests {
             [(0, b"\0zz".as_slice()), (1, b"a_idea"), (2, b"b_idea")]
         );
         captured.tokens.rows[2] = advisor_tokens::Row { start: 0, len: 6 };
-        assert!(matches!(captured.tables()[2], TableView::Unavailable { .. }));
+        assert!(matches!(
+            captured.tables()[2],
+            TableView::Unavailable { .. }
+        ));
         captured.tokens.rows[2] = advisor_tokens::Row { start: 12, len: 4 };
-        assert!(matches!(captured.tables()[2], TableView::Unavailable { .. }));
+        assert!(matches!(
+            captured.tables()[2],
+            TableView::Unavailable { .. }
+        ));
     }
 
     #[test]

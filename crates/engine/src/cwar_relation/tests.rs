@@ -2,6 +2,22 @@ use super::*;
 use crate::{cgame_state, memory::SliceMemory};
 use std::cell::{Cell, RefCell};
 
+#[test]
+fn checked_owned_snapshot_capacity_overflow_returns_oom() {
+    let error = match OwnedSnapshotScratch::try_with_capacity(usize::MAX) {
+        Ok(_) => panic!("impossible snapshot capacity accepted"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::OutOfMemory);
+    let mut scratch = OwnedSnapshotScratch::try_with_capacity(2).unwrap();
+    let before = scratch.capacity();
+    assert_eq!(
+        scratch.grow(usize::MAX).unwrap_err().kind(),
+        std::io::ErrorKind::OutOfMemory
+    );
+    assert_eq!(scratch.capacity(), before);
+}
+
 const GS: usize = 0x1000;
 const COUNTRIES: usize = 0x3000;
 const LINKS: usize = 0x3100;
@@ -208,7 +224,7 @@ fn reader<'a, M: Memory>(memory: &'a M) -> Reader<'a, M> {
     // Test-only storage; production readers borrow the frame's resolver.
     let resolver = Box::leak(Box::new(crelation_status::Resolver::default()));
     resolver.begin(&countries);
-    resolver.grow();
+    resolver.grow().unwrap();
     Reader {
         memory,
         base: 0,
@@ -329,7 +345,7 @@ fn prepared_snapshot(countries: usize, words: usize) -> OwnedSnapshotScratch {
     let mut scratch = OwnedSnapshotScratch::with_capacity(countries);
     scratch.stats.required_words = words;
     scratch.stats.required_cells = words.saturating_mul(4);
-    scratch.grow(countries);
+    scratch.grow(countries).unwrap();
     scratch
 }
 
@@ -654,7 +670,7 @@ fn owned_snapshot_complete_walk_matches_serial_rows_errors_aliases_and_output_ca
                 &mut scratch,
             );
             assert_eq!(scratch.stats.hits, 0);
-            scratch.grow(5);
+            scratch.grow(5).unwrap();
             let allocated = scratch.allocated_bytes();
             let memory = SliceMemory {
                 base: 0,
@@ -749,7 +765,7 @@ fn owned_snapshot_resets_and_growth_keep_root_pressure_and_unreused_storage_hone
     );
     assert_eq!(*candidate.reads.borrow(), *old.reads.borrow());
     assert_eq!(scratch.stats.fallbacks, 1);
-    scratch.grow(2);
+    scratch.grow(2).unwrap();
     scratch.begin();
     assert_eq!(scratch.stats, OwnedSnapshotStats::default());
     assert!(scratch.words.is_empty());
@@ -790,12 +806,12 @@ fn owned_snapshot_resets_and_growth_keep_root_pressure_and_unreused_storage_hone
     let before = scratch.capacity();
     scratch.stats.required_words = usize::MAX;
     scratch.stats.required_cells = usize::MAX;
-    scratch.grow(2);
+    scratch.grow(2).unwrap();
     assert_eq!(scratch.capacity(), before);
     // Observed demand beyond any former fixed budget is honoured exactly.
     scratch.stats.required_words = 70_000;
     scratch.stats.required_cells = 280_000;
-    scratch.grow(2);
+    scratch.grow(2).unwrap();
     assert_eq!(scratch.counts.len(), 280_000);
     assert!(scratch.words.capacity() >= 70_000);
     assert_eq!(
@@ -1753,7 +1769,7 @@ fn dense_authentication_cells_key_full_ids_and_fall_back_beyond_storage() {
     }
     assert_eq!(memory.guards.get() - start, 6);
     assert_eq!(short.resolver.required(), [FAR + 1, 5]);
-    short.resolver.grow();
+    short.resolver.grow().unwrap();
     assert_eq!(short.resolver.capacity(), [FAR + 1, 5]);
 }
 
@@ -2309,7 +2325,7 @@ fn owned_walk_at_census_scale_grows_past_former_budgets_and_stays_linear() {
     assert!(scratch.stats().fallbacks > 0);
     assert!(scratch.stats().required_words >= learning.hub_words);
     // Growth happens between passes, as on the spool thread.
-    scratch.grow(COUNTRIES + 1);
+    scratch.grow(COUNTRIES + 1).unwrap();
     assert!(scratch.capacity().words >= learning.hub_words);
     assert!(scratch.capacity().initialized_count_cells >= 2 * learning.hub_words);
 
@@ -2338,7 +2354,7 @@ fn owned_walk_at_census_scale_grows_past_former_budgets_and_stays_linear() {
         "{stats:?}"
     );
     // The status-graph table is sized from the observed wars next time.
-    scratch.grow(COUNTRIES + 1);
+    scratch.grow(COUNTRIES + 1).unwrap();
     assert!(scratch.status_graphs.len() >= 2 * (COUNTRIES - 1));
     // Output capacity still truncates honestly, never by country count.
     let mut short = vec![Row::default(); 10];
@@ -2377,7 +2393,7 @@ fn cold_rescans_past_the_census_budget_fail_cleanly_and_one_growth_suffices() {
     assert!(scratch.rescanned_words <= 1_000_000 + census.hub_words);
     // The failed pass still observed every owned header.
     assert_eq!(scratch.observed_words, 2 * (COUNTRIES - 1));
-    scratch.grow(0);
+    scratch.grow(0).unwrap();
     assert_eq!(
         walk_owned(&memory, &memory, 0, GS, &mut rows, &mut scratch),
         Outcome::Rows { len: COUNTRIES - 1 }

@@ -754,7 +754,7 @@ fn walk_shared(memory: &World, sources: &mut Sources, divisions: &[(usize, u64)]
                     .take(IMAGE_BATCH)
                     .map(|division| division.0)
                     .collect();
-                images.capture(memory, &armies);
+                images.capture(memory, &armies).unwrap();
             }
             let image = images.division(memory, row, army);
             let memory = &image;
@@ -1104,7 +1104,7 @@ fn images_resume_after_a_failed_record() {
     let mut images = Images::default();
     w.copies.set(0);
     *w.log.borrow_mut() = Some(Vec::new());
-    images.capture(w, &armies);
+    images.capture(w, &armies).unwrap();
     // Armies: rows 0-1, then 3-5. Stat blocks: rows 0-1, then 3, then 5.
     assert_eq!(w.copies.get(), 5);
     let log = w.log.borrow_mut().take().unwrap();

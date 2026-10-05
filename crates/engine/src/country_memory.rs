@@ -110,28 +110,38 @@ impl Cache {
 
     /// Allocate off the game thread. Zero disables storage; other capacities
     /// round up to a power of two for bounded, division-free lookup.
-    pub fn with_capacity(cells: usize) -> Self {
+    pub fn try_with_capacity(cells: usize) -> std::io::Result<Self> {
         let cells = if cells == 0 {
             0
         } else {
-            cells.next_power_of_two()
+            cells
+                .checked_next_power_of_two()
+                .ok_or_else(crate::allocation::oom)?
         };
         let words = (cells / 16).max(FILTER_WORDS);
-        Self {
-            entries: vec![Entry::EMPTY; cells].into_boxed_slice(),
-            filter: vec![0; words].into_boxed_slice(),
-            front_filter: vec![0; words].into_boxed_slice(),
+        Ok(Self {
+            entries: crate::allocation::boxed_slice(crate::allocation::filled(
+                cells,
+                Entry::EMPTY,
+            )?)?,
+            filter: crate::allocation::boxed_slice(crate::allocation::filled(words, 0)?)?,
+            front_filter: crate::allocation::boxed_slice(crate::allocation::filled(words, 0)?)?,
             filter_mask: words * u64::BITS as usize - 1,
             lengths: 0,
             len: 0,
             observed_reads: 0,
             status: SeedStatus::Capacity { required_cells: 1 },
-            roster: vec![None; cells].into_boxed_slice(),
+            roster: crate::allocation::boxed_slice(crate::allocation::filled(cells, None)?)?,
             roster_len: 0,
             roster_base: 0,
             roster_game_state: 0,
             roster_arrays: [Array { data: 0, count: 0 }; 2],
-        }
+        })
+    }
+
+    #[cfg(test)]
+    pub fn with_capacity(cells: usize) -> Self {
+        Self::try_with_capacity(cells).unwrap()
     }
 
     pub fn capacity(&self) -> usize {

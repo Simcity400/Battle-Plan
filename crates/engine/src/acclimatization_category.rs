@@ -20,10 +20,15 @@ pub struct Categories {
 }
 
 impl Categories {
+    pub fn try_with_capacity(capacity: usize) -> std::io::Result<Self> {
+        Ok(Self {
+            entries: crate::allocation::vec(capacity)?,
+        })
+    }
+
+    #[cfg(test)]
     pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            entries: Vec::with_capacity(capacity),
-        }
+        Self::try_with_capacity(capacity).unwrap()
     }
 
     pub fn clear(&mut self) {

@@ -7,6 +7,7 @@
 //! for, the hour carries the last sample, and the next hour walks instead.
 
 use crate::table_capture::{CaptureRows, grow_vec};
+use engine::allocation::{filled, oom};
 use engine::country_intel_row::Row;
 use std::sync::{
     Arc, Mutex, MutexGuard, PoisonError,
@@ -41,18 +42,27 @@ struct Inner {
 pub struct Home(Arc<Inner>);
 
 impl Home {
-    pub fn new(rows: usize, scratch: usize) -> Self {
+    pub fn try_new(rows: usize, scratch: usize) -> std::io::Result<Self> {
+        let rows = CaptureRows::new(rows);
+        if crate::allocation::failed() {
+            return Err(oom());
+        }
         let buffer = Box::new(Buffer {
-            rows: CaptureRows::new(rows),
-            scratch: vec![0; scratch],
+            rows,
+            scratch: filled(scratch, 0)?,
         });
-        Self(Arc::new(Inner {
+        Ok(Self(Arc::new(Inner {
             bytes: AtomicUsize::new(buffer.allocated_bytes()),
             slot: Mutex::new(Slot {
                 buffer: Some(buffer),
                 missed: false,
             }),
-        }))
+        })))
+    }
+
+    #[cfg(test)]
+    pub fn new(rows: usize, scratch: usize) -> Self {
+        Self::try_new(rows, scratch).unwrap()
     }
 
     /// The shared buffer's bytes, to be counted once for the whole pool.

@@ -334,7 +334,7 @@ fn reads_every_group_month_and_variant_in_native_order() {
             GAME,
             |_| Some(Months::All),
             &mut rows,
-            &mut VariantMemo::new()
+            &mut VariantMemo::try_new().unwrap()
         ),
         Outcome::Rows { len: 6 }
     );
@@ -364,7 +364,7 @@ fn empty_logs_are_a_complete_empty_table() {
             GAME,
             |_| Some(Months::All),
             &mut rows,
-            &mut VariantMemo::new()
+            &mut VariantMemo::try_new().unwrap()
         ),
         Outcome::Rows { len: 0 }
     );
@@ -400,7 +400,7 @@ fn a_country_that_does_not_fit_is_counted_unread_whole() {
             GAME,
             |_| Some(Months::All),
             &mut rows,
-            &mut VariantMemo::new()
+            &mut VariantMemo::try_new().unwrap()
         ),
         Outcome::Rows { len: 7 }
     );
@@ -414,7 +414,7 @@ fn a_country_that_does_not_fit_is_counted_unread_whole() {
             GAME,
             |_| Some(Months::All),
             &mut rows,
-            &mut VariantMemo::new()
+            &mut VariantMemo::try_new().unwrap()
         ),
         Outcome::Truncated {
             len: 0,
@@ -430,7 +430,7 @@ fn a_country_that_does_not_fit_is_counted_unread_whole() {
             GAME,
             |country| (country == 8).then_some(Months::All),
             &mut rows,
-            &mut VariantMemo::new()
+            &mut VariantMemo::try_new().unwrap()
         ),
         Outcome::Rows { len: 1 }
     );
@@ -443,7 +443,7 @@ fn a_country_that_does_not_fit_is_counted_unread_whole() {
             GAME,
             |_| Some(Months::All),
             &mut rows,
-            &mut VariantMemo::new()
+            &mut VariantMemo::try_new().unwrap()
         ),
         Outcome::Truncated {
             len: 0,
@@ -460,7 +460,7 @@ fn unavailable(f: &Fixture) -> &'static str {
         GAME,
         |_| Some(Months::All),
         &mut rows,
-        &mut VariantMemo::new(),
+        &mut VariantMemo::try_new().unwrap(),
     ) {
         Outcome::Unavailable { reason } => reason,
         other => panic!("expected unavailable, got {other:?}"),
@@ -577,7 +577,7 @@ fn the_recovered_array_keeps_whatever_reason_it_was_built_with() {
             GAME,
             |_| Some(Months::All),
             &mut rows,
-            &mut VariantMemo::new()
+            &mut VariantMemo::try_new().unwrap()
         ),
         Outcome::Rows { len: 6 }
     );
@@ -613,7 +613,7 @@ fn many_groups_and_months_cross_batch_boundaries() {
             GAME,
             |_| Some(Months::All),
             &mut rows,
-            &mut VariantMemo::new()
+            &mut VariantMemo::try_new().unwrap()
         ),
         Outcome::Rows { len: 70 * 70 * 70 }
     );
@@ -664,7 +664,7 @@ fn combat_log_scale() {
     let arrays = countries * groups as usize * 4;
     let rows = arrays * 12 * variants as usize;
     let mut output = vec![Row::default(); rows];
-    let mut memo = VariantMemo::new();
+    let mut memo = VariantMemo::try_new().unwrap();
     let memory = crate::memory::SliceMemory {
         base: 0,
         bytes: &f.bytes,
@@ -754,7 +754,7 @@ fn a_window_read_keeps_each_arrays_last_two_months() {
         GAME,
         |_| Some(Months::Window),
         &mut rows,
-        &mut VariantMemo::new(),
+        &mut VariantMemo::try_new().unwrap(),
     );
     assert_eq!(outcome, Outcome::Rows { len: 3 });
     assert_eq!(
@@ -774,7 +774,7 @@ fn a_window_read_keeps_each_arrays_last_two_months() {
         GAME,
         |_| Some(Months::All),
         &mut rows,
-        &mut VariantMemo::new(),
+        &mut VariantMemo::try_new().unwrap(),
     );
     assert_eq!(outcome, Outcome::Rows { len: 4 });
 }
@@ -807,7 +807,7 @@ fn each_country_is_read_with_the_months_its_selector_chooses() {
             })
         },
         &mut rows,
-        &mut VariantMemo::new(),
+        &mut VariantMemo::try_new().unwrap(),
     );
     assert_eq!(outcome, Outcome::Rows { len: 5 });
     // Country 3's manager holds no group log and is not asked.
@@ -845,14 +845,21 @@ fn only_selected_countries_are_followed_past_their_header() {
             GAME,
             |country| (country != 7).then_some(Months::All),
             &mut rows,
-            &mut VariantMemo::new(),
+            &mut VariantMemo::try_new().unwrap(),
         ),
         Outcome::Rows { len: 0 }
     );
     // Every manager's header is still authenticated.
     f.pointer(manager, BASE + 8);
     assert!(matches!(
-        walk(&f, BASE, GAME, |_| None, &mut rows, &mut VariantMemo::new(),),
+        walk(
+            &f,
+            BASE,
+            GAME,
+            |_| None,
+            &mut rows,
+            &mut VariantMemo::try_new().unwrap(),
+        ),
         Outcome::Unavailable { .. }
     ));
 }
@@ -885,7 +892,7 @@ fn the_variant_memo_changes_no_row_and_no_failure() {
     let (f, _) = standard();
     let mut remembered = [Row::default(); 16];
     let mut unremembered = [Row::default(); 16];
-    let mut memo = VariantMemo::new();
+    let mut memo = VariantMemo::try_new().unwrap();
     // Twice with the same memo: it is cleared at the start of each walk.
     for _ in 0..2 {
         assert_eq!(
@@ -937,7 +944,7 @@ fn the_variant_memo_changes_no_row_and_no_failure() {
         }
     );
     // A memo that stops remembering still answers only what it holds.
-    let mut full = VariantMemo::new();
+    let mut full = VariantMemo::try_new().unwrap();
     for pointer in 1..=MEMO_LIMIT {
         full.insert(pointer << 4, pointer as u32);
     }
@@ -945,4 +952,60 @@ fn the_variant_memo_changes_no_row_and_no_failure() {
     full.insert(0xdead_0000, 1);
     assert_eq!(full.get(0xdead_0000), None);
     assert_eq!(full.get(7 << 4), Some(7));
+}
+
+#[test]
+fn prepared_selection_failure_does_not_attempt_manager_reads() {
+    let (fixture, _) = standard();
+    let memory = crate::read_census::ReadCensus::new(&fixture);
+    let mut selected = 0;
+    let outcome = walk_prepared(
+        &memory,
+        BASE,
+        GAME,
+        &mut selected,
+        |_, _| Err("collector allocation failed"),
+        |selected, _| {
+            *selected += 1;
+            Ok(Some(Months::All))
+        },
+        &mut [Row::default(); 16],
+        &mut VariantMemo::vacant(),
+    );
+    assert_eq!(
+        outcome,
+        Outcome::Unavailable {
+            reason: "collector allocation failed"
+        }
+    );
+    assert_eq!(selected, 0);
+    assert_eq!(memory.calls(), 1);
+}
+
+#[test]
+fn prepared_selection_failure_at_visitor_does_not_attempt_group_reads() {
+    let (fixture, _) = standard();
+    let memory = crate::read_census::ReadCensus::new(&fixture);
+    let mut selected = 0;
+    let outcome = walk_prepared(
+        &memory,
+        BASE,
+        GAME,
+        &mut selected,
+        |_, _| Ok(()),
+        |selected, _| {
+            *selected += 1;
+            Err("collector allocation failed")
+        },
+        &mut [Row::default(); 16],
+        &mut VariantMemo::vacant(),
+    );
+    assert_eq!(
+        outcome,
+        Outcome::Unavailable {
+            reason: "collector allocation failed"
+        }
+    );
+    assert_eq!(selected, 1);
+    assert_eq!(memory.calls(), 3);
 }

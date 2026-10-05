@@ -1,6 +1,21 @@
 use super::*;
 use crate::{Memory, corder_instance as order, corders_group as group, memory::SliceMemory};
 
+#[test]
+fn allocation_capacity_overflow_preserves_membership_packet() {
+    let mut inputs = MembershipPacket::new(2, 2, 2, 2);
+    let before = inputs.capacity();
+    let required = MembershipCapacity {
+        groups: usize::MAX,
+        ..before
+    };
+    assert_eq!(
+        inputs.grow(required).unwrap_err().kind(),
+        std::io::ErrorKind::OutOfMemory,
+    );
+    assert_eq!(inputs.capacity(), before);
+}
+
 const MEMBER: usize = 0x1000;
 const OWN: usize = 0x2000;
 const PARENT: usize = 0x3000;
@@ -309,7 +324,7 @@ fn packet_zero_and_small_capacities_preserve_original_reads_and_failures() {
                 assert!(inputs.capacity().chunks >= 2);
             }
             let allocated = inputs.allocated_bytes();
-            inputs.grow(inputs.required_capacity());
+            inputs.grow(inputs.required_capacity()).unwrap();
             assert_eq!(inputs.allocated_bytes(), allocated);
         }
     }
@@ -386,7 +401,7 @@ fn demanded_chunks_grow_once_without_expanding_other_arenas() {
     assert_eq!(memory.count(MEMBERS + 128 * 8), 1);
     assert_eq!(memory.count(MEMBERS + 256 * 8), 0);
     assert!(inputs.allocated_bytes() > allocated);
-    inputs.grow(inputs.required_capacity());
+    inputs.grow(inputs.required_capacity()).unwrap();
     assert_eq!(
         inputs.capacity(),
         MembershipCapacity {
@@ -404,7 +419,7 @@ fn demanded_chunks_grow_once_without_expanding_other_arenas() {
     assert_eq!(memory.count(MEMBERS + 256 * 8), 0);
     assert_eq!(memory.count(OWN + group::SECONDARY_ORDER_DATA), 0);
     let allocated = inputs.allocated_bytes();
-    inputs.grow(inputs.required_capacity());
+    inputs.grow(inputs.required_capacity()).unwrap();
     assert_eq!(inputs.allocated_bytes(), allocated);
     assert_eq!(inputs.required_capacity(), MembershipCapacity::default());
 }

@@ -34,7 +34,7 @@ export function validateProductReply<T>(reply: ProductReply<T>, request: Product
   return reply;
 }
 
-export interface ReplayFile { path: string; name: string; folder: string }
+export interface ReplayFile { path: string; name: string; folder: string; partial?: import('../generated/dashboard').PartialRecording | null }
 export interface ReplayLibrary { folder: string | null; files: ReplayFile[] }
 
 export interface DashboardMapView {

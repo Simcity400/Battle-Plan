@@ -2,6 +2,8 @@
 
 Everything a widget needs natively: opened recordings, data products, the host/viewer protocol and the data service that answers the frontend. No map pixels are drawn here and no live game memory is read.
 
+Opened metadata carries the replay's terminal partial marker separately from branch gaps. The verified prefix remains readable; the marker keeps the failure reason and an optional attempted hour. An unknown failed hour adds no inferred gap. Recording-library summaries read only the validated replay trailer, leaving frame blocks to the normal source-open path.
+
 ## Layout
 
 | Module | What it does |

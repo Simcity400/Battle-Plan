@@ -6,6 +6,7 @@ use crate::{
     sampling::qpc,
     table_capture::{Arena, CaptureRows, bounded, grow_capacity, grow_vec},
 };
+use engine::allocation::{copy_vec, owned_vec, reserve, resize};
 use engine::{
     Memory, cair_base, ccontroller_area, ccountry, ctheatre,
     memory::{RecordLayout, RecordSources},
@@ -196,7 +197,7 @@ impl Captured {
     /// Size the dense resolver to a live link count. Off the game thread only.
     fn grow_resolver(&mut self, links: usize) {
         if links > self.resolved.len() {
-            self.resolved.resize(links, None);
+            let _ = resize(&mut self.resolved, links, None).map_err(crate::allocation::io);
         }
     }
 
@@ -452,7 +453,7 @@ impl Captured {
                 country: r.country,
                 ordinal: r.ordinal,
                 state: r.state,
-                provinces: provinces(r).to_vec(),
+                provinces: owned_vec(copy_vec(provinces(r))),
             },
         )
     }
@@ -486,7 +487,7 @@ impl Captured {
                 theatre: r.theatre,
                 ordinal: r.ordinal,
                 representative: r.representative,
-                provinces: provinces(r).to_vec(),
+                provinces: owned_vec(copy_vec(provinces(r))),
             },
         )
     }
@@ -520,7 +521,7 @@ impl Captured {
                 base: r.base,
                 slot: r.slot,
                 capacity_raw: r.capacity_raw,
-                wings: wings(r).to_vec(),
+                wings: owned_vec(copy_vec(wings(r))),
             },
         )
     }
@@ -622,9 +623,14 @@ impl Captured {
     pub(crate) fn save_registrations_memo(&self, memo: &mut RegistrationsMemo) {
         debug_assert!(self.registrations_memo_complete());
         memo.rows.clear();
+        memo.wings.clear();
+        if reserve(&mut memo.rows, self.registrations.outcome.len()).is_err()
+            || reserve(&mut memo.wings, self.wings.len).is_err()
+        {
+            return;
+        }
         memo.rows
             .extend_from_slice(&self.registrations.rows[..self.registrations.outcome.len()]);
-        memo.wings.clear();
         memo.wings
             .extend_from_slice(&self.wings.first[..self.wings.len]);
         memo.required_wings = self.wings.required;

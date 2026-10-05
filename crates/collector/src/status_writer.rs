@@ -1,167 +1,143 @@
-//! Status files written on their own thread, so the spool thread never waits
-//! on status I/O (#94).
-//!
-//! The loader owns the [`StatusWriter`] and its thread; the spool thread gets
-//! a [`StatusHandle`] and hands each snapshot over with
-//! [`StatusHandle::publish`]: a short lock and no I/O. Dropping a handle never
-//! waits. The writer thread keeps only the latest unwritten snapshot per path,
-//! so a stalled disk or a reader that blocks the replace coalesces snapshots
-//! instead of backing up the spool, and through it the capture buffers the
-//! game thread waits for. A snapshot published with directories to measure
-//! gets their `spool.*` byte total as `spool_bytes`, computed here rather than
-//! on the spool thread. A failed write is kept and retried after
-//! [`RETRY_DELAY`], unless a newer snapshot for that path replaced it first.
-//! The loader [`StatusWriter::finish`]es it (also run on drop) only after the
-//! spool thread has returned and every callback is quiescent, then reads the
-//! spool's last status.
-use serde_json::{Value, json};
+//! Coalesced checked status snapshots with reusable byte buffers.
+use crate::{allocation, status::status};
 use std::{
-    fs, io,
+    io,
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex, PoisonError},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
 
-/// How long a failed write waits before its next attempt.
 pub(crate) const RETRY_DELAY: Duration = Duration::from_millis(250);
-/// At `finish`, how long pending snapshots keep being retried before the
-/// writer gives up on them. A single stuck write cannot be interrupted.
 const FINISH_BUDGET: Duration = Duration::from_secs(2);
-/// While finishing, the pause between attempts of a failing write.
 const FINISH_RETRY_DELAY: Duration = Duration::from_millis(20);
-
-type Write = dyn Fn(&Path, &Value) -> io::Result<()> + Send + Sync;
-
-/// One unwritten snapshot: its file, its value, and the directories whose
-/// `spool.*` files it reports as `spool_bytes`, if any.
 struct Pending {
     path: PathBuf,
-    value: Value,
+    bytes: Vec<u8>,
     measure: Option<Vec<PathBuf>>,
 }
-
 #[derive(Default)]
 struct State {
-    /// The latest unwritten snapshot per path, oldest path first.
     pending: Vec<Pending>,
+    recycled: Vec<Pending>,
     stop: bool,
-    /// The last write failure not yet taken.
-    error: Option<String>,
+    error: Option<&'static str>,
     writes: u64,
     failures: u64,
-    /// Snapshots replaced by a newer one before they were written, including
-    /// a failed one a newer snapshot superseded before its retry.
     coalesced: u64,
     write_ns_total: u64,
     write_ns_max: u64,
 }
-
 struct Inner {
     state: Mutex<State>,
     wake: Condvar,
 }
-
 impl Inner {
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
-
-/// The spool thread's side: hand-overs only, never I/O, never a join.
 #[derive(Clone)]
 pub(crate) struct StatusHandle {
     inner: Arc<Inner>,
 }
-
 impl StatusHandle {
-    /// Hand a snapshot over without waiting for any I/O. It replaces an
-    /// unwritten snapshot of the same path.
-    pub(crate) fn publish(&self, path: &Path, value: Value) {
-        self.hand_over(path, value, None);
+    pub(crate) fn publish(&self, path: &Path, value: impl serde::Serialize) -> io::Result<()> {
+        self.publish_snapshot(path, value, None)
     }
-
-    /// [`Self::publish`], with `spool_bytes` set on the writer thread to the
-    /// total size of the `spool.*` files in `directories`.
-    pub(crate) fn publish_measured(&self, path: &Path, value: Value, directories: Vec<PathBuf>) {
-        self.hand_over(path, value, Some(directories));
+    pub(crate) fn publish_measured(
+        &self,
+        path: &Path,
+        value: impl serde::Serialize,
+        directories: Vec<PathBuf>,
+    ) -> io::Result<()> {
+        self.publish_snapshot(path, value, Some(directories))
     }
-
-    fn hand_over(&self, path: &Path, value: Value, measure: Option<Vec<PathBuf>>) {
+    fn publish_snapshot(
+        &self,
+        path: &Path,
+        value: impl serde::Serialize,
+        measure: Option<Vec<PathBuf>>,
+    ) -> io::Result<()> {
+        if allocation::failed() {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
         let mut state = self.inner.lock();
-        if let Some(entry) = state.pending.iter_mut().find(|entry| entry.path == path) {
-            entry.value = value;
-            entry.measure = measure;
+        let position = state.pending.iter().position(|p| p.path == path);
+        let mut pending = if let Some(index) = position {
             state.coalesced += 1;
+            state.pending.remove(index)
+        } else if let Some(index) = state.recycled.iter().position(|p| p.path == path) {
+            state.recycled.swap_remove(index)
         } else {
-            state.pending.push(Pending {
+            Pending {
                 path: path.to_path_buf(),
-                value,
-                measure,
-            });
+                bytes: Vec::new(),
+                measure: None,
+            }
+        };
+        drop(state);
+        crate::status::serialize_into(&mut pending.bytes, &value)?;
+        pending.measure = measure;
+        let mut state = self.inner.lock();
+        if allocation::failed() {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
+        engine::allocation::reserve(&mut state.pending, 1)?;
+        if let Some(index) = position {
+            let index = index.min(state.pending.len());
+            state.pending.insert(index, pending);
+        } else {
+            state.pending.push(pending);
         }
         drop(state);
         self.inner.wake.notify_one();
+        Ok(())
     }
-
-    /// The last write failure since the previous call, if any.
-    pub(crate) fn take_error(&self) -> Option<String> {
+    pub(crate) fn take_error(&self) -> Option<&'static str> {
         self.inner.lock().error.take()
     }
-
-    /// Counters for `status.json`.
-    pub(crate) fn json(&self) -> Value {
+    pub(crate) fn status(&self) -> impl serde::Serialize {
         let state = self.inner.lock();
-        json!({
-            "writes": state.writes,
-            "failures": state.failures,
-            "coalesced": state.coalesced,
-            "pending": state.pending.len(),
-            "write_ns_total": state.write_ns_total,
-            "write_ns_max": state.write_ns_max,
-            "scope": "status and content files written on their own thread; the spool thread only hands the latest snapshot over; spool_bytes is measured on this thread; a failed write is retried later unless a newer snapshot replaced it (coalesced); write time includes that measurement; cumulative since attach",
+        status!({
+            "writes":state.writes,"failures":state.failures,"coalesced":state.coalesced,
+            "pending":state.pending.len(),"write_ns_total":state.write_ns_total,"write_ns_max":state.write_ns_max,
+            "scope":"status and content files written on their own thread; the spool thread only hands the latest snapshot over; spool_bytes is measured on this thread; a failed write is retried later unless a newer snapshot replaced it (coalesced); write time includes that measurement; cumulative since attach",
         })
     }
+    #[cfg(test)]
+    fn json(&self) -> serde_json::Value {
+        serde_json::to_value(self.status()).unwrap()
+    }
 }
-
-/// The loader's side: owns the writer thread.
 pub(crate) struct StatusWriter {
     handle: StatusHandle,
     thread: Option<JoinHandle<()>>,
 }
-
 impl StatusWriter {
-    /// Start the writer thread; `write` writes one file (production:
-    /// `runtime::write_status`).
     pub(crate) fn start(
-        write: impl Fn(&Path, &Value) -> io::Result<()> + Send + Sync + 'static,
+        write: impl Fn(&Path, &[u8]) -> io::Result<()> + Send + Sync + 'static,
     ) -> io::Result<Self> {
         let inner = Arc::new(Inner {
             state: Mutex::new(State::default()),
             wake: Condvar::new(),
         });
-        let worker = Arc::clone(&inner);
-        let write: Box<Write> = Box::new(write);
+        let worker = inner.clone();
         let thread = std::thread::Builder::new()
-            .name("hoi4-status".into())
-            .spawn(move || run(&worker, &*write))?;
+            .name("collector-status".into())
+            .spawn(move || run(&worker, &write))?;
         Ok(Self {
             handle: StatusHandle { inner },
             thread: Some(thread),
         })
     }
-
     pub(crate) fn handle(&self) -> StatusHandle {
         self.handle.clone()
     }
-
-    pub(crate) fn take_error(&self) -> Option<String> {
+    #[cfg(test)]
+    pub(crate) fn take_error(&self) -> Option<&'static str> {
         self.handle.take_error()
     }
-
-    /// Write what is pending (retrying failures for a short budget) and join
-    /// the thread. Call it only where waiting on disk I/O blocks no game
-    /// thread: after the spool thread has returned and callbacks are quiescent.
     pub(crate) fn finish(&mut self) {
         let Some(thread) = self.thread.take() else {
             return;
@@ -171,35 +147,74 @@ impl StatusWriter {
         let _ = thread.join();
     }
 }
-
 impl Drop for StatusWriter {
     fn drop(&mut self) {
         self.finish();
     }
 }
-
-/// Total size of the `spool.*` files in `directories`.
-fn spool_bytes(directories: &[PathBuf]) -> u64 {
-    directories
-        .iter()
-        .filter_map(|directory| fs::read_dir(directory).ok())
-        .flatten()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with("spool."))
-        .filter_map(|entry| entry.metadata().ok())
-        .map(|metadata| metadata.len())
-        .sum()
+fn spool_bytes(directories: &[PathBuf]) -> io::Result<u64> {
+    let mut total = 0u64;
+    for directory in directories {
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            if entry.file_name().to_string_lossy().starts_with("spool.") {
+                total = total.saturating_add(entry.metadata()?.len());
+            }
+        }
+    }
+    Ok(total)
 }
-
-fn run(inner: &Inner, write: &Write) {
+fn measure(pending: &mut Pending) -> io::Result<()> {
+    let Some(directories) = &pending.measure else {
+        return Ok(());
+    };
+    measure_bytes(&mut pending.bytes, directories)?;
+    pending.measure = None;
+    Ok(())
+}
+pub(crate) fn measure_bytes(bytes: &mut Vec<u8>, directories: &[PathBuf]) -> io::Result<()> {
+    let value = spool_bytes(directories)?;
+    // Comma, key, maximum u64 decimal digits, and the closing brace.
+    engine::allocation::reserve(bytes, 1 + b"\"spool_bytes\":".len() + 20 + 1)?;
+    if bytes.last() != Some(&b'}') {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    bytes.pop();
+    if bytes.len() > 1 {
+        bytes.push(b',');
+    }
+    bytes.extend_from_slice(b"\"spool_bytes\":");
+    let mut digits = [0u8; 20];
+    let mut index = digits.len();
+    let mut number = value;
+    loop {
+        index -= 1;
+        digits[index] = b'0' + (number % 10) as u8;
+        number /= 10;
+        if number == 0 {
+            break;
+        }
+    }
+    bytes.extend_from_slice(&digits[index..]);
+    bytes.push(b'}');
+    Ok(())
+}
+fn run(inner: &Inner, write: &impl Fn(&Path, &[u8]) -> io::Result<()>) {
+    let _phase = allocation::enter(allocation::Phase::Status);
+    allocation::attempted_hour(None);
     let mut stopping_since: Option<Instant> = None;
     loop {
         let mut state = inner.lock();
-        while state.pending.is_empty() && !state.stop {
+        while state.pending.is_empty() && !state.stop && !allocation::failed() {
             state = inner
                 .wake
-                .wait(state)
-                .unwrap_or_else(PoisonError::into_inner);
+                .wait_timeout(state, RETRY_DELAY)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        if allocation::failed() {
+            state.pending.clear();
+            return;
         }
         if state.stop {
             let since = *stopping_since.get_or_insert_with(Instant::now);
@@ -207,42 +222,41 @@ fn run(inner: &Inner, write: &Write) {
                 return;
             }
         }
-        let batch = std::mem::take(&mut state.pending);
+        let mut pending = state.pending.remove(0);
         drop(state);
-        let mut failed = Vec::new();
-        for mut pending in batch {
-            let started = Instant::now();
-            if let Some(directories) = &pending.measure {
-                pending.value["spool_bytes"] = json!(spool_bytes(directories));
+        let started = Instant::now();
+        let result = measure(&mut pending).and_then(|()| write(&pending.path, &pending.bytes));
+        let ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let mut state = inner.lock();
+        state.write_ns_total = state.write_ns_total.saturating_add(ns);
+        state.write_ns_max = state.write_ns_max.max(ns);
+        match result {
+            Ok(()) => {
+                state.writes += 1;
+                pending.bytes.clear();
+                if let Some(old) = state.recycled.iter_mut().find(|p| p.path == pending.path) {
+                    if pending.bytes.capacity() > old.bytes.capacity() {
+                        *old = pending;
+                    }
+                } else if engine::allocation::reserve(&mut state.recycled, 1).is_ok() {
+                    state.recycled.push(pending);
+                }
+                continue;
             }
-            let result = write(&pending.path, &pending.value);
-            let ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-            let mut state = inner.lock();
-            state.write_ns_total = state.write_ns_total.saturating_add(ns);
-            state.write_ns_max = state.write_ns_max.max(ns);
-            match result {
-                Ok(()) => state.writes += 1,
-                Err(error) => {
-                    state.failures += 1;
-                    state.error = Some(error.to_string());
-                    failed.push(pending);
+            Err(error) => {
+                allocation::observe(&error);
+                state.failures += 1;
+                state.error = Some("status write failed");
+                if state.pending.iter().any(|entry| entry.path == pending.path) {
+                    state.coalesced += 1;
+                } else {
+                    if engine::allocation::reserve(&mut state.pending, 1).is_err() {
+                        return;
+                    }
+                    state.pending.push(pending);
                 }
             }
         }
-        if failed.is_empty() {
-            continue;
-        }
-        // Keep a failed snapshot unless a newer one for its path arrived.
-        let mut state = inner.lock();
-        for pending in failed {
-            if state.pending.iter().any(|entry| entry.path == pending.path) {
-                state.coalesced += 1;
-            } else {
-                state.pending.push(pending);
-            }
-        }
-        // Wait before the retry. A stop request cuts a normal wait short to
-        // the shorter finishing pause.
         let stopping = state.stop;
         let deadline = Instant::now()
             + if stopping {
@@ -252,7 +266,7 @@ fn run(inner: &Inner, write: &Write) {
             };
         loop {
             let now = Instant::now();
-            if now >= deadline || (state.stop && !stopping) {
+            if now >= deadline || (state.stop && !stopping) || allocation::failed() {
                 break;
             }
             state = inner
@@ -265,9 +279,55 @@ fn run(inner: &Inner, write: &Write) {
 }
 
 #[cfg(test)]
+pub(crate) struct AllocationProbe {
+    writer: StatusWriter,
+    status: PathBuf,
+    directory: PathBuf,
+}
+#[cfg(test)]
+impl AllocationProbe {
+    pub(crate) fn prepare(directory: &Path) -> io::Result<Self> {
+        let directory = directory.join("status-writer");
+        std::fs::create_dir_all(&directory)?;
+        std::fs::write(directory.join("spool.0001"), [0; 23])?;
+        let status = directory.join("status.json");
+        Ok(Self {
+            writer: StatusWriter::start(crate::runtime::write_status_bytes)?,
+            status,
+            directory,
+        })
+    }
+    pub(crate) fn run(&mut self) -> io::Result<()> {
+        let _phase = allocation::enter(allocation::Phase::Status);
+        allocation::attempted_hour(None);
+        let mut directories = Vec::new();
+        engine::allocation::reserve_exact(&mut directories, 1)?;
+        directories.push(self.directory.clone());
+        let published = self.writer.handle().publish_measured(
+            &self.status,
+            status!({"state":"recording","hours":2u64}),
+            directories,
+        );
+        self.writer.finish();
+        published?;
+        if allocation::failed() {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
+        if let Some(_error) = self.writer.take_error() {
+            return Err(io::ErrorKind::Other.into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
+    use serde_json::{Value, json};
+    use std::{
+        fs,
+        sync::{Arc, mpsc},
+    };
 
     /// Generous: every wait in these tests ends in a failure, never a hang.
     const TIMEOUT: Duration = Duration::from_secs(30);
@@ -290,7 +350,7 @@ mod tests {
         entered: mpsc::Sender<()>,
         released: mpsc::Receiver<()>,
         written: Arc<Mutex<Vec<(PathBuf, Value)>>>,
-    ) -> impl Fn(&Path, &Value) -> io::Result<()> + Send + Sync + 'static {
+    ) -> impl Fn(&Path, &[u8]) -> io::Result<()> + Send + Sync + 'static {
         let entered = Mutex::new(entered);
         let released = Mutex::new(released);
         move |path, value| {
@@ -302,7 +362,7 @@ mod tests {
             written
                 .lock()
                 .unwrap()
-                .push((path.to_path_buf(), value.clone()));
+                .push((path.to_path_buf(), serde_json::from_slice(value).unwrap()));
             Ok(())
         }
     }
@@ -321,7 +381,7 @@ mod tests {
         let status = Path::new("status.json");
         let content = Path::new("content.json");
         let handle = writer.handle();
-        handle.publish(status, json!({ "hour": 0 }));
+        handle.publish(status, json!({ "hour": 0 })).unwrap();
         entered
             .recv_timeout(TIMEOUT)
             .expect("the first write stalls");
@@ -329,8 +389,8 @@ mod tests {
         let publisher = handle.clone();
         std::thread::spawn(move || {
             for hour in 1..=1000 {
-                publisher.publish(status, json!({ "hour": hour }));
-                publisher.publish(content, json!({ "hour": hour }));
+                publisher.publish(status, json!({ "hour": hour })).unwrap();
+                publisher.publish(content, json!({ "hour": hour })).unwrap();
             }
             let _ = done_tx.send(());
         });
@@ -367,12 +427,16 @@ mod tests {
             StatusWriter::start(stalling(entered_tx, released, Arc::clone(&written))).unwrap();
         let release = Release(release_tx);
         let spool = writer.handle();
-        spool.publish(Path::new("status.json"), json!({ "hour": 1 }));
+        spool
+            .publish(Path::new("status.json"), json!({ "hour": 1 }))
+            .unwrap();
         entered.recv_timeout(TIMEOUT).expect("the write stalls");
         // Only now, with the write stuck, does the spool side end early.
         let (done_tx, done) = mpsc::channel();
         std::thread::spawn(move || {
-            spool.publish(Path::new("status.json"), json!({ "state": "failing" }));
+            spool
+                .publish(Path::new("status.json"), json!({ "state": "failing" }))
+                .unwrap();
             drop(spool);
             let _ = done_tx.send(());
         });
@@ -402,7 +466,9 @@ mod tests {
         })
         .unwrap();
         let handle = writer.handle();
-        handle.publish(Path::new("status.json"), json!({ "hour": 1 }));
+        handle
+            .publish(Path::new("status.json"), json!({ "hour": 1 }))
+            .unwrap();
         // The retry succeeded while the writer was running; finishing only
         // lets its counters settle before they are read.
         wrote.recv_timeout(TIMEOUT).expect("the retry succeeds");
@@ -411,10 +477,7 @@ mod tests {
         assert_eq!(handle.json()["failures"], 2);
         assert_eq!(handle.json()["writes"], 1);
         let error = handle.take_error().expect("the failure is reported");
-        assert!(
-            error.contains("32") || error.contains("another process"),
-            "{error}"
-        );
+        assert!(error == "status write failed", "{error}");
     }
 
     /// A newer snapshot published while a write is failing supersedes it: the
@@ -431,7 +494,10 @@ mod tests {
         let record = Arc::clone(&attempts);
         let mut writer = StatusWriter::start(move |_, value| {
             let first = record.lock().unwrap().is_empty();
-            record.lock().unwrap().push(value.clone());
+            record
+                .lock()
+                .unwrap()
+                .push(serde_json::from_slice(value).unwrap());
             if first {
                 // Fail only after the test has published the newer snapshot.
                 let _ = entered_tx.lock().unwrap().send(());
@@ -445,11 +511,11 @@ mod tests {
         let release = Release(proceed_tx);
         let handle = writer.handle();
         let path = Path::new("status.json");
-        handle.publish(path, json!({ "hour": 1 }));
+        handle.publish(path, json!({ "hour": 1 })).unwrap();
         entered
             .recv_timeout(TIMEOUT)
             .expect("the first write is in flight");
-        handle.publish(path, json!({ "hour": 2 }));
+        handle.publish(path, json!({ "hour": 2 })).unwrap();
         drop(release);
         wrote
             .recv_timeout(TIMEOUT)
@@ -476,18 +542,24 @@ mod tests {
         fs::write(directory.join("spool.0001"), [0_u8; 100]).unwrap();
         fs::write(directory.join("spool.0002"), [0_u8; 23]).unwrap();
         fs::write(directory.join("other.bin"), [0_u8; 7]).unwrap();
-        let written = Arc::new(Mutex::new(Vec::new()));
+        let written = Arc::new(Mutex::new(Vec::<Value>::new()));
         let record = Arc::clone(&written);
         let mut writer = StatusWriter::start(move |_, value| {
-            record.lock().unwrap().push(value.clone());
+            record
+                .lock()
+                .unwrap()
+                .push(serde_json::from_slice(value).unwrap());
             Ok(())
         })
         .unwrap();
-        writer.handle().publish_measured(
-            Path::new("status.json"),
-            json!({ "hour": 1 }),
-            vec![directory.clone()],
-        );
+        writer
+            .handle()
+            .publish_measured(
+                Path::new("status.json"),
+                json!({ "hour": 1 }),
+                vec![directory.clone()],
+            )
+            .unwrap();
         writer.finish();
         let _ = fs::remove_dir_all(&directory);
         assert_eq!(

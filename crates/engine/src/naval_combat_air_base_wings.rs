@@ -45,29 +45,39 @@ impl Hasher for HandleHasher {
 
 /// Distinct base handles in first-reference order. Membership is indexed, so
 /// selecting `n` references costs O(n); both allocations are reused across
-/// hours and grown only by [`Self::reserve`] outside the capture.
-#[derive(Clone, Debug, Default)]
+/// hours and grown with checked reservations.
+#[derive(Debug, Default)]
 pub struct UniqueHandles {
     order: Vec<u64>,
     members: HashSet<u64, BuildHasherDefault<HandleHasher>>,
 }
 
 impl UniqueHandles {
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            order: Vec::with_capacity(capacity),
-            members: HashSet::with_capacity_and_hasher(capacity, Default::default()),
-        }
+    pub fn try_with_capacity(capacity: usize) -> std::io::Result<Self> {
+        let mut handles = Self::default();
+        handles.try_reserve(capacity)?;
+        Ok(handles)
     }
     pub fn clear(&mut self) {
         self.order.clear();
         self.members.clear();
     }
     /// Appends `handle` unless it is already present.
-    pub fn insert(&mut self, handle: u64) {
+    pub fn try_insert(&mut self, handle: u64) -> std::io::Result<()> {
+        if self.order.len() == self.order.capacity()
+            || self.members.len() == self.members.capacity()
+        {
+            if self.members.contains(&handle) {
+                return Ok(());
+            }
+            crate::allocation::reserve(&mut self.order, 1)?;
+            crate::allocation::reserve_set(&mut self.members, 1)?;
+        }
+        // Both structures have a vacant slot; neither insertion can grow.
         if self.members.insert(handle) {
             self.order.push(handle);
         }
+        Ok(())
     }
     pub fn as_slice(&self) -> &[u64] {
         &self.order
@@ -82,11 +92,11 @@ impl UniqueHandles {
     pub fn capacity(&self) -> usize {
         self.order.capacity().min(self.members.capacity())
     }
-    pub fn reserve(&mut self, capacity: usize) {
-        self.order
-            .reserve(capacity.saturating_sub(self.order.len()));
-        self.members
-            .reserve(capacity.saturating_sub(self.members.len()));
+    pub fn try_reserve(&mut self, capacity: usize) -> std::io::Result<()> {
+        let additional = capacity.saturating_sub(self.order.len());
+        crate::allocation::reserve(&mut self.order, additional)?;
+        let additional = capacity.saturating_sub(self.members.len());
+        crate::allocation::reserve_set(&mut self.members, additional)
     }
     /// Approximate heap bytes: the order vector and the set's slots with
     /// their one control byte each.
@@ -391,7 +401,7 @@ mod tests {
     fn handles(list: &[u64]) -> UniqueHandles {
         let mut handles = UniqueHandles::default();
         for &handle in list {
-            handles.insert(handle);
+            handles.try_insert(handle).unwrap();
         }
         handles
     }
@@ -399,14 +409,16 @@ mod tests {
     #[test]
     fn unique_handles_keep_first_reference_order_at_country_scale() {
         for countries in [1_500_u64, 5_000] {
-            let mut unique = UniqueHandles::with_capacity(countries as usize);
+            let mut unique = UniqueHandles::try_with_capacity(countries as usize).unwrap();
             let reserved = unique.allocated_bytes();
             // Every country's base referenced three times, interleaved.
             let started = std::time::Instant::now();
             for round in 0..3 {
                 for country in 0..countries {
                     let index = (country * 7 + round) % countries;
-                    unique.insert((index + 1) << 32 | u64::from(cair_base::TYPE));
+                    unique
+                        .try_insert((index + 1) << 32 | u64::from(cair_base::TYPE))
+                        .unwrap();
                 }
             }
             let elapsed = started.elapsed();

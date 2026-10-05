@@ -1,5 +1,6 @@
 //! The sole game-thread callback. Buffers are allocated before publication to its free queue.
 
+use std::sync::Arc;
 mod divisions;
 pub(crate) use divisions::{
     DivisionsCopyContext, DivisionsCopyReport, DivisionsJob, copy_divisions_core_refresh,
@@ -36,7 +37,7 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     ptr,
     sync::{
-        Arc, Condvar, Mutex, OnceLock,
+        Condvar, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU64, AtomicUsize, Ordering},
     },
 };
@@ -193,7 +194,9 @@ impl OrderCounterCapture {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             forced: false,
-            rows: vec![ccountry::OrderInstanceCounter::default(); capacity],
+            rows: engine::allocation::owned_vec(engine::allocation::default_vec::<
+                ccountry::OrderInstanceCounter,
+            >(capacity)),
             read: None,
             qpc_begin: 0,
             qpc_end: 0,
@@ -233,8 +236,7 @@ impl OrderCounterCapture {
             .map_or(0, |read| read.required)
             .max(country_capacity);
         if self.rows.len() < required {
-            self.rows
-                .resize(required, ccountry::OrderInstanceCounter::default());
+            crate::table_capture::grow_vec(&mut self.rows, required);
         }
     }
 }
@@ -300,19 +302,20 @@ impl Captured {
             &MapCapacities::default(),
             &extended::Capacities::default(),
         )
+        .unwrap()
     }
 
     pub(crate) fn with_capacities(
         capacities: &[usize; 12],
         map_capacities: &MapCapacities,
         extended_capacities: &extended::Capacities,
-    ) -> Self {
+    ) -> std::io::Result<Self> {
         let unavailable = Outcome::Unavailable {
             reason: "clock unavailable",
         };
         let mut division_fallback = crate::division_census::Census::new();
         division_fallback.reserve_sources(capacities[4].max(extended_capacities.division_sources));
-        Self {
+        let frame = Self {
             capture_seq: 0,
             fixed_layout: None,
             order_counters: OrderCounterCapture::with_capacity(capacities[0]),
@@ -325,27 +328,29 @@ impl Captured {
             country_cache_ns: 0,
             clock: None,
             counters: None,
-            countries: vec![ccountry::Row::default(); capacities[0]],
-            provinces: cprovince::Capture::with_capacity(
+            countries: engine::allocation::default_vec::<ccountry::Row>(capacities[0])?,
+            provinces: cprovince::Capture::try_with_capacity(
                 capacities[1],
                 capacities[9],
                 capacities[10],
-            ),
-            states: vec![cstate::Row::default(); capacities[3]],
-            state_names: vec![0; capacities[11]],
+            )?,
+            states: engine::allocation::default_vec::<cstate::Row>(capacities[3])?,
+            state_names: engine::allocation::default_vec(capacities[11])?,
             state_names_len: 0,
             state_names_required: 0,
-            divisions: vec![carmy::Row::default(); capacities[4]],
+            divisions: engine::allocation::default_vec::<carmy::Row>(capacities[4])?,
             division_fallback,
-            wars: vec![cwar_relation::Row::default(); capacities[5]],
-            wars_snapshot: cwar_relation::OwnedSnapshotScratch::with_capacity(capacities[0]),
+            wars: engine::allocation::default_vec::<cwar_relation::Row>(capacities[5])?,
+            wars_snapshot: cwar_relation::OwnedSnapshotScratch::try_with_capacity(capacities[0])?,
             wars_snapshot_sampled: false,
-            factions: vec![cfaction::Row::default(); capacities[6]],
-            faction_names: vec![0; capacities[8]],
+            factions: engine::allocation::default_vec::<cfaction::Row>(capacities[6])?,
+            faction_names: engine::allocation::default_vec(capacities[8])?,
             faction_names_len: 0,
             faction_names_required: 0,
-            faction_members: vec![cfaction_system::MemberRow::default(); capacities[7]],
-            links: vec![ccountry::LinkRow::default(); capacities[2]],
+            faction_members: engine::allocation::default_vec::<cfaction_system::MemberRow>(
+                capacities[7],
+            )?,
+            links: engine::allocation::default_vec::<ccountry::LinkRow>(capacities[2])?,
             countries_result: unavailable,
             provinces_result: unavailable,
             states_result: unavailable,
@@ -361,7 +366,11 @@ impl Captured {
             pool_bytes: 0,
             dropped_frames: 0,
             dropped_before: LossBatch::default(),
+        };
+        if crate::allocation::failed() {
+            return Err(std::io::ErrorKind::OutOfMemory.into());
         }
+        Ok(frame)
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -448,7 +457,7 @@ impl Captured {
                 grow_capacity(capacity, len.saturating_add(unread_rows as usize));
             }
             if rows.len() < *capacity {
-                rows.resize(*capacity, T::default());
+                crate::table_capture::grow_vec(rows, *capacity);
             }
         }
         resize(
@@ -469,11 +478,13 @@ impl Captured {
         );
         grow_capacity(&mut capacities[10], conflicts.required_groups);
         if self.provinces.groups.len() < capacities[10] {
-            self.provinces.groups.resize(capacities[10], 0);
+            crate::table_capture::grow_vec(&mut self.provinces.groups, capacities[10]);
         }
         resize(&mut self.links, self.links_result, &mut capacities[2]);
         self.order_counters.grow(capacities[0]);
-        self.wars_snapshot.grow(capacities[0]);
+        if self.wars_snapshot.grow(capacities[0]).is_err() {
+            return;
+        }
         resize(&mut self.states, self.states_result, &mut capacities[3]);
         resize(
             &mut self.divisions,
@@ -494,9 +505,9 @@ impl Captured {
             &mut capacities[7],
         );
         grow_capacity(&mut capacities[8], self.faction_names_required);
-        self.faction_names.resize(capacities[8], 0);
+        crate::table_capture::grow_vec(&mut self.faction_names, capacities[8]);
         grow_capacity(&mut capacities[11], self.state_names_required);
-        self.state_names.resize(capacities[11], 0);
+        crate::table_capture::grow_vec(&mut self.state_names, capacities[11]);
     }
 }
 
@@ -694,6 +705,7 @@ impl Shared {
             frequency,
             &crate::country_scale::Sizing::for_slots(0),
         )
+        .expect("synthetic capture buffers")
     }
 
     /// Every frame and the country cache are allocated from `sizing`, which
@@ -703,24 +715,42 @@ impl Shared {
         trampoline: usize,
         frequency: u64,
         sizing: &crate::country_scale::Sizing,
-    ) -> Self {
+    ) -> std::io::Result<Self> {
         let roster = Box::new(Roster::with_counts(sizing.content));
-        let country_cache = Arc::new(Cache::with_capacity(sizing.country_cells));
+        let country_cache = Arc::new(Cache::try_with_capacity(sizing.country_cells)?);
         let country_cells = country_cache.capacity();
         // Frame 0 allocates the CountryIntel buffer; the others borrow it.
-        let first = Captured::with_capacities(&sizing.core, &sizing.map, &sizing.extended);
+        let first = Captured::with_capacities(&sizing.core, &sizing.map, &sizing.extended)?;
+        if crate::allocation::failed() {
+            return Err(std::io::ErrorKind::OutOfMemory.into());
+        }
         let country_intel = first
             .extended
             .country_intel_home()
             .expect("a new frame holds its intel pack");
         let air = &sizing.extended.air;
-        let mut raid_air_scores = Box::<engine::raid_air_scores::Held>::default();
-        raid_air_scores.grow(air.scores.regions, air.scores.countries, air.scores.rows);
+        let mut raid_air_scores = Box::new(engine::raid_air_scores::Held::default());
+        raid_air_scores.grow(air.scores.regions, air.scores.countries, air.scores.rows)?;
         let raid_air_score_bytes = raid_air_scores.allocated_bytes();
         let pool_bytes = roster.allocated_bytes()
             + country_cache.allocated_bytes()
             + country_intel.allocated_bytes()
             + raid_air_score_bytes;
+        let mut slice_fingerprints = std::array::from_fn(|_| UnsafeCell::new(None));
+        for (family, cell) in slice_fingerprints.iter_mut().enumerate() {
+            if !matches!(
+                family,
+                crate::slicing::AIR_RELATIONS | crate::slicing::AIR_HISTORIES
+            ) {
+                *cell.get_mut() = Some(Box::new(crate::slicing::SliceFingerprints::new()));
+            }
+        }
+        let mut eta_cadence = std::array::from_fn(|_| UnsafeCell::new(None));
+        for cell in &mut eta_cadence {
+            *cell.get_mut() = Some(Box::new(
+                extended::division_eta_inputs::CadenceStore::default(),
+            ));
+        }
         let shared = Self {
             acquisition: OnceLock::new(),
             collect_wait_ns: AtomicU64::new(0),
@@ -761,17 +791,9 @@ impl Shared {
             pending: UnsafeCell::new(LossBatch::default()),
             cadence: UnsafeCell::new(CadenceState::default()),
             // The air families' stores belong to their decode steps.
-            slice_fingerprints: std::array::from_fn(|family| {
-                UnsafeCell::new(
-                    (!matches!(
-                        family,
-                        crate::slicing::AIR_RELATIONS | crate::slicing::AIR_HISTORIES
-                    ))
-                    .then(|| Box::new(crate::slicing::SliceFingerprints::new())),
-                )
-            }),
+            slice_fingerprints,
             country_cache: UnsafeCell::new(country_cache),
-            eta_cadence: std::array::from_fn(|_| UnsafeCell::new(Some(Box::default()))),
+            eta_cadence,
             eta_cadence_bytes: std::array::from_fn(|_| AtomicU64::new(0)),
             raid_air_scores: UnsafeCell::new(Some(raid_air_scores)),
             raid_air_score_bytes: AtomicU64::new(raid_air_score_bytes as u64),
@@ -794,11 +816,14 @@ impl Shared {
         // No callback or spool thread can observe Shared during construction.
         unsafe { shared.publish_frame(0, Box::new(first)) };
         for index in 1..BUFFERS {
-            let mut frame = Captured::with_capacities(&sizing.core, &sizing.map, &borrowed);
+            let mut frame = Captured::with_capacities(&sizing.core, &sizing.map, &borrowed)?;
             frame.extended.share_country_intel(&shared.country_intel);
+            if crate::allocation::failed() {
+                return Err(std::io::ErrorKind::OutOfMemory.into());
+            }
             unsafe { shared.publish_frame(index, Box::new(frame)) };
         }
-        shared
+        Ok(shared)
     }
 
     /// Spool thread: free a retired cache and offer a larger one when the
@@ -819,7 +844,9 @@ impl Shared {
                 self.pool_bytes
                     .fetch_sub(previous.allocated_bytes() as u64, Ordering::Relaxed);
             }
-            let next = Arc::new(Cache::with_capacity(cells));
+            let Ok(next) = Cache::try_with_capacity(cells).map(Arc::new) else {
+                return;
+            };
             self.pool_bytes
                 .fetch_add(next.allocated_bytes() as u64, Ordering::Relaxed);
             swap.next = Some(next);
@@ -900,7 +927,7 @@ impl Shared {
     }
 
     pub fn acquisition_failed(&self) -> bool {
-        self.acquisition_panics.load(Ordering::Acquire) != 0
+        crate::allocation::failed() || self.acquisition_panics.load(Ordering::Acquire) != 0
     }
 
     /// Publish all completed writes before waking a callback waiting for reuse.
@@ -1094,9 +1121,21 @@ unsafe fn guarded_acquisition(
     entry: Option<Clock>,
     acquire: impl FnOnce(),
 ) -> bool {
+    if crate::allocation::failed() {
+        shared.cancel_buffer_wait.store(true, Ordering::Release);
+        shared.recording.store(false, Ordering::Release);
+        return false;
+    }
     if !shared.acquisition_failed() {
         match catch_unwind(AssertUnwindSafe(acquire)) {
-            Ok(()) => return true,
+            Ok(()) if !crate::allocation::failed() => return true,
+            Ok(()) => {
+                shared.cancel_buffer_wait.store(true, Ordering::Release);
+                shared.recording.store(false, Ordering::Release);
+                // The fixed witness names this admitted hour. Enqueue failure
+                // may already have returned its loss; never add it a second time.
+                return false;
+            }
             Err(payload) => {
                 // A panic payload can itself panic on Drop. At most one is
                 // retained because this attachment now stops acquisition.
@@ -1112,6 +1151,26 @@ unsafe fn guarded_acquisition(
     false
 }
 
+#[cfg(test)]
+pub(crate) unsafe fn synthetic_callback(
+    shared: &Shared,
+    entry: Option<Clock>,
+    acquire: impl FnOnce(),
+    original: impl FnOnce(),
+) -> bool {
+    let _phase = crate::allocation::enter(crate::allocation::Phase::Callback);
+    crate::allocation::set_context(crate::allocation::Context {
+        campaign_id: entry.and_then(|clock| clock.campaign_id.as_bytes().try_into().ok()),
+        branch: None,
+        load_signal: entry.map(|clock| clock.play_session_started_at),
+        failed_hour: entry.map(|clock| clock.hour),
+    });
+    let complete = unsafe { guarded_acquisition(shared, entry, acquire) };
+    original();
+    crate::allocation::attempted_hour(None);
+    complete
+}
+
 /// The hooked hourly boundary, CGameState::HourlyUpdate. Its entry is the
 /// settled end-of-hour state (every command drained, tick_busy 0, before the
 /// CGameDate increment). The game thread runs the acquisition body here on its
@@ -1121,14 +1180,21 @@ unsafe fn guarded_acquisition(
 pub unsafe extern "system" fn tick(state: usize, commands: usize) {
     ACTIVE.fetch_add(1, Ordering::SeqCst);
     let shared = unsafe { &*SHARED.load(Ordering::Acquire) };
-    let recording = shared.recording.load(Ordering::Relaxed);
+    let recording = shared.recording.load(Ordering::Relaxed) && !crate::allocation::failed();
     if recording {
+        let _phase = crate::allocation::enter(crate::allocation::Phase::Callback);
         let _reads = crate::read_accounting::Capture::new();
         let memory = CountedMemory::new(unsafe { LiveMemory::new() });
         // Read the clock at entry: +468 still the hour just ended, the trampoline
         // has not run. The frame's identity and the settled state the body reads.
         let clock_start = qpc();
         let entry = cgame_state::read_clock(&memory, shared.base);
+        crate::allocation::set_context(crate::allocation::Context {
+            campaign_id: entry.and_then(|clock| clock.campaign_id.as_bytes().try_into().ok()),
+            branch: None,
+            load_signal: entry.map(|clock| clock.play_session_started_at),
+            failed_hour: entry.map(|clock| clock.hour),
+        });
         crate::equipment_destruction::boundary(entry);
         let entry_ticks = qpc() - clock_start;
         #[cfg(feature = "callback_profile")]
@@ -1162,6 +1228,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
         shared
             .collect_wait_ns
             .fetch_add(shared.ns(qpc() - dispatched), Ordering::Relaxed);
+        crate::allocation::attempted_hour(None);
         #[cfg(feature = "callback_profile")]
         {
             let mut sample = profile_stamp.finish(shared.frequency);
@@ -1887,7 +1954,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     .unwrap()
                     .census
                     .unit_inputs()
-                    .map(Arc::clone)
+                    .cloned()
             } else {
                 let begin = qpc();
                 decode::recycle_divisions_job(divisions_job.take().unwrap());
@@ -1907,11 +1974,9 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     division_source_capacity,
                 );
                 frame.table_ns[6] = shared.ns(qpc() - begin);
-                frame.division_fallback.unit_inputs().map(Arc::clone)
+                frame.division_fallback.unit_inputs().cloned()
             };
-            frame
-                .extended
-                .install_unit_inputs(inputs.as_ref().map(Arc::clone));
+            frame.extended.install_unit_inputs(inputs.clone());
             let divisions_pending = divisions_job.take().map(|payload| {
                 queue!(acquisition::Job::Divisions(acquisition::RawRequest {
                     countries: Arc::clone(&country_snapshot),
@@ -1927,7 +1992,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 countries: Arc::clone(&country_snapshot),
                 context: intel_ctx,
                 payload: decode::acquire_intel_job(),
-                inputs: inputs.as_ref().map(Arc::clone),
+                inputs: inputs.clone(),
             }));
             // The fat late-joined jobs go out after Divisions and Intel so those
             // find a free worker; the burst's short jobs have freed some by now.

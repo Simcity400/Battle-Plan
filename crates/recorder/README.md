@@ -15,6 +15,18 @@ Keep `collector.dll` beside `recorder.exe`. The recorder prints the Paradox user
 
 Unsupported executable hashes and simultaneous game processes are refused. Recording must never pause, save, send input to or otherwise control the game.
 
+The recorder prepares a fixed terminal-witness file before injection. After confirmed collector absence or game-process exit, a valid [checksummed witness](../replay/src/witness.rs) overrides periodic status, including a stale successful status. The recorder checks its process/session identity, campaign, branch/load context and complete-record spool watermark before recovering the CRC-valid prefix. It keeps the source spool, writes a normal replay with a partial outcome and failure reason, and reports partial completion. A known attempted hour with validated campaign and branch context becomes an explicit gap with reason “collector allocation failed”; an unknown hour creates no guessed gap. Repeating finalization preserves the replay bytes and does not duplicate the gap or partial outcome. Missing or invalid failure evidence retains the spool and reports incomplete recovery.
+
+The witness separates the attempted campaign from the global committed campaign and a pending append's preceding per-campaign watermark. Recovery caps both named spool prefixes, using the earlier watermark when they name the same campaign. A pending campaign with no prior committed records remains incomplete while other stable campaigns keep their captured hours. With no global committed watermark, or no surviving recorded campaign identity, recovery retains the evidence without inventing a replay.
+
+If the attempted campaign cannot be established, the witness and terminal status retain any known failed hour. The recovered replay remains partial without attributing that hour to a campaign or branch.
+
+A committed branch declaration can precede its first clock record. If that branch has no recorded frame, gap or clock yet, an authoritative witness for its exact declared first hour supplies the missing failure context. A contradictory committed clock or a different attempted hour remains a refusal; recovery never invents a clock record or QPC.
+
+Terminal `status.json` and `completed.json` carry `capture_failed`, `failure_code`, nullable `failed_hour` and `partial`. A completed queue drain does not make a failed capture successful. Partial recordings open normally in the dashboard and viewer, with their recorded prefix available and the failure visible. `inspect` prints the partial outcome and exact gap.
+
+For the coordinated allocation-failure live check, build both the collector and recorder with their `alloc-fault-injection` feature and pass `--alloc-fault <phase>:<positive ordinal>[:<committed-hours>]` to the recorder. The optional hour count defaults to zero; ordinal counting starts after that many complete hours have committed. A default recorder refuses that option by feature name; a default collector refuses a hand-supplied `alloc_fault` configuration by feature name. The recorder writes the ordinary JSON configuration and adds the fault field only for a feature-enabled request, with `after_hours` only for a nonzero threshold. The option targets checked allocations; production builds compile out injection. Run the fresh-save oracle and existing smoke workflow after the live lead confirms that the game survives and the partial replay opens.
+
 ## Inspect and compare
 
 ```powershell

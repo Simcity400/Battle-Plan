@@ -1,4 +1,5 @@
 use super::*;
+use engine::allocation;
 
 pub(crate) const WING_PACK_N: usize = 2;
 
@@ -56,11 +57,11 @@ impl Default for AirWingJob {
 impl AirWingJob {
     pub fn new() -> Self {
         let mut job = Self {
-            map_rows: vec![Default::default(); 8192],
-            sources: vec![Default::default(); 8192],
-            equipment: vec![Default::default(); 8192],
-            cumulative: vec![Default::default(); 4096],
-            memberships: vec![Default::default(); 8192],
+            map_rows: allocation::owned_vec(allocation::default_vec(8192)),
+            sources: allocation::owned_vec(allocation::default_vec(8192)),
+            equipment: allocation::owned_vec(allocation::default_vec(8192)),
+            cumulative: allocation::owned_vec(allocation::default_vec(4096)),
+            memberships: allocation::owned_vec(allocation::default_vec(8192)),
             ..Default::default()
         };
         job.update_capacity_charge();
@@ -109,30 +110,20 @@ impl AirWingJob {
             || self.required_memberships > self.memberships.len()
     }
     pub fn grow(&mut self) {
-        self.map_rows.resize(
-            self.required[0].max(self.map_rows.len()),
-            Default::default(),
-        );
-        self.equipment.resize(
-            self.required[1].max(self.equipment.len()),
-            Default::default(),
-        );
-        self.cumulative.resize(
-            self.required[2].max(self.cumulative.len()),
-            Default::default(),
-        );
+        crate::table_capture::grow_vec(&mut self.map_rows, self.required[0]);
+        crate::table_capture::grow_vec(&mut self.equipment, self.required[1]);
+        crate::table_capture::grow_vec(&mut self.cumulative, self.required[2]);
         if self.sources.is_empty() {
-            self.sources.resize(8192, Default::default());
+            crate::table_capture::grow_vec(&mut self.sources, 8192);
         }
         if self.required_memberships > self.memberships.len() {
-            self.memberships
-                .resize(self.required_memberships, Default::default());
+            crate::table_capture::grow_vec(&mut self.memberships, self.required_memberships);
         }
         if let Outcome::Truncated { len, unread_rows } = self.source_outcome {
             let required = len
                 .saturating_add(unread_rows as usize)
                 .max(self.sources.len().saturating_mul(2));
-            self.sources.resize(required, Default::default());
+            crate::table_capture::grow_vec(&mut self.sources, required);
         }
         self.update_capacity_charge();
     }

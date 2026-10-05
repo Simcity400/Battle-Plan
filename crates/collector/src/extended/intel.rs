@@ -9,16 +9,17 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows, bounded, grow_vec},
 };
+use engine::allocation::{copy_vec, default_vec, map_slice, owned_vec, reserve, reserve_exact};
 use engine::{
     Memory, ccharacter, ccharacter_manager, ccountry, ccountry_intel, ccountry_intel_network,
-    ccountry_operation_manager,
-    ccountry_operation_token_manager, ccryptology, ccurrent_autonomy_status, cdiplomacy_status,
-    cflag_manager, cgame_state, cintelligence_agency, coperation_instance, coperative_leader,
-    cwar_relation,
+    ccountry_operation_manager, ccountry_operation_token_manager, ccryptology,
+    ccurrent_autonomy_status, cdiplomacy_status, cflag_manager, cgame_state, cintelligence_agency,
+    coperation_instance, coperative_leader,
     cpdx_array::Array,
     crelation_status, cscript_flag, cstate,
     csubject_relation::{self, Name},
-    cvariables, incoming_diplomatic_action_queue, operation_assigned_operative, read, read_slice,
+    cvariables, cwar_relation, incoming_diplomatic_action_queue, operation_assigned_operative,
+    read, read_slice,
     walk::Outcome,
 };
 use replay::{
@@ -26,7 +27,8 @@ use replay::{
     frame::{BaselineToken, TableInput, TableView},
     rows::{self, TableId, TableRows, tables},
 };
-use std::{mem::size_of, sync::Arc};
+use std::mem::size_of;
+use std::sync::Arc;
 
 pub const N: usize = 16;
 pub const TABLES: [TableId; N] = [
@@ -89,9 +91,14 @@ pub(crate) struct ScriptVariableComparison {
     entries: Vec<u64>,
 }
 
-fn clear_seen(bits: &mut Vec<u64>, count: usize) {
-    bits.resize(count.div_ceil(64), 0);
+fn clear_seen(bits: &mut Vec<u64>, count: usize) -> bool {
+    let words = count.div_ceil(64);
+    if reserve(bits, words.saturating_sub(bits.len())).is_err() {
+        return false;
+    }
+    bits.resize(words, 0);
     bits.fill(0);
+    true
 }
 
 fn first_seen(bits: &mut [u64], index: usize) -> bool {
@@ -244,7 +251,7 @@ struct NativeShadow<R> {
     misses: u64,
 }
 
-impl<R: Clone + PartialEq> NativeShadow<R> {
+impl<R: Copy + PartialEq> NativeShadow<R> {
     fn clear(&mut self) {
         self.rows.clear();
         self.output = None;
@@ -285,6 +292,9 @@ impl<R: Clone + PartialEq> NativeShadow<R> {
         {
             debug_assert_eq!(rows.table(), id);
             let output = Arc::new(rows);
+            if reserve(&mut self.rows, source.len()).is_err() {
+                return unavailable("collector allocation failed").into();
+            }
             self.rows.extend_from_slice(source);
             self.output = Some(Arc::clone(&output));
             return TableInput::SharedComplete(output);
@@ -423,7 +433,9 @@ impl Captured {
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self::build(
             capacity,
-            Loan::new(Home::new(capacity.rows[15], capacity.intel_scratch)),
+            Home::try_new(capacity.rows[15], capacity.intel_scratch)
+                .map(Loan::new)
+                .unwrap_or_default(),
         )
     }
 
@@ -464,7 +476,7 @@ impl Captured {
             variable_entries: Arena::new(capacity.variable_entries),
             variable_names: Arena::new(capacity.variable_names),
             tokens: Arena::new(capacity.tokens),
-            flag_scratch: vec![cscript_flag::Row::default(); capacity.rows[7]],
+            flag_scratch: owned_vec(default_vec(capacity.rows[7])),
             relations_raw_mode: false,
             relations_selection: SliceSelection::new(capacity.rows[13] != 0),
             relation_active: [false; 2],
@@ -643,8 +655,22 @@ impl Captured {
         self.relation_tuples.grow(&mut capacity.rows[14]);
         // Relation storage is sized only from what its own walks observed, so
         // a vacant or never-walked pack allocates nothing here.
-        self.relation_resolver.grow();
-        self.subject_snapshot.grow(0);
+        if self
+            .relation_resolver
+            .grow()
+            .map_err(crate::allocation::io)
+            .is_err()
+        {
+            return;
+        }
+        if self
+            .subject_snapshot
+            .grow(0)
+            .map_err(crate::allocation::io)
+            .is_err()
+        {
+            return;
+        }
         // Returns the shared buffer. Its scratch is a fixed copy window: a
         // country longer than it is copied in several passes, not truncated.
         self.country_intel.grow(&mut capacity.rows[15]);
@@ -1167,7 +1193,7 @@ impl Captured {
             end_hour: r.end_hour,
             cancel: r.cancel,
             autonomy_ratio: r.autonomy_ratio,
-            state: literal(&self.subject_names.first, r.state).to_vec(),
+            state: owned_vec(copy_vec(literal(&self.subject_names.first, r.state))),
         })
     }
 
@@ -1189,7 +1215,7 @@ impl Captured {
                 active_count: r.active_count,
                 admission_ceiling: r.admission_ceiling,
                 unknown_f0: r.unknown_f0,
-                name: literal(&self.agency_names.first, r.name).to_vec(),
+                name: owned_vec(copy_vec(literal(&self.agency_names.first, r.name))),
                 created: r.created,
             }
         })
@@ -1211,13 +1237,13 @@ impl Captured {
             lower_score: r.lower_score,
             upper_score: r.upper_score,
             last_modified_bits: r.last_modified_bits,
-            state: literal(&self.autonomy_names.first, r.state).to_vec(),
+            state: owned_vec(copy_vec(literal(&self.autonomy_names.first, r.state))),
             previous: r
                 .previous
-                .map(|name| literal(&self.autonomy_names.first, name).to_vec()),
+                .map(|name| owned_vec(copy_vec(literal(&self.autonomy_names.first, name)))),
             next: r
                 .next
-                .map(|name| literal(&self.autonomy_names.first, name).to_vec()),
+                .map(|name| owned_vec(copy_vec(literal(&self.autonomy_names.first, name)))),
         })
     }
 
@@ -1258,7 +1284,9 @@ impl Captured {
         {
             return false;
         }
-        clear_seen(&mut scratch.scopes, len);
+        if !clear_seen(&mut scratch.scopes, len) {
+            return false;
+        }
         for (ordinal, scope) in self.variables.rows[..len].iter().enumerate() {
             let identity = scope_identity(scope.scope);
             // State scopes arrive in ID order, while canonical country slots
@@ -1283,7 +1311,9 @@ impl Captured {
             {
                 return false;
             }
-            clear_seen(&mut scratch.entries, old.len());
+            if !clear_seen(&mut scratch.entries, old.len()) {
+                return false;
+            }
             for entry in &self.variable_entries.first
                 [scope.entries_start..scope.entries_start + scope.entries_len]
             {
@@ -1313,16 +1343,16 @@ impl Captured {
         }
         let view = table::<tables::ScriptVariables, _>(outcome, &self.variables.rows, |r| {
             let (scope_kind, scope_id) = scope_identity(r.scope);
-            let mut entries: Vec<_> = self.variable_entries.first
-                [r.entries_start..r.entries_start + r.entries_len]
-                .iter()
-                .map(|entry| rows::ScriptVariableEntry {
-                    name: self.variable_names.first
-                        [entry.name_start..entry.name_start + entry.name_len]
-                        .to_vec(),
+            let mut entries = owned_vec(map_slice(
+                &self.variable_entries.first[r.entries_start..r.entries_start + r.entries_len],
+                |entry| rows::ScriptVariableEntry {
+                    name: owned_vec(copy_vec(
+                        &self.variable_names.first
+                            [entry.name_start..entry.name_start + entry.name_len],
+                    )),
                     value_raw: entry.value_raw,
-                })
-                .collect();
+                },
+            ));
             entries.sort_unstable_by(|a, b| a.name.cmp(&b.name));
             rows::ScriptVariablesRow {
                 scope_kind,
@@ -1408,7 +1438,9 @@ impl Captured {
             rows::OperationTokensRow {
                 owner: r.owner,
                 target: r.target,
-                tokens: self.tokens.first[r.tokens_start..r.tokens_start + r.tokens_len].to_vec(),
+                tokens: owned_vec(copy_vec(
+                    &self.tokens.first[r.tokens_start..r.tokens_start + r.tokens_len],
+                )),
             }
         })
     }
@@ -1757,7 +1789,8 @@ fn pointer(memory: &impl Memory, root: usize, offset: usize) -> Result<usize, &'
 
 /// Drains the opinion writes observed since `consumed`: see
 /// [`crate::opinion_changes::drain`].
-type Drain = fn(&mut u64, &mut [crelation_status::Mark], &mut usize) -> Option<(u64, Option<usize>)>;
+type Drain =
+    fn(&mut u64, &mut [crelation_status::Mark], &mut usize) -> Option<(u64, Option<usize>)>;
 
 /// The opinion baseline every relations job shares. Pooled jobs borrow the one
 /// store: a job takes it at its refresh and returns it, grown off the game
@@ -1805,14 +1838,21 @@ impl SharedOpinions {
         fn fit<T: Default + Clone>(vector: &mut Vec<T>, required: usize) {
             if required > vector.len() {
                 let len = required.saturating_add(required / 4);
-                if vector.try_reserve_exact(len - vector.len()).is_ok() {
+                if reserve_exact(vector, len - vector.len()).is_ok() {
                     vector.resize(len, T::default());
                 }
             }
         }
         // Room for the marks the last drain saw, in the baseline as well as
         // here, so they are not refused twice.
-        self.baseline.reserve_marks(self.required_marks);
+        if self
+            .baseline
+            .reserve_marks(self.required_marks)
+            .map_err(crate::allocation::io)
+            .is_err()
+        {
+            return;
+        }
         fit(
             &mut self.marks,
             self.required_marks
@@ -1966,8 +2006,8 @@ impl RelationsJob {
     /// opinions and 1,512 tuples); growth follows each refresh.
     pub fn new() -> Self {
         let mut job = Self {
-            opinions: vec![crelation_status::OpinionRow::default(); 16_384],
-            tuples: vec![crelation_status::TupleRow::default(); 4_096],
+            opinions: owned_vec(default_vec(16_384)),
+            tuples: owned_vec(default_vec(4_096)),
             ..Self::default()
         };
         job.update_capacity_charge();
@@ -2013,14 +2053,16 @@ impl RelationsJob {
         fn fit<T: Default + Clone>(rows: &mut Vec<T>, required: usize) {
             if required > rows.len() {
                 let len = required.saturating_add(required / 4);
-                if rows.try_reserve_exact(len - rows.len()).is_ok() {
+                if reserve_exact(rows, len - rows.len()).is_ok() {
                     rows.resize(len, T::default());
                 }
             }
         }
         fit(&mut self.opinions, self.required[0]);
         fit(&mut self.tuples, self.required[1]);
-        self.resolver.grow();
+        if self.resolver.grow().map_err(crate::allocation::io).is_err() {
+            return;
+        }
         self.update_capacity_charge();
     }
 
@@ -2189,9 +2231,7 @@ pub(crate) fn copy_relations_refresh(
             };
             // Marks from before the baseline's epoch (a load's, say) are
             // never replayed: they are no demand for storage.
-            if drained.is_some_and(|(epoch, _)| {
-                baseline.token() == Some((epoch, ctx.epoch))
-            }) {
+            if drained.is_some_and(|(epoch, _)| baseline.token() == Some((epoch, ctx.epoch))) {
                 *required_marks = pending;
             }
             // Verify mode publishes no replay it cannot compare: until its
@@ -2201,13 +2241,10 @@ pub(crate) fn copy_relations_refresh(
             if report.is_some() {
                 *required_verify = (*required_verify).max(lens[0]);
             }
-            let observation =
-                drained.map(|(epoch, count)| crelation_status::Observation {
-                    token: (epoch, ctx.epoch),
-                    marks: count
-                        .filter(|_| verifiable)
-                        .map(|count| &marks[..count]),
-                });
+            let observation = drained.map(|(epoch, count)| crelation_status::Observation {
+                token: (epoch, ctx.epoch),
+                marks: count.filter(|_| verifiable).map(|count| &marks[..count]),
+            });
             (baseline, observation)
         }
         None => {
@@ -2314,7 +2351,10 @@ impl Captured {
         decode_ticks: &mut [u64; 2],
     ) {
         self.relation_active = job.active;
-        let Some(walk) = job.walk.filter(|_| job.active.into_iter().any(|active| active)) else {
+        let Some(walk) = job
+            .walk
+            .filter(|_| job.active.into_iter().any(|active| active))
+        else {
             self.fail_relations_capture(job.active, replay::cadence::SKIPPED_REASON);
             return;
         };
@@ -3121,6 +3161,20 @@ mod tests {
     }
 
     #[test]
+    fn comparison_bitsets_keep_the_original_resize_capacity_trace() {
+        let mut previous = Vec::<u64>::new();
+        let mut checked = Vec::<u64>::new();
+        for count in [1_usize, 64, 257, 65, 513, 1_025, 0] {
+            previous.resize(count.div_ceil(64), 0);
+            previous.fill(0);
+            assert!(clear_seen(&mut checked, count));
+            assert_eq!(checked, previous);
+            assert_eq!(checked.capacity(), previous.capacity());
+            checked.fill(u64::MAX);
+        }
+    }
+
+    #[test]
     fn relations_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
         use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
         static LOCAL: Tracker = Tracker::new();
@@ -3823,8 +3877,15 @@ mod tests {
         put(&mut bytes, historical, &0x5100_u64.to_le_bytes());
         put(&mut bytes, historical + 8, &2_u32.to_le_bytes());
         put(&mut bytes, historical + 12, &2_u32.to_le_bytes());
-        for (index, (character, id)) in [(0x6000_usize, 44_u32), (0x6200, 45)].into_iter().enumerate() {
-            put(&mut bytes, 0x5100 + index * 8, &(character as u64).to_le_bytes());
+        for (index, (character, id)) in [(0x6000_usize, 44_u32), (0x6200, 45)]
+            .into_iter()
+            .enumerate()
+        {
+            put(
+                &mut bytes,
+                0x5100 + index * 8,
+                &(character as u64).to_le_bytes(),
+            );
             put(
                 &mut bytes,
                 character,
@@ -3974,7 +4035,11 @@ mod tests {
         );
         // A character whose manager is not a CFlagManager fails the table.
         let mut broken = bytes.clone();
-        put(&mut broken, 0x6200 + ccharacter::FLAGS, &0_u64.to_le_bytes());
+        put(
+            &mut broken,
+            0x6200 + ccharacter::FLAGS,
+            &0_u64.to_le_bytes(),
+        );
         assert!(matches!(
             walk_flags(
                 &SliceMemory {
@@ -4712,8 +4777,7 @@ mod tests {
         let mut shared = SharedOpinions::new();
         shared.drain = test_drain;
         shared.marks = vec![crelation_status::Mark::default(); 8];
-        shared.report =
-            verify.then_some(crate::opinion_changes::verified as fn(Option<bool>));
+        shared.report = verify.then_some(crate::opinion_changes::verified as fn(Option<bool>));
         Box::leak(Box::new(std::sync::Mutex::new(OpinionSlot::Home(shared))))
     }
 
@@ -4734,7 +4798,8 @@ mod tests {
         job: &mut RelationsJob,
         epoch: u64,
     ) -> (Outcome, Vec<crelation_status::OpinionRow>) {
-        let report = copy_relations_refresh(&relations_kit::memory(bytes), relations_ctx(epoch), job);
+        let report =
+            copy_relations_refresh(&relations_kit::memory(bytes), relations_ctx(epoch), job);
         assert!(report.raw_ok);
         if job.grow_for_next() {
             job.grow();
@@ -4784,8 +4849,12 @@ mod tests {
             second.return_opinions();
         }
         assert!(
-            copy_relations_refresh(&relations_kit::memory(&cleared), relations_ctx(0), &mut second)
-                .raw_ok
+            copy_relations_refresh(
+                &relations_kit::memory(&cleared),
+                relations_ctx(0),
+                &mut second
+            )
+            .raw_ok
         );
         assert_eq!(second.walk.unwrap().opinions, rows.0.opinions);
     }
@@ -4809,18 +4878,13 @@ mod tests {
         // the hour's published rows came from, and whether they were
         // published by the job itself.
         let hour = |pack: &mut Captured,
-                        store: &mut Option<Box<SliceFingerprints>>,
-                        hour: i32,
-                        rows: usize,
-                        // A panicked (walked) or stopped (never walked) job.
-                        failure: Option<(&'static str, bool)>| {
-            let (context, selection) = pack.begin_relations(
-                relations_kit::BASE,
-                relations_kit::GS,
-                hour,
-                false,
-                true,
-            );
+                    store: &mut Option<Box<SliceFingerprints>>,
+                    hour: i32,
+                    rows: usize,
+                    // A panicked (walked) or stopped (never walked) job.
+                    failure: Option<(&'static str, bool)>| {
+            let (context, selection) =
+                pack.begin_relations(relations_kit::BASE, relations_kit::GS, hour, false, true);
             assert_eq!((context.opinion_cap, context.tuple_cap), (16, 16));
             assert_eq!(pack.relation_activity(), [true; 2]);
             let loaned = std::mem::replace(pack, Captured::vacant());
@@ -4882,7 +4946,9 @@ mod tests {
                         assert_eq!(pack.relation_opinions.outcome, UNCAPTURED, "no typed walk");
                         assert_eq!(pack.relation_tuples.outcome, UNCAPTURED, "no typed walk");
                         pack.fail_relations_capture(context.active, reason);
-                        for outcome in [pack.relation_opinions.outcome, pack.relation_tuples.outcome] {
+                        for outcome in
+                            [pack.relation_opinions.outcome, pack.relation_tuples.outcome]
+                        {
                             assert_eq!(outcome, Outcome::Unavailable { reason });
                         }
                         Default::default()
@@ -4976,7 +5042,11 @@ mod tests {
             let owners: std::collections::BTreeSet<u32> = job.opinions[..walk.opinions.len()]
                 .iter()
                 .map(|row| row.owner_country)
-                .chain(job.tuples[..walk.tuples.len()].iter().map(|row| row.owner_country))
+                .chain(
+                    job.tuples[..walk.tuples.len()]
+                        .iter()
+                        .map(|row| row.owner_country),
+                )
                 .collect();
             (owners, job.selection.take().unwrap())
         };
@@ -5010,11 +5080,17 @@ mod tests {
         };
         // Owners, then their rows, get storage; the third refresh records.
         for _ in 0..3 {
-            assert_eq!(observed_refresh(&bytes, &mut job, 1).0, Outcome::Rows { len: 2 });
+            assert_eq!(
+                observed_refresh(&bytes, &mut job, 1).0,
+                Outcome::Rows { len: 2 }
+            );
         }
         let mut moved = bytes.clone();
         relations_kit::p64(&mut moved, relations_kit::status(0, 2), 0);
-        assert_eq!(observed_refresh(&moved, &mut job, 1).0, Outcome::Rows { len: 2 });
+        assert_eq!(
+            observed_refresh(&moved, &mut job, 1).0,
+            Outcome::Rows { len: 2 }
+        );
         assert_eq!(
             observed_refresh(&moved, &mut job, 2).0,
             Outcome::Unavailable {
@@ -5031,7 +5107,7 @@ mod tests {
         let _lock = crate::opinion_changes::test_lock();
         crate::opinion_changes::observe_for_test(true);
         let verified = || {
-            let status = crate::opinion_changes::status();
+            let status = serde_json::to_value(crate::opinion_changes::status()).unwrap();
             ["unverified_refreshes", "verified_refreshes", "mismatches"]
                 .map(|key| status[key].as_u64().unwrap())
         };
@@ -5041,7 +5117,8 @@ mod tests {
             store: Some(observed_store(true)),
             ..RelationsJob::new()
         };
-        let opinion = |owner, target| relations_kit::status(owner, target) + crelation_status::OPINION;
+        let opinion =
+            |owner, target| relations_kit::status(owner, target) + crelation_status::OPINION;
         let initial = observed_refresh(&bytes, &mut job, 1);
         assert_eq!(initial.0, Outcome::Rows { len: 2 });
         // Records, then replays (the first replay sizes the verify rows).
@@ -5074,7 +5151,10 @@ mod tests {
             crate::opinion_changes::drain(&mut consumed, &mut output, &mut required),
             None
         );
-        assert_eq!(crate::opinion_changes::status()["poisoned"], true);
+        assert_eq!(
+            serde_json::to_value(crate::opinion_changes::status()).unwrap()["poisoned"],
+            true
+        );
         // The baseline was dropped: the next refresh reads every status.
         assert_eq!(observed_refresh(&bytes, &mut job, 1), missed);
         assert_eq!(delta(verified()), [0, 3, 1]);

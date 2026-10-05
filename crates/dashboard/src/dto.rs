@@ -22,7 +22,18 @@ pub struct ReplayMetadata {
     pub player_country_id: Option<String>,
     /// The recorder's identity witness, not a new local asset verification.
     pub content_verified: bool,
+    /// The capture stopped after the verified prefix; independent of gap coverage.
+    pub partial: Option<PartialRecording>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PartialRecording {
+    pub session_id: String,
+    pub reason: String,
+    /// No hour is inferred for an idle or status failure.
+    pub failed_hour: Option<i32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]

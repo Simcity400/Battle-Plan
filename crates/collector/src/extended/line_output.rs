@@ -9,15 +9,18 @@
 //! which were created after the observation began. The table shares the
 //! census's daily slot: off it, the spool carries the last publication, until
 //! a tick goes unobserved.
+use super::output_continuity::OutputMap;
 pub(crate) use super::output_continuity::holds_publication;
 use super::output_continuity::{self, Progress, Reasons, State};
 use crate::line_output::{Drained, Entry};
+use crate::spooling::unavailable;
+use engine::allocation::{owned_vec, reserve, reserve_exact, reserve_map};
 use replay::{
     BranchId,
     frame::{TableInput, TableView},
     rows::{ProductionLineOutputRow, ProductionLineRow, TableId, TableRows},
 };
-use std::collections::BTreeMap;
+use std::io;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ProductionLineOutput];
@@ -57,6 +60,7 @@ struct Line {
     outputs: Vec<Output>,
     /// Published as ended; dropped at the next publication.
     ended: bool,
+    pending: usize,
 }
 
 /// The branch's per-line totals, owned by the spool for one campaign.
@@ -76,7 +80,9 @@ impl Totals {
         captured: &Captured,
         tables: &mut [TableInput],
     ) {
-        self.observe(branch, hour, captured);
+        if self.observe(branch, hour, captured).is_err() {
+            return;
+        }
         let published = self.publish(hour, &tables[TableId::ProductionLines.index()]);
         tables[TableId::ProductionLineOutput.index()] = TableInput::Sampled(published);
     }
@@ -87,7 +93,7 @@ impl Totals {
         self.shared.written(held_publication);
     }
 
-    fn observe(&mut self, branch: BranchId, hour: i32, captured: &Captured) {
+    fn observe(&mut self, branch: BranchId, hour: i32, captured: &Captured) -> io::Result<()> {
         let progress = self.shared.observe(
             branch,
             hour,
@@ -102,12 +108,29 @@ impl Totals {
         match progress {
             Progress::Restart => {}
             Progress::Entries(range) => {
-                for entry in &captured.handed_over()[range] {
+                let entries = &captured.handed_over()[range];
+                reserve_map(&mut self.shared.lines, entries.len())?;
+                for entry in entries {
+                    let line = self.shared.lines.entry(entry.line).or_insert_with(|| Line {
+                        first_hour: hour,
+                        outputs: Vec::new(),
+                        ended: false,
+                        pending: 0,
+                    });
+                    line.pending = line.pending.saturating_add(1);
+                }
+                for entry in entries {
+                    let line = self.shared.lines.get_mut(&entry.line).unwrap();
+                    if line.pending != 0 {
+                        reserve(&mut line.outputs, line.pending)?;
+                        line.pending = 0;
+                    }
                     add(&mut self.shared.lines, entry, hour);
                 }
             }
             Progress::None => {}
         }
+        Ok(())
     }
 
     fn publish(&mut self, hour: i32, lines: &TableInput) -> TableView {
@@ -125,18 +148,16 @@ impl Totals {
             TableInput::Sampled(TableView::Unavailable { reason })
                 if reason == replay::cadence::SKIPPED_REASON =>
             {
-                return TableView::Unavailable {
-                    reason: replay::cadence::SKIPPED_REASON.into(),
-                };
+                return unavailable(replay::cadence::SKIPPED_REASON);
             }
             _ => return unavailable("ProductionLines is incomplete at this hour"),
         };
         if !self.shared.complete {
             return unavailable("production ticks before this hour's sample are still in the log");
         }
-        TableView::Complete(TableRows::ProductionLineOutput(
+        TableView::Complete(TableRows::ProductionLineOutput(owned_vec(
             self.rows(hour, since_hour, census),
-        ))
+        )))
     }
 
     fn rows(
@@ -144,23 +165,26 @@ impl Totals {
         hour: i32,
         since_hour: i32,
         census: &[ProductionLineRow],
-    ) -> Vec<ProductionLineOutputRow> {
+    ) -> io::Result<Vec<ProductionLineOutputRow>> {
         let live = |handle: u64| {
             census
                 .binary_search_by_key(&handle, |row| row.handle)
                 .is_ok()
         };
         self.shared
-            .prepare_publication(hour, census.iter().map(|row| row.handle), |line| line.ended);
+            .prepare_publication(hour, census.iter().map(|row| row.handle), |line| line.ended)?;
+        reserve_map(&mut self.shared.lines, census.len())?;
         let baseline = &self.shared.census;
         for row in census {
             let line = self.shared.lines.entry(row.handle).or_insert_with(|| Line {
                 first_hour: hour,
                 outputs: Vec::new(),
                 ended: false,
+                pending: 0,
             });
             // Every live line has a row, zero until it produces.
             if line.outputs.is_empty() {
+                reserve(&mut line.outputs, 1)?;
                 line.outputs.push(Output {
                     country: row.country,
                     variant: row.variant,
@@ -171,7 +195,11 @@ impl Totals {
                 });
             }
         }
+        let count = self.shared.lines.values().try_fold(0usize, |count, line| {
+            engine::allocation::add(count, line.outputs.len())
+        })?;
         let mut rows = Vec::new();
+        reserve_exact(&mut rows, count)?;
         for (&handle, line) in &mut self.shared.lines {
             line.ended = !live(handle);
             // Absent from the first census and first seen after it: created
@@ -193,16 +221,16 @@ impl Totals {
                 }
             }));
         }
-        rows
+        rows.sort_unstable_by_key(|row| (row.line, row.ordinal));
+        Ok(rows)
     }
 }
 
-fn add(lines: &mut BTreeMap<u64, Line>, entry: &Entry, hour: i32) {
-    let line = lines.entry(entry.line).or_insert_with(|| Line {
-        first_hour: hour,
-        outputs: Vec::new(),
-        ended: false,
-    });
+fn add(lines: &mut OutputMap<Line>, entry: &Entry, hour: i32) {
+    let line = lines
+        .get_mut(&entry.line)
+        .expect("batch admitted every output line");
+    let _ = hour;
     let index = match line.outputs.iter().position(|output| {
         output.country == entry.country
             && output.variant == entry.variant
@@ -225,12 +253,6 @@ fn add(lines: &mut BTreeMap<u64, Line>, entry: &Entry, hour: i32) {
     output.units += i64::from(entry.units);
     output.credit += i64::from(entry.credit);
     output.exact &= entry.exact;
-}
-
-fn unavailable(reason: &str) -> TableView {
-    TableView::Unavailable {
-        reason: reason.into(),
-    }
 }
 
 #[cfg(test)]

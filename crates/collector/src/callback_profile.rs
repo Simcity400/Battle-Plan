@@ -93,12 +93,12 @@ impl JoinSample {
         }
     }
 
-    fn json(self) -> serde_json::Value {
+    fn json(self) -> impl serde::Serialize {
         let label = self
             .role
             .and_then(|index| acquisition_jobs::ROLES.get(index))
-            .map(|role| format!("{role:?}"));
-        serde_json::json!({
+            .map(|role| crate::status::DebugValue(role));
+        crate::status::status!({
             "role": self.role,
             "role_label": label,
             "wall_ns": self.wall_ns,
@@ -210,8 +210,8 @@ impl Sample {
         }
     }
 
-    fn json(self) -> serde_json::Value {
-        serde_json::json!({
+    fn json(self) -> impl serde::Serialize {
+        crate::status::status!({
             "hour": self.hour,
             "qpc_begin": self.qpc_begin,
             "qpc_end": self.qpc_end,
@@ -226,8 +226,8 @@ impl Sample {
             "dispatch_ns": self.dispatch_ns,
             "phase_calls": self.phase_calls,
             "join": self.join.json(),
-            "segments_ns": self.segments_ns.as_slice(),
-            "join_wait_ns": self.join_wait_ns.as_slice(),
+            "segments_ns": crate::status::sequence(self.segments_ns.into_iter()),
+            "join_wait_ns": crate::status::sequence(self.join_wait_ns.into_iter()),
         })
     }
 }
@@ -347,25 +347,31 @@ impl<const N: usize> Samples<N> {
         }
     }
 
-    fn status(&self) -> serde_json::Value {
+    fn status(&self) -> impl serde::Serialize + '_ {
         let qualifying = self.qualifying.load(Ordering::Relaxed);
         let reserved = qualifying.min(N as u64) as usize;
-        let samples: Vec<_> = self.slots[..reserved]
-            .iter()
-            .filter_map(Slot::read)
-            .map(Sample::json)
-            .collect();
-        let roles: Vec<_> = acquisition_jobs::ROLES
-            .iter()
-            .map(|role| format!("{role:?}"))
-            .collect();
-        serde_json::json!({
+        let ready = std::array::from_fn::<_, N, _>(|index| {
+            index < reserved && self.slots[index].read().is_some()
+        });
+        let published = ready.iter().filter(|&&ready| ready).count();
+        let samples = crate::status::sequence(
+            self.slots
+                .iter()
+                .zip(ready)
+                .filter_map(|(slot, ready)| ready.then(|| slot.read().unwrap().json())),
+        );
+        let roles = crate::status::sequence(
+            acquisition_jobs::ROLES
+                .iter()
+                .map(crate::status::DebugValue),
+        );
+        crate::status::status!({
             "threshold_ns": THRESHOLD_NS,
             "capacity": N,
             "observations": self.observations.load(Ordering::Relaxed),
             "qualifying_observations": qualifying,
-            "published": samples.len(),
-            "pending_publication": reserved - samples.len(),
+            "published": published,
+            "pending_publication": reserved - published,
             "dropped": qualifying.saturating_sub(N as u64),
             "segments_scope": sampling::SEGMENTS_SCOPE,
             "join_role_order": roles,
@@ -380,7 +386,7 @@ pub(crate) fn record(sample: Sample) {
     SAMPLES.record(sample);
 }
 
-pub(crate) fn status() -> serde_json::Value {
+pub(crate) fn status() -> impl serde::Serialize + 'static {
     SAMPLES.status()
 }
 
@@ -401,7 +407,7 @@ mod tests {
         samples.record(sample(3, THRESHOLD_NS + 1));
         samples.record(sample(4, THRESHOLD_NS * 2));
         samples.record(sample(5, 0));
-        let status = samples.status();
+        let status = serde_json::to_value(samples.status()).unwrap();
         assert_eq!(status["observations"], 5);
         assert_eq!(status["qualifying_observations"], 3);
         assert_eq!(status["published"], 2);
@@ -417,7 +423,7 @@ mod tests {
         samples.observations.store(1, Ordering::Relaxed);
         samples.qualifying.store(1, Ordering::Relaxed);
         samples.slots[0].fields[4].store(THRESHOLD_NS, Ordering::Relaxed);
-        let pending = samples.status();
+        let pending = serde_json::to_value(samples.status()).unwrap();
         assert_eq!(pending["published"], 0);
         assert_eq!(pending["pending_publication"], 1);
         let sample = Sample {
@@ -460,7 +466,7 @@ mod tests {
             samples.slots[0].read().map(Sample::fields),
             Some(sample.fields())
         );
-        let status = samples.status();
+        let status = serde_json::to_value(samples.status()).unwrap();
         assert_eq!(status["pending_publication"], 0);
         assert_eq!(status["samples"][0]["hour"], i32::MIN);
         assert_eq!(status["samples"][0]["thread_cycles"], 0);
@@ -470,7 +476,7 @@ mod tests {
         assert_eq!(status["samples"][0]["join"]["runner_thread_id"], 456);
         assert_eq!(status["samples"][0]["join"]["wake_begin_qpc"], 9);
         assert_eq!(status["samples"][0]["join"]["wake_end_qpc"], 10);
-        let missing = Sample::default().json();
+        let missing = serde_json::to_value(Sample::default().json()).unwrap();
         assert!(missing["hour"].is_null());
         assert!(missing["thread_cycles"].is_null());
         assert!(missing["join"]["role"].is_null());

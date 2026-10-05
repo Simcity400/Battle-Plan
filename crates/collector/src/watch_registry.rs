@@ -52,7 +52,7 @@ struct Slot {
 }
 
 struct Table {
-    slots: Box<[Slot]>,
+    slots: Vec<Slot>,
 }
 
 enum Lookup<'a> {
@@ -66,12 +66,9 @@ impl Table {
     /// Off the hook path; `None` when the allocation fails.
     fn new(len: usize) -> Option<Box<Self>> {
         debug_assert!(len.is_power_of_two());
-        let mut slots = Vec::new();
-        slots.try_reserve_exact(len).ok()?;
+        let mut slots = engine::allocation::vec(len).ok()?;
         slots.resize_with(len, Slot::default);
-        Some(Box::new(Self {
-            slots: slots.into_boxed_slice(),
-        }))
+        Some(Box::new(Self { slots }))
     }
 
     fn find(&self, address: usize, register: bool) -> Lookup<'_> {
@@ -355,13 +352,15 @@ impl WatchRegistry {
     /// Off the game thread: allocate a table for `watches` receivers when
     /// the installed and offered ones are smaller. A boundary installs it.
     pub fn offer(&self, watches: usize) {
-        if let Some(len) = watches
-            .saturating_mul(SLOTS_PER_WATCH)
-            .max(MIN_SLOTS)
-            .checked_next_power_of_two()
-        {
-            self.offer_slots(len);
-        }
+        let Some(len) = watches
+            .checked_mul(SLOTS_PER_WATCH)
+            .and_then(|slots| slots.max(MIN_SLOTS).checked_next_power_of_two())
+        else {
+            let _ = engine::allocation::oom();
+            self.failed_offers.fetch_add(1, Relaxed);
+            return;
+        };
+        self.offer_slots(len);
     }
 
     fn offer_slots(&self, len: usize) {
@@ -427,8 +426,8 @@ impl WatchRegistry {
         self.active.load(SeqCst)
     }
 
-    pub fn status(&self) -> serde_json::Value {
-        serde_json::json!({
+    pub fn status(&self) -> impl serde::Serialize {
+        crate::status::status!({
             "capacity": self.capacity.load(Relaxed),
             "registered": self.registered.load(Relaxed),
             "refused_registrations": self.refused.load(Relaxed),
@@ -637,6 +636,18 @@ mod tests {
         assert!(!registry.retired.load(SeqCst).is_null());
         registry.collect();
         assert!(registry.retired.load(SeqCst).is_null());
+    }
+
+    #[test]
+    fn an_unrepresentable_offer_reports_failure_and_keeps_the_installed_table() {
+        let registry = registry(4);
+        let installed = registry.table.load(SeqCst);
+        let certificate = registry.sequence(8).unwrap();
+        registry.offer(usize::MAX);
+        assert_eq!(registry.failed_offers.load(Relaxed), 1);
+        assert_eq!(registry.table.load(SeqCst), installed);
+        assert!(registry.offered.load(SeqCst).is_null());
+        assert_eq!(registry.sequence(8), Some(certificate));
     }
 
     #[test]

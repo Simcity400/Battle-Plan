@@ -3,9 +3,10 @@
 use crate::{
     equipment_destruction as producer,
     sampling::qpc,
+    spooling::unavailable,
     table_capture::{CaptureRows, grow_vec},
 };
-use engine::{Memory, walk::Outcome};
+use engine::{Memory, allocation, walk::Outcome};
 use replay::{
     frame::TableView,
     rows::{EquipmentDestructionRow, TableId, TableRows},
@@ -52,32 +53,26 @@ impl Captured {
                 Outcome::Unavailable { reason } => reason,
                 _ => "equipment destruction incomplete drain",
             };
-            return [TableView::Unavailable {
-                reason: reason.into(),
-            }];
+            return [unavailable(reason)];
         };
         match aggregate(&self.rows.rows[..len]) {
             Ok(rows) => [TableView::Complete(TableRows::EquipmentDestruction(rows))],
             Err(reason) => {
                 producer::lost_drain();
-                [TableView::Unavailable {
-                    reason: reason.into(),
-                }]
+                [unavailable(reason)]
             }
         }
     }
 }
 
 fn aggregate(events: &[producer::Entry]) -> Result<Vec<EquipmentDestructionRow>, &'static str> {
-    let mut rows: Vec<_> = events
-        .iter()
-        .map(|r| EquipmentDestructionRow {
-            country: r.country,
-            cause: r.cause.into(),
-            variant: r.variant,
-            amount_raw: r.amount_raw,
-        })
-        .collect();
+    let mut rows = allocation::collect_vec(events.iter().map(|r| EquipmentDestructionRow {
+        country: r.country,
+        cause: r.cause.into(),
+        variant: r.variant,
+        amount_raw: r.amount_raw,
+    }))
+    .map_err(|_| "collector allocation failed")?;
     rows.sort_unstable_by_key(EquipmentDestructionRow::key);
     let mut write = 0usize;
     for read in 0..rows.len() {
@@ -114,17 +109,16 @@ mod tests {
             country: 1500,
             ..event
         };
-        let rows =
-            aggregate(&[
-                event,
-                other,
-                event,
-                producer::Entry {
-                    cause: engine::equipment_destruction::Cause::Unknown,
-                    ..event
-                },
-            ])
-            .unwrap();
+        let rows = aggregate(&[
+            event,
+            other,
+            event,
+            producer::Entry {
+                cause: engine::equipment_destruction::Cause::Unknown,
+                ..event
+            },
+        ])
+        .unwrap();
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].country, 1500);
         assert_eq!(rows[1].cause, EquipmentDestructionCause::Unknown);

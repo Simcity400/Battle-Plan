@@ -4,9 +4,10 @@ use super::{
 };
 use crate::{
     BranchId, Hour, KEYFRAME_INTERVAL,
-    codec::{invalid, put_string},
+    codec::{invalid_static as invalid, put_bytes, put_string},
     rows::{TableId, TableRows, TableSchema},
 };
+use engine::allocation;
 use std::{
     io,
     sync::{
@@ -44,6 +45,27 @@ impl Default for Baselines {
         }
     }
 }
+/// An encoded record whose baselines have not yet been committed.
+pub struct PreparedFrame {
+    frame: Option<EncodedFrame>,
+    source: FrameInput,
+    unchanged: [bool; TABLE_COUNT],
+    revision: u64,
+    encoder: u64,
+    previous_revision: u64,
+    keyframe: bool,
+}
+
+impl PreparedFrame {
+    pub fn frame(&self) -> &EncodedFrame {
+        self.frame.as_ref().expect("prepared record not taken")
+    }
+    /// Move the bytes to the spool without copying; retain the pending baselines.
+    pub fn take_frame(&mut self) -> EncodedFrame {
+        self.frame.take().expect("prepared record already taken")
+    }
+}
+
 pub struct FrameEncoder {
     pub(super) state: Baselines,
     keyframe_hour: Option<Hour>,
@@ -202,13 +224,25 @@ impl FrameEncoder {
         self.encode_bytes(source, force_keyframe)?.decode()
     }
 
-    /// Segment recovery forces a keyframe. Baselines commit only after all input
-    /// tables have been validated and encoded successfully into the owned payload.
+    /// Convenience for callers without an external record sink.
+    /// Collector recording uses `prepare_bytes`, writes the complete spool record,
+    /// then calls `commit` so failed writes never advance a baseline.
     pub fn encode_bytes(
         &mut self,
         source: FrameInput,
         force_keyframe: bool,
     ) -> io::Result<EncodedFrame> {
+        let mut prepared = self.prepare_bytes(source, force_keyframe)?;
+        let frame = prepared.take_frame();
+        self.commit(prepared)?;
+        Ok(frame)
+    }
+
+    pub fn prepare_bytes(
+        &mut self,
+        source: FrameInput,
+        force_keyframe: bool,
+    ) -> io::Result<PreparedFrame> {
         let new_branch = self.state.branch != Some(source.branch);
         if !new_branch && self.state.last_hour.is_some_and(|hour| hour >= source.hour) {
             return Err(invalid("frame hour did not advance on its branch"));
@@ -218,7 +252,8 @@ impl FrameEncoder {
             .checked_add(1)
             .ok_or_else(|| invalid("encoder revision space exhausted"))?;
         let keyframe = self.needs_keyframe(source.branch, source.hour, force_keyframe);
-        let mut output = vec![0; EncodedFrame::PREFIX_BYTES];
+        let mut output = allocation::vec(EncodedFrame::PREFIX_BYTES + 37 + 8 * TABLE_COUNT)?;
+        output.resize(EncodedFrame::PREFIX_BYTES, 0);
         output.extend_from_slice(&source.branch.to_le_bytes());
         output.extend_from_slice(&source.hour.to_le_bytes());
         output.push(u8::from(keyframe));
@@ -230,6 +265,7 @@ impl FrameEncoder {
         output.extend_from_slice(&source.metrics.dropped_frames.to_le_bytes());
         let mut unchanged = [false; TABLE_COUNT];
         for table in TableId::ALL {
+            allocation::reserve(&mut output, 9)?;
             let view = &source.tables[table.index()];
             unchanged[table.index()] = match view {
                 TableInput::SharedComplete(values) => {
@@ -290,10 +326,25 @@ impl FrameEncoder {
                     }
                     if keyframe {
                         output.push(4);
-                        put_string(
-                            &mut output,
-                            &format!("truncated at keyframe: {missing} rows not read"),
-                        )?;
+                        let mut reason = [0_u8; 64];
+                        let prefix = b"truncated at keyframe: ";
+                        reason[..prefix.len()].copy_from_slice(prefix);
+                        let mut number = [0_u8; 10];
+                        let mut value = *missing;
+                        let mut start = number.len();
+                        loop {
+                            start -= 1;
+                            number[start] = b'0' + (value % 10) as u8;
+                            value /= 10;
+                            if value == 0 {
+                                break;
+                            }
+                        }
+                        let end = prefix.len() + number.len() - start;
+                        reason[prefix.len()..end].copy_from_slice(&number[start..]);
+                        let suffix = b" rows not read";
+                        reason[end..end + suffix.len()].copy_from_slice(suffix);
+                        put_bytes(&mut output, &reason[..end + suffix.len()])?;
                     } else {
                         output.push(3);
                         output.extend_from_slice(&missing.to_le_bytes());
@@ -326,6 +377,37 @@ impl FrameEncoder {
                 }
             };
         }
+        Ok(PreparedFrame {
+            frame: Some(EncodedFrame {
+                branch: source.branch,
+                hour: source.hour,
+                keyframe,
+                bytes: output,
+            }),
+            source,
+            unchanged,
+            revision,
+            encoder: self.identity,
+            previous_revision: self.revision,
+            keyframe,
+        })
+    }
+
+    /// Publish validated owning rows only after their record was fully written.
+    /// Moving rows, replacing rows and shared-reference handoff cannot allocate.
+    pub fn commit(&mut self, prepared: PreparedFrame) -> io::Result<()> {
+        if prepared.encoder != self.identity || prepared.previous_revision != self.revision {
+            return Err(invalid(
+                "prepared frame no longer names the encoder baseline",
+            ));
+        }
+        let PreparedFrame {
+            source,
+            unchanged,
+            revision,
+            keyframe,
+            ..
+        } = prepared;
         for (table, view) in TableId::ALL.into_iter().zip(source.tables) {
             let index = table.index();
             if let TableInput::ComparedChanges { indices, rows, .. } = view {
@@ -363,11 +445,6 @@ impl FrameEncoder {
         if keyframe {
             self.keyframe_hour = Some(source.hour);
         }
-        Ok(EncodedFrame {
-            branch: source.branch,
-            hour: source.hour,
-            keyframe,
-            bytes: output,
-        })
+        Ok(())
     }
 }

@@ -1,13 +1,21 @@
 //! The callback copies bounded, exact roster bytes; the spool worker verifies IDs.
 
+use engine::allocation;
 use engine::{
     Memory,
     cdlc_manager::{self, Descriptor, mounts_match},
     walk::Outcome,
 };
 use replay::identity::{Identity, Roster as IdentityRoster, Verification};
-use serde_json::{Value, json};
-use std::{collections::BTreeSet, mem::size_of};
+use serde::{
+    Serialize, Serializer,
+    ser::{SerializeMap, SerializeSeq},
+};
+use std::{
+    fmt::{self, Write as _},
+    io,
+    mem::size_of,
+};
 use windows_sys::Win32::System::Performance::QueryPerformanceCounter;
 
 /// Floor for every sample buffer, and the whole size when no live count hint
@@ -33,18 +41,10 @@ struct Pass {
 
 /// Owned rows for one list: the live count plus headroom for names the manager
 /// can still add before the sample, never below the floor. An unallocatable
-/// hint keeps the floor; the sample then reports its own truncation rather
-/// than failing the allocation inside the game process.
+/// hint terminates capture; startup never retries allocation with a smaller floor.
 fn buffer<T: Default + Clone>(hint: usize) -> Vec<T> {
     let wanted = hint.saturating_add(hint / 4).max(MINIMUM_CAPACITY);
-    let mut rows = Vec::new();
-    let len = if rows.try_reserve_exact(wanted).is_ok() {
-        wanted
-    } else {
-        MINIMUM_CAPACITY
-    };
-    rows.resize(len, T::default());
-    rows
+    engine::allocation::owned_vec(engine::allocation::default_vec(wanted))
 }
 
 impl Pass {
@@ -168,27 +168,30 @@ impl Roster {
         expected_mounts: &[String],
         mod_descriptors: &[String],
         content_order_note: Option<&str>,
-    ) -> Result<(), String> {
-        let launcher = identity.roster();
-        let mut reasons = Vec::new();
+    ) -> io::Result<()> {
+        let launcher = identity.try_roster()?;
+        let mut reasons = String::new();
         if !self.sampled {
-            reasons.push("content roster was not sampled".to_owned());
+            add_reason(&mut reasons, format_args!("content roster was not sampled"))?;
         } else if self.hour.is_none() {
-            reasons.push("content roster sample had no readable hour".to_owned());
+            add_reason(
+                &mut reasons,
+                format_args!("content roster sample had no readable hour"),
+            )?;
         }
         let pass = &self.pass;
         for (name, outcome) in NAMES.into_iter().zip(pass.outcomes()) {
             match outcome {
                 Outcome::Rows { .. } => {}
-                Outcome::Truncated { len, unread_rows } => reasons.push(format!(
-                    "{name} truncated after {len} rows; {unread_rows} rows unread",
-                )),
+                Outcome::Truncated { len, unread_rows } => add_reason(
+                    &mut reasons,
+                    format_args!("{name} truncated after {len} rows; {unread_rows} rows unread",),
+                )?,
                 Outcome::Unavailable { reason } => {
-                    reasons.push(format!("{name} unavailable: {reason}"));
+                    add_reason(&mut reasons, format_args!("{name} unavailable: {reason}",))?
                 }
             }
         }
-
         let mut memory = IdentityRoster {
             dlc: observed_ids(
                 &pass.dlcs,
@@ -197,7 +200,7 @@ impl Roster {
                 "DLC",
                 true,
                 &mut reasons,
-            ),
+            )?,
             mods: observed_ids(
                 &pass.mods,
                 pass.observation.mods,
@@ -205,121 +208,70 @@ impl Roster {
                 "mod",
                 false,
                 &mut reasons,
-            ),
+            )?,
         };
-        // Memory names a mod by its descriptor file, not its Workshop or local
-        // content ID. The recorder resolved and hashed each recorded mod from
-        // one such file, so the active set must be exactly those files; the
-        // mount check below then proves their order and mounted sources.
+        // Descriptor membership plus successful mount order proves the content stack.
         if mod_descriptors.len() != launcher.mods.len() {
-            reasons.push(format!(
-                "{} mod descriptor files supplied for {} recorded mods",
-                mod_descriptors.len(),
-                launcher.mods.len()
-            ));
+            add_reason(
+                &mut reasons,
+                format_args!(
+                    "{} mod descriptor files supplied for {} recorded mods",
+                    mod_descriptors.len(),
+                    launcher.mods.len(),
+                ),
+            )?;
         }
         if !same_membership(&memory.dlc, &launcher.dlc)
             || !same_membership(&memory.mods, mod_descriptors)
         {
-            reasons.push("launcher and in-memory content membership differ".to_owned());
+            add_reason(
+                &mut reasons,
+                format_args!("launcher and in-memory content membership differ"),
+            )?;
         }
         if !mounts_match(&pass.mounts[..pass.mount_outcome.len()], expected_mounts) {
-            reasons.push(format!(
-                "successful content mounts differ in membership or priority order (observed {}, expected {})",
-                pass.mount_outcome.len(), expected_mounts.len(),
-            ));
+            add_reason(
+                &mut reasons,
+                format_args!(
+                    "successful content mounts differ in membership or priority order (observed {}, expected {})",
+                    pass.mount_outcome.len(),
+                    expected_mounts.len(),
+                ),
+            )?;
         }
         if let Some(note) = content_order_note {
-            reasons.push(format!("content loading order is unverified: {note}"));
+            add_reason(
+                &mut reasons,
+                format_args!("content loading order is unverified: {note}"),
+            )?;
         }
         if reasons.is_empty() {
-            // The diagnostic maps are ordered by display name. Successful mounts
-            // independently matched the identity's layer order, so record that
-            // proven order, in content IDs, after checking exact membership.
-            memory.dlc.clone_from(&launcher.dlc);
-            memory.mods.clone_from(&launcher.mods);
+            memory.dlc = copy_strings(&launcher.dlc)?;
+            memory.mods = copy_strings(&launcher.mods)?;
             identity.verification = Verification::Verified { launcher, memory };
             Ok(())
         } else {
-            let reason = reasons.join("; ");
             identity.verification = Verification::Unverified {
-                reason: reason.clone(),
+                reason: reasons,
                 launcher,
                 memory,
             };
-            Err(reason)
+            Err(io::ErrorKind::InvalidData.into())
         }
     }
 
     /// Worker-only local sidecar data. Contains machine paths and must never be
     /// included in the replay identity or in any spool/replay control record.
-    pub fn diagnostics(&self, expected_mounts: &[String], verification: &Verification) -> Value {
-        fn bytes(bytes: &[u8]) -> Value {
-            match std::str::from_utf8(bytes) {
-                Ok(text) => json!(text),
-                Err(_) => json!({ "invalid_utf8_bytes": bytes }),
-            }
+    pub fn diagnostics<'a>(
+        &'a self,
+        expected_mounts: &'a [String],
+        verification: &'a Verification,
+    ) -> impl Serialize + 'a {
+        Diagnostics {
+            roster: self,
+            expected_mounts,
+            verification,
         }
-        fn outcome(outcome: Outcome) -> Value {
-            match outcome {
-                Outcome::Rows { len } => json!({ "state": "rows", "rows": len }),
-                Outcome::Truncated { len, unread_rows } => {
-                    json!({ "state": "truncated", "rows": len, "unread_rows": unread_rows })
-                }
-                Outcome::Unavailable { reason } => {
-                    json!({ "state": "unavailable", "reason": reason })
-                }
-            }
-        }
-        fn entries(rows: &[cdlc_manager::Entry]) -> Vec<Value> {
-            rows.iter()
-                .map(|row| {
-                    json!({
-                        "name": bytes(row.name.as_bytes()),
-                        "descriptor": bytes(row.descriptor.as_bytes()),
-                        "reported_active": row.reported_active,
-                    })
-                })
-                .collect()
-        }
-        let sample = {
-            let pass = &self.pass;
-            let outcomes: serde_json::Map<_, _> = NAMES
-                .into_iter()
-                .zip(pass.outcomes())
-                .map(|(name, read)| (name.to_owned(), outcome(read)))
-                .collect();
-            let capacities: serde_json::Map<_, _> = NAMES
-                .into_iter()
-                .zip(pass.capacities())
-                .map(|(name, capacity)| (name.to_owned(), json!(capacity)))
-                .collect();
-            json!({
-                "outcomes": outcomes,
-                "capacities": capacities,
-                "mount_paths": pass.mounts[..pass.mount_outcome.len()].iter()
-                    .map(|path| bytes(path.as_bytes())).collect::<Vec<_>>(),
-                "dlcs": entries(&pass.dlcs[..pass.observation.dlcs.len()]),
-                "mods": entries(&pass.mods[..pass.observation.mods.len()]),
-                "requested_mods": pass.requested_mods[..pass.observation.requested_mods.len()].iter()
-                    .map(|path| bytes(path.as_bytes())).collect::<Vec<_>>(),
-            })
-        };
-        let verification = match verification {
-            Verification::Unchecked => json!({ "state": "unchecked" }),
-            Verification::Verified { .. } => json!({ "state": "verified" }),
-            Verification::Unverified { reason, .. } => {
-                json!({ "state": "unverified", "reason": reason })
-            }
-        };
-        json!({
-            "sampled": self.sampled,
-            "hour": self.hour,
-            "callback_ticks": self.ticks,
-            "expected_mounts": expected_mounts,
-            "sample": sample,
-            "verification": verification,
-        })
     }
 }
 
@@ -330,74 +282,248 @@ fn qpc() -> i64 {
 }
 
 fn same_membership(a: &[String], b: &[String]) -> bool {
-    a.len() == b.len() && a.iter().collect::<BTreeSet<_>>() == b.iter().collect::<BTreeSet<_>>()
+    a.len() == b.len() && a.iter().all(|id| b.contains(id)) && b.iter().all(|id| a.contains(id))
+}
+
+struct CheckedText<'a>(&'a mut String);
+impl fmt::Write for CheckedText<'_> {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        allocation::reserve_string(self.0, text.len()).map_err(|_| fmt::Error)?;
+        self.0.push_str(text);
+        Ok(())
+    }
+}
+
+pub(crate) fn add_reason(reasons: &mut String, args: fmt::Arguments<'_>) -> io::Result<()> {
+    if !reasons.is_empty() {
+        allocation::reserve_string(reasons, 2)?;
+        reasons.push_str("; ");
+    }
+    CheckedText(reasons)
+        .write_fmt(args)
+        .map_err(|_| allocation::oom())
+}
+
+fn copy_strings(rows: &[String]) -> io::Result<Vec<String>> {
+    let mut result = allocation::vec(rows.len())?;
+    for row in rows {
+        result.push(allocation::string(row)?);
+    }
+    Ok(result)
 }
 
 fn observed_ids(
     rows: &[cdlc_manager::Entry],
     outcome: Outcome,
-    normalize: fn(&[u8]) -> Result<String, &'static str>,
+    normalize: fn(&[u8]) -> Result<&str, &'static str>,
     kind: &str,
     check_inactive: bool,
-    reasons: &mut Vec<String>,
-) -> Vec<String> {
-    let mut ids = Vec::new();
-    let mut seen = BTreeSet::new();
-    for (index, row) in rows[..outcome.len()].iter().enumerate() {
+    reasons: &mut String,
+) -> io::Result<Vec<String>> {
+    let rows = &rows[..outcome.len()];
+    let mut ids = allocation::vec(rows.len())?;
+    for (index, row) in rows.iter().enumerate() {
         if !row.reported_active && !check_inactive {
             continue;
         }
         match normalize(row.descriptor.as_bytes()) {
             Ok(id) => {
-                // Two descriptors in one DLC folder are ambiguous even when only
-                // one is active: its folder ID cannot identify which was mounted.
-                if !seen.insert(id.clone()) {
-                    reasons.push(format!("duplicate in-memory {kind} ID: {id}"));
+                if rows[..index].iter().any(|earlier| {
+                    (earlier.reported_active || check_inactive)
+                        && normalize(earlier.descriptor.as_bytes()) == Ok(id)
+                }) {
+                    add_reason(reasons, format_args!("duplicate in-memory {kind} ID: {id}"))?;
                 }
-                if row.reported_active && !ids.contains(&id) {
-                    ids.push(id);
+                if row.reported_active && !ids.iter().any(|known| known == id) {
+                    ids.push(allocation::string(id)?);
                 }
             }
-            Err(reason) => reasons.push(format!(
-                "{kind} descriptor {} has no recordable content ID: {reason}",
-                index + 1,
-            )),
+            Err(reason) => add_reason(
+                reasons,
+                format_args!(
+                    "{kind} descriptor {} has no recordable content ID: {reason}",
+                    index + 1,
+                ),
+            )?,
         }
     }
-    ids
+    Ok(ids)
 }
 
-fn components(bytes: &[u8]) -> Result<Vec<&str>, &'static str> {
+fn components(bytes: &[u8]) -> Result<impl Iterator<Item = &str>, &'static str> {
     let text = std::str::from_utf8(bytes).map_err(|_| "descriptor is not UTF-8")?;
     if text.chars().any(|c| c.is_control() || c == ':') {
         return Err("descriptor contains a control character or drive separator");
     }
-    let parts: Vec<_> = text.split(['/', '\\']).collect();
-    if parts
-        .iter()
-        .any(|part| part.is_empty() || matches!(*part, "." | ".."))
+    if text
+        .split(['/', '\\'])
+        .any(|part| part.is_empty() || matches!(part, "." | ".."))
     {
         return Err("descriptor has an empty or relative path component");
     }
-    Ok(parts)
+    Ok(text.split(['/', '\\']))
 }
 
-fn dlc_id(bytes: &[u8]) -> Result<String, &'static str> {
-    let parts = components(bytes)?;
-    match parts.as_slice() {
-        ["dlc", id, descriptor] if id.starts_with("dlc") && descriptor.ends_with(".dlc") => {
-            Ok((*id).to_owned())
+fn dlc_id(bytes: &[u8]) -> Result<&str, &'static str> {
+    let mut parts = components(bytes)?;
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some("dlc"), Some(id), Some(descriptor), None)
+            if id.starts_with("dlc") && descriptor.ends_with(".dlc") =>
+        {
+            Ok(id)
         }
         _ => Err("expected dlc/<DLC folder>/<descriptor>.dlc"),
     }
 }
 
-fn mod_id(bytes: &[u8]) -> Result<String, &'static str> {
-    let parts = components(bytes)?;
-    match parts.as_slice() {
-        ["mod", descriptor] if descriptor.ends_with(".mod") => Ok((*descriptor).to_owned()),
+fn mod_id(bytes: &[u8]) -> Result<&str, &'static str> {
+    let mut parts = components(bytes)?;
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some("mod"), Some(descriptor), None) if descriptor.ends_with(".mod") => Ok(descriptor),
         _ => Err("expected mod/<descriptor>.mod; remote file ID is not present in memory"),
     }
+}
+
+struct Diagnostics<'a> {
+    roster: &'a Roster,
+    expected_mounts: &'a [String],
+    verification: &'a Verification,
+}
+impl Serialize for Diagnostics<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(6))?;
+        map.serialize_entry("sampled", &self.roster.sampled)?;
+        map.serialize_entry("hour", &self.roster.hour)?;
+        map.serialize_entry("callback_ticks", &self.roster.ticks)?;
+        map.serialize_entry("expected_mounts", self.expected_mounts)?;
+        map.serialize_entry("sample", &Sample(&self.roster.pass))?;
+        map.serialize_entry("verification", &Verified(self.verification))?;
+        map.end()
+    }
+}
+struct Verified<'a>(&'a Verification);
+impl Serialize for Verified<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(None)?;
+        let state = match self.0 {
+            Verification::Unchecked => "unchecked",
+            Verification::Verified { .. } => "verified",
+            Verification::Unverified { reason, .. } => {
+                map.serialize_entry("reason", reason)?;
+                "unverified"
+            }
+        };
+        map.serialize_entry("state", state)?;
+        map.end()
+    }
+}
+struct Sample<'a>(&'a Pass);
+impl Serialize for Sample<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let pass = self.0;
+        let mut map = serializer.serialize_map(Some(6))?;
+        map.serialize_entry("outcomes", &NamedOutcomes(pass.outcomes()))?;
+        map.serialize_entry("capacities", &NamedCapacities(pass.capacities()))?;
+        map.serialize_entry(
+            "mount_paths",
+            &Descriptors(&pass.mounts[..pass.mount_outcome.len()]),
+        )?;
+        map.serialize_entry("dlcs", &Entries(&pass.dlcs[..pass.observation.dlcs.len()]))?;
+        map.serialize_entry("mods", &Entries(&pass.mods[..pass.observation.mods.len()]))?;
+        map.serialize_entry(
+            "requested_mods",
+            &Descriptors(&pass.requested_mods[..pass.observation.requested_mods.len()]),
+        )?;
+        map.end()
+    }
+}
+struct NamedOutcomes([Outcome; 5]);
+impl Serialize for NamedOutcomes {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(NAMES.len()))?;
+        for (name, outcome) in NAMES.into_iter().zip(self.0) {
+            map.serialize_entry(name, &Read(outcome))?;
+        }
+        map.end()
+    }
+}
+struct NamedCapacities([usize; 5]);
+impl Serialize for NamedCapacities {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(NAMES.len()))?;
+        for (name, capacity) in NAMES.into_iter().zip(self.0) {
+            map.serialize_entry(name, &capacity)?;
+        }
+        map.end()
+    }
+}
+struct Read(Outcome);
+impl Serialize for Read {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(None)?;
+        match self.0 {
+            Outcome::Rows { len } => {
+                map.serialize_entry("state", "rows")?;
+                map.serialize_entry("rows", &len)?;
+            }
+            Outcome::Truncated { len, unread_rows } => {
+                map.serialize_entry("state", "truncated")?;
+                map.serialize_entry("rows", &len)?;
+                map.serialize_entry("unread_rows", &unread_rows)?;
+            }
+            Outcome::Unavailable { reason } => {
+                map.serialize_entry("state", "unavailable")?;
+                map.serialize_entry("reason", reason)?;
+            }
+        }
+        map.end()
+    }
+}
+struct Bytes<'a>(&'a [u8]);
+impl Serialize for Bytes<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if let Ok(text) = std::str::from_utf8(self.0) {
+            return serializer.serialize_str(text);
+        }
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_entry("invalid_utf8_bytes", self.0)?;
+        map.end()
+    }
+}
+struct Descriptors<'a>(&'a [Descriptor]);
+impl Serialize for Descriptors<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for row in self.0 {
+            seq.serialize_element(&Bytes(row.as_bytes()))?;
+        }
+        seq.end()
+    }
+}
+struct Entry<'a>(&'a cdlc_manager::Entry);
+impl Serialize for Entry<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(3))?;
+        map.serialize_entry("name", &Bytes(self.0.name.as_bytes()))?;
+        map.serialize_entry("descriptor", &Bytes(self.0.descriptor.as_bytes()))?;
+        map.serialize_entry("reported_active", &self.0.reported_active)?;
+        map.end()
+    }
+}
+struct Entries<'a>(&'a [cdlc_manager::Entry]);
+impl Serialize for Entries<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for row in self.0 {
+            seq.serialize_element(&Entry(row))?;
+        }
+        seq.end()
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn allocation_failure_fixture() -> impl FnOnce() -> io::Result<()> {
+    tests::allocation_failure_fixture()
 }
 
 #[cfg(test)]
@@ -405,6 +531,7 @@ mod tests {
     use super::*;
     use engine::msvc_string::Text;
     use replay::identity::{COVERAGE_POLICY_VERSION, Dlc, Mod};
+    use std::collections::BTreeSet;
 
     fn identity(ids: &[&str]) -> Identity {
         Identity {
@@ -479,7 +606,39 @@ mod tests {
             .map(|layer| format!("F:/game/dlc/{}", layer.id))
             .chain(std::iter::once("F:/game".to_owned()))
             .collect();
-        roster.verify(identity, &expected, &[], note)
+        roster
+            .verify(identity, &expected, &[], note)
+            .map_err(|error| {
+                if let Verification::Unverified { reason, .. } = &identity.verification {
+                    reason.clone()
+                } else {
+                    error.to_string()
+                }
+            })
+    }
+
+    pub(super) fn allocation_failure_fixture() -> impl FnOnce() -> io::Result<()> {
+        let roster = captured(&[b"dlc/dlc_b/b.dlc", b"dlc/dlc_a/a.dlc"]);
+        let mut verified = identity(&["dlc_a", "dlc_b"]);
+        let mut refused = identity(&["dlc_a", "dlc_b"]);
+        let expected = vec![
+            "F:/game/dlc/dlc_b".into(),
+            "F:/game/dlc/dlc_a".into(),
+            "F:/game".into(),
+        ];
+        move || {
+            roster.verify(&mut verified, &expected, &[], None)?;
+            match roster.verify(
+                &mut refused,
+                &expected,
+                &[],
+                Some("unresolved root coverage"),
+            ) {
+                Err(error) if error.kind() == io::ErrorKind::InvalidData => Ok(()),
+                Err(error) => Err(error),
+                Ok(()) => Err(io::ErrorKind::InvalidData.into()),
+            }
+        }
     }
 
     #[test]
@@ -641,7 +800,10 @@ mod tests {
                 "priority order",
             ),
         ] {
-            let error = roster.verify(&mut value, mounts, files, None).unwrap_err();
+            roster.verify(&mut value, mounts, files, None).unwrap_err();
+            let Verification::Unverified { reason: error, .. } = &value.verification else {
+                panic!()
+            };
             assert!(error.contains(reason), "{error}");
             value.validate().unwrap();
         }
@@ -657,7 +819,9 @@ mod tests {
         assert!(reason.contains("observed 2, expected 1"));
         assert!(!reason.contains("private"));
         value.validate().unwrap();
-        let diagnostics = roster.diagnostics(&["F:/game".to_owned()], &value.verification);
+        let diagnostics =
+            serde_json::to_value(roster.diagnostics(&["F:/game".to_owned()], &value.verification))
+                .unwrap();
         assert_eq!(
             diagnostics["sample"]["mount_paths"][1],
             "C:/private/user/interface-override"
@@ -824,7 +988,8 @@ mod tests {
             panic!("a complete roster must verify")
         };
         assert_eq!(memory.dlc, ids);
-        let diagnostics = roster.diagnostics(&[], &value.verification);
+        let diagnostics =
+            serde_json::to_value(roster.diagnostics(&[], &value.verification)).unwrap();
         assert_eq!(diagnostics["sample"]["dlcs"].as_array().unwrap().len(), 150);
         assert!(diagnostics["sample"]["capacities"]["DLC map"].as_u64() >= Some(150));
 

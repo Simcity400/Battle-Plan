@@ -14,6 +14,7 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
+use engine::allocation::{copy_vec, owned_vec};
 use engine::{Memory, ccountry, raid_launch_inputs as native, walk::Outcome};
 use replay::{
     cadence::{SKIPPED_REASON, should_walk},
@@ -33,8 +34,7 @@ pub const TABLES: [TableId; N] = [
     TableId::CountryCommandPower,
 ];
 /// One country pass produces all five tables.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] =
-    &[("raid launch inputs", 0, &[0, 1, 2, 3, 4])];
+pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[("raid launch inputs", 0, &[0, 1, 2, 3, 4])];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
@@ -119,13 +119,15 @@ impl Captured {
             command_power: CaptureRows::new(capacity.command_power),
             selection: SliceSelection::new(capacity.rows[0] != 0),
             // The six launch keys; a vacant pack stays allocation-free.
-            memo: engine::modifier_definition::DefinitionMemo::with_capacity(
+            memo: engine::modifier_definition::DefinitionMemo::try_with_capacity(
                 if capacity.rows[0] == 0 {
                     0
                 } else {
                     native::MODIFIERS
                 },
-            ),
+            )
+            .map_err(crate::allocation::io)
+            .unwrap_or_default(),
         }
     }
     pub fn reset(&mut self) {
@@ -332,7 +334,7 @@ impl Captured {
                 air_range_factor: row.modifiers[0],
                 naval_commando_range_factor: row.modifiers[1],
                 autonomous: row.autonomous,
-                convoy_reservations: span(row).unwrap().to_vec(),
+                convoy_reservations: owned_vec(copy_vec(span(row).unwrap())),
             }
         })
     }

@@ -40,6 +40,144 @@ fn valid_segment() -> Vec<u8> {
 }
 
 #[test]
+fn control_and_context_bounds_match_encoded_fields() {
+    for present in [false, true] {
+        let controls = [
+            ControlRecord::Detach {
+                session: 3,
+                last_hour: present.then_some(-7),
+            },
+            ControlRecord::ClockWitness {
+                session: 3,
+                qpc: 17,
+                hour: -7,
+                load_signal: present.then_some(i64::MIN),
+            },
+            ControlRecord::GapSummary {
+                session: 3,
+                dropped_frames: 1,
+                reason: "synthetic \u{03bb} gap".into(),
+            },
+            ControlRecord::Partial {
+                session: 3,
+                reason: "synthetic \u{03bb} failure".into(),
+                failed_hour: present.then_some(-7),
+            },
+        ];
+        for control in controls {
+            let expected = control.encoded_bytes().unwrap();
+            let mut payload = Vec::new();
+            control.encode(&mut payload).unwrap();
+            assert_eq!(payload.len(), expected);
+            let encoded = encode_record(&Record::Control(control.clone())).unwrap();
+            assert_eq!(encoded.len(), RECORD_HEADER_BYTES + expected);
+            assert_eq!(
+                ControlRecord::decode(&mut Decoder::new(&payload)).unwrap(),
+                control
+            );
+        }
+        let Record::BranchStart(mut start) = branch() else {
+            unreachable!()
+        };
+        start.loaded_hour = present.then_some(9);
+        start.parent = if present {
+            Parentage::Probable { branch: 1, hour: 9 }
+        } else {
+            Parentage::Unknown
+        };
+        let expected = start.encoded_bytes();
+        let encoded = encode_record(&Record::BranchStart(start)).unwrap();
+        assert_eq!(
+            encoded.len(),
+            RECORD_HEADER_BYTES + size_of::<u8>() + expected
+        );
+    }
+    let gap = Gap {
+        branch: 7,
+        first_hour: -7,
+        last_hour: -7,
+        reason: "synthetic \u{03bb} gap".into(),
+    };
+    let expected = gap.encoded_bytes().unwrap();
+    let encoded = encode_record(&Record::Gap(gap)).unwrap();
+    assert_eq!(
+        encoded.len(),
+        RECORD_HEADER_BYTES + size_of::<u8>() + expected
+    );
+}
+
+#[test]
+fn partial_capture_control_roundtrips_and_prevents_later_frames() {
+    for failed_hour in [Some(12), None] {
+        let partial = ControlRecord::Partial {
+            session: 3,
+            reason: "collector allocation failed".into(),
+            failed_hour,
+        };
+        let encoded = encode_record(&Record::Control(partial.clone())).unwrap();
+        assert_eq!(encoded[RECORD_HEADER_BYTES], 7);
+        let mut input = Decoder::new(&encoded[RECORD_HEADER_BYTES..]);
+        assert_eq!(
+            Record::decode(&mut input).unwrap(),
+            Record::Control(partial.clone())
+        );
+        input.finish().unwrap();
+        let mut segment = valid_segment();
+        segment.extend_from_slice(&encoded);
+        segment.extend_from_slice(
+            &encode_record(&Record::Control(ControlRecord::Detach {
+                session: 3,
+                last_hour: Some(11),
+            }))
+            .unwrap(),
+        );
+        let recovered = recover_prefix(&segment);
+        assert!(recovered.damage.is_none());
+        assert_eq!(recovered.records.len(), 5);
+
+        let mut illegal = valid_segment();
+        illegal.extend_from_slice(&encoded);
+        illegal.extend_from_slice(&encode_record(&Record::Frame(frame(12, false))).unwrap());
+        let recovered = recover_prefix(&illegal);
+        assert_eq!(recovered.records.len(), 4);
+        assert!(recovered.damage.is_some());
+    }
+    assert!(
+        encode_record(&Record::Control(ControlRecord::Partial {
+            session: 3,
+            reason: " ".into(),
+            failed_hour: None,
+        }))
+        .is_err()
+    );
+    let records = [
+        branch(),
+        Record::Gap(Gap {
+            branch: 7,
+            first_hour: 10,
+            last_hour: 10,
+            reason: "collector allocation failed".into(),
+        }),
+        Record::Control(ControlRecord::Partial {
+            session: 3,
+            reason: "collector allocation failed".into(),
+            failed_hour: Some(10),
+        }),
+        Record::Control(ControlRecord::Detach {
+            session: 3,
+            last_hour: None,
+        }),
+    ];
+    let bytes: Vec<_> = records
+        .iter()
+        .flat_map(|record| encode_record(record).unwrap())
+        .collect();
+    let recovered = recover_prefix(&bytes);
+    assert_eq!(recovered.records, records);
+    assert!(recovered.damage.is_none());
+}
+
+#[test]
 fn each_byte_cut_recovers_exactly_the_complete_prefix() {
     let records = [
         branch(),
@@ -286,6 +424,13 @@ enum Fault {
     Flush,
     Sync,
     Create,
+    StartSyncOom,
+    StopDuringWrite,
+    StopDuringFlush,
+}
+
+thread_local! {
+    static CAPTURE_STOPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[derive(Default)]
@@ -350,11 +495,17 @@ impl Write for MemorySink {
             .get_mut(&self.index)
             .unwrap()
             .extend_from_slice(&bytes[..count]);
+        if matches!(memory.fault, Some(Fault::StopDuringWrite)) {
+            CAPTURE_STOPPED.set(true);
+        }
         Ok(count)
     }
     fn flush(&mut self) -> io::Result<()> {
         let mut memory = self.shared.borrow_mut();
         memory.flushes += 1;
+        if matches!(memory.fault, Some(Fault::StopDuringFlush)) {
+            CAPTURE_STOPPED.set(true);
+        }
         if matches!(memory.fault, Some(Fault::Flush)) {
             Err(injected())
         } else {
@@ -376,6 +527,9 @@ impl SegmentSink for MemorySink {
     }
 
     fn start_sync(&mut self) -> io::Result<()> {
+        if matches!(self.shared.borrow().fault, Some(Fault::StartSyncOom)) {
+            return Err(io::Error::from(io::ErrorKind::OutOfMemory));
+        }
         if !self.shared.borrow().background {
             return self.sync_all();
         }
@@ -398,6 +552,155 @@ impl SegmentSink for MemorySink {
         }
         Ok(!memory.sync_pending)
     }
+}
+
+#[test]
+fn terminal_capture_during_spool_write_never_promotes_the_inflight_record() {
+    thread_local! {
+        static PENDING: std::cell::Cell<Option<Option<(u32, u64)>>> = const { std::cell::Cell::new(None) };
+        static STOP_AT_START: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    fn write_started(preceding: Option<(u32, u64)>) {
+        PENDING.set(Some(preceding));
+        if STOP_AT_START.get() {
+            CAPTURE_STOPPED.set(true);
+        }
+    }
+    struct StopHook;
+    impl Drop for StopHook {
+        fn drop(&mut self) {
+            CAPTURE_STOPPED.set(false);
+            STOP_AT_START.set(false);
+            engine::allocation::set_stop_hook(None);
+        }
+    }
+    engine::allocation::set_stop_hook(Some(|| CAPTURE_STOPPED.get()));
+    let _stop_hook = StopHook;
+    for (fault, stop_at_start) in [
+        (None, false),
+        (None, true),
+        (Some(Fault::StopDuringWrite), false),
+        (Some(Fault::StopDuringFlush), false),
+    ] {
+        CAPTURE_STOPPED.set(false);
+        STOP_AT_START.set(false);
+        let backend = MemoryBackend::default();
+        let shared = backend.0.clone();
+        let mut spool = SegmentedSpool::new(backend);
+        spool.set_write_start_hook(write_started);
+        spool.set_commit_hook(|_, _, _| PENDING.set(None));
+        spool.start_segment(&[branch()], &frame(10, true)).unwrap();
+        assert_eq!(PENDING.get(), None);
+        let watermark = spool.committed_watermark().unwrap();
+        let encoded = frame(11, false).encoded().unwrap();
+        shared.borrow_mut().fault = fault;
+        STOP_AT_START.set(stop_at_start);
+        CAPTURE_STOPPED.set(fault.is_none() && !stop_at_start);
+        assert_eq!(
+            spool.append_encoded_frame(encoded).unwrap_err().kind(),
+            io::ErrorKind::OutOfMemory
+        );
+        assert!(!spool.is_open());
+        assert_eq!(spool.committed_watermark(), Some(watermark));
+        assert_eq!(PENDING.get(), Some(Some(watermark)));
+        CAPTURE_STOPPED.set(false);
+        let memory = shared.borrow();
+        let bytes = &memory.files[&0];
+        assert_eq!(bytes.len() > watermark.1 as usize, fault.is_some());
+        let recovered = recover_prefix(&bytes[..watermark.1 as usize]);
+        assert!(recovered.damage.is_none());
+        assert!(matches!(
+            recovered.records.last(),
+            Some(Record::Frame(Frame { hour: 10, .. }))
+        ));
+    }
+}
+
+#[test]
+fn write_start_hook_uses_each_campaign_spools_preceding_watermark() {
+    thread_local! {
+        static PENDING: std::cell::Cell<Option<Option<(u32, u64)>>> = const { std::cell::Cell::new(None) };
+        static COMMITTED: std::cell::Cell<Option<(u32, u64)>> = const { std::cell::Cell::new(None) };
+        static FIRST_WRITE: std::cell::Cell<Option<Option<(u32, u64)>>> = const { std::cell::Cell::new(None) };
+        static LAST_WRITE: std::cell::Cell<Option<Option<(u32, u64)>>> = const { std::cell::Cell::new(None) };
+    }
+    fn started(preceding: Option<(u32, u64)>) {
+        if FIRST_WRITE.get().is_none() {
+            FIRST_WRITE.set(Some(preceding));
+        }
+        PENDING.set(Some(preceding));
+        LAST_WRITE.set(Some(preceding));
+    }
+    fn committed(segment: u32, bytes: u64, _complete_hour: bool) {
+        assert!(PENDING.get().is_some());
+        PENDING.set(None);
+        COMMITTED.set(Some((segment, bytes)));
+    }
+    let mut first = SegmentedSpool::new(MemoryBackend::default());
+    first.set_write_start_hook(started);
+    first.set_commit_hook(committed);
+    first.start_segment(&[branch()], &frame(10, true)).unwrap();
+    assert_eq!(FIRST_WRITE.get(), Some(None));
+    let first_watermark = first.committed_watermark();
+    let mut second = SegmentedSpool::with_next_segment_index(MemoryBackend::default(), 7);
+    second.set_write_start_hook(started);
+    second.set_commit_hook(committed);
+    second.start_segment(&[branch()], &frame(10, true)).unwrap();
+    let second_watermark = second.committed_watermark();
+    assert_eq!(COMMITTED.get(), second_watermark);
+    first.append(&Record::Frame(frame(11, false))).unwrap();
+    assert_eq!(LAST_WRITE.get(), Some(first_watermark));
+    assert_ne!(COMMITTED.get(), second_watermark);
+    assert_eq!(PENDING.get(), None);
+    let preceding = first.committed_watermark();
+    first.finish_segment().unwrap();
+    FIRST_WRITE.set(None);
+    first.start_segment(&[branch()], &frame(10, true)).unwrap();
+    assert_eq!(FIRST_WRITE.get(), Some(preceding));
+}
+
+#[test]
+fn committed_frame_watermark_precedes_postwrite_durability_allocation_failure() {
+    thread_local! {
+        static WATERMARK: std::cell::Cell<Option<(u32, u64, bool)>> = const { std::cell::Cell::new(None) };
+        static ATTEMPTED: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+    }
+    fn committed(segment: u32, bytes: u64, complete_hour: bool) {
+        if complete_hour {
+            ATTEMPTED.with(|hour| hour.set(None));
+        }
+        WATERMARK.with(|watermark| watermark.set(Some((segment, bytes, complete_hour))));
+    }
+    let backend = MemoryBackend::default();
+    let shared = backend.0.clone();
+    let mut spool = SegmentedSpool::new(backend);
+    spool.set_commit_hook(committed);
+    spool.start_segment(&[branch()], &frame(10, true)).unwrap();
+    ATTEMPTED.with(|hour| hour.set(Some(11)));
+    shared.borrow_mut().fault = Some(Fault::StartSyncOom);
+    spool.last_sync = Instant::now() - SYNC_INTERVAL;
+    assert_eq!(
+        spool
+            .append(&Record::Frame(frame(11, false)))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::OutOfMemory
+    );
+    assert!(!spool.is_open());
+    let memory = shared.borrow();
+    let bytes = &memory.files[&0];
+    assert_eq!(spool.committed_watermark(), Some((0, bytes.len() as u64)));
+    assert_eq!(
+        WATERMARK.with(std::cell::Cell::get),
+        Some((0, bytes.len() as u64, true))
+    );
+    assert_eq!(ATTEMPTED.with(std::cell::Cell::get), None);
+    let recovered = recover_prefix(bytes);
+    assert!(recovered.damage.is_none());
+    assert!(matches!(
+        recovered.records.last(),
+        Some(Record::Frame(Frame { hour: 11, .. }))
+    ));
 }
 
 #[test]

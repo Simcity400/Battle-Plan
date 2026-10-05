@@ -10,6 +10,7 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
+use engine::allocation::{copy_vec, owned_vec};
 use engine::{Memory, ccountry, country_stability as native, walk::Outcome};
 use replay::{
     cadence::{SKIPPED_REASON, should_walk},
@@ -22,11 +23,8 @@ pub const TABLES: [TableId; N] = [
     TableId::CountryStabilityInputs,
     TableId::CountryStabilityLines,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[(
-    "stability inputs, fingerprints and tree lines",
-    0,
-    &[0, 1],
-)];
+pub const READ_GROUPS: &[(&str, usize, &[usize])] =
+    &[("stability inputs, fingerprints and tree lines", 0, &[0, 1])];
 
 /// Tree lines per country slot and identity/text bytes per line the first
 /// capture is sized for. Most hours read one slice of the countries; a full
@@ -56,9 +54,7 @@ impl Capacities {
         let inputs = crate::country_scale::rows(slots, 1);
         self.inputs = self.inputs.max(inputs);
         self.lines = self.lines.max(inputs.saturating_mul(LINES_PER_COUNTRY));
-        self.bytes = self
-            .bytes
-            .max(self.lines.saturating_mul(BYTES_PER_LINE));
+        self.bytes = self.bytes.max(self.lines.saturating_mul(BYTES_PER_LINE));
     }
 }
 
@@ -100,7 +96,9 @@ impl Captured {
             inputs: CaptureRows::new(capacity.inputs),
             lines: CaptureRows::new(capacity.lines),
             bytes: Arena::new(capacity.bytes),
-            scratch: native::Scratch::new(),
+            scratch: native::Scratch::try_new()
+                .map_err(crate::allocation::io)
+                .unwrap_or_else(|_| native::Scratch::vacant()),
             selection: SliceSelection::new(true),
             keys: None,
             context: None,
@@ -200,8 +198,7 @@ impl Captured {
                         continue;
                     }
                 };
-                let value =
-                    native::fingerprint_country(memory, base, country.pointer, &keys).ok();
+                let value = native::fingerprint_country(memory, base, country.pointer, &keys).ok();
                 self.selection.scan(fingerprints, country.id, value);
             }
             fingerprints.finish_scan();
@@ -280,13 +277,8 @@ impl Captured {
                 _ => unavailable("stability rows without their read's globals"),
             });
         };
-        let keys: Vec<u32> = context
-            .keys
-            .keys
-            .iter()
-            .map(|key| key.unwrap_or(u32::MAX))
-            .collect();
-        let language = context.language.as_bytes().to_vec();
+        let keys = context.keys.keys.map(|key| key.unwrap_or(u32::MAX));
+        let language = context.language.as_bytes();
         let d = context.defines;
         let inputs = table::<tables::CountryStabilityInputs, _>(
             self.inputs.outcome,
@@ -329,9 +321,9 @@ impl Captured {
                     war_support_factor: t[5],
                     stability_weekly: t[6],
                     war_support_weekly: t[7],
-                    keys: keys.clone(),
+                    keys: owned_vec(copy_vec(&keys)),
                     children: row.children,
-                    language: language.clone(),
+                    language: owned_vec(copy_vec(language)),
                 }
             },
         );
@@ -350,7 +342,10 @@ impl Captured {
             .iter()
             .any(|row| text(row.identity).is_none() || text(row.text).is_none())
         {
-            return [inputs, unavailable("stability line strings outside captured arena")];
+            return [
+                inputs,
+                unavailable("stability line strings outside captured arena"),
+            ];
         }
         let lines = table::<tables::CountryStabilityLines, _>(self.lines.outcome, rows, |row| {
             CountryStabilityLineRow {
@@ -358,11 +353,11 @@ impl Captured {
                 line: row.line,
                 key: row.key,
                 kind: kind(row.kind),
-                identity: text(row.identity).unwrap().to_vec(),
+                identity: owned_vec(copy_vec(text(row.identity).unwrap())),
                 identity_id: row.identity_id,
                 secondary: row.secondary,
                 value: row.value,
-                text: text(row.text).unwrap().to_vec(),
+                text: owned_vec(copy_vec(text(row.text).unwrap())),
             }
         });
         [inputs, lines]
@@ -474,7 +469,10 @@ mod tests {
         };
         captured.lines.outcome = Outcome::Rows { len: 2 };
         // No context: the read never reached the countries.
-        assert!(matches!(captured.tables()[1], TableView::Unavailable { .. }));
+        assert!(matches!(
+            captured.tables()[1],
+            TableView::Unavailable { .. }
+        ));
     }
 
     #[test]

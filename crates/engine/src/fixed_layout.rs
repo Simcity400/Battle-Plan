@@ -79,11 +79,11 @@ impl Report {
     }
 
     /// Every mismatch: the gap and each built-in row, then the static tokens.
-    pub fn failures(&self) -> impl Iterator<Item = Failure> + '_ {
+    pub fn failures(&self) -> impl Iterator<Item = Failure> + Clone + '_ {
         self.layout_failures().chain(self.token_failures())
     }
 
-    fn layout_failures(&self) -> impl Iterator<Item = Failure> + '_ {
+    fn layout_failures(&self) -> impl Iterator<Item = Failure> + Clone + '_ {
         let gap = self.gap.err().map(|reason| Failure {
             name: "modifier definition gap",
             index: GAP,
@@ -103,7 +103,7 @@ impl Report {
         gap.into_iter().chain(rows)
     }
 
-    fn token_failures(&self) -> impl Iterator<Item = Failure> + '_ {
+    fn token_failures(&self) -> impl Iterator<Item = Failure> + Clone + '_ {
         TOKENS
             .iter()
             .zip(&self.tokens)

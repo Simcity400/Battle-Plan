@@ -2,6 +2,7 @@
 //! Double-buffered owned arenas let one changed character grow without moving
 //! later cache keys or forcing the rest of the roster to be reacquired.
 use super::*;
+use engine::allocation::{default_vec, owned_vec, reserve, reserve_exact, resize, vec};
 use std::cell::Cell;
 #[cfg(feature = "advisor_profile")]
 pub(crate) mod profile;
@@ -40,9 +41,9 @@ struct Owned {
 impl Owned {
     fn new(rows: usize, bytes: usize, characters: usize) -> Self {
         Self {
-            rows: vec![cadvisor::Row::default(); rows],
-            bytes: vec![0; bytes],
-            entries: Vec::with_capacity(characters),
+            rows: owned_vec(default_vec(rows)),
+            bytes: owned_vec(default_vec(bytes)),
+            entries: owned_vec(vec(characters)),
         }
     }
     fn allocated(&self) -> u64 {
@@ -121,11 +122,13 @@ impl Section {
             _ => (self.current.rows.len(), self.current.bytes.len()),
         };
         for owned in [&mut self.current, &mut self.previous] {
-            owned.rows.resize(rows, cadvisor::Row::default());
-            owned.bytes.resize(bytes, 0);
-            owned
-                .entries
-                .reserve(self.characters.saturating_sub(owned.entries.len()));
+            let additional = self.characters.saturating_sub(owned.entries.len());
+            if resize(&mut owned.rows, rows, cadvisor::Row::default()).is_err()
+                || resize(&mut owned.bytes, bytes, 0).is_err()
+                || reserve(&mut owned.entries, additional).is_err()
+            {
+                return;
+            }
         }
         self.update_charge();
     }
@@ -160,7 +163,8 @@ impl Section {
         // the remaining observations retain equality controls.
         let data_reads = self.plan.pending_reads().map(|reads| {
             let mut countries = reads.iter().enumerate().filter(|(_, read)| read.len == 4);
-            let mut indexes = Vec::with_capacity(self.current.entries.len());
+            let mut indexes = Vec::new();
+            reserve_exact(&mut indexes, self.current.entries.len()).ok()?;
             for entry in &mut self.current.entries {
                 let (index, read) = countries.next()?;
                 if entry.pointer.checked_add(ccharacter::COUNTRY) != Some(read.address) {

@@ -672,6 +672,7 @@ fn template_width(
     }
     let start = arena.len();
     let terms = (|| {
+        crate::allocation::reserve_push_batch(arena, count).map_err(|_| "allocation failed")?;
         let mut packed = [0; WIDTH_TERM_LIMIT * 16];
         if !read_slice(memory, array.data, &mut packed[..count * 16]) {
             return Err("land combat width terms unreadable");

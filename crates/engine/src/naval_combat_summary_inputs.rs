@@ -125,6 +125,12 @@ fn list(
         return Err("naval summary country count exceeds the country table");
     }
     let start = *len;
+    let required = start
+        .checked_add(count as usize)
+        .ok_or("naval summary country arena overflow")?;
+    let additional = required.saturating_sub(arena.len());
+    crate::allocation::reserve_push_batch(arena, additional)
+        .map_err(|_| "collector allocation failed")?;
     let mut end = start;
     let mut node = head;
     for _ in 0..count {

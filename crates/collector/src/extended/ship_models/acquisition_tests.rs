@@ -280,7 +280,7 @@ fn only_current_country_authentication_is_forwarded_for_matching_context() {
     let source = Source::from_bytes(0, vec![0; 0x8000]);
     source.array(STATE + engine::cgame_state::COUNTRIES, 0x5000, 2);
     source.array(STATE + engine::cgame_state::COUNTRY_LINKS, 0x5100, 2);
-    let mut cache = engine::country_memory::Cache::with_capacity(64);
+    let mut cache = engine::country_memory::Cache::try_with_capacity(64).unwrap();
     let cached = cache.prepare(&source, 0, STATE);
     assert_eq!(
         cached.seed_status(),
@@ -291,7 +291,7 @@ fn only_current_country_authentication_is_forwarded_for_matching_context() {
         inner: &cached,
         used: &used,
     };
-    let arena = RefCell::new(SnapshotArena::new(SnapshotCapacity::default()));
+    let arena = RefCell::new(SnapshotArena::try_new(SnapshotCapacity::default()).unwrap());
     let memory = ModifierMemory {
         inner: &bounded,
         arena: &arena,
@@ -448,10 +448,13 @@ fn malformed_snapshot_prefix_precedes_a_later_batch_budget_refusal() {
         inner: &source,
         used: &used,
     };
-    let arena = RefCell::new(SnapshotArena::new(SnapshotCapacity {
-        nodes: 1,
-        entries: 3,
-    }));
+    let arena = RefCell::new(
+        SnapshotArena::try_new(SnapshotCapacity {
+            nodes: 1,
+            entries: 3,
+        })
+        .unwrap(),
+    );
     let memory = ModifierMemory {
         inner: &bounded,
         arena: &arena,
@@ -534,7 +537,7 @@ fn whole_census_budget_refuses_bytes_and_calls_before_memory_access() {
                 inner: &source,
                 used: &used,
             };
-            let arena = RefCell::new(SnapshotArena::new(SnapshotCapacity::default()));
+            let arena = RefCell::new(SnapshotArena::try_new(SnapshotCapacity::default()).unwrap());
             let memory = ModifierMemory {
                 inner: &bounded,
                 arena: &arena,

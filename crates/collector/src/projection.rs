@@ -14,7 +14,6 @@ use replay::{
     frame::{FrameEncoder, TABLE_COUNT, TableInput, TableView},
     rows::{RowCodec, TableRows, TableSchema},
 };
-use serde_json::{Value, json};
 
 #[derive(Default)]
 struct Ordering {
@@ -40,11 +39,11 @@ impl Default for ProjectionScratch {
 }
 
 impl ProjectionScratch {
-    pub(crate) fn json(&self) -> Value {
-        json!({
+    pub(crate) fn status(&self) -> impl serde::Serialize + '_ {
+        crate::status::status!({
             "scope": "current complete native payload compared with encoder baseline; cumulative conversion decisions including later failed writes",
-            "tables": replay::rows::TableId::ALL.into_iter().zip(&self.tables).filter(|(_, order)| order.compared != 0 || order.converted != 0).map(|(table, order)| json!({
-                "table": format!("{table:?}"),
+            "tables": crate::status::sequence(replay::rows::TableId::ALL.into_iter().zip(&self.tables).filter(|(_, order)| order.compared != 0 || order.converted != 0).map(|(table, order)| crate::status::status!({
+                "table": crate::status::DebugValue(table),
                 "compared": order.compared,
                 "reused": order.reused,
                 "converted": order.converted,
@@ -52,7 +51,7 @@ impl ProjectionScratch {
                 "updated_rows": order.updated_rows,
                 "sorted": order.sorted,
                 "ordering_capacity_bytes": order.indices.capacity() * std::mem::size_of::<usize>(),
-            })).collect::<Vec<_>>(),
+            }))),
         })
     }
 }
@@ -105,6 +104,9 @@ impl<'a> Projection<'a> {
         if !natural {
             if order.indices.len() != source.len() {
                 order.indices.clear();
+                if engine::allocation::reserve_exact(&mut order.indices, source.len()).is_err() {
+                    return unavailable("collector allocation failed").into();
+                }
                 order.indices.extend(0..source.len());
             }
             if !order
@@ -137,24 +139,40 @@ impl<'a> Projection<'a> {
             order.compared = order.compared.saturating_add(1);
             if token.allows_row_updates() && source.len() == baseline.len() {
                 let mut indices = Vec::new();
+                let mut allocation_failed = false;
                 let same_keys = baseline.iter().enumerate().all(|(index, previous)| {
                     let current = at(index);
                     if key(current) != previous.key() {
                         return false;
                     }
                     if !equal(current, previous) {
+                        // Equal baselines still allocate nothing. The first
+                        // changed row reserves the entire remaining batch.
+                        if indices.is_empty()
+                            && engine::allocation::reserve_exact(&mut indices, source.len())
+                                .is_err()
+                        {
+                            allocation_failed = true;
+                            return false;
+                        }
                         indices.push(index);
                     }
                     true
                 });
+                if allocation_failed {
+                    return unavailable("collector allocation failed").into();
+                }
                 if same_keys {
                     if indices.is_empty() {
                         order.reused = order.reused.saturating_add(1);
                         return TableInput::ComparedEqual(token);
                     }
-                    let rows = TableRows::from_rows::<S>(
-                        indices.iter().map(|&index| convert(at(index))).collect(),
-                    );
+                    let mut rows = Vec::new();
+                    if engine::allocation::reserve_exact(&mut rows, indices.len()).is_err() {
+                        return unavailable("collector allocation failed").into();
+                    }
+                    rows.extend(indices.iter().map(|&index| convert(at(index))));
+                    let rows = TableRows::from_rows::<S>(rows);
                     order.updated = order.updated.saturating_add(1);
                     order.updated_rows = order.updated_rows.saturating_add(indices.len() as u64);
                     return TableInput::ComparedChanges {
@@ -174,8 +192,12 @@ impl<'a> Projection<'a> {
                 return TableInput::ComparedEqual(token);
             }
         }
-        let rows =
-            TableRows::from_rows::<S>((0..source.len()).map(|index| convert(at(index))).collect());
+        let mut rows = Vec::new();
+        if engine::allocation::reserve_exact(&mut rows, source.len()).is_err() {
+            return unavailable("collector allocation failed").into();
+        }
+        rows.extend((0..source.len()).map(|index| convert(at(index))));
+        let rows = TableRows::from_rows::<S>(rows);
         order.converted = order.converted.saturating_add(1);
         match outcome {
             Outcome::Truncated { unread_rows, .. } => TableView::Truncated {

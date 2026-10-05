@@ -107,15 +107,17 @@ pub fn verified(verification: Verification) {
     }
 }
 
-pub fn status() -> serde_json::Value {
-    let events: serde_json::Map<String, serde_json::Value> = MUTATIONS
-        .iter()
-        .zip(&EVENTS)
-        .map(|(site, n)| (site.name.to_string(), n.load(Ordering::Relaxed).into()))
-        .collect();
+pub fn status() -> impl serde::Serialize {
+    let event_counts = EVENTS.each_ref().map(|value| value.load(Ordering::Relaxed));
+    let events = crate::status::map(
+        MUTATIONS
+            .iter()
+            .zip(event_counts)
+            .map(|(site, n)| (site.name, n)),
+    );
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     let verify = VERIFY.each_ref().map(|value| value.load(Ordering::Relaxed));
-    serde_json::json!({
+    crate::status::status!({
         "configured": cfg!(feature = "relation_changes"),
         "verify": cfg!(feature = "relation_verify"),
         "poisoned": WATCHES.poisoned(),
@@ -137,7 +139,7 @@ pub struct Hooks {
 }
 impl Hooks {
     /// The enclosing runtime verified the executable hash before construction.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, String> {
+    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "relation_changes") {
             let callbacks = [
@@ -148,32 +150,33 @@ impl Hooks {
             ];
             for (index, site) in MUTATIONS.iter().enumerate() {
                 if engine::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
-                    return Err(format!("relation {} sentinel differs", site.name));
+                    return Err("relation hook sentinel differs");
                 }
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }?;
+                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+                    .map_err(|_| "native hook construction failed")?;
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }
         }
         Ok(Self { hooks })
     }
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
             WATCHES.set_enabled(false);
         }
         for hook in &mut self.hooks {
-            if !hook.set_enabled(enabled)? {
+            if !hook
+                .set_enabled(enabled)
+                .map_err(|_| "native hook state change failed")?
+            {
                 return Ok(false);
             }
         }
         WATCHES.set_enabled(enabled && !self.hooks.is_empty());
         Ok(true)
     }
-    pub fn executable_ranges(&self) -> Vec<Range<usize>> {
-        self.hooks
-            .iter()
-            .flat_map(Hook::executable_ranges)
-            .collect()
+    pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
+        self.hooks.iter().flat_map(Hook::executable_ranges)
     }
 }
 impl Drop for Hooks {

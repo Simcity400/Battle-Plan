@@ -2,9 +2,10 @@
 //! acquisition worker from their original observations; projection is deferred.
 use crate::{
     sampling::qpc,
-    spooling::{table, unavailable},
-    table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
+    spooling::{table, table_iter, unavailable},
+    table_capture::{Arena, CaptureRows, grow_capacity},
 };
+use engine::allocation::{collect_vec, copy_vec, filled, owned_vec, reserve, resize_default};
 use engine::naval_air_efficiency_inputs;
 use engine::{
     Memory, cfex_air, cfex_damage_entry, cfex_member, cnaval_combat, naval_combat_air_base_wings,
@@ -39,44 +40,49 @@ pub(crate) struct BreakdownStatus {
 pub(crate) struct BreakdownWork {
     hours: u64,
     available_hours: u64,
-    refusals: std::collections::BTreeMap<&'static str, u64>,
+    refusals: Vec<(&'static str, u64)>,
     latest: Option<BreakdownStatus>,
 }
 
 impl BreakdownWork {
-    pub(crate) fn observe(&mut self, status: BreakdownStatus) {
+    pub(crate) fn observe(&mut self, status: BreakdownStatus) -> std::io::Result<()> {
         self.hours = self.hours.saturating_add(1);
         if let Outcome::Unavailable { reason } = status.outcome {
-            let count = self.refusals.entry(reason).or_default();
+            let index = match self
+                .refusals
+                .binary_search_by_key(&reason, |(reason, _)| *reason)
+            {
+                Ok(index) => index,
+                Err(index) => {
+                    reserve(&mut self.refusals, 1)?;
+                    self.refusals.insert(index, (reason, 0));
+                    index
+                }
+            };
+            let count = &mut self.refusals[index].1;
             *count = count.saturating_add(1);
         } else if matches!(status.outcome, Outcome::Rows { .. }) {
             self.available_hours = self.available_hours.saturating_add(1);
         }
         self.latest = Some(status);
+        Ok(())
     }
 
-    pub(crate) fn json(&self) -> serde_json::Value {
-        let mut arenas = serde_json::Map::new();
-        if let Some(latest) = self.latest {
-            for (index, name) in ["requests", "roots", "nodes", "text_bytes", "depth"]
-                .into_iter()
-                .enumerate()
-            {
-                arenas.insert(
-                    name.into(),
-                    serde_json::json!({
-                        "required": latest.required[index],
-                        "capacity": latest.capacity[index],
-                    }),
-                );
-            }
-        }
-        serde_json::json!({
+    pub(crate) fn status(&self) -> impl serde::Serialize + '_ {
+        crate::status::status!({
             "hours": self.hours,
             "available_hours": self.available_hours,
-            "refused_hours": self.refusals.values().fold(0_u64, |sum, count| sum.saturating_add(*count)),
-            "refusals": self.refusals,
-            "latest_arenas": arenas,
+            "refused_hours": self.refusals.iter().fold(0_u64, |sum, (_, count)| sum.saturating_add(*count)),
+            "refusals": crate::status::map(self.refusals.iter().map(|&(reason, count)| (reason, count))),
+            "latest_arenas": crate::status::map(self.latest.iter().flat_map(|latest| {
+                ["requests", "roots", "nodes", "text_bytes", "depth"]
+                    .into_iter()
+                    .enumerate()
+                    .map(move |(index, name)| (name, crate::status::status!({
+                        "required": latest.required[index],
+                        "capacity": latest.capacity[index],
+                    })))
+            })),
         })
     }
 }
@@ -213,7 +219,7 @@ impl Captured {
             damage: Arena::new(c.damage),
             air: Arena::new(c.air),
             hits: Arena::new(c.hits),
-            groups: vec![0; c.groups],
+            groups: owned_vec(filled(c.groups, 0)),
             required_groups: 0,
             planes: Arena::new(c.planes),
             plane_air: Arena::new(c.plane_air),
@@ -224,7 +230,11 @@ impl Captured {
             weapon_terms: Arena::new(c.weapon_terms),
             dense_bases: CaptureRows::new(c.dense_bases),
             dense_wings: Arena::new(c.dense_wings),
-            base_handles: naval_combat_air_base_wings::UniqueHandles::with_capacity(c.dense_bases),
+            base_handles: naval_combat_air_base_wings::UniqueHandles::try_with_capacity(
+                c.dense_bases,
+            )
+            .map_err(crate::allocation::io)
+            .unwrap_or_default(),
             side_units: Arena::new(c.side_units),
             custom_sea: Arena::new(c.custom_sea),
             damage_sources: Arena::new(c.damage_sources),
@@ -313,18 +323,36 @@ impl Captured {
         self.ships.grow(&mut c.ships);
         // These owned arenas grew from successfully read entries in the
         // worker. A failed payload's declared count must not size a pool.
-        grow_vec(&mut self.damage.first, c.damage);
-        grow_vec(&mut self.air.first, c.air);
-        grow_vec(&mut self.hits.first, c.hits);
+        if self.damage.first.len() < c.damage
+            && resize_default(&mut self.damage.first, c.damage).is_err()
+        {
+            return;
+        }
+        if self.air.first.len() < c.air && resize_default(&mut self.air.first, c.air).is_err() {
+            return;
+        }
+        if self.hits.first.len() < c.hits && resize_default(&mut self.hits.first, c.hits).is_err() {
+            return;
+        }
         grow_capacity(&mut c.groups, self.required_groups);
-        grow_vec(&mut self.groups, c.groups);
+        if self.groups.len() < c.groups && resize_default(&mut self.groups, c.groups).is_err() {
+            return;
+        }
         self.planes.grow(&mut c.planes);
         self.plane_air.grow(&mut c.plane_air);
         self.plane_hits.grow(&mut c.plane_hits);
         self.plane_kills.grow(&mut c.plane_kills);
         self.commanders.grow(&mut c.commanders);
-        grow_vec(&mut self.weapon_sources.first, c.weapon_sources);
-        grow_vec(&mut self.weapon_terms.first, c.weapon_terms);
+        if self.weapon_sources.first.len() < c.weapon_sources
+            && resize_default(&mut self.weapon_sources.first, c.weapon_sources).is_err()
+        {
+            return;
+        }
+        if self.weapon_terms.first.len() < c.weapon_terms
+            && resize_default(&mut self.weapon_terms.first, c.weapon_terms).is_err()
+        {
+            return;
+        }
         self.dense_bases.grow(&mut c.dense_bases);
         self.dense_wings.grow(&mut c.dense_wings);
         if self.base_handles.len() >= c.dense_bases.saturating_sub(c.dense_bases / 4) {
@@ -333,8 +361,14 @@ impl Captured {
                 self.base_handles.len().saturating_add(1),
             );
         }
-        if self.base_handles.capacity() < c.dense_bases {
-            self.base_handles.reserve(c.dense_bases);
+        if self.base_handles.capacity() < c.dense_bases
+            && self
+                .base_handles
+                .try_reserve(c.dense_bases)
+                .map_err(crate::allocation::io)
+                .is_err()
+        {
+            return;
         }
         self.side_units.grow(&mut c.side_units);
         self.custom_sea.grow(&mut c.custom_sea);
@@ -389,7 +423,10 @@ impl Captured {
                         && plane.flags[1] == 0
                         && matches!(plane.efficiency.source, 2 | 3)
                     {
-                        self.base_handles.insert(plane.air_base);
+                        self.base_handles
+                            .try_insert(plane.air_base)
+                            .map_err(crate::allocation::io)
+                            .map_err(|_| "collector allocation failed")?;
                     }
                 }
             }
@@ -397,7 +434,10 @@ impl Captured {
         for ship in ships {
             let handle = ship.weapon_context.air_base;
             if ship.live_ship != 0 && handle != 0 {
-                self.base_handles.insert(handle);
+                self.base_handles
+                    .try_insert(handle)
+                    .map_err(crate::allocation::io)
+                    .map_err(|_| "collector allocation failed")?;
             }
         }
         Ok(())
@@ -605,25 +645,28 @@ impl Captured {
                     duration: r.duration,
                     progress: r.progress,
                     custom_sea: r.custom_sea.map(|span| {
-                        range(&self.custom_sea.first, span)
-                            .iter()
-                            .flat_map(|value| value.to_le_bytes())
-                            .collect()
+                        let source = range(&self.custom_sea.first, span);
+                        let mut bytes = owned_vec(filled(source.len().saturating_mul(2), 0));
+                        for (out, value) in bytes.chunks_exact_mut(2).zip(source) {
+                            out.copy_from_slice(&value.to_le_bytes());
+                        }
+                        bytes
                     }),
                     custom_sea_error: u8::from(r.custom_sea_error.is_some()),
                     sides: r.sides.each_ref().map(|s| rows::NavalCombatSideDetails {
                         damage_history: s.damage_history,
                         original_health: s.original_health,
                         total_damage: s.total_damage,
-                        damage_by_type: range(&self.damage_sources.first, s.damage_by_type)
-                            .iter()
-                            .map(|&(token, damage)| rows::NavalDamageSource { token, damage })
-                            .collect(),
+                        damage_by_type: owned_vec(collect_vec(
+                            range(&self.damage_sources.first, s.damage_by_type)
+                                .iter()
+                                .map(|&(token, damage)| rows::NavalDamageSource { token, damage }),
+                        )),
                         commander: s.commander,
                         commander_inputs: range(&self.commanders.first, s.commander_inputs)
                             .first()
                             .map(commander_inputs),
-                        units: range(&self.side_units.first, s.units).to_vec(),
+                        units: owned_vec(copy_vec(range(&self.side_units.first, s.units))),
                         engaged: s.engaged,
                         retreating: s.retreating,
                         capital_screening: s.capital_screening,
@@ -633,12 +676,14 @@ impl Captured {
                         summary: rows::NavalCombatSummaryInputs {
                             recent_join_penalty: s.summary.recent_join_penalty,
                             escort_bonus: s.summary.escort_bonus,
-                            countries: range(&self.summary_countries, s.summary.countries).to_vec(),
-                            secondary_countries: range(
+                            countries: owned_vec(copy_vec(range(
+                                &self.summary_countries,
+                                s.summary.countries,
+                            ))),
+                            secondary_countries: owned_vec(copy_vec(range(
                                 &self.summary_countries,
                                 s.summary.secondary_countries,
-                            )
-                            .to_vec(),
+                            ))),
                             modifiers: s.summary.modifiers.map(|scope| {
                                 scope.map(|m| rows::NavalCombatSummaryModifier {
                                     raw: m.raw,
@@ -649,66 +694,71 @@ impl Captured {
                             feature_flags: s.summary.feature_flags,
                             eligibility_callback: s.summary.eligibility_callback,
                         },
-                        planes: range(&self.planes.first, s.planes)
-                            .iter()
-                            .map(|p| rows::NavalCombatPlane {
-                                wing_types: range(&self.wing_types.first, p.wing_types).to_vec(),
-                                source: p.source,
-                                group_index: p.group_index,
-                                index: p.index,
-                                carrier_slot: p.carrier_slot,
-                                carrier_member_present: p.carrier_member_present,
-                                carrier_state: p.carrier_state,
-                                air_base: p.air_base,
-                                casualties: p.casualties,
-                                time_duration: p.time_duration,
-                                wings: p
-                                    .wings
-                                    .map(|span| range(&self.plane_wings.first, span).to_vec()),
-                                initial_planes: p.initial_planes,
-                                current_planes: p.current_planes,
-                                country: p.country,
-                                date: p.date,
-                                flags: p.flags,
-                                variant: p.variant,
-                                efficiency: rows::NavalCombatAirEfficiency {
-                                    source: p.efficiency.source,
-                                    pool_type_flags: p.efficiency.pool_type_flags,
-                                    mission: p.efficiency.mission,
-                                    container_present: p.efficiency.container_present,
-                                    base_crowding: p.efficiency.base_crowding,
-                                    night: p.efficiency.night,
-                                    modifiers: p.efficiency.modifiers.map(|m| {
-                                        rows::NavalCombatAirEfficiencyModifier {
-                                            raw: m.raw,
-                                            present: m.present,
-                                        }
+                        planes: owned_vec(collect_vec(
+                            range(&self.planes.first, s.planes).iter().map(|p| {
+                                rows::NavalCombatPlane {
+                                    wing_types: owned_vec(copy_vec(range(
+                                        &self.wing_types.first,
+                                        p.wing_types,
+                                    ))),
+                                    source: p.source,
+                                    group_index: p.group_index,
+                                    index: p.index,
+                                    carrier_slot: p.carrier_slot,
+                                    carrier_member_present: p.carrier_member_present,
+                                    carrier_state: p.carrier_state,
+                                    air_base: p.air_base,
+                                    casualties: p.casualties,
+                                    time_duration: p.time_duration,
+                                    wings: p.wings.map(|span| {
+                                        owned_vec(copy_vec(range(&self.plane_wings.first, span)))
                                     }),
-                                    modifier_metadata: p.efficiency.modifier_metadata,
-                                    feature_flags: p.efficiency.feature_flags,
-                                    eligibility_callback: p.efficiency.eligibility_callback,
-                                },
-                                kills: range(&self.plane_kills.first, p.kills)
-                                    .iter()
-                                    .map(|k| rows::NavalCombatAirWingKill {
-                                        wing: k.wing,
-                                        index: k.index,
-                                        category: k.category,
-                                        count: k.count,
-                                    })
-                                    .collect(),
-                                air_hits: p.air_hits.map(|span| {
-                                    range(&self.plane_air.first, span)
-                                        .iter()
-                                        .map(air_hit)
-                                        .collect()
-                                }),
-                                naval_hits: range(&self.plane_hits.first, p.naval_hits)
-                                    .iter()
-                                    .map(naval_hit)
-                                    .collect(),
-                            })
-                            .collect(),
+                                    initial_planes: p.initial_planes,
+                                    current_planes: p.current_planes,
+                                    country: p.country,
+                                    date: p.date,
+                                    flags: p.flags,
+                                    variant: p.variant,
+                                    efficiency: rows::NavalCombatAirEfficiency {
+                                        source: p.efficiency.source,
+                                        pool_type_flags: p.efficiency.pool_type_flags,
+                                        mission: p.efficiency.mission,
+                                        container_present: p.efficiency.container_present,
+                                        base_crowding: p.efficiency.base_crowding,
+                                        night: p.efficiency.night,
+                                        modifiers: p.efficiency.modifiers.map(|m| {
+                                            rows::NavalCombatAirEfficiencyModifier {
+                                                raw: m.raw,
+                                                present: m.present,
+                                            }
+                                        }),
+                                        modifier_metadata: p.efficiency.modifier_metadata,
+                                        feature_flags: p.efficiency.feature_flags,
+                                        eligibility_callback: p.efficiency.eligibility_callback,
+                                    },
+                                    kills: owned_vec(collect_vec(
+                                        range(&self.plane_kills.first, p.kills).iter().map(|k| {
+                                            rows::NavalCombatAirWingKill {
+                                                wing: k.wing,
+                                                index: k.index,
+                                                category: k.category,
+                                                count: k.count,
+                                            }
+                                        }),
+                                    )),
+                                    air_hits: p.air_hits.map(|span| {
+                                        owned_vec(collect_vec(
+                                            range(&self.plane_air.first, span).iter().map(air_hit),
+                                        ))
+                                    }),
+                                    naval_hits: owned_vec(collect_vec(
+                                        range(&self.plane_hits.first, p.naval_hits)
+                                            .iter()
+                                            .map(naval_hit),
+                                    )),
+                                }
+                            }),
+                        )),
                     }),
                 }
             }),
@@ -718,7 +768,10 @@ impl Captured {
                 &self.dense_bases.rows,
                 |r| rows::NavalCombatAirBaseWingHandlesRow {
                     base: r.base,
-                    wings: range(&self.dense_wings.first, [r.wings_start, r.wings_len]).to_vec(),
+                    wings: owned_vec(copy_vec(range(
+                        &self.dense_wings.first,
+                        [r.wings_start, r.wings_len],
+                    ))),
                 },
             ),
             self.breakdown_table(),
@@ -729,12 +782,12 @@ impl Captured {
             return unavailable(reason);
         }
         match self.project_breakdowns() {
-            Ok(projected) => table::<tables::NavalModifierBreakdowns, _>(
+            Ok(projected) => table_iter::<tables::NavalModifierBreakdowns, _>(
                 Outcome::Rows {
                     len: projected.len(),
                 },
-                &projected,
-                Clone::clone,
+                projected.into_iter(),
+                std::convert::identity,
             ),
             Err(reason) => unavailable(reason),
         }
@@ -748,6 +801,7 @@ impl Captured {
         let nodes = &self.breakdown_nodes.first[..self.breakdown_nodes.len];
         let names = &self.breakdown_text.first[..self.breakdown_text.len];
         let mut result = Vec::new();
+        reserve(&mut result, requests.len()).map_err(|_| "collector allocation failed")?;
         let mut at = 0;
         for root in roots {
             let raw = range(nodes, root.nodes);
@@ -768,6 +822,8 @@ impl Captured {
                 }
                 let mut cursor = 0;
                 let mut projected = Vec::new();
+                reserve(&mut projected, raw.len().saturating_add(1))
+                    .map_err(|_| "collector allocation failed")?;
                 copy_visible_subtree(raw, names, &mut cursor, key_index, true, &mut projected)?;
                 if cursor != raw.len() {
                     return Err("naval modifier tree has extra nodes");
@@ -782,17 +838,17 @@ impl Captured {
                 result.push(rows::NavalModifierBreakdownRow {
                     accumulator: root.accumulator as u64,
                     key,
-                    uses: requests[first..at]
-                        .iter()
-                        .map(|request| rows::NavalModifierUse {
+                    uses: collect_vec(requests[first..at].iter().map(|request| {
+                        rows::NavalModifierUse {
                             combat: request.usage.combat,
                             side: request.usage.side,
                             battle_slot: request.usage.battle_slot,
                             source_scope: request.usage.source_scope,
                             source_index: request.usage.source_index,
                             order: request.usage.order,
-                        })
-                        .collect(),
+                        }
+                    }))
+                    .map_err(|_| "collector allocation failed")?,
                     nodes: projected,
                 });
             }
@@ -817,10 +873,10 @@ impl Captured {
             cached_strength_ratio: r.cached_strength_ratio,
             pride: r.pride,
             is_convoy: r.is_convoy,
-            name: r.name.as_bytes().to_vec(),
-            type_name: r.type_name.as_bytes().to_vec(),
-            sprite: r.sprite.as_bytes().to_vec(),
-            sunk_by: r.sunk_by.as_bytes().to_vec(),
+            name: owned_vec(copy_vec(r.name.as_bytes())),
+            type_name: owned_vec(copy_vec(r.type_name.as_bytes())),
+            sprite: owned_vec(copy_vec(r.sprite.as_bytes())),
+            sunk_by: owned_vec(copy_vec(r.sunk_by.as_bytes())),
             variant: r.variant,
             arrival_hours: r.arrival_hours,
             received_criticals: r.received_criticals,
@@ -859,44 +915,48 @@ impl Captured {
                 fuel: r.weapon_context.fuel,
                 night: r.weapon_context.night,
                 formation_flags: r.weapon_context.formation_flags,
-                terrain_name: r.weapon_context.terrain_name.as_bytes().to_vec(),
-                sources: range(&self.weapon_sources.first, r.weapon_context.sources)
-                    .iter()
-                    .map(|s| rows::NavalShipModifierSource {
-                        scope: s.scope,
-                        index: s.index,
-                        selector: s.selector,
-                        reference: s.reference,
-                        dynamic_keys: s.dynamic_keys,
-                        weights: s.weights,
-                        movement: s.movement,
-                        terms: range(&self.weapon_terms.first, s.terms)
-                            .iter()
-                            .map(|t| rows::NavalShipModifierTerm {
-                                key: t.key,
-                                raw: t.raw,
-                                metadata_flags: t.metadata_flags,
-                                feature_selector: t.feature_selector,
-                            })
-                            .collect(),
-                    })
-                    .collect(),
+                terrain_name: owned_vec(copy_vec(r.weapon_context.terrain_name.as_bytes())),
+                sources: owned_vec(collect_vec(
+                    range(&self.weapon_sources.first, r.weapon_context.sources)
+                        .iter()
+                        .map(|s| rows::NavalShipModifierSource {
+                            scope: s.scope,
+                            index: s.index,
+                            selector: s.selector,
+                            reference: s.reference,
+                            dynamic_keys: s.dynamic_keys,
+                            weights: s.weights,
+                            movement: s.movement,
+                            terms: owned_vec(collect_vec(
+                                range(&self.weapon_terms.first, s.terms).iter().map(|t| {
+                                    rows::NavalShipModifierTerm {
+                                        key: t.key,
+                                        raw: t.raw,
+                                        metadata_flags: t.metadata_flags,
+                                        feature_selector: t.feature_selector,
+                                    }
+                                }),
+                            )),
+                        }),
+                )),
             },
-            damage_entries: range(&self.damage.first, r.damage_entries)
-                .iter()
-                .map(|v| rows::NavalCombatDamage {
-                    source: v.source,
-                    country: v.country,
-                    damage: v.damage,
-                })
-                .collect(),
-            air_hits: r
-                .air_hits
-                .map(|span| range(&self.air.first, span).iter().map(air_hit).collect()),
-            naval_hits: range(&self.hits.first, r.naval_hits)
-                .iter()
-                .map(naval_hit)
-                .collect(),
+            damage_entries: owned_vec(collect_vec(
+                range(&self.damage.first, r.damage_entries).iter().map(|v| {
+                    rows::NavalCombatDamage {
+                        source: v.source,
+                        country: v.country,
+                        damage: v.damage,
+                    }
+                }),
+            )),
+            air_hits: r.air_hits.map(|span| {
+                owned_vec(collect_vec(
+                    range(&self.air.first, span).iter().map(air_hit),
+                ))
+            }),
+            naval_hits: owned_vec(collect_vec(
+                range(&self.hits.first, r.naval_hits).iter().map(naval_hit),
+            )),
         }
     }
 }
@@ -912,52 +972,56 @@ pub(super) fn commander_inputs(
         skills: c.skills,
         skill_definitions: c.skill_definitions.map(commander_skill),
         next_skill: commander_skill(c.next_skill),
-        name: c.name[..c.name_len].to_vec(),
-        description: c.description[..c.description_len].to_vec(),
+        name: owned_vec(copy_vec(&c.name[..c.name_len])),
+        description: owned_vec(copy_vec(&c.description[..c.description_len])),
         presentation: super::combat_details::commander_presentation(&c.presentation),
-        traits: c.traits[..c.traits_len]
-            .iter()
-            .map(|t| rows::LandCombatCommanderTrait {
+        traits: owned_vec(collect_vec(c.traits[..c.traits_len].iter().map(|t| {
+            rows::LandCombatCommanderTrait {
                 token_id: t.token_id,
                 definition_ordinal: t.definition_ordinal,
                 kind: t.kind,
                 relevant: t.relevant,
-                token: c.trait_text[t.token_start..t.token_start + t.token_len].to_vec(),
-            })
-            .collect(),
-        learning_traits: c.learning_traits[..c.learning_traits_len]
-            .iter()
-            .map(|t| rows::LandCombatCommanderLearningTrait {
-                token_id: t.token_id,
-                definition_ordinal: t.definition_ordinal,
-                required_experience: t.required_experience,
-                experience: t.experience,
-                token: c.learning_text[t.token_start..t.token_start + t.token_len].to_vec(),
-            })
-            .collect(),
+                token: owned_vec(copy_vec(
+                    &c.trait_text[t.token_start..t.token_start + t.token_len],
+                )),
+            }
+        }))),
+        learning_traits: owned_vec(collect_vec(
+            c.learning_traits[..c.learning_traits_len].iter().map(|t| {
+                rows::LandCombatCommanderLearningTrait {
+                    token_id: t.token_id,
+                    definition_ordinal: t.definition_ordinal,
+                    required_experience: t.required_experience,
+                    experience: t.experience,
+                    token: owned_vec(copy_vec(
+                        &c.learning_text[t.token_start..t.token_start + t.token_len],
+                    )),
+                }
+            }),
+        )),
         learning_threshold: c.learning_threshold,
         modifier_feature_flags: c.modifier_feature_flags,
         modifier_callback_kind: c.modifier_callback_kind,
-        modifiers: c.modifiers[..c.modifiers_len]
-            .iter()
-            .map(|m| rows::LandCombatCommanderPortraitModifier {
+        modifiers: owned_vec(collect_vec(c.modifiers[..c.modifiers_len].iter().map(
+            |m| rows::LandCombatCommanderPortraitModifier {
                 source: m.source,
                 id: m.id,
                 value: m.value,
                 metadata_flags: m.metadata_flags,
                 category_mask: m.category_mask,
                 feature_selector: m.feature_selector,
-            })
-            .collect(),
-        tooltips: c.tooltips[..c.tooltips_len]
-            .iter()
-            .map(|t| rows::LandCombatCommanderPortraitTooltip {
+            },
+        ))),
+        tooltips: owned_vec(collect_vec(c.tooltips[..c.tooltips_len].iter().map(|t| {
+            rows::LandCombatCommanderPortraitTooltip {
                 source: t.source,
                 bucket: t.bucket,
                 key: t.key,
-                text: c.tooltip_text[t.text_start..t.text_start + t.text_len].to_vec(),
-            })
-            .collect(),
+                text: owned_vec(copy_vec(
+                    &c.tooltip_text[t.text_start..t.text_start + t.text_len],
+                )),
+            }
+        }))),
     }
 }
 pub(super) fn commander_skill(
@@ -1004,10 +1068,12 @@ fn copy_visible_subtree(
     output[start] = rows::ModifierBreakdownNode {
         children: kept_children,
         value: node.values[key],
-        name: names
-            .get(node.name[0]..end)
-            .ok_or("naval modifier display span invalid")?
-            .to_vec(),
+        name: copy_vec(
+            names
+                .get(node.name[0]..end)
+                .ok_or("naval modifier display span invalid")?,
+        )
+        .map_err(|_| "collector allocation failed")?,
     };
     Ok(true)
 }
@@ -1022,7 +1088,7 @@ pub(super) fn air_hit(v: &naval_combat_air_hit::Row) -> rows::NavalCombatAirHit 
 pub(super) fn naval_hit(v: &naval_combat_hit::Row) -> rows::NavalCombatHit {
     rows::NavalCombatHit {
         target_slot: v.target_slot,
-        target_name: v.target_name.as_bytes().to_vec(),
+        target_name: owned_vec(copy_vec(v.target_name.as_bytes())),
         convoy: v.convoy,
         damage: v.damage,
         denominator: v.denominator,

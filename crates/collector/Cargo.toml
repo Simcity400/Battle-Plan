@@ -17,6 +17,8 @@ advisor_changes = []
 advisor_profile = ["advisor_changes"]
 # Bounded per-hour slow-callback phase and thread-cycle diagnostics.
 callback_profile = []
+# Diagnostic checked-allocation injection; absent from normal builds.
+alloc-fault-injection = ["engine/alloc-fault-injection"]
 # Diagnostic acquisition checks every proposed advisor cache hit.
 advisor_verify = ["advisor_changes"]
 portrait_changes = []
@@ -42,4 +44,4 @@ retour = "0.3"
 crossbeam-queue = "0.3"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Performance", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Kernel", "Win32_System_Memory", "Win32_System_SystemInformation"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Performance", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Kernel", "Win32_System_Memory", "Win32_System_SystemInformation"] }

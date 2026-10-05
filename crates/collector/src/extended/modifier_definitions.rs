@@ -8,6 +8,7 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
+use engine::allocation::{copy_vec, owned_vec};
 use engine::{Memory, modifier_definition as native, walk::Outcome};
 use replay::{
     cadence::{SKIPPED_REASON, should_walk},
@@ -126,9 +127,9 @@ impl Captured {
             |row| ModifierDefinitionRow {
                 index: row.index,
                 token: row.token,
-                name_key: bytes(row.name_key).unwrap().to_vec(),
-                postfix_key: bytes(row.postfix_key).unwrap().to_vec(),
-                argument: bytes(row.argument).unwrap().to_vec(),
+                name_key: owned_vec(copy_vec(bytes(row.name_key).unwrap())),
+                postfix_key: owned_vec(copy_vec(bytes(row.postfix_key).unwrap())),
+                argument: owned_vec(copy_vec(bytes(row.argument).unwrap())),
                 flags: row.flags,
                 category_mask: row.category_mask,
                 feature_selector: row.feature_selector,

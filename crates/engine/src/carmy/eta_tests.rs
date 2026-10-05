@@ -857,7 +857,7 @@ impl Walker {
                 neighbour_entries: 1 << 16,
             }),
             statics: cprovince::StaticGeometry::default(),
-            packet: EtaInputPacket::new(rows, terrain, legs),
+            packet: EtaInputPacket::new(rows, terrain, legs).unwrap(),
             capacities: (rows, terrain, legs),
         }
     }

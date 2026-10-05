@@ -6,6 +6,7 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows, grow_capacity},
 };
+use engine::allocation::{map_slice, owned_vec};
 use engine::{Memory, cdeployment_status, cproduction_status, walk::Outcome};
 use replay::{
     cadence::{SKIPPED_REASON, should_walk},
@@ -166,14 +167,12 @@ impl Captured {
             CountryLocalSubunitRow {
                 country: row.country,
                 token: row.token,
-                requirements: span(row)
-                    .unwrap()
-                    .iter()
-                    .map(|requirement| LocalSubunitRequirement {
+                requirements: owned_vec(map_slice(span(row).unwrap(), |requirement| {
+                    LocalSubunitRequirement {
                         archetype_token: requirement.archetype_token,
                         amount_raw: requirement.amount_raw,
-                    })
-                    .collect(),
+                    }
+                })),
             }
         })
     }
@@ -210,7 +209,11 @@ mod tests {
                     == Outcome::Unavailable {
                         reason: SKIPPED_REASON,
                     };
-                assert_eq!(skipped, !should_walk(table, hour, false), "{table:?} {hour}");
+                assert_eq!(
+                    skipped,
+                    !should_walk(table, hour, false),
+                    "{table:?} {hour}"
+                );
             }
         }
     }

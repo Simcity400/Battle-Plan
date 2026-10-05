@@ -7,6 +7,7 @@ pub struct ReplayFile {
     path: String,
     name: String,
     folder: String,
+    partial: Option<dashboard::PartialRecording>,
 }
 #[derive(Serialize)]
 pub struct ReplayLibrary {
@@ -57,6 +58,9 @@ fn scan(folder: &Path) -> Result<ReplayLibrary, String> {
                     .is_some_and(|ext| ext.eq_ignore_ascii_case("battleplan") || ext.eq_ignore_ascii_case("hoi4replay"))
             {
                 files.push(ReplayFile {
+                    partial: dashboard::metadata::read_partial_recording(&path)
+                        .ok()
+                        .flatten(),
                     path: path.to_string_lossy().into_owned(),
                     name: path
                         .file_stem()

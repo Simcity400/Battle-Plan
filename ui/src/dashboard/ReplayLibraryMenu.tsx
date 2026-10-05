@@ -10,6 +10,7 @@ import { Icon } from '../components/Icons';
 import ReplayFilename from '../components/ReplayFilename';
 import { SourceFlag } from '../components/CountryFlag';
 import FactionColoursButton from './FactionColours';
+import { PartialRecordingBadge, partialRecordingText } from '../shell/recordingNotice';
 
 const replayFilename = (path: string) => path.replaceAll('\\', '/').split('/').pop()!;
 const displayName = (path: string) => replayFilename(path).replace(/\.(?:battleplan|hoi4replay)$/i, '');
@@ -61,14 +62,16 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
       {visible.map(campaign => {
         const isDefault = campaign.id === defaultId;
         const source = bindings[campaign.id]?.source;
+        const partial = source?.metadata.partial;
         const tag = countryTags[campaign.id] ?? null;
         const country = tag ? source?.metadata.countries.find(item => item.tag === tag)?.name : undefined;
         return <div className="loaded-campaign" role="listitem" key={campaign.id}>
           <button type="button" className="sidebar-row campaign-row" disabled={!source} aria-current={isDefault ? 'true' : undefined}
-            aria-label={isDefault ? `${displayName(campaign.path)}, shown campaign` : `Show ${displayName(campaign.path)}`}
-            data-tooltip={[displayName(campaign.path), country].filter(Boolean).join(' · ')} onClick={() => onDefault(campaign.id)}>
+            aria-label={`${isDefault ? `${displayName(campaign.path)}, shown campaign` : `Show ${displayName(campaign.path)}`}${partial ? ', partial recording' : ''}`}
+            data-tooltip={[displayName(campaign.path), country, partial && partialRecordingText(partial)].filter(Boolean).join(' · ')} onClick={() => onDefault(campaign.id)}>
             {source ? <SourceFlag client={client} source={source} tag={tag} /> : <span className="campaign-loading"><span className="spinner" /></span>}
             <span>{displayName(campaign.path)}</span>
+            <PartialRecordingBadge partial={partial} />
           </button>
           {source && <FactionColoursButton client={client} source={source} label={displayName(campaign.path)} />}
           {source && <button type="button" className="icon-button small campaign-unload" aria-label={`Unload ${displayName(campaign.path)}`} data-tooltip="Unload"
@@ -98,6 +101,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
           <div className="replay-library-list">{rows.map(file => {
             const campaign = campaigns.find(campaign => sameCampaignPath(file.path, campaign.path));
             const binding = campaign ? bindings[campaign.id] : null;
+            const partial = binding?.source?.metadata.partial ?? file.partial;
             const label = replayFilename(file.path);
             const error = binding?.error ?? Object.entries(errors).find(([path]) => sameCampaignPath(path, file.path))?.[1];
             const busy = campaign?.loading || binding?.loading;
@@ -105,6 +109,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
               <span className="replay-library-icon" aria-hidden="true"><Icon name="file" /></span>
               <div className="replay-library-name"><strong><ReplayFilename path={file.path} /></strong>
                 {error ? <small className="replay-library-error" role="alert">{error}</small> : file.folder ? <small>{file.folder}</small> : null}</div>
+              <PartialRecordingBadge partial={partial} />
               {binding?.source && <span className="pill positive">{campaign?.id === defaultId ? 'Default' : 'Loaded'}</span>}
               <button type="button" className={`button small${binding?.source ? ' quiet' : ''}`} disabled={busy || (!binding?.source && !campaign && !canLoad)}
                 onClick={() => binding?.source && campaign ? onUnload(campaign.id) : onLoad(file.path, label, slotId)}>

@@ -5,6 +5,7 @@ use crate::{
     spooling::table,
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
+use engine::allocation::{copy_vec, owned_vec};
 use engine::{
     Memory, cfront, cfront_section, corder_instance, corders_group, invasion_preparations,
     modifier_definition::DefinitionMemo, walk::Outcome,
@@ -121,7 +122,7 @@ impl Captured {
             root_orders: Arena::new(c.root_orders),
             sections: Arena::new(c.sections),
             pairs: Arena::new(c.pairs),
-            handles: vec![0; c.handles],
+            handles: owned_vec(engine::allocation::filled(c.handles, 0)),
             order: Vec::new(),
             required_handles: 0,
             ticks: [0; N],
@@ -206,9 +207,8 @@ impl Captured {
             && len == roots.len()
             && len > self.colors.rows.len()
         {
-            self.colors
-                .rows
-                .try_reserve(len - self.colors.rows.len())
+            let additional = len - self.colors.rows.len();
+            engine::allocation::reserve(&mut self.colors.rows, additional)
                 .map(|()| self.colors.rows.resize(len, Default::default()))
         } else {
             Ok(())
@@ -333,7 +333,7 @@ impl Captured {
         self.ticks
     }
     fn name(&self, (start, len): (usize, usize)) -> Vec<u8> {
-        self.names.first[start..start + len].to_vec()
+        owned_vec(copy_vec(&self.names.first[start..start + len]))
     }
     pub fn outcomes(&self) -> [Outcome; N] {
         [
@@ -361,15 +361,17 @@ impl Captured {
                     virtual_order: r.virtual_order,
                     has_child: r.has_child,
                     owner_override: r.owner_override,
-                    predecessors: self.links.first
-                        [r.predecessors_start..r.predecessors_start + r.predecessors_len]
-                        .to_vec(),
-                    successors: self.links.first
-                        [r.successors_start..r.successors_start + r.successors_len]
-                        .to_vec(),
-                    assigned_divisions: self.assigned.first
-                        [r.assigned_start..r.assigned_start + r.assigned_len]
-                        .to_vec(),
+                    predecessors: owned_vec(copy_vec(
+                        &self.links.first
+                            [r.predecessors_start..r.predecessors_start + r.predecessors_len],
+                    )),
+                    successors: owned_vec(copy_vec(
+                        &self.links.first
+                            [r.successors_start..r.successors_start + r.successors_len],
+                    )),
+                    assigned_divisions: owned_vec(copy_vec(
+                        &self.assigned.first[r.assigned_start..r.assigned_start + r.assigned_len],
+                    )),
                     name_prefix: self.name(r.names[0]),
                     name: self.name(r.names[1]),
                     name_first: self.name(r.names[2]),
@@ -385,14 +387,16 @@ impl Captured {
                     green: r.green,
                     blue: r.blue,
                     alpha: r.alpha,
-                    primary_orders: self.root_orders.first
-                        [r.primary_start..r.primary_start + r.primary_len]
-                        .to_vec(),
-                    fallback_orders: self.root_orders.first
-                        [r.fallback_start..r.fallback_start + r.fallback_len]
-                        .to_vec(),
-                    name: self.group_names.first[r.name_start..r.name_start + r.name_len]
-                        .to_vec(),
+                    primary_orders: owned_vec(copy_vec(
+                        &self.root_orders.first[r.primary_start..r.primary_start + r.primary_len],
+                    )),
+                    fallback_orders: owned_vec(copy_vec(
+                        &self.root_orders.first
+                            [r.fallback_start..r.fallback_start + r.fallback_len],
+                    )),
+                    name: owned_vec(copy_vec(
+                        &self.group_names.first[r.name_start..r.name_start + r.name_len],
+                    )),
                 }
             }),
             table::<tables::Fronts, _>(outcomes[2], &self.fronts.rows, |r| {
@@ -400,9 +404,23 @@ impl Captured {
                     front: r.front,
                     ..Default::default()
                 };
-                for section in
-                    &self.sections.first[r.section_start..r.section_start + r.section_len]
+                let sections =
+                    &self.sections.first[r.section_start..r.section_start + r.section_len];
+                let pairs = sections
+                    .iter()
+                    .try_fold(0_usize, |count, section| {
+                        count.checked_add(section.pair_len)
+                    })
+                    .unwrap_or(usize::MAX);
+                if engine::allocation::reserve_exact(&mut row.section_ids, sections.len()).is_err()
+                    || engine::allocation::reserve_exact(&mut row.section_ends, sections.len())
+                        .is_err()
+                    || engine::allocation::reserve_exact(&mut row.province_pairs, pairs).is_err()
                 {
+                    return row;
+                }
+                // One reserve covers all sections and their captured pairs.
+                for section in sections {
                     row.section_ids.push(section.id);
                     row.province_pairs.extend_from_slice(
                         &self.pairs.first
@@ -428,9 +446,10 @@ impl Captured {
                     zero_war_present: r.zero_relation.war_present,
                     zero_war_retired: r.zero_relation.war_retired,
                     zero_co_belligerent: r.zero_relation.co_belligerent,
-                    co_belligerents: self.co_belligerents.first
-                        [r.co_belligerent_start..r.co_belligerent_start + r.co_belligerent_len]
-                        .to_vec(),
+                    co_belligerents: owned_vec(copy_vec(
+                        &self.co_belligerents.first
+                            [r.co_belligerent_start..r.co_belligerent_start + r.co_belligerent_len],
+                    )),
                 }
             }),
         ]
@@ -670,7 +689,10 @@ mod tests {
             m.u64(0x3a00, ORDER as u64);
             // Both are named moves: inline keys and a heap unique text.
             for (order, heap) in [(ORDER, 0x5000), (SECOND, 0x5100)] {
-                m.u32(order + corder_instance::TYPE, corder_instance::TYPE_MOVE as u32);
+                m.u32(
+                    order + corder_instance::TYPE,
+                    corder_instance::TYPE_MOVE as u32,
+                );
                 for (index, offset) in corder_instance::NAME_STRINGS.into_iter().enumerate() {
                     let at = order + offset;
                     match index {
@@ -680,7 +702,12 @@ mod tests {
                     }
                 }
             }
-            string(&mut m, GROUP + corders_group::NAME, group_name, Some(0x5200));
+            string(
+                &mut m,
+                GROUP + corders_group::NAME,
+                group_name,
+                Some(0x5200),
+            );
             m
         };
         let rows = |c: &Captured| {
@@ -703,8 +730,14 @@ mod tests {
         assert_eq!(plans.len(), 2);
         let (first, second) = (&plans[0], &plans[1]);
         assert_eq!((first.instance, second.instance), (9, 10));
-        assert_eq!((&first.successors[..], &first.predecessors[..]), (&[10][..], &[][..]));
-        assert_eq!((&second.successors[..], &second.predecessors[..]), (&[][..], &[9][..]));
+        assert_eq!(
+            (&first.successors[..], &first.predecessors[..]),
+            (&[10][..], &[][..])
+        );
+        assert_eq!(
+            (&second.successors[..], &second.predecessors[..]),
+            (&[][..], &[9][..])
+        );
         for plan in &plans {
             assert_eq!(plan.name_prefix, b"prefix_key");
             assert_eq!(plan.name_unique, b"Operation Barbarossa");
@@ -770,7 +803,10 @@ mod tests {
         // One image carried across the hours, so a rename leaves the old
         // tail bytes behind its terminator exactly as an in-place assign does.
         let mut m = image();
-        m.u32(ORDER + corder_instance::TYPE, corder_instance::TYPE_MOVE as u32);
+        m.u32(
+            ORDER + corder_instance::TYPE,
+            corder_instance::TYPE_MOVE as u32,
+        );
         for (index, offset) in corder_instance::NAME_STRINGS.into_iter().enumerate() {
             let text: &[u8] = if index == 0 { b"o_operation" } else { b"" };
             string(&mut m, ORDER + offset, text, None);
@@ -796,7 +832,12 @@ mod tests {
             // Same length, same buffer, same capacity: only the bytes differ.
             (b"Operation Zitadelle!", true, b"Heeresgruppe Sued!", true),
             // Shorter and longer in the same buffer.
-            (b"Operation Blau", true, b"Heeresgruppe Nord, 16. Armee", true),
+            (
+                b"Operation Blau",
+                true,
+                b"Heeresgruppe Nord, 16. Armee",
+                true,
+            ),
             // Heap to inline.
             (b"Op Uranus", false, b"Army 1", false),
             // Inline to heap.
@@ -834,7 +875,11 @@ mod tests {
             pass(&m, &mut fresh);
             fresh.capture();
             let (plans, groups) = names(&reused);
-            assert_eq!((&plans, &groups), (&names(&fresh).0, &names(&fresh).1), "hour {hour}");
+            assert_eq!(
+                (&plans, &groups),
+                (&names(&fresh).0, &names(&fresh).1),
+                "hour {hour}"
+            );
             assert_eq!(plans[0].name_unique, unique, "hour {hour}");
             assert_eq!(plans[0].name_prefix, b"o_operation");
             assert_eq!(groups[0].name, group, "hour {hour}");
@@ -898,7 +943,8 @@ mod l3b_bench {
                 &mut self.successors,
             );
             let (plan_reads, plan_ticks) = self.successors.plan_gathers();
-            let census_ticks = (qpc().saturating_sub(begin).max(0) as u64).saturating_sub(plan_ticks);
+            let census_ticks =
+                (qpc().saturating_sub(begin).max(0) as u64).saturating_sub(plan_ticks);
             reads.select(TableId::ArmyOrderPlans);
             plan_reads.add_current();
             drop(reads);

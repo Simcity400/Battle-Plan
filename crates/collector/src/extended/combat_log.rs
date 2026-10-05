@@ -34,8 +34,8 @@ use crate::{
     table_capture::CaptureRows,
 };
 use engine::{
-    Memory, clend_lease_exchange as lend_lease, ncombat_log_cequipment_loss::month_bucket,
-    ncombat_log_cmanager as native, walk::Outcome,
+    Memory, allocation, clend_lease_exchange as lend_lease,
+    ncombat_log_cequipment_loss::month_bucket, ncombat_log_cmanager as native, walk::Outcome,
 };
 use replay::{
     cadence::{SKIPPED_REASON, STAGGER_PERIOD, should_walk},
@@ -244,7 +244,9 @@ impl Captured {
             viewing: Err(VIEWING_UNREAD),
             prune_observed: false,
             selection: SliceSelection::new(true),
-            memo: native::VariantMemo::new(),
+            memo: native::VariantMemo::try_new()
+                .map_err(crate::allocation::io)
+                .unwrap_or_default(),
             signal: 0,
             drained: Vec::new(),
             visited: Vec::new(),
@@ -305,7 +307,8 @@ impl Captured {
             let log_cost = {
                 let _reads = crate::read_accounting::table(TABLES[0]);
                 let started = qpc();
-                self.rows.outcome = self.read_log(store, memory, base, game_state, hour, force_full);
+                self.rows.outcome =
+                    self.read_log(store, memory, base, game_state, hour, force_full);
                 qpc().saturating_sub(started).max(0) as u64
             };
             (state_cost, log_cost)
@@ -332,7 +335,10 @@ impl Captured {
     /// observed.
     fn begin(&mut self, store: &mut Store, hour: i32, force_full: bool) -> bool {
         if store.read_hour.len() != FINGERPRINT_OWNERS {
-            store.read_hour = vec![NEVER; FINGERPRINT_OWNERS];
+            let Ok(read_hour) = allocation::filled(FINGERPRINT_OWNERS, NEVER) else {
+                return false;
+            };
+            store.read_hour = read_hour;
         }
         // A load (a new signal; an earlier hour could only be one too):
         // nothing kept describes the new branch.
@@ -353,11 +359,15 @@ impl Captured {
             }
         }
         store.finals.retain(|kept| {
-            kept.published
-                .is_none_or(|published| (published..published.saturating_add(RETAIN_HOURS)).contains(&hour))
+            kept.published.is_none_or(|published| {
+                (published..published.saturating_add(RETAIN_HOURS)).contains(&hour)
+            })
         });
         self.drained.clear();
         let observed = drain_prune_log(self.signal, &mut self.drained);
+        if allocation::reserve(&mut store.finals, self.drained.len()).is_err() {
+            return false;
+        }
         store.finals.extend(self.drained.iter().map(|&row| Final {
             row,
             published: None,
@@ -388,27 +398,39 @@ impl Captured {
                 return Outcome::Unavailable { reason };
             }
         }
+        if crate::allocation::failed() {
+            return Outcome::Unavailable {
+                reason: "collector allocation failed",
+            };
+        }
         let selection = &self.selection;
         let read_hour = &store.read_hour;
         let visited = &mut self.visited;
         visited.clear();
-        let outcome = native::walk(
+        let outcome = native::walk_prepared(
             memory,
             base,
             game_state,
-            |country| {
+            visited,
+            |_, _| Ok(()),
+            |visited, country| {
                 if !selection.contains(country) {
-                    return None;
+                    return Ok(None);
+                }
+                if visited.len() == visited.capacity() {
+                    allocation::reserve_push_batch(visited, 1)
+                        .map_err(crate::allocation::io)
+                        .map_err(|_| "collector allocation failed")?;
                 }
                 visited.push(country);
                 // A country above the tracked range is read at every hour
                 // and read whole.
                 let last = read_hour.get(country as usize).copied().unwrap_or(NEVER);
-                Some(if force_full || needs_all(last, hour) {
+                Ok(Some(if force_full || needs_all(last, hour) {
                     native::Months::All
                 } else {
                     native::Months::Window
-                })
+                }))
             },
             &mut self.rows.rows,
             &mut self.memo,
@@ -431,7 +453,11 @@ impl Captured {
             };
         }
         let mut at = len;
-        for kept in store.finals.iter_mut().filter(|kept| kept.published.is_none()) {
+        for kept in store
+            .finals
+            .iter_mut()
+            .filter(|kept| kept.published.is_none())
+        {
             self.rows.rows[at] = kept.row;
             kept.published = Some(hour);
             at += 1;
@@ -508,7 +534,8 @@ mod tests {
 
     fn game_state(viewing: i32) -> Vec<u8> {
         let mut bytes = vec![0; 0x1000];
-        bytes[engine::cgame_state::LOCAL_PLAYER_COUNTRY..engine::cgame_state::LOCAL_PLAYER_COUNTRY + 4]
+        bytes[engine::cgame_state::LOCAL_PLAYER_COUNTRY
+            ..engine::cgame_state::LOCAL_PLAYER_COUNTRY + 4]
             .copy_from_slice(&viewing.to_le_bytes());
         bytes
     }
@@ -552,8 +579,7 @@ mod tests {
                 "{hour}"
             );
         }
-        let [_, TableView::Complete(TableRows::CombatLogState(rows)), _] = captured.tables()
-        else {
+        let [_, TableView::Complete(TableRows::CombatLogState(rows)), _] = captured.tables() else {
             panic!("complete state");
         };
         assert_eq!(
@@ -577,8 +603,7 @@ mod tests {
         };
         let mut captured = Captured::with_capacities(&Capacities::default());
         captured.capture(&memory, 0, 0x1000, 5, false);
-        let [_, TableView::Complete(TableRows::CombatLogState(rows)), _] = captured.tables()
-        else {
+        let [_, TableView::Complete(TableRows::CombatLogState(rows)), _] = captured.tables() else {
             panic!("complete state");
         };
         assert_eq!(
@@ -593,7 +618,10 @@ mod tests {
             bytes: &bytes,
         };
         captured.capture(&memory, 0, 0x1000, 5, false);
-        assert!(matches!(captured.tables()[1], TableView::Unavailable { .. }));
+        assert!(matches!(
+            captured.tables()[1],
+            TableView::Unavailable { .. }
+        ));
     }
 
     const SIGNAL: i64 = 1_778_888_888;
@@ -607,6 +635,79 @@ mod tests {
         bytes[header + 8..header + 12].copy_from_slice(&1_u32.to_le_bytes());
         bytes[header + 12..header + 16].copy_from_slice(&1_u32.to_le_bytes());
         bytes
+    }
+
+    #[test]
+    fn visited_capacity_follows_selected_country_pushes() {
+        use engine::ncombat_log_corders_group_logs as groups;
+
+        let mut bytes = logged_state();
+        bytes.resize(0x6000, 0);
+        let header = engine::cgame_state::COMBAT_LOGS;
+        bytes[header..header + 8].copy_from_slice(&0x2000_u64.to_le_bytes());
+        bytes[header + 8..header + 12].copy_from_slice(&41_u32.to_le_bytes());
+        bytes[header + 12..header + 16].copy_from_slice(&41_u32.to_le_bytes());
+        for country in 1..=40_usize {
+            let manager = 0x3000 + country * native::SIZE;
+            let pointer = 0x2000 - 0x1000 + country * 8;
+            bytes[pointer..pointer + 8].copy_from_slice(&(manager as u64).to_le_bytes());
+            let at = manager - 0x1000;
+            bytes[at..at + 8].copy_from_slice(&(native::VTABLE_RVA as u64).to_le_bytes());
+            bytes[at + native::GROUPS..at + native::GROUPS + 8]
+                .copy_from_slice(&0x4000_u64.to_le_bytes());
+            bytes[at + native::GROUPS + 8..at + native::GROUPS + 12]
+                .copy_from_slice(&1_u32.to_le_bytes());
+            bytes[at + native::GROUPS + 12..at + native::GROUPS + 16]
+                .copy_from_slice(&1_u32.to_le_bytes());
+            bytes[at + native::COUNTRY..at + native::COUNTRY + 4]
+                .copy_from_slice(&(country as u32).to_le_bytes());
+        }
+        bytes[0x3000..0x3008].copy_from_slice(&0x5000_u64.to_le_bytes());
+        bytes[0x4000..0x4008].copy_from_slice(&(groups::VTABLE_RVA as u64).to_le_bytes());
+        let reference = (7_u64 << 32) | u64::from(engine::corders_group::REFERENCE_TYPE);
+        bytes[0x4000 + groups::GROUP..0x4000 + groups::GROUP + 8]
+            .copy_from_slice(&reference.to_le_bytes());
+        let memory = engine::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let mut captured = Captured::with_capacities(&Capacities {
+            rows: 0,
+            lend_lease: 0,
+        });
+        let before = captured.allocated_bytes();
+        let mut original_visited = Vec::new();
+        let mut memo = native::VariantMemo::try_new().unwrap();
+        for (hour, force_full) in [(5, false), (6, false), (7, true), (8, false)] {
+            captured.set_signal(SIGNAL);
+            captured.capture(&memory, 0, 0x1000, hour, force_full);
+            original_visited.clear();
+            let outcome = native::walk(
+                &memory,
+                0,
+                0x1000,
+                |country| {
+                    if !captured.selection.contains(country) {
+                        return None;
+                    }
+                    original_visited.push(country);
+                    Some(native::Months::All)
+                },
+                &mut [],
+                &mut memo,
+            );
+            assert_eq!(outcome, Outcome::Rows { len: 0 });
+            assert_eq!(captured.rows.outcome, outcome);
+            assert_eq!(captured.visited, original_visited);
+            assert_eq!(captured.visited.capacity(), original_visited.capacity());
+            assert_eq!(
+                captured.allocated_bytes(),
+                before + original_visited.capacity() * size_of::<u32>()
+            );
+            if !force_full {
+                assert!(captured.visited.len() < 40);
+            }
+        }
     }
 
     /// Capture `hour` in `captured` with load signal `signal`: its Combat
@@ -646,7 +747,10 @@ mod tests {
             bytes[offset..offset + 4].copy_from_slice(&viewing.to_le_bytes());
             let signal = SIGNAL + index as i64;
             crate::combat_log_prune::append_for_test(signal, &[row(29, 7), row(30, 8)]);
-            assert_eq!(capture(&mut captured, &bytes, signal, 5, true), [row(29, 7), row(30, 8)]);
+            assert_eq!(
+                capture(&mut captured, &bytes, signal, 5, true),
+                [row(29, 7), row(30, 8)]
+            );
         }
     }
 

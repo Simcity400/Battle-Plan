@@ -10,16 +10,15 @@ use crate::{
     raw::RawLog,
     read_accounting,
     sampling::qpc,
-    spooling::{table, unavailable},
+    spooling::{table, table_iter, unavailable},
     table_capture::{Arena, CaptureRows},
 };
 use engine::{
-    Memory, cace, cair_base, cair_region_combat_data,
+    Memory, allocation, cace, cair_base, cair_region_combat_data,
     cair_regional_mission::{self, WingIdentity},
     cair_wing, cair_wing_pool, ccountry, ccountry_air_container, cgame_state, cloop_history,
     cpdx_array::Array,
-    cprovince, cstate, cstrategic_air_manager, cstrategic_navy_manager,
-    equipment_entry,
+    cprovince, cstate, cstrategic_air_manager, cstrategic_navy_manager, equipment_entry,
     map_air_base_reference,
     memory::{RecordLayout, RecordSources},
     msvc_string, sair_wing_combat_data, sdamage_entry,
@@ -214,8 +213,10 @@ impl Captured {
             self.fail_missions_rows(reason);
         }
         self.references.fail(failed(self.active[8], reason));
-        self.sorties
-            .fail(failed(self.active[10], reason), failed(self.active[14], reason));
+        self.sorties.fail(
+            failed(self.active[10], reason),
+            failed(self.active[14], reason),
+        );
         self.mines.fail(failed(self.active[9], reason));
         if !self.bases_raw_mode {
             self.bases.fail(failed(self.active[1], reason));
@@ -269,7 +270,7 @@ impl Captured {
             identities_owned: false,
             registrations: CaptureRows::new(capacity.rows[7]),
             registration_failure: Default::default(),
-            handles: vec![0; capacity.wings * 2],
+            handles: allocation::owned_vec(allocation::filled(capacity.wings.saturating_mul(2), 0)),
             references: CaptureRows::new(capacity.rows[8]),
             sorties: Sorties::with_capacities(&capacity.sorties),
             mines: CaptureRows::new(capacity.rows[9]),
@@ -359,7 +360,7 @@ impl Captured {
         // One pool base per registration plus one transfer base per wing.
         crate::table_capture::grow_vec(
             &mut self.handles,
-            (capacity.wings * 2).max(capacity.rows[8]),
+            capacity.wings.saturating_mul(2).max(capacity.rows[8]),
         );
         self.registrations.grow(&mut capacity.rows[7]);
         self.references.grow(&mut capacity.rows[8]);
@@ -729,9 +730,10 @@ impl Captured {
                     missions,
                     &self.references.rows[..len],
                 ),
-                Err(reason) => self
-                    .sorties
-                    .fail(Outcome::Unavailable { reason }, failed(self.active[14], reason)),
+                Err(reason) => self.sorties.fail(
+                    Outcome::Unavailable { reason },
+                    failed(self.active[14], reason),
+                ),
             }
         } else {
             let reason = "air sortie inputs lack the complete base witnesses";
@@ -769,7 +771,15 @@ impl Captured {
             }
             // Only a raised capacity allocates, on this pool worker.
             let [regions, countries] = self.score_capacity;
-            scores.grow(regions, countries, self.scores.rows.len());
+            if scores
+                .grow(regions, countries, self.scores.rows.len())
+                .is_err()
+            {
+                self.scores.fail(Outcome::Unavailable {
+                    reason: "collector allocation failed",
+                });
+                return ticks;
+            }
             let walked = engine::raid_air_scores::walk(
                 memory,
                 base,
@@ -872,6 +882,9 @@ impl Captured {
     }
 
     fn registration_table(&self) -> TableView {
+        if allocation::capture_stopped() {
+            return unavailable("");
+        }
         if let Outcome::Unavailable { reason } = self.registrations.outcome
             && let Some(country) = self.registration_failure.country_slot
         {
@@ -899,7 +912,9 @@ impl Captured {
         }
         table::<tables::AirAces, _>(outcome, &self.aces.rows, |r| {
             let text = |range: cace::TextRange| {
-                self.names.first[range.start..range.start + range.len].to_vec()
+                allocation::owned_vec(allocation::copy_vec(
+                    &self.names.first[range.start..range.start + range.len],
+                ))
             };
             rows::AirAceRow {
                 id: r.id,
@@ -966,8 +981,7 @@ fn registered_wings<'a>(
     wings: &'a [WingIdentity],
     registered: Option<&'a [cair_regional_mission::Row]>,
 ) -> Result<impl Iterator<Item = Result<&'a WingIdentity, &'static str>>, &'static str> {
-    let registered =
-        registered.ok_or("air mission joins lack the complete registration census")?;
+    let registered = registered.ok_or("air mission joins lack the complete registration census")?;
     Ok(registered.iter().map(move |registration| {
         wings
             .binary_search_by_key(&registration.wing, |wing| wing.wing)
@@ -1316,6 +1330,9 @@ fn valid_names(outcome: Outcome, rows: &[cace::Row], bytes: &[u8], len: usize) -
 /// parents, and its last parent may be partial. Keep that hour unavailable with
 /// a specific capacity reason; raw capture truncation still grows the pool.
 fn grouped_source<R>(outcome: Outcome, rows: &[R]) -> Result<&[R], TableView> {
+    if allocation::capture_stopped() {
+        return Err(unavailable(""));
+    }
     match bounded(outcome, rows.len()) {
         Outcome::Rows { len } => Ok(&rows[..len]),
         Outcome::Truncated { len, unread_rows } => Err(unavailable(&format!(
@@ -1330,18 +1347,20 @@ fn history_table(outcome: Outcome, captured: &[sair_wing_combat_data::Row]) -> T
         Ok(rows) => rows,
         Err(table) => return table,
     };
-    let groups: Vec<_> = captured
-        .chunk_by(|a, b| (a.key.country, a.key.region) == (b.key.country, b.key.region))
-        .collect();
+    let chunks =
+        || captured.chunk_by(|a, b| (a.key.country, a.key.region) == (b.key.country, b.key.region));
     // The shared table helper rejects a repeated outer parent separated by a
     // different parent. Native duplicate children within a parent remain exact.
-    table::<tables::AirRegionHistory, _>(Outcome::Rows { len: groups.len() }, &groups, |group| {
-        rows::AirRegionHistoryRow {
+    table_iter::<tables::AirRegionHistory, _>(
+        Outcome::Rows {
+            len: chunks().count(),
+        },
+        chunks(),
+        |group| rows::AirRegionHistoryRow {
             country: group[0].key.country,
             region: group[0].key.region,
-            entries: group
-                .iter()
-                .map(|row| rows::AirHistoryEntry {
+            entries: allocation::owned_vec(allocation::collect_vec(group.iter().map(|row| {
+                rows::AirHistoryEntry {
                     side: row.key.side,
                     date: row.key.date,
                     wing_id: row.key.wing_id,
@@ -1352,10 +1371,10 @@ fn history_table(outcome: Outcome, captured: &[sair_wing_combat_data::Row]) -> T
                     selection: row.selection,
                     copied: row.copied,
                     attributed_country: row.attributed_country,
-                })
-                .collect(),
-        }
-    })
+                }
+            }))),
+        },
+    )
 }
 
 fn damage_table(outcome: Outcome, captured: &[sdamage_entry::Row]) -> TableView {
@@ -1363,16 +1382,21 @@ fn damage_table(outcome: Outcome, captured: &[sdamage_entry::Row]) -> TableView 
         Ok(rows) => rows,
         Err(table) => return table,
     };
-    let groups: Vec<_> = captured
-        .chunk_by(|a, b| (a.record.country, a.record.region) == (b.record.country, b.record.region))
-        .collect();
-    table::<tables::AirRegionDamage, _>(Outcome::Rows { len: groups.len() }, &groups, |group| {
-        rows::AirRegionDamageRow {
+    let chunks = || {
+        captured.chunk_by(|a, b| {
+            (a.record.country, a.record.region) == (b.record.country, b.record.region)
+        })
+    };
+    table_iter::<tables::AirRegionDamage, _>(
+        Outcome::Rows {
+            len: chunks().count(),
+        },
+        chunks(),
+        |group| rows::AirRegionDamageRow {
             country: group[0].record.country,
             region: group[0].record.region,
-            entries: group
-                .iter()
-                .map(|row| rows::AirDamageEntry {
+            entries: allocation::owned_vec(allocation::collect_vec(group.iter().map(|row| {
+                rows::AirDamageEntry {
                     side: row.record.side,
                     date: row.record.date,
                     wing_id: row.record.wing_id,
@@ -1380,10 +1404,10 @@ fn damage_table(outcome: Outcome, captured: &[sdamage_entry::Row]) -> TableView 
                     channel: row.channel,
                     cause: row.cause,
                     amount: row.amount,
-                })
-                .collect(),
-        }
-    })
+                }
+            }))),
+        },
+    )
 }
 
 /// One complete source census, independent of the bounded map projection.
@@ -1396,35 +1420,35 @@ pub(crate) struct WingMembershipRead {
 }
 
 mod wing;
+#[cfg(test)]
+use wing::WING_PACK_N;
 pub(crate) use wing::{
     AirWingCopyContext, AirWingCopyReport, AirWingJob, copy_air_refresh, decode_air_payload,
 };
-#[cfg(test)]
-use wing::WING_PACK_N;
 
 mod stats;
+#[cfg(test)]
+use stats::{AIR_STATS_N, STATS_MASK, copy_stats_channels, sspan};
 pub(crate) use stats::{
     AirStatsCopyContext, AirStatsCopyReport, AirStatsJob, copy_air_stats_refresh,
     decode_air_stats_payload,
 };
-#[cfg(test)]
-use stats::{AIR_STATS_N, STATS_MASK, copy_stats_channels, sspan};
 
 mod bases;
+use super::fog;
 pub(crate) use bases::{
     AIR_BASES_N, AirBasesCopyContext, AirBasesCopyReport, AirBasesJob, AirBasesMemo,
     AirBasesMemoContext, AirBasesMemoReport, air_bases_memo_memory, copy_air_bases_refresh,
 };
 #[cfg(test)]
 use bases::{AIR_REGISTRATIONS_MASK, bases_pool_u32, bspan, copy_air_bases_pass, resolve_link};
-use super::fog;
 
 mod history;
+#[cfg(test)]
+use history::acquire_air_history_pass;
 pub(crate) use history::{
     AirHistoryCopyContext, AirHistoryCopyReport, AirHistoryJob, copy_air_history_refresh,
 };
-#[cfg(test)]
-use history::acquire_air_history_pass;
 
 #[cfg(test)]
 mod tests;

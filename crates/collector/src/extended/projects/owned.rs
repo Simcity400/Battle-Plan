@@ -1,4 +1,5 @@
 use super::*;
+use engine::allocation::{owned_vec, vec};
 
 // ===========================================================================
 // Scheduled raw-copy split (ProjectPrograms, Projects, ProjectHistory,
@@ -102,9 +103,9 @@ impl ProjectsJob {
             log: RawLog::new(1 << 20, 48 << 20),
             game_state: 0,
             active: false,
-            census: Vec::with_capacity(census),
-            statuses: Vec::with_capacity(census),
-            pointers: Vec::with_capacity(32768),
+            census: owned_vec(vec(census)),
+            statuses: owned_vec(vec(census)),
+            pointers: owned_vec(vec(32768)),
             capacity_charge: crate::raw_memory::Charge::default(),
         };
         job.update_capacity_charge();

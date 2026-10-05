@@ -80,6 +80,10 @@ impl Source {
         Arc::clone(&self.replay)
     }
 
+    pub fn replay_ref(&self) -> &Replay {
+        &self.replay
+    }
+
     /// The initial observed catalogue, not a census of every campaign hour, with
     /// country names once [`Self::name_countries`] has run and tags before.
     pub fn metadata(&self) -> ReplayMetadata {

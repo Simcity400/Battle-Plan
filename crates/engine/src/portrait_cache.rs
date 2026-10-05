@@ -41,9 +41,19 @@ pub struct Cache {
 }
 
 impl Cache {
-    pub fn new(rows: usize) -> Self {
+    pub fn new(rows: usize) -> std::io::Result<Self> {
+        Ok(Self {
+            keys: crate::allocation::filled(rows, Key::default())?,
+            scope: (0, 0, 0, 0),
+            valid: false,
+            used: 0,
+            counts: Counts::default(),
+        })
+    }
+
+    pub fn empty() -> Self {
         Self {
-            keys: vec![Key::default(); rows],
+            keys: Vec::new(),
             scope: (0, 0, 0, 0),
             valid: false,
             used: 0,
@@ -56,11 +66,12 @@ impl Cache {
     }
 
     /// Called with ordinary off-thread buffer growth, never during acquisition.
-    pub fn grow(&mut self, rows: usize) {
+    pub fn grow(&mut self, rows: usize) -> std::io::Result<()> {
         if self.keys.len() < rows {
-            self.keys.resize(rows, Key::default());
+            crate::allocation::resize(&mut self.keys, rows, Key::default())?;
             self.invalidate();
         }
+        Ok(())
     }
 
     pub fn invalidate(&mut self) {
@@ -129,8 +140,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn allocation_growth_preserves_the_previous_capacity_trace() {
+        let mut cache = Cache::new(1).unwrap();
+        let mut previous = vec![Key::default(); 1];
+        for rows in [2, 5, 4, 9] {
+            if previous.len() < rows {
+                previous.resize(rows, Key::default());
+            }
+            cache.grow(rows).unwrap();
+            assert_eq!(cache.keys.capacity(), previous.capacity());
+            assert_eq!(
+                cache.allocated_bytes(),
+                previous.capacity() * std::mem::size_of::<Key>()
+            );
+        }
+    }
+
+    #[test]
+    fn failed_growth_keeps_the_existing_cache() {
+        let mut cache = Cache::new(1).unwrap();
+        cache.valid = true;
+        let pointer = cache.keys.as_ptr();
+        assert_eq!(
+            cache.grow(usize::MAX).unwrap_err().kind(),
+            std::io::ErrorKind::OutOfMemory
+        );
+        assert_eq!(cache.keys.as_ptr(), pointer);
+        assert!(cache.valid);
+    }
+
+    #[test]
     fn ownership_arena_position_revision_and_scope_are_required() {
-        let mut cache = Cache::new(1);
+        let mut cache = Cache::new(1).unwrap();
         let scope = (1, 2, 0, 4);
         let key = Key {
             pointer: 100,

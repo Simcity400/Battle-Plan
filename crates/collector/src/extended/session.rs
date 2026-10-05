@@ -4,7 +4,7 @@
 //! The hourly game speed is not a table here: `CGameState+0x4bc` is already read
 //! by the authenticated clock read in the same guarded batch as the hour, so it
 //! rides on the existing Clock row instead of paying a second read and a second
-//! availability outcome. Pause is not recorded; see [archived domain index](#)'s D57 row.
+//! availability outcome. Pause use is not recorded; see [archived domain index](#)'s D57 row.
 //!
 //! Only growth and replay conversion allocate.
 
@@ -15,6 +15,7 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows, bounded},
 };
+use engine::allocation::{copy_vec, owned_vec};
 use engine::{Memory, cthreat_source, cworld_threat, walk::Outcome};
 use replay::{
     frame::TableView,
@@ -244,7 +245,7 @@ fn sources(
         final_raw: r.final_raw,
         daily_raw: r.daily_raw,
         date: r.date,
-        reason: text(bytes, r.reason_start, r.reason_len).unwrap().to_vec(),
+        reason: owned_vec(copy_vec(text(bytes, r.reason_start, r.reason_len).unwrap())),
     })
 }
 

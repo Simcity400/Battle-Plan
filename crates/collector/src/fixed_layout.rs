@@ -3,59 +3,96 @@
 //! Refusals replace the affected tables after carry/slice merging, so no held
 //! baseline reintroduces an unchecked value, and they never request a refresh.
 
+use crate::status::{self, DebugValue, DisplayValue};
 use engine::fixed_layout::Report;
 use replay::{
     fixed_layout::{FAMILIES, Family},
     frame::{TABLE_COUNT, TableInput, TableView},
 };
-use serde_json::{Value, json};
+use serde::Serialize;
+use std::{fmt, io};
 
 /// A final report, or why this hour's check could not complete.
 pub(crate) type Layout = Result<Report, &'static str>;
 
-fn refusals(layout: &Layout) -> impl Iterator<Item = (Family, String)> + '_ {
-    FAMILIES.iter().filter_map(move |&family| {
-        let reason = match layout {
-            Ok(report) => report.failure(family.keys, family.tokens)?.to_string(),
-            Err(reason) => format!("fixed layout unverified: {reason}"),
-        };
-        Some((family, format!("{} refused: {reason}", family.name)))
-    })
+#[derive(Clone, Copy)]
+enum Refusal {
+    Failure(engine::fixed_layout::Failure),
+    Unverified(&'static str),
 }
-
-pub(crate) fn apply(tables: &mut [TableInput; TABLE_COUNT], layout: &Layout) {
-    if layout.is_ok_and(|report| report.is_verified()) {
-        return;
-    }
-    let mut reasons = std::collections::BTreeMap::<_, Vec<String>>::new();
-    for (family, reason) in refusals(layout) {
-        for &table in family.tables {
-            reasons.entry(table).or_default().push(reason.clone());
+impl fmt::Display for Refusal {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Failure(failure) => failure.fmt(out),
+            Self::Unverified(reason) => write!(out, "fixed layout unverified: {reason}"),
         }
     }
-    for (table, reasons) in reasons {
-        tables[table.index()] = TableInput::Sampled(TableView::Unavailable {
-            reason: reasons.join("; "),
-        });
+}
+#[derive(Clone, Copy)]
+struct FamilyReason {
+    family: Family,
+    refusal: Refusal,
+}
+impl fmt::Display for FamilyReason {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(out, "{} refused: {}", self.family.name, self.refusal)
     }
 }
-
-pub(crate) fn status(report: Option<&Report>) -> Value {
-    let Some(report) = report else {
-        return json!({"state": "unverified"});
+fn refusal(layout: &Layout, family: Family) -> Option<FamilyReason> {
+    let refusal = match layout {
+        Ok(report) => Refusal::Failure(report.failure(family.keys, family.tokens)?),
+        Err(reason) => Refusal::Unverified(reason),
     };
-    let refusals: Vec<_> = refusals(&Ok(*report)).collect();
-    json!({
+    Some(FamilyReason { family, refusal })
+}
+
+pub(crate) fn apply(tables: &mut [TableInput; TABLE_COUNT], layout: &Layout) -> io::Result<()> {
+    if layout.is_ok_and(|report| report.is_verified()) {
+        return Ok(());
+    }
+    for table in replay::rows::TableId::ALL {
+        let mut reason = String::new();
+        for family in FAMILIES
+            .iter()
+            .copied()
+            .filter(|family| family.tables.contains(&table))
+        {
+            if let Some(refusal) = refusal(layout, family) {
+                crate::roster::add_reason(&mut reason, format_args!("{refusal}"))?;
+            }
+        }
+        if !reason.is_empty() {
+            tables[table.index()] = TableInput::Sampled(TableView::Unavailable { reason });
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn status(report: Option<&Report>) -> impl Serialize + '_ {
+    let Some(report) = report else {
+        return status::Choice::First(status::status!({"state": "unverified"}));
+    };
+    status::Choice::Second(status::status!({
         "state": if report.is_verified() { "verified" } else { "refused" },
         "static_token_maximum": report.static_token_maximum,
         "modifier_keys_checked": engine::modifier_keys::NAMES.len(),
         "static_tokens_checked": engine::fixed_layout::TOKENS.len(),
-        "layout_failures": report.failures().map(|failure| failure.to_string()).collect::<Vec<_>>(),
-        "refusals": refusals.into_iter().map(|(family, reason)| json!({
-            "tables": family.tables.iter().map(|table| format!("{table:?}")).collect::<Vec<_>>(),
-            "reason": reason,
-        })).collect::<Vec<_>>(),
-    })
+        "layout_failures": status::sequence(report.failures().map(DisplayValue)),
+        "refusals": status::sequence(FAMILIES.iter().copied().filter_map(move |family| {
+            refusal(&Ok(*report), family).map(|reason| status::status!({
+                "tables": status::sequence(family.tables.iter().map(DebugValue)),
+                "reason": DisplayValue(reason),
+            }))
+        })),
+    }))
+}
+
+#[cfg(test)]
+pub(crate) fn allocation_failure_exercise() -> io::Result<()> {
+    let mut tables = replay::rows::TableId::ALL.map(|table| {
+        TableInput::Sampled(TableView::Complete(replay::rows::TableRows::empty(table)))
+    });
+    apply(&mut tables, &Err("synthetic native layout changed"))
 }
 
 #[cfg(test)]
@@ -139,7 +176,7 @@ mod tests {
     fn a_used_key_mismatch_refuses_every_key_family_and_survives_encoding() {
         let report = mismatched(modifier_keys::ARMY_SPEED_FACTOR as usize);
         let mut input = inputs();
-        apply(&mut input, &Ok(report));
+        apply(&mut input, &Ok(report)).unwrap();
         assert_key_families_refused(
             &input,
             "army_speed_factor (0x2b): definition token spells a different script name",
@@ -165,7 +202,7 @@ mod tests {
             &*frame.tables[TableId::DivisionEtaInputs.index()],
             TableView::Unavailable { reason } if reason.contains(&format!("{} refused: army_speed_factor", MOVEMENT.name))
         ));
-        let status = status(Some(&report));
+        let status = serde_json::to_value(status(Some(&report))).unwrap();
         assert_eq!(status["state"], "refused");
         assert_eq!(status["layout_failures"].as_array().unwrap().len(), 1);
         let refusals = status["refusals"].as_array().unwrap();
@@ -191,9 +228,9 @@ mod tests {
             let name = modifier_keys::NAMES[index];
             let report = mismatched(index);
             let mut input = inputs();
-            apply(&mut input, &Ok(report));
+            apply(&mut input, &Ok(report)).unwrap();
             assert_key_families_refused(&input, &format!("{name} ({index:#x})"));
-            let status = status(Some(&report));
+            let status = serde_json::to_value(status(Some(&report))).unwrap();
             assert_eq!(status["layout_failures"].as_array().unwrap().len(), 1);
         }
     }
@@ -202,9 +239,9 @@ mod tests {
     fn valid_report_preserves_every_input_and_records_static_maximum() {
         let mut input = inputs();
         let original = input.clone();
-        apply(&mut input, &Ok(valid()));
+        apply(&mut input, &Ok(valid())).unwrap();
         assert_eq!(input, original);
-        let status = status(Some(&valid()));
+        let status = serde_json::to_value(status(Some(&valid()))).unwrap();
         assert_eq!(status["state"], "verified");
         assert_eq!(status["static_token_maximum"], 0x6000);
         assert_eq!(status["refusals"].as_array().unwrap().len(), 0);
@@ -217,7 +254,7 @@ mod tests {
             ..valid()
         };
         let mut input = inputs();
-        apply(&mut input, &Ok(report));
+        apply(&mut input, &Ok(report)).unwrap();
         assert_key_families_refused(&input, "modifier definition gap (0x29a)");
         assert!(untouched(&input, TableId::ResearchSlots));
     }
@@ -230,7 +267,7 @@ mod tests {
             .position(|token| token.id == cresearch_slot::IDLE_HANDLE)
             .unwrap()] = Err("token spells a different name");
         let mut input = inputs();
-        apply(&mut input, &Ok(report));
+        apply(&mut input, &Ok(report)).unwrap();
         for &table in RESEARCH_IDLE.tables {
             assert!(refused(
                 &input,
@@ -248,9 +285,9 @@ mod tests {
             .unwrap()] = Err("exceeds the static token maximum");
         let mut input = inputs();
         let original = input.clone();
-        apply(&mut input, &Ok(report));
+        apply(&mut input, &Ok(report)).unwrap();
         assert_eq!(input, original);
-        let status = status(Some(&report));
+        let status = serde_json::to_value(status(Some(&report))).unwrap();
         assert_eq!(status["state"], "refused");
         assert!(
             status["refusals"][0]["reason"]
@@ -263,7 +300,7 @@ mod tests {
     #[test]
     fn unverified_hour_refuses_every_consumer() {
         let mut input = inputs();
-        apply(&mut input, &Err("lexer changed during lookup"));
+        apply(&mut input, &Err("lexer changed during lookup")).unwrap();
         for family in FAMILIES {
             for &table in family.tables {
                 assert!(refused(
@@ -274,6 +311,9 @@ mod tests {
             }
         }
         assert!(untouched(&input, TableId::Countries));
-        assert_eq!(status(None)["state"], "unverified");
+        assert_eq!(
+            serde_json::to_value(status(None)).unwrap()["state"],
+            "unverified"
+        );
     }
 }

@@ -126,7 +126,10 @@ impl World {
         let Some(end) = address.checked_add(out.len()) else {
             return false;
         };
-        let mut window = Window { start: address, out };
+        let mut window = Window {
+            start: address,
+            out,
+        };
         if (GAME_STATE..GAME_STATE + 0x1000).contains(&address) {
             if end > GAME_STATE + 0x1000 {
                 return false;
@@ -138,9 +141,16 @@ impl World {
             if end > MANAGER + 0x100 {
                 return false;
             }
-            window.put(MANAGER, &((MODULE + ccharacter_manager::VTABLE_RVA) as u64).to_le_bytes());
+            window.put(
+                MANAGER,
+                &((MODULE + ccharacter_manager::VTABLE_RVA) as u64).to_le_bytes(),
+            );
             let historical = self.historical.min(self.slots());
-            window.array(MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS, HISTORICAL, historical);
+            window.array(
+                MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS,
+                HISTORICAL,
+                historical,
+            );
             window.array(
                 MANAGER + ccharacter_manager::DYNAMIC_CHARACTERS,
                 DYNAMIC,
@@ -179,30 +189,56 @@ impl World {
             _ if index >= self.characters => return false,
             CHARACTER => self.render_character(&mut window, index, object),
             LEADER_HEAD => {
-                let target = if Self::leader(index) { LEADER_NODE + index * 0x40 } else { object };
+                let target = if Self::leader(index) {
+                    LEADER_NODE + index * 0x40
+                } else {
+                    object
+                };
                 window.node(object, target, 1);
             }
             LEADER_NODE if Self::leader(index) => {
                 window.node(object, Self::leader_head(index), 0);
-                window.put(object + character_leader_node::IDEOLOGY, &((index % 7) as i32).to_le_bytes());
-                window.pointer(object + character_leader_node::LEADER, LEADER_ROLE + index * 0x20);
+                window.put(
+                    object + character_leader_node::IDEOLOGY,
+                    &((index % 7) as i32).to_le_bytes(),
+                );
+                window.pointer(
+                    object + character_leader_node::LEADER,
+                    LEADER_ROLE + index * 0x20,
+                );
             }
             LEADER_ROLE if Self::leader(index) => {
-                window.put(object, &((MODULE + ccountry_leader::VTABLE_RVA) as u64).to_le_bytes());
+                window.put(
+                    object,
+                    &((MODULE + ccountry_leader::VTABLE_RVA) as u64).to_le_bytes(),
+                );
                 window.pointer(object + ccountry_leader::CHARACTER, Self::character(index));
             }
             ADVISOR_HEAD => {
-                let target = if self.advisor(index) { ADVISOR_NODE + index * 0x60 } else { object };
+                let target = if self.advisor(index) {
+                    ADVISOR_NODE + index * 0x60
+                } else {
+                    object
+                };
                 window.node(object, target, 1);
             }
             ADVISOR_NODE if self.advisor(index) => {
                 window.node(object, Self::advisor_head(index), 0);
                 window.literal(object + character_advisor_node::KEY, b"advisor_key");
-                window.put(object + character_advisor_node::KEY_HASH, &(index as u32).to_le_bytes());
-                window.pointer(object + character_advisor_node::ADVISOR, ADVISOR_ROLE + index * 0x100);
+                window.put(
+                    object + character_advisor_node::KEY_HASH,
+                    &(index as u32).to_le_bytes(),
+                );
+                window.pointer(
+                    object + character_advisor_node::ADVISOR,
+                    ADVISOR_ROLE + index * 0x100,
+                );
             }
             ADVISOR_ROLE if self.advisor(index) => {
-                window.put(object, &((MODULE + cadvisor::VTABLE_RVA) as u64).to_le_bytes());
+                window.put(
+                    object,
+                    &((MODULE + cadvisor::VTABLE_RVA) as u64).to_le_bytes(),
+                );
                 window.pointer(object + cadvisor::CHARACTER, Self::character(index));
                 window.literal(object + cadvisor::IDEA_TOKEN, b"idea");
                 window.literal(object + cadvisor::SLOT, b"political");
@@ -222,9 +258,18 @@ impl World {
                 }
             }
             DEFINITION if index < self.definitions => {
-                window.put(object, &((MODULE + cunit_leader_trait::VTABLE_RVA) as u64).to_le_bytes());
-                window.put(object + cunit_leader_trait::TOKEN_ID, &(index as i32 + 7).to_le_bytes());
-                window.put(object + cunit_leader_trait::ORDINAL, &(index as i32).to_le_bytes());
+                window.put(
+                    object,
+                    &((MODULE + cunit_leader_trait::VTABLE_RVA) as u64).to_le_bytes(),
+                );
+                window.put(
+                    object + cunit_leader_trait::TOKEN_ID,
+                    &(index as i32 + 7).to_le_bytes(),
+                );
+                window.put(
+                    object + cunit_leader_trait::ORDINAL,
+                    &(index as i32).to_le_bytes(),
+                );
                 window.literal(object + cunit_leader_trait::TOKEN, b"trait");
             }
             _ => return false,
@@ -237,14 +282,32 @@ impl World {
     }
 
     fn render_character(&self, window: &mut Window<'_>, index: usize, object: usize) {
-        window.put(object, &((MODULE + ccharacter::VTABLE_RVA) as u64).to_le_bytes());
-        window.put(object + ccharacter::TYPE, &ccharacter::REFERENCE_TYPE.to_le_bytes());
-        window.put(object + ccharacter::ID, &(1_000_000 + index as u32).to_le_bytes());
-        window.put(object + ccharacter::NAME_TOKEN_ID, &(index as i32).to_le_bytes());
+        window.put(
+            object,
+            &((MODULE + ccharacter::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        window.put(
+            object + ccharacter::TYPE,
+            &ccharacter::REFERENCE_TYPE.to_le_bytes(),
+        );
+        window.put(
+            object + ccharacter::ID,
+            &(1_000_000 + index as u32).to_le_bytes(),
+        );
+        window.put(
+            object + ccharacter::NAME_TOKEN_ID,
+            &(index as i32).to_le_bytes(),
+        );
         window.literal(object + ccharacter::NAME, b"name");
         window.literal(object + ccharacter::TOKEN, b"token");
-        window.put(object + ccharacter::COUNTRY, &(1 + index as u32 / 31).to_le_bytes());
-        window.pointer(object + ccharacter::LEADER_MAP_HEAD, Self::leader_head(index));
+        window.put(
+            object + ccharacter::COUNTRY,
+            &(1 + index as u32 / 31).to_le_bytes(),
+        );
+        window.pointer(
+            object + ccharacter::LEADER_MAP_HEAD,
+            Self::leader_head(index),
+        );
         window.put(
             object + ccharacter::LEADER_MAP_SIZE,
             &u64::from(Self::leader(index)).to_le_bytes(),
@@ -252,7 +315,10 @@ impl World {
         if let Some(unit) = Self::unit(index) {
             window.pointer(object + ccharacter::UNIT_LEADER, unit);
         }
-        window.pointer(object + ccharacter::ADVISOR_MAP_HEAD, Self::advisor_head(index));
+        window.pointer(
+            object + ccharacter::ADVISOR_MAP_HEAD,
+            Self::advisor_head(index),
+        );
         window.put(
             object + ccharacter::ADVISOR_MAP_SIZE,
             &u64::from(self.advisor(index)).to_le_bytes(),
@@ -260,24 +326,52 @@ impl World {
     }
 
     fn render_unit(&self, window: &mut Window<'_>, index: usize, object: usize) {
-        let vtable = [cunit_leader::VTABLE_RVA, carmy_leader::VTABLE_RVA, cnavy_leader::VTABLE_RVA]
-            [(index / 4) % 3];
+        let vtable = [
+            cunit_leader::VTABLE_RVA,
+            carmy_leader::VTABLE_RVA,
+            cnavy_leader::VTABLE_RVA,
+        ][(index / 4) % 3];
         window.put(object, &((MODULE + vtable) as u64).to_le_bytes());
-        window.put(object + cunit_leader::TYPE, &cunit_leader::REFERENCE_TYPE.to_le_bytes());
-        window.put(object + cunit_leader::ID, &(2_000_000 + index as u32).to_le_bytes());
+        window.put(
+            object + cunit_leader::TYPE,
+            &cunit_leader::REFERENCE_TYPE.to_le_bytes(),
+        );
+        window.put(
+            object + cunit_leader::ID,
+            &(2_000_000 + index as u32).to_le_bytes(),
+        );
         window.literal(object + cunit_leader::TOKEN, b"leader");
         window.literal(object + cunit_leader::NAME, b"inherited");
-        window.array(object + cunit_leader::TRAIT_DATA, TRAITS + index * 0x40, Self::traits(index));
+        window.array(
+            object + cunit_leader::TRAIT_DATA,
+            TRAITS + index * 0x40,
+            Self::traits(index),
+        );
         window.array(
             object + cunit_leader::TRAIT_EXPERIENCE_DATA,
             EXPERIENCE + index * 0x100,
             Self::experience(index),
         );
-        window.put(object + cunit_leader::EXPERIENCE, &(index as i64 * 1000).to_le_bytes());
-        window.put(object + cunit_leader::CATEGORY, &((index % 3) as i32).to_le_bytes());
-        window.put(object + cunit_leader::CHARACTER_TYPE, &ccharacter::REFERENCE_TYPE.to_le_bytes());
-        window.put(object + cunit_leader::CHARACTER_ID, &(1_000_000 + index as u32).to_le_bytes());
-        for (ordinal, offset) in [carmy_leader::ATTACK, carmy_leader::DEFENSE].into_iter().enumerate() {
+        window.put(
+            object + cunit_leader::EXPERIENCE,
+            &(index as i64 * 1000).to_le_bytes(),
+        );
+        window.put(
+            object + cunit_leader::CATEGORY,
+            &((index % 3) as i32).to_le_bytes(),
+        );
+        window.put(
+            object + cunit_leader::CHARACTER_TYPE,
+            &ccharacter::REFERENCE_TYPE.to_le_bytes(),
+        );
+        window.put(
+            object + cunit_leader::CHARACTER_ID,
+            &(1_000_000 + index as u32).to_le_bytes(),
+        );
+        for (ordinal, offset) in [carmy_leader::ATTACK, carmy_leader::DEFENSE]
+            .into_iter()
+            .enumerate()
+        {
             window.put(object + offset, &(ordinal as i32 + 1).to_le_bytes());
         }
     }
@@ -317,7 +411,11 @@ impl Window<'_> {
 
     /// A single-node tree link set: every link names `target`.
     fn node(&mut self, at: usize, target: usize, nil: u8) {
-        for link in [msvc_tree_node::LEFT, msvc_tree_node::PARENT, msvc_tree_node::RIGHT] {
+        for link in [
+            msvc_tree_node::LEFT,
+            msvc_tree_node::PARENT,
+            msvc_tree_node::RIGHT,
+        ] {
             self.pointer(at + link, target);
         }
         self.put(at + msvc_tree_node::COLOR, &[1, nil]);
@@ -329,7 +427,11 @@ impl Memory for World {
         let Some(end) = address.checked_add(destination.len()) else {
             return false;
         };
-        if self.faults.iter().any(|&fault| (address..end).contains(&fault)) {
+        if self
+            .faults
+            .iter()
+            .any(|&fault| (address..end).contains(&fault))
+        {
             return false;
         }
         if !self.render(address, destination) {
@@ -339,7 +441,8 @@ impl Memory for World {
             let from = (*at).max(address);
             let to = (at + bytes.len()).min(end);
             if from < to {
-                destination[from - address..to - address].copy_from_slice(&bytes[from - at..to - at]);
+                destination[from - address..to - address]
+                    .copy_from_slice(&bytes[from - at..to - at]);
             }
         }
         true
@@ -388,7 +491,12 @@ impl Memory for Counting<'_> {
         destinations: &mut [&mut [u8]; M],
     ) -> usize {
         let completed = self.inner.copy_scattered(addresses, destinations);
-        self.count(destinations[..completed].iter().map(|span| span.len()).sum());
+        self.count(
+            destinations[..completed]
+                .iter()
+                .map(|span| span.len())
+                .sum(),
+        );
         completed
     }
 
@@ -397,8 +505,15 @@ impl Memory for Counting<'_> {
         addresses: [usize; M],
         destinations: &mut [&mut [u8]; M],
     ) -> usize {
-        let completed = self.inner.copy_scattered_prefetched(addresses, destinations);
-        self.count(destinations[..completed].iter().map(|span| span.len()).sum());
+        let completed = self
+            .inner
+            .copy_scattered_prefetched(addresses, destinations);
+        self.count(
+            destinations[..completed]
+                .iter()
+                .map(|span| span.len())
+                .sum(),
+        );
         completed
     }
 
@@ -422,9 +537,9 @@ impl Memory for Counting<'_> {
         let outcome = self.inner.execute_read_plan(plan, destination);
         let completed = match outcome {
             Some(Plan::Complete) => plan.reads().len(),
-            Some(Plan::ControlChanged { completed_reads } | Plan::ReadFailed { completed_reads }) => {
-                completed_reads
-            }
+            Some(
+                Plan::ControlChanged { completed_reads } | Plan::ReadFailed { completed_reads },
+            ) => completed_reads,
             None => 0,
         };
         self.count(plan.reads()[..completed].iter().map(|read| read.len).sum());
@@ -519,7 +634,10 @@ fn typed(memory: &impl Memory, part: usize) -> Captured {
         None,
     );
     captured.install_family(PART_MASKS[part], results);
-    captured.fail_character_tables(PART_MASKS[part].map(|active| !active), replay::cadence::SKIPPED_REASON);
+    captured.fail_character_tables(
+        PART_MASKS[part].map(|active| !active),
+        replay::cadence::SKIPPED_REASON,
+    );
     captured
 }
 
@@ -595,7 +713,10 @@ fn advisor_cache(world: &World, loan: Option<census::Admitted<'_>>) -> advisors:
 
 fn decode_cache(cache: &advisors::Cache) -> Captured {
     let mut captured = Captured::with_capacities(&capacities());
-    captured.fail_character_tables(PART_MASKS[2].map(|active| !active), replay::cadence::SKIPPED_REASON);
+    captured.fail_character_tables(
+        PART_MASKS[2].map(|active| !active),
+        replay::cadence::SKIPPED_REASON,
+    );
     cache.decode(&mut captured);
     captured
 }
@@ -624,7 +745,9 @@ fn role_capture_cost_scales_with_roles_not_roster() {
         let memory = Counting::new(&world);
         let characters = world.characters;
         let leaders = (0..characters).filter(|&i| World::leader(i)).count();
-        let units = (0..characters).filter(|&i| World::unit(i).is_some()).count();
+        let units = (0..characters)
+            .filter(|&i| World::unit(i).is_some())
+            .count();
         let report = |part: &str, variant: &str, (calls, time): (usize, std::time::Duration)| {
             let bytes = memory.bytes.get();
             println!(
@@ -656,27 +779,54 @@ fn role_capture_cost_scales_with_roles_not_roster() {
                 (calls, elapsed)
             })
         };
-        for (variant, roles) in [("independent", Roles::Independent), ("with role census", Roles::Gather)] {
-            report("part 0", &format!("{variant} cold"), measure(0, roles, true));
-            report("part 0", &format!("{variant} warm"), measure(0, roles, false));
+        for (variant, roles) in [
+            ("independent", Roles::Independent),
+            ("with role census", Roles::Gather),
+        ] {
+            report(
+                "part 0",
+                &format!("{variant} cold"),
+                measure(0, roles, true),
+            );
+            report(
+                "part 0",
+                &format!("{variant} warm"),
+                measure(0, roles, false),
+            );
         }
         let owner = roster(&world);
         let loan = owner.role_census().expect("admitted role census");
         for part in [1, 3] {
             let mut job = CharactersJob::new_part(part);
             settle(&world, PART_MASKS[part], &mut job, Roles::Borrow(&loan));
-            copy_characters(&world, context(PART_MASKS[part]), &mut job, Roles::Borrow(&loan));
+            copy_characters(
+                &world,
+                context(PART_MASKS[part]),
+                &mut job,
+                Roles::Borrow(&loan),
+            );
             assert!(job.census_capture);
             let loaned = decode(&job);
             check(&world, &loaned, PART_MASKS[part]);
             let (independent, _) = role(&world, part, Roles::Independent);
             characters_test_kit::assert_matches_direct(&loaned, &independent);
             let name = format!("part {part}");
-            report(&name, "independent cold", measure(part, Roles::Independent, true));
-            report(&name, "independent warm", measure(part, Roles::Independent, false));
+            report(
+                &name,
+                "independent cold",
+                measure(part, Roles::Independent, true),
+            );
+            report(
+                &name,
+                "independent warm",
+                measure(part, Roles::Independent, false),
+            );
             let calls = report(&name, "census", measure(part, Roles::Borrow(&loan), false));
             let bound = if part == 1 { 6 * leaders } else { 16 * units };
-            assert!(calls <= bound + characters / 64 + 400, "{calls} guarded calls");
+            assert!(
+                calls <= bound + characters / 64 + 400,
+                "{calls} guarded calls"
+            );
         }
         let ctx = context(PART_MASKS[2]);
         let admitted = loan.admitted(MODULE, GAME_STATE);
@@ -694,10 +844,21 @@ fn role_capture_cost_scales_with_roles_not_roster() {
                     (memory.calls.get(), elapsed)
                 })
             };
-            report("part 2 (advisor cache)", &format!("{variant} quiet"), measure(&Quiet));
-            let calls = report("part 2 (advisor cache)", &format!("{variant} unwatched"), measure(&Unwatched));
+            report(
+                "part 2 (advisor cache)",
+                &format!("{variant} quiet"),
+                measure(&Quiet),
+            );
+            let calls = report(
+                "part 2 (advisor cache)",
+                &format!("{variant} unwatched"),
+                measure(&Unwatched),
+            );
             if source.is_some() {
-                assert!(calls <= 8 * expected + characters / 64 + 8, "{calls} guarded calls");
+                assert!(
+                    calls <= 8 * expected + characters / 64 + 8,
+                    "{calls} guarded calls"
+                );
             }
         }
         characters_test_kit::assert_matches_direct(
@@ -728,7 +889,10 @@ fn census_roles_match_the_independent_walk_on_every_roster_shape() {
         let owner = roster(world);
         let loan = owner.role_census().expect("admitted role census");
         for part in 1..PARTS {
-            assert!(assert_part(world, part, Some(&loan)), "part {part} used the loan");
+            assert!(
+                assert_part(world, part, Some(&loan)),
+                "part {part} used the loan"
+            );
         }
     }
 }
@@ -770,15 +934,39 @@ fn census_roles_match_the_independent_walk_at_every_fault_and_broken_map() {
     // character view owns, fail exactly as the independent walk does.
     let broken = [
         (leader_head(1) + msvc_tree_node::NIL, vec![0]),
-        (leader_head(2) + msvc_tree_node::LEFT, 0_u64.to_le_bytes().to_vec()),
-        (leader_head(6) + msvc_tree_node::RIGHT, (character(6) as u64).to_le_bytes().to_vec()),
+        (
+            leader_head(2) + msvc_tree_node::LEFT,
+            0_u64.to_le_bytes().to_vec(),
+        ),
+        (
+            leader_head(6) + msvc_tree_node::RIGHT,
+            (character(6) as u64).to_le_bytes().to_vec(),
+        ),
         (advisor_head(1) + msvc_tree_node::NIL, vec![0]),
-        (advisor_head(7) + msvc_tree_node::PARENT, 1_u64.to_le_bytes().to_vec()),
-        (character(4) + ccharacter::LEADER_MAP_HEAD, ((character(4) + 0x40) as u64).to_le_bytes().to_vec()),
-        (character(8) + ccharacter::ADVISOR_MAP_HEAD, ((character(8) + 0xb8) as u64).to_le_bytes().to_vec()),
-        (character(9) + ccharacter::LEADER_MAP_HEAD, 0_u64.to_le_bytes().to_vec()),
-        (character(11) + ccharacter::ADVISOR_MAP_SIZE, u64::MAX.to_le_bytes().to_vec()),
-        (character(12) + ccharacter::LEADER_MAP_SIZE, 2_u64.to_le_bytes().to_vec()),
+        (
+            advisor_head(7) + msvc_tree_node::PARENT,
+            1_u64.to_le_bytes().to_vec(),
+        ),
+        (
+            character(4) + ccharacter::LEADER_MAP_HEAD,
+            ((character(4) + 0x40) as u64).to_le_bytes().to_vec(),
+        ),
+        (
+            character(8) + ccharacter::ADVISOR_MAP_HEAD,
+            ((character(8) + 0xb8) as u64).to_le_bytes().to_vec(),
+        ),
+        (
+            character(9) + ccharacter::LEADER_MAP_HEAD,
+            0_u64.to_le_bytes().to_vec(),
+        ),
+        (
+            character(11) + ccharacter::ADVISOR_MAP_SIZE,
+            u64::MAX.to_le_bytes().to_vec(),
+        ),
+        (
+            character(12) + ccharacter::LEADER_MAP_SIZE,
+            2_u64.to_le_bytes().to_vec(),
+        ),
     ];
     for (address, bytes) in broken {
         let mut world = base.clone();
@@ -790,7 +978,12 @@ fn census_roles_match_the_independent_walk_at_every_fault_and_broken_map() {
         }
         let leaders = decode(&{
             let mut job = CharactersJob::new_part(1);
-            copy_characters(&world, context(PART_MASKS[1]), &mut job, Roles::Borrow(&loan));
+            copy_characters(
+                &world,
+                context(PART_MASKS[1]),
+                &mut job,
+                Roles::Borrow(&loan),
+            );
             job
         });
         let advisors = role(&world, 2, Roles::Borrow(&loan)).0;
@@ -807,7 +1000,11 @@ fn census_roles_match_the_independent_walk_at_every_fault_and_broken_map() {
 fn census_is_refused_when_incomplete_unreadable_stale_or_still_loaned() {
     let world = small();
     // A widened field the roster job does not read fails only the gather.
-    for field in [ccharacter::ADVISOR_MAP_HEAD + 4, ccharacter::LEADER_MAP_SIZE, ccharacter::COUNTRY] {
+    for field in [
+        ccharacter::ADVISOR_MAP_HEAD + 4,
+        ccharacter::LEADER_MAP_SIZE,
+        ccharacter::COUNTRY,
+    ] {
         let mut faulted = world.clone();
         faulted.faults.push(World::character(77) + field);
         let owner = roster(&faulted);
@@ -822,7 +1019,9 @@ fn census_is_refused_when_incomplete_unreadable_stale_or_still_loaned() {
     // An incomplete portrait census or role storage publishes nothing, then
     // grows off-thread to the observed roster.
     let mut short = CharactersJob::new_part(0);
-    short.portrait_census = Some(Arc::new(ccharacter_manager::PortraitCensus::new(2)));
+    short.portrait_census = Some(Arc::new(
+        ccharacter_manager::PortraitCensus::try_new(2).unwrap(),
+    ));
     copy_characters(&world, context(PART_MASKS[0]), &mut short, Roles::Gather);
     assert!(short.role_census().is_none());
     let mut narrow = CharactersJob::new_part(0);
@@ -837,13 +1036,21 @@ fn census_is_refused_when_incomplete_unreadable_stale_or_still_loaned() {
     copy_characters(&world, context(PART_MASKS[0]), &mut narrow, Roles::Gather);
     let loan = narrow.role_census().expect("grown role census");
     // Another game state cannot use it.
-    let other = CharactersCopyContext { game_state: GAME_STATE + 8, ..context(PART_MASKS[1]) };
+    let other = CharactersCopyContext {
+        game_state: GAME_STATE + 8,
+        ..context(PART_MASKS[1])
+    };
     let mut job = CharactersJob::new_part(1);
     copy_characters(&world, other, &mut job, Roles::Borrow(&loan));
     assert!(!job.census_capture);
     // Hours without role jobs gather nothing; a retained loan blocks the
     // next gather without waiting, and the returned loan admits it again.
-    copy_characters(&world, context(PART_MASKS[0]), &mut narrow, Roles::Independent);
+    copy_characters(
+        &world,
+        context(PART_MASKS[0]),
+        &mut narrow,
+        Roles::Independent,
+    );
     assert!(narrow.role_census().is_none());
     copy_characters(&world, context(PART_MASKS[0]), &mut narrow, Roles::Gather);
     assert!(narrow.role_census().is_none());
@@ -860,13 +1067,23 @@ fn exhausted_census_storage_falls_back_and_grows_to_the_whole_demand() {
     for part in [1, 3] {
         let mut job = CharactersJob::new_part(part);
         job.census_visited = Vec::with_capacity(3);
-        let report = copy_characters(&world, context(PART_MASKS[part]), &mut job, Roles::Borrow(&loan));
+        let report = copy_characters(
+            &world,
+            context(PART_MASKS[part]),
+            &mut job,
+            Roles::Borrow(&loan),
+        );
         assert!(!report.raw_ok && !report.plan_failed, "part {part}");
         assert!(job.grow_for_next());
         job.grow();
         job.prepare_read_plans();
         job.clear();
-        let report = copy_characters(&world, context(PART_MASKS[part]), &mut job, Roles::Borrow(&loan));
+        let report = copy_characters(
+            &world,
+            context(PART_MASKS[part]),
+            &mut job,
+            Roles::Borrow(&loan),
+        );
         assert!(report.raw_ok, "part {part} after growth");
         characters_test_kit::assert_matches_direct(&decode(&job), &typed(&world, part));
     }
@@ -892,7 +1109,10 @@ fn census_advisor_cache_keeps_reuse_verification_and_fresh_countries() {
     cache.prepare();
     // A changed country comes from the current census, never the entry.
     drop(loan);
-    world.patch(World::character(3) + ccharacter::COUNTRY, &99_u32.to_le_bytes());
+    world.patch(
+        World::character(3) + ccharacter::COUNTRY,
+        &99_u32.to_le_bytes(),
+    );
     let owner = roster(&world);
     let loan = owner.role_census().unwrap();
     cache.capture(&world, ctx, &Quiet, loan.admitted(MODULE, GAME_STATE));

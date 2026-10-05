@@ -7,6 +7,7 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows, bounded, grow_capacity, grow_vec},
 };
+use engine::allocation::{copy_vec, default_vec, map_slice, owned_vec};
 use engine::raid_tooltip_operands;
 use engine::{
     Memory, ccountry, ccountry_raid_status, cgame_state, cnuke,
@@ -236,9 +237,11 @@ impl Captured {
             raid_equipment_amounts: Arena::new(capacity.raid_equipment_items),
             raid_equipment_archetype_tokens: Arena::new(capacity.raid_equipment_archetypes),
             raid_equipment_archetype_amounts: Arena::new(capacity.raid_equipment_archetypes),
-            speed_memo: engine::modifier_definition::DefinitionMemo::with_capacity(
+            speed_memo: engine::modifier_definition::DefinitionMemo::try_with_capacity(
                 if capacity.rows[14] == 0 { 0 } else { 3 },
-            ),
+            )
+            .map_err(crate::allocation::io)
+            .unwrap_or_default(),
             raid_reads: super::RaidReadCounts::default(),
             raid_type_tokens: Arena::new(capacity.raid_type_tokens),
             raid_show_for: Arena::new(capacity.raid_show_for),
@@ -246,10 +249,12 @@ impl Captured {
                 ccountry_raid_status::TypeTokens::empty()
             } else {
                 // Grown from the database's count after the first walk.
-                ccountry_raid_status::TypeTokens::with_definitions(64)
+                ccountry_raid_status::TypeTokens::try_with_definitions(64)
+                    .map_err(crate::allocation::io)
+                    .unwrap_or_else(|_| ccountry_raid_status::TypeTokens::empty())
             },
             names: Arena::new(capacity.program_names),
-            candidates: vec![0; capacity.program_candidates],
+            candidates: owned_vec(default_vec(capacity.program_candidates)),
             required_candidates: 0,
             raw_mode: false,
         }
@@ -358,7 +363,14 @@ impl Captured {
         capacity.raid_equipment_archetypes = capacity.raid_equipment_archetypes.max(archetypes);
         self.raid_type_tokens.grow(&mut capacity.raid_type_tokens);
         self.raid_show_for.grow(&mut capacity.raid_show_for);
-        self.raid_type_memo.grow();
+        if self
+            .raid_type_memo
+            .grow()
+            .map_err(crate::allocation::io)
+            .is_err()
+        {
+            return;
+        }
         self.names.grow(&mut capacity.program_names);
         grow_capacity(&mut capacity.program_candidates, self.required_candidates);
         if self.required_candidates > 0
@@ -798,15 +810,15 @@ impl Captured {
                     strategic_present: u8::from(r.strategic_present),
                     country_defense: r.country_defense,
                     crypto_strength: r.crypto_strength,
-                    operatives: self.counteroperatives.first
-                        [r.operatives_start..r.operatives_start + r.operatives_len]
-                        .iter()
-                        .map(|o| rows::RaidCounterOperative {
+                    operatives: owned_vec(map_slice(
+                        &self.counteroperatives.first
+                            [r.operatives_start..r.operatives_start + r.operatives_len],
+                        |o| rows::RaidCounterOperative {
                             handle: o.handle,
                             defense: o.defense,
                             context: o.context,
-                        })
-                        .collect(),
+                        },
+                    )),
                 }
             }),
             table::<tables::RaidTooltipOperands, _>(
@@ -862,11 +874,11 @@ impl Captured {
                 id: r.id,
                 phase: r.phase,
                 end_hour: r.end_hour,
-                variants: variants[entries.clone()].to_vec(),
-                amounts: amounts[entries].to_vec(),
+                variants: owned_vec(copy_vec(&variants[entries.clone()])),
+                amounts: owned_vec(copy_vec(&amounts[entries])),
                 nukes: r.nukes,
-                archetype_tokens: tokens[archetypes.clone()].to_vec(),
-                archetype_amounts: totals[archetypes].to_vec(),
+                archetype_tokens: owned_vec(copy_vec(&tokens[archetypes.clone()])),
+                archetype_amounts: owned_vec(copy_vec(&totals[archetypes])),
             }
         })
     }
@@ -894,7 +906,7 @@ impl Captured {
                 end_hour: r.end_hour,
                 wing_max_speed: r.wing_max_speed,
                 army_max_speed: r.army_max_speed,
-                transport_speeds: list(r).unwrap_or_default().to_vec(),
+                transport_speeds: owned_vec(copy_vec(list(r).unwrap_or_default())),
                 transport_from_country: r.transport_from_country,
                 transport_fallback: r.transport_fallback,
                 ace_present: r.ace_present,
@@ -922,7 +934,7 @@ impl Captured {
         table::<tables::RaidPlayerAllowedTypes, _>(outcome, &self.raid_player.rows, |r| {
             rows::RaidPlayerAllowedTypeRow {
                 country: r.country,
-                allowed: list(r).unwrap_or_default().to_vec(),
+                allowed: owned_vec(copy_vec(list(r).unwrap_or_default())),
             }
         })
     }
@@ -947,8 +959,10 @@ impl Captured {
             rows::RaidCountryRow {
                 canonical_slot: r.canonical_slot,
                 country: r.country,
-                eligible_types: list(r.eligible_start, r.eligible_len).unwrap().to_vec(),
-                used_types: list(r.used_start, r.used_len).unwrap().to_vec(),
+                eligible_types: owned_vec(copy_vec(
+                    list(r.eligible_start, r.eligible_len).unwrap(),
+                )),
+                used_types: owned_vec(copy_vec(list(r.used_start, r.used_len).unwrap())),
             }
         })
     }
@@ -984,7 +998,7 @@ impl Captured {
                 building_location: r.source.building_location,
                 building_country: r.source.building_country,
             },
-            show_for: list(r).unwrap().to_vec(),
+            show_for: owned_vec(copy_vec(list(r).unwrap())),
             unit: r.unit,
             air_wing: r.air_wing,
             travelled: Some(r.travelled),
@@ -1011,8 +1025,9 @@ impl Captured {
                 active_project: r.active_project,
                 scientist: r.scientist,
                 unread_rewards: r.unread_rewards,
-                building: self.names.first[r.building_start..r.building_start + r.building_len]
-                    .to_vec(),
+                building: owned_vec(copy_vec(
+                    &self.names.first[r.building_start..r.building_start + r.building_len],
+                )),
             }
         })
     }

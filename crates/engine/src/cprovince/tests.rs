@@ -1740,3 +1740,68 @@ fn dense_records_preserve_invalid_source_prefix_without_retry() {
     );
     assert_eq!(*current.reads.borrow(), *reference.reads.borrow());
 }
+
+#[test]
+fn allocation_capacity_overflow_owned_capture_buffers() {
+    let oom = std::io::ErrorKind::OutOfMemory;
+    assert_eq!(
+        crate::country_memory::Cache::try_with_capacity(usize::MAX)
+            .err()
+            .unwrap()
+            .kind(),
+        oom
+    );
+    assert_eq!(
+        Capture::try_with_capacity(usize::MAX, 0, 0)
+            .err()
+            .unwrap()
+            .kind(),
+        oom
+    );
+    assert_eq!(
+        crate::cname_group_member::GroupKeys::try_with_capacity(usize::MAX, 0)
+            .err()
+            .unwrap()
+            .kind(),
+        oom
+    );
+    assert_eq!(
+        crate::ccountry_raid_status::TypeTokens::try_with_definitions(usize::MAX)
+            .err()
+            .unwrap()
+            .kind(),
+        oom
+    );
+    assert_eq!(
+        crate::ccharacter_manager::PortraitCensus::try_new(usize::MAX)
+            .err()
+            .unwrap()
+            .kind(),
+        oom
+    );
+    assert_eq!(
+        crate::carmy::MovementPacket::try_new(0, usize::MAX)
+            .err()
+            .unwrap()
+            .kind(),
+        oom
+    );
+    let mut geometry = GeometryPacket::try_with_capacities(GeometryCapacities {
+        provinces: 2,
+        neighbour_entries: 4,
+    })
+    .unwrap();
+    let before = geometry.allocated_bytes();
+    assert_eq!(
+        geometry
+            .grow(GeometryCapacities {
+                provinces: usize::MAX,
+                neighbour_entries: 4,
+            })
+            .unwrap_err()
+            .kind(),
+        oom
+    );
+    assert_eq!(geometry.allocated_bytes(), before);
+    assert_eq!(geometry.capacities.provinces, 2);
+}

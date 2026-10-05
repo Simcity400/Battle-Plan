@@ -48,6 +48,8 @@ Each widget follows the default campaign or one chosen in its gear menu. Choosin
 
 Use the game's fixed 365-day calendar in [calendar.ts](src/dashboard/calendar.ts), with hours shown as 01:00 through 24:00 and raw engine hours underneath. Keep exact decimal strings until formatting; floating point is for geometry only. Show gaps and unavailable data honestly; never carry a value across missing hours.
 
+Partial recordings open through the same source path. The shell keeps their failure notice above Overview and Campaign map, and marks their recording-library and loaded-campaign entries partial. The terminal marker does not depend on the playhead or diagnostics. A known unrecorded hour uses the existing timeline gap; an unknown failed hour is never guessed.
+
 ## Shared UI
 
 Use [Popover.tsx](src/components/Popover.tsx) for every interactive pop-down and [Tooltip.tsx](src/components/Tooltip.tsx) with `data-tooltip` for hints. Reuse [CountryPicker.tsx](src/components/CountryPicker.tsx) for country choices; it reads the land-owners and country-flags products. Flags come from the recording's own installed content: lists request medium flags, falling back to the same country's large flag when its medium flag is absent. The top bar shows the country as the game's top bar does (`shield`: the sprite the recorded `interface/topbar.gui` `player_flag` button names) at the playback hour, so cosmetic tags, ideologies and mods change it when they did in the game. A missing flag shows an empty frame. Recordings may hold thousands of countries, so the picker renders only the rows in view and keeps their list flags in [flagCache.ts](src/dashboard/flagCache.ts), apart from the product cache. Icons come from [Icons.tsx](src/components/Icons.tsx), one outline family.

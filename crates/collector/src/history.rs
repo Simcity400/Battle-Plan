@@ -53,6 +53,7 @@ impl PreparedCampaigns {
                 continue;
             };
             if let Ok(id) = campaign_name(stem.as_bytes()) {
+                engine::allocation::reserve(&mut paths, 1)?;
                 paths.push((id, path));
             }
         }
@@ -62,13 +63,15 @@ impl PreparedCampaigns {
             let deadline = Instant::now() + Duration::from_secs(2);
             let prepared = loop {
                 progress(&id)?;
-                match Self::read(&path, &id, session) {
+                match Self::read(&path, &id, session).map_err(engine::allocation::allocation_error)
+                {
                     Err(error)
                         if matches!(error.raw_os_error(), Some(5 | 32 | 33))
                             && Instant::now() < deadline =>
                     {
                         std::thread::sleep(Duration::from_millis(100));
                     }
+                    Err(error) if error.kind() == io::ErrorKind::OutOfMemory => return Err(error),
                     result => break result.map_err(|error| error.to_string()),
                 }
             };
@@ -90,7 +93,20 @@ impl PreparedCampaigns {
             .share_mode(FILE_SHARE_READ)
             .open(path)?;
         let mut bytes = Vec::new();
-        lease.read_to_end(&mut bytes)?;
+        let length =
+            usize::try_from(lease.metadata()?.len()).map_err(|_| engine::allocation::oom())?;
+        engine::allocation::reserve_exact(&mut bytes, length)?;
+        let mut chunk = [0_u8; 8192];
+        loop {
+            let count = match lease.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(count) => count,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            };
+            engine::allocation::reserve(&mut bytes, count)?;
+            bytes.extend_from_slice(&chunk[..count]);
+        }
         let history = Replay::open(bytes)?.into_history()?;
         if !history.campaign_id.eq_ignore_ascii_case(name.as_bytes()) {
             return Err(invalid(

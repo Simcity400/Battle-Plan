@@ -2,11 +2,10 @@
 
 use crate::{
     BranchId, Hour,
-    codec::{Decoder, invalid},
+    codec::{Decoder, invalid_static as invalid},
     rows::{DeltaRow, TableId, TableRows, TableSchema},
 };
 use std::{
-    collections::BTreeSet,
     io,
     sync::{Arc, Weak},
 };
@@ -15,7 +14,11 @@ mod decoder;
 mod encoder;
 mod wire;
 
-pub use self::{decoder::FrameDecoder, encoder::FrameEncoder};
+pub use self::{
+    decoder::FrameDecoder,
+    encoder::{FrameEncoder, PreparedFrame},
+};
+use engine::allocation;
 
 #[cfg(test)]
 use self::{
@@ -270,6 +273,7 @@ impl EncodedFrame {
 }
 
 fn put_count(out: &mut Vec<u8>, n: usize) -> io::Result<()> {
+    allocation::reserve(out, 4)?;
     out.extend_from_slice(
         &u32::try_from(n)
             .map_err(|_| invalid("too many rows"))?
@@ -283,16 +287,16 @@ impl DecodedFrame {
         let table = T::ID;
         match &*self.tables[table.index()] {
             TableView::Complete(rows) => rows.rows::<T>().ok_or_else(|| {
-                invalid(format!(
+                crate::codec::invalid(format!(
                     "hour {} {table:?} contains another table's rows",
                     self.hour
                 ))
             }),
-            TableView::Truncated { missing, .. } => Err(invalid(format!(
+            TableView::Truncated { missing, .. } => Err(crate::codec::invalid(format!(
                 "hour {} {table:?} is truncated ({missing} missing rows)",
                 self.hour
             ))),
-            TableView::Unavailable { reason } => Err(invalid(format!(
+            TableView::Unavailable { reason } => Err(crate::codec::invalid(format!(
                 "hour {} {table:?} is unavailable: {reason}",
                 self.hour
             ))),
@@ -307,11 +311,10 @@ fn validate_rows(table: TableId, rows: &TableRows) -> io::Result<()> {
     }
     rows.validate_keys()?;
     if let TableRows::Countries(countries) = rows {
-        let mut slots = BTreeSet::new();
-        if countries
-            .iter()
-            .any(|country| !slots.insert(country.canonical_slot))
-        {
+        let mut slots = allocation::vec(countries.len())?;
+        slots.extend(countries.iter().map(|country| country.canonical_slot));
+        slots.sort_unstable();
+        if slots.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(invalid("country rows have duplicate canonical slots"));
         }
     }
@@ -323,9 +326,9 @@ fn validate_complete(table: TableId, rows: &TableRows, hour: Hour) -> io::Result
 }
 fn validate_singleton(table: TableId, rows: &TableRows, hour: Hour) -> io::Result<()> {
     if table.key_bits() == 0 && rows.len() != 1 {
-        return Err(invalid(format!(
-            "complete {table:?} table must contain exactly one row"
-        )));
+        return Err(invalid(
+            "complete singleton table must contain exactly one row",
+        ));
     }
     if let TableRows::Clock(rows) = rows
         && rows[0].hour != hour

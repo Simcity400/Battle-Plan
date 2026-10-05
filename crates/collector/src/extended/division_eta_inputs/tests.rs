@@ -141,7 +141,7 @@ fn air_defense_hits_preserve_fresh_operands_and_first_native_failure() {
         identity: Cell::new(true),
         reads: RefCell::new(Vec::new()),
     };
-    let arena = RefCell::new(SnapshotArena::new(SnapshotCapacity::default()));
+    let arena = RefCell::new(SnapshotArena::try_new(SnapshotCapacity::default()).unwrap());
     let air_defense = RefCell::new(AirDefenseMemo::with_capacity(1));
     let memory = ModifierMemory {
         inner: &source,
@@ -320,14 +320,14 @@ fn country_roster_reuse_keeps_ordinary_eta_reads_fresh_and_scoped() {
         spans: RefCell::new(Vec::new()),
         fault: Cell::new(None),
     };
-    let mut cache = Cache::with_capacity(64);
+    let mut cache = Cache::try_with_capacity(64).unwrap();
     let cached = cache.prepare(&source, 0, 0x1000);
     let roster = cached.authenticated_countries(0, 0x1000).unwrap();
     let expected = ccountry::Reader::new(&cached, 0, 0x1000)
         .unwrap()
         .resolve(7)
         .unwrap();
-    let arena = RefCell::new(SnapshotArena::new(SnapshotCapacity::default()));
+    let arena = RefCell::new(SnapshotArena::try_new(SnapshotCapacity::default()).unwrap());
     let air_defense = RefCell::new(AirDefenseMemo::with_capacity(0));
     let memory = ModifierMemory {
         inner: &source,
@@ -477,10 +477,13 @@ fn the_modifier_snapshot_reads_each_accumulator_once_a_walk() {
         ]
     );
     let direct = source.reads.replace(0);
-    let arena = RefCell::new(SnapshotArena::new(SnapshotCapacity {
-        nodes: 4,
-        entries: ENTRIES as usize,
-    }));
+    let arena = RefCell::new(
+        SnapshotArena::try_new(SnapshotCapacity {
+            nodes: 4,
+            entries: ENTRIES as usize,
+        })
+        .unwrap(),
+    );
     let air_defense = RefCell::new(AirDefenseMemo::with_capacity(0));
     let memory = ModifierMemory {
         inner: &source,
@@ -503,10 +506,13 @@ fn the_modifier_snapshot_reads_each_accumulator_once_a_walk() {
     assert_eq!(source.reads.get() * keys.len(), direct);
     // Too small an arena refuses the snapshot after its header read and
     // the direct reader answers every key.
-    let small = RefCell::new(SnapshotArena::new(SnapshotCapacity {
-        nodes: 4,
-        entries: 8,
-    }));
+    let small = RefCell::new(
+        SnapshotArena::try_new(SnapshotCapacity {
+            nodes: 4,
+            entries: 8,
+        })
+        .unwrap(),
+    );
     let memory = ModifierMemory {
         inner: &source,
         arena: &small,
@@ -526,7 +532,7 @@ fn the_modifier_snapshot_reads_each_accumulator_once_a_walk() {
     assert_eq!(source.reads.get(), direct + 1);
     assert!(small.borrow().required_capacity().entries >= ENTRIES as usize);
 
-    let empty = RefCell::new(SnapshotArena::new(SnapshotCapacity::default()));
+    let empty = RefCell::new(SnapshotArena::try_new(SnapshotCapacity::default()).unwrap());
     let memory = ModifierMemory {
         inner: &source,
         arena: &empty,
@@ -562,10 +568,13 @@ fn the_modifier_snapshot_reads_each_accumulator_once_a_walk() {
             reads: std::cell::Cell::new(0),
             fault: Some(fault),
         };
-        let arena = RefCell::new(SnapshotArena::new(SnapshotCapacity {
-            nodes: 4,
-            entries: ENTRIES as usize,
-        }));
+        let arena = RefCell::new(
+            SnapshotArena::try_new(SnapshotCapacity {
+                nodes: 4,
+                entries: ENTRIES as usize,
+            })
+            .unwrap(),
+        );
         let memory = ModifierMemory {
             inner: &source,
             arena: &arena,
@@ -674,4 +683,214 @@ fn stable_partitions_cover_the_census_and_a_failed_range_denies_the_table() {
             reason: "worker stopped"
         }
     ));
+}
+
+/// Prepare outside the allocator-denial window; execute through the same
+/// zero-worker pool route that the callback uses when it runs an accepted job.
+pub(crate) fn allocation_failure_route_exercise(
+    workers: usize,
+) -> impl FnOnce() -> bool + Send + 'static {
+    struct Fixture {
+        bytes: Vec<u8>,
+        seed: DivisionSeed,
+        range: RangeCaptured,
+    }
+    impl Memory for Fixture {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            let global = match address {
+                engine::cgame_state::PLAY_SESSION_STARTED_AT_RVA => Some(1_i64),
+                carmy::TRANSPORT_SCALE_RVA | carmy::OUTER_SCALE_RVA => Some(100_000),
+                carmy::INVASION_SPEED_RVA => Some(50_000),
+                engine::cnaval_unit_transfer::BASE_SPEED_RVA => Some(100_000),
+                engine::modifier_definition::TRADE_FEATURE_FLAGS_RVA => Some(0),
+                _ => None,
+            };
+            if let Some(value) = global {
+                let bytes = value.to_le_bytes();
+                if let Some(source) = bytes.get(..output.len()) {
+                    output.copy_from_slice(source);
+                    return true;
+                }
+                return false;
+            }
+            SliceMemory {
+                base: 0,
+                bytes: &self.bytes,
+            }
+            .copy(address, output)
+        }
+    }
+    fn word(bytes: &mut [u8], at: usize, value: u64) {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    fn array(bytes: &mut [u8], at: usize, data: usize, count: u32) {
+        word(bytes, at, data as u64);
+        word(bytes, at + 8, u64::from(count) | (u64::from(count) << 32));
+    }
+    const STATE: usize = 0x1000;
+    const ROUTE: usize = 0xd000;
+    const LEGS: usize = 3;
+    let mut bytes = vec![0_u8; 0xe000];
+    array(
+        &mut bytes,
+        STATE + engine::cgame_state::COUNTRIES,
+        0x2000,
+        2,
+    );
+    array(
+        &mut bytes,
+        STATE + engine::cgame_state::COUNTRY_LINKS,
+        0x2100,
+        2,
+    );
+    word(&mut bytes, 0x2008, 0x3000);
+    bytes[0x2104..0x2108].copy_from_slice(&1_u32.to_le_bytes());
+    word(&mut bytes, 0x3000, engine::ccountry::VTABLE_RVA as u64);
+    bytes[0x3008..0x300c].copy_from_slice(&1_u32.to_le_bytes());
+    array(
+        &mut bytes,
+        STATE + engine::cgame_state::PROVINCES,
+        0x5000,
+        5,
+    );
+    array(
+        &mut bytes,
+        STATE + engine::cgame_state::STRATEGIC_REGIONS,
+        0xb100,
+        1,
+    );
+    word(&mut bytes, 0xb100, 0xb000);
+    word(
+        &mut bytes,
+        0xb000,
+        engine::cstrategic_region::VTABLE_RVA as u64,
+    );
+    word(
+        &mut bytes,
+        STATE + engine::cgame_state::WEATHER_MANAGER,
+        0xc000,
+    );
+    word(
+        &mut bytes,
+        0xc000,
+        engine::cweather_manager::VTABLE_RVA as u64,
+    );
+    // An empty weather region array and disabled transport composition select
+    // the native zero modifiers without introducing unrelated country graphs.
+    for id in 1_u32..=4 {
+        let pointer = 0x6000 + id as usize * 0x200;
+        let definition = 0x8000 + id as usize * 0x200;
+        word(&mut bytes, 0x5000 + id as usize * 8, pointer as u64);
+        word(&mut bytes, pointer, cprovince::VTABLE_RVA as u64);
+        bytes[pointer + cprovince::ID..pointer + cprovince::ID + 4]
+            .copy_from_slice(&id.to_le_bytes());
+        word(
+            &mut bytes,
+            pointer + cprovince::DEFINITION,
+            definition as u64,
+        );
+        word(&mut bytes, pointer + cprovince::STRATEGIC_REGION, 0xb000);
+        bytes[definition + engine::province_definition::ID
+            ..definition + engine::province_definition::ID + 4]
+            .copy_from_slice(&id.to_le_bytes());
+        word(
+            &mut bytes,
+            definition + engine::province_definition::TERRAIN,
+            0xa000,
+        );
+        if id > 1 {
+            bytes[ROUTE + (id as usize - 2) * 4..ROUTE + (id as usize - 1) * 4]
+                .copy_from_slice(&id.to_le_bytes());
+        }
+    }
+    let mut header = [0_u8; 16];
+    header[..8].copy_from_slice(&(ROUTE as u64).to_le_bytes());
+    header[8..12].copy_from_slice(&(LEGS as u32).to_le_bytes());
+    header[12..].copy_from_slice(&(LEGS as u32).to_le_bytes());
+    let seed = DivisionSeed {
+        pointer: 0x4000,
+        division: 1,
+        handle: Some(1),
+        primary_vtable: Some(carmy::VTABLE_RVA as u64),
+        ordinary_route: Some(header),
+        location: Some(0x6200),
+        class: Some(0),
+        logical_owner: Some(1),
+        naval_transfer_membership: Some(1),
+        ..Default::default()
+    };
+    let capacities = Capacities {
+        rows: 1,
+        terrain: 0,
+        legs: LEGS,
+        geometry: cprovince::GeometryCapacities {
+            provinces: 4,
+            neighbour_entries: 0,
+        },
+        modifiers: SnapshotCapacity::default(),
+        ranges: 1,
+    };
+    let mut request = Some(Fixture {
+        bytes,
+        seed,
+        range: RangeCaptured::with_capacities(&capacities),
+    });
+    let pool = crate::acquisition::Pool::start(workers, 1, |fixture: &mut Fixture| {
+        // Move the owned packet out while its memory view is borrowed. The
+        // vacancy neither allocates nor provisions another route arena.
+        let mut range = std::mem::replace(&mut fixture.range, RangeCaptured::vacant());
+        range.capture(
+            fixture,
+            CaptureContext {
+                hour: 7,
+                force_full: true,
+                base: 0,
+                game_state: STATE,
+                span: (0, 1),
+                partition: (0, 1),
+            },
+            Sources {
+                rows: std::slice::from_ref(&fixture.seed),
+                outcome: Outcome::Rows { len: 1 },
+            },
+            None,
+        );
+        let result = (range.outcome(), range.counters.legs);
+        fixture.range = range;
+        result
+    })
+    .unwrap();
+    if workers != 0 {
+        pool.reserve_worker_slots(1).unwrap();
+    }
+    move || {
+        // The request owns all synthetic memory until the accepted job returns.
+        let Ok(ticket) = (unsafe { pool.submit_with_priority(&mut request, 0, workers != 0) })
+        else {
+            return false;
+        };
+        let Some(completion) = pool.finish(ticket) else {
+            return false;
+        };
+        let calibration = pool.calibration();
+        let stopped = completion.report == Err(crate::acquisition::Failure::Stopped);
+        let complete = completion.report == Ok((Outcome::Rows { len: 1 }, LEGS as u64));
+        let executed = if workers == 0 {
+            calibration.caller_executed == 1 && calibration.worker_executed == 0
+        } else {
+            calibration.caller_executed == 0 && calibration.worker_executed == 1
+        };
+        let healthy_or_stopped = if crate::allocation::failed() {
+            stopped
+        } else {
+            complete
+        };
+        pool.shutdown().is_ok() && healthy_or_stopped && executed
+    }
+}
+
+#[test]
+fn inline_eta_route_fixture_scans_every_leg() {
+    assert!(allocation_failure_route_exercise(0)());
+    assert!(allocation_failure_route_exercise(1)());
 }

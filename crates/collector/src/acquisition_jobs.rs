@@ -19,10 +19,11 @@ use crate::{
 pub(crate) use acquisition::{Completion, Failure, SubmitError, Ticket};
 use engine::memory::{CountedMemory, LiveMemory};
 use serde::Serialize;
+use std::sync::Arc;
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Mutex,
+        Mutex,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -792,7 +793,14 @@ pub(crate) struct RoleCalibration {
 #[derive(Serialize)]
 pub(crate) struct Calibration {
     pub executor: acquisition::Calibration,
-    pub roles: Vec<RoleCalibration>,
+    #[serde(serialize_with = "serialize_roles")]
+    pub roles: [RoleCalibration; ROLE_COUNT],
+}
+fn serialize_roles<S: serde::Serializer>(
+    roles: &[RoleCalibration; ROLE_COUNT],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    roles.as_slice().serialize(serializer)
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -883,8 +891,13 @@ fn note_completion<R>(counters: &Counters, report: &Result<R, Failure>) {
 }
 
 fn catch_failure<R>(work: impl FnOnce() -> R) -> Result<R, Failure> {
+    let _phase = crate::allocation::enter(crate::allocation::Phase::Acquisition);
+    if crate::allocation::failed() {
+        return Err(Failure::Stopped);
+    }
     match catch_unwind(AssertUnwindSafe(work)) {
-        Ok(report) => Ok(report),
+        Ok(report) if !crate::allocation::failed() => Ok(report),
+        Ok(_) => Err(Failure::Stopped),
         Err(payload) => {
             // A panic payload can itself panic when dropped. Preserve the
             // callback's drainage barrier by never running that destructor.
@@ -1397,7 +1410,7 @@ pub(crate) struct Pool {
     calibration: Arc<SharedCalibration>,
 }
 impl Pool {
-    pub(crate) fn start(worker_count: usize, capacity: usize) -> Result<Self, String> {
+    pub(crate) fn start(worker_count: usize, capacity: usize) -> Result<Self, &'static str> {
         let calibration = Arc::new(SharedCalibration::default());
         let runner_calibration = Arc::clone(&calibration);
         let executor = acquisition::Pool::start(worker_count.max(1), capacity, move |job| {
@@ -1503,17 +1516,13 @@ impl Pool {
     pub(crate) fn calibration(&self) -> Calibration {
         Calibration {
             executor: self.executor.calibration(),
-            roles: ROLES
-                .iter()
-                .enumerate()
-                .map(|(index, role)| RoleCalibration {
-                    role: *role,
-                    counters: self.calibration.roles[index].snapshot(),
-                })
-                .collect(),
+            roles: std::array::from_fn(|index| RoleCalibration {
+                role: ROLES[index],
+                counters: self.calibration.roles[index].snapshot(),
+            }),
         }
     }
-    pub(crate) fn shutdown(&self) -> Result<(), String> {
+    pub(crate) fn shutdown(&self) -> Result<(), &'static str> {
         self.executor.shutdown()
     }
 }
@@ -1613,7 +1622,8 @@ mod tests {
         memory: &impl engine::Memory,
         cells: usize,
     ) -> Arc<engine::country_memory::Cache> {
-        let mut storage = Arc::new(engine::country_memory::Cache::with_capacity(cells));
+        let mut storage =
+            Arc::new(engine::country_memory::Cache::try_with_capacity(cells).unwrap());
         engine::country_memory::Cache::prepare_shared(&mut storage, memory, 0, 0x1000).unwrap()
     }
 
@@ -1799,7 +1809,8 @@ mod tests {
                 reads: &reads,
                 faults: &[],
             };
-            let mut storage = Arc::new(engine::country_memory::Cache::with_capacity(cells));
+            let mut storage =
+                Arc::new(engine::country_memory::Cache::try_with_capacity(cells).unwrap());
             let countries = engine::country_memory::Cache::prepare_shared(
                 &mut storage,
                 &seed,
@@ -2135,7 +2146,7 @@ mod tests {
                     Job::Provinces(ProvincesRequest {
                         base: 0,
                         game_state,
-                        payload: engine::cprovince::Capture::with_capacity(2, 0, 0),
+                        payload: engine::cprovince::Capture::try_with_capacity(2, 0, 0).unwrap(),
                     })
                 };
                 let mut accepted = Some(make());

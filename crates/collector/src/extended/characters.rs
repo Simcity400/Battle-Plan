@@ -1,6 +1,7 @@
 //! Persistent character state. Native walks use pooled rows and literal-byte
 //! arenas; sorting, duplicate checks and owned replay strings run off-thread.
 
+use engine::allocation::{copy_vec, owned_vec, reserve, reserve_exact};
 pub(crate) mod advisors;
 pub(crate) mod census;
 #[cfg(test)]
@@ -28,10 +29,8 @@ use replay::{
     },
 };
 
-use std::{
-    mem::size_of,
-    sync::{Arc, Weak},
-};
+use std::mem::size_of;
+use std::sync::{Arc, Weak};
 
 pub const N: usize = 6;
 pub const TABLES: [TableId; N] = [
@@ -170,32 +169,31 @@ static ADVISOR_SECTION_PLANNED: [std::sync::atomic::AtomicU64; 2] =
 static ADVISOR_SECTION_NS: [std::sync::atomic::AtomicU64; 2] =
     [const { std::sync::atomic::AtomicU64::new(0) }; 2];
 
-pub(crate) fn acquisition_diagnostics() -> serde_json::Value {
+pub(crate) fn acquisition_diagnostics() -> impl serde::Serialize {
     use std::sync::atomic::Ordering::Relaxed;
-    serde_json::json!({
+    let parts = std::array::from_fn::<_, PARTS, _>(|part| {
+        let calls = COPY_CALLS[part].load(Relaxed);
+        let total = COPY_NS[part].load(Relaxed);
+        let backend = BACKEND_NS[part].load(Relaxed);
+        crate::status::status!({
+            "name": READ_GROUPS[part].0, "calls": calls, "total_ns": total,
+            "backend_ns": backend, "mean_backend_ns": backend.checked_div(calls).unwrap_or(0),
+            "mean_other_ns": total.saturating_sub(backend).checked_div(calls).unwrap_or(0),
+        })
+    });
+    let sections = std::array::from_fn::<_, 2, _>(|section| {
+        let calls = ADVISOR_SECTION_CALLS[section].load(Relaxed);
+        let ns = ADVISOR_SECTION_NS[section].load(Relaxed);
+        crate::status::status!({
+            "roster": section, "calls": calls,
+            "complete_prepared": ADVISOR_SECTION_PLANNED[section].load(Relaxed),
+            "total_ns": ns, "mean_ns": ns.checked_div(calls).unwrap_or(0),
+        })
+    });
+    crate::status::status!({
         "scope": "cumulative active character acquisitions; backend is fresh prepared execution only; other includes discovery/continuation, trait acquisition and metadata restoration; overlapping jobs must not be summed as callback wall",
-        "parts": (0..PARTS).map(|part| {
-            let calls = COPY_CALLS[part].load(Relaxed);
-            let total = COPY_NS[part].load(Relaxed);
-            let backend = BACKEND_NS[part].load(Relaxed);
-            serde_json::json!({
-                "name": READ_GROUPS[part].0,
-                "calls": calls,
-                "total_ns": total,
-                "backend_ns": backend,
-                "mean_backend_ns": backend.checked_div(calls).unwrap_or(0),
-                "mean_other_ns": total.saturating_sub(backend).checked_div(calls).unwrap_or(0),
-            })
-        }).collect::<Vec<_>>(),
-        "advisor_sections": (0..2).map(|section| {
-            let calls = ADVISOR_SECTION_CALLS[section].load(Relaxed);
-            let ns = ADVISOR_SECTION_NS[section].load(Relaxed);
-            serde_json::json!({
-                "roster": section, "calls": calls,
-                "complete_prepared": ADVISOR_SECTION_PLANNED[section].load(Relaxed),
-                "total_ns": ns, "mean_ns": ns.checked_div(calls).unwrap_or(0),
-            })
-        }).collect::<Vec<_>>()
+        "parts": crate::status::sequence(parts.into_iter()),
+        "advisor_sections": crate::status::sequence(sections.into_iter()),
     })
 }
 
@@ -591,12 +589,28 @@ impl TemplateCache {
         let mut entries = Vec::new();
         let mut files = Vec::new();
         if let Some(rows) = rows {
-            let mut present: Vec<_> = rows
+            let mut present: Vec<&ccharacter::Row> = Vec::new();
+            if reserve_exact(&mut present, rows.len()).is_err() {
+                return;
+            }
+            present.extend(
+                rows.iter()
+                    .filter(|row| row.template != 0 && character_ranges_valid(row, bytes)),
+            );
+            // Preserve the original first occurrence when identities repeat.
+            present.sort_unstable_by_key(|row| (row.id, *row as *const ccharacter::Row as usize));
+            let Some(file_bytes) = present
                 .iter()
-                .filter(|row| row.template != 0 && character_ranges_valid(row, bytes))
-                .collect();
-            present.sort_by_key(|row| row.id);
-            entries.reserve_exact(present.len());
+                .try_fold(0usize, |sum, row| sum.checked_add(row.template_file_len))
+            else {
+                let _ = crate::allocation::oom();
+                return;
+            };
+            if reserve_exact(&mut entries, present.len()).is_err()
+                || reserve_exact(&mut files, file_bytes).is_err()
+            {
+                return;
+            }
             for group in present.chunk_by(|a, b| a.id == b.id) {
                 let row = group[0];
                 if group.iter().any(|other| other.template != row.template) {
@@ -1234,7 +1248,7 @@ pub(super) fn valid(bytes: &[u8], start: usize, len: usize) -> bool {
 
 /// Used only after `view` validates every range for this table.
 fn owned(bytes: &[u8], start: usize, len: usize) -> Vec<u8> {
-    bytes[start..start + len].to_vec()
+    owned_vec(copy_vec(&bytes[start..start + len]))
 }
 
 fn leader_reference(id: u32) -> u64 {
@@ -1517,10 +1531,9 @@ impl Captured {
         }
         let rows = &mut self.advisors.rows.rows;
         let bytes = &mut self.advisors.bytes.first;
-        rows.try_reserve(demand.rows.saturating_sub(rows.len()))
+        reserve(rows, demand.rows.saturating_sub(rows.len()))
             .map_err(|_| "advisor row allocation failed")?;
-        bytes
-            .try_reserve(demand.bytes.saturating_sub(bytes.len()))
+        reserve(bytes, demand.bytes.saturating_sub(bytes.len()))
             .map_err(|_| "advisor byte allocation failed")?;
         if demand.rows > rows.len() {
             rows.resize(demand.rows, cadvisor::Row::default());

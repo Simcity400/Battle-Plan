@@ -8,23 +8,29 @@ pub fn state_census(
     memory: &impl Memory,
     game_state: usize,
     output: &mut Vec<u32>,
-) -> Result<(), &'static str> {
+) -> std::io::Result<()> {
     output.clear();
     let root = address(game_state, cgame_state::STATES)
         .ok()
         .and_then(|at| Array::read(memory, at, 8))
         .filter(|array| array.count >= 2)
-        .ok_or("state array unreadable or invalid")?;
+        .ok_or(std::io::ErrorKind::InvalidData)?;
     let mut bytes = [0_u8; 512 * 8];
     let mut first = 1;
     while first < root.count {
         let count = ((root.count - first) as usize).min(512);
-        let start = root.element(first, 8).ok_or("state pointers unreadable")?;
+        let start = root
+            .element(first, 8)
+            .ok_or(std::io::ErrorKind::InvalidData)?;
         if !memory.copy(start, &mut bytes[..count * 8]) {
-            return Err("state pointers unreadable");
+            return Err(std::io::ErrorKind::InvalidData.into());
         }
         for index in 0..count {
             if u64_at(&bytes, index * 8) != 0 {
+                // Null slots do not contribute to the actual census count.
+                if output.len() == output.capacity() {
+                    crate::allocation::reserve(output, 1)?;
+                }
                 output.push(first + index as u32);
             }
         }

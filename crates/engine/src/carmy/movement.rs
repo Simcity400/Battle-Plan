@@ -12,14 +12,29 @@ pub struct MovementPacket {
     pub(super) result: MovementWalk,
 }
 impl MovementPacket {
-    pub fn new(unit_capacity: usize, path_capacity: usize) -> Self {
-        let paths = Vec::with_capacity(path_capacity);
-        let route_bytes = Vec::with_capacity(Self::route_byte_capacity(paths.capacity()));
-        Self {
-            units: Vec::with_capacity(unit_capacity),
+    pub fn try_new(unit_capacity: usize, path_capacity: usize) -> std::io::Result<Self> {
+        let paths = crate::allocation::vec(path_capacity)?;
+        let bytes = Self::route_byte_capacity(paths.capacity())?;
+        Ok(Self {
+            units: crate::allocation::vec(unit_capacity)?,
             paths,
-            combats: MovementCombats::new(unit_capacity),
-            route_bytes,
+            combats: MovementCombats::try_new(unit_capacity)?,
+            route_bytes: crate::allocation::vec(bytes)?,
+            result: Self::vacant().result,
+        })
+    }
+
+    #[cfg(test)]
+    pub fn new(unit_capacity: usize, path_capacity: usize) -> Self {
+        Self::try_new(unit_capacity, path_capacity).unwrap()
+    }
+
+    pub fn vacant() -> Self {
+        Self {
+            units: Vec::new(),
+            paths: Vec::new(),
+            combats: MovementCombats::default(),
+            route_bytes: Vec::new(),
             result: MovementWalk {
                 outcome: Outcome::Unavailable {
                     reason: "division movement not captured",
@@ -30,9 +45,10 @@ impl MovementPacket {
         }
     }
 
-    fn route_byte_capacity(path_capacity: usize) -> usize {
-        // Admission bounds a division's two routes by the whole path arena.
-        path_capacity * size_of::<u32>()
+    fn route_byte_capacity(path_capacity: usize) -> std::io::Result<usize> {
+        path_capacity
+            .checked_mul(size_of::<u32>())
+            .ok_or_else(crate::allocation::oom)
     }
 
     pub fn clear(&mut self) {
@@ -47,19 +63,15 @@ impl MovementPacket {
             required_paths: 0,
         };
     }
-    pub fn reserve(&mut self, unit_capacity: usize, path_capacity: usize) {
-        if self.units.capacity() < unit_capacity {
-            self.units.reserve_exact(unit_capacity - self.units.len());
-        }
-        if self.paths.capacity() < path_capacity {
-            self.paths.reserve_exact(path_capacity - self.paths.len());
-        }
-        self.combats.reserve(unit_capacity);
-        let route_bytes = Self::route_byte_capacity(self.paths.capacity());
-        if self.route_bytes.capacity() < route_bytes {
-            self.route_bytes
-                .reserve_exact(route_bytes - self.route_bytes.len());
-        }
+    pub fn reserve(&mut self, unit_capacity: usize, path_capacity: usize) -> std::io::Result<()> {
+        let units = unit_capacity.saturating_sub(self.units.len());
+        let paths = path_capacity.saturating_sub(self.paths.len());
+        crate::allocation::reserve_exact(&mut self.units, units)?;
+        crate::allocation::reserve_exact(&mut self.paths, paths)?;
+        self.combats.reserve(unit_capacity)?;
+        let bytes = Self::route_byte_capacity(self.paths.capacity())?;
+        let additional = bytes.saturating_sub(self.route_bytes.len());
+        crate::allocation::reserve_exact(&mut self.route_bytes, additional)
     }
     pub fn allocated_bytes(&self) -> usize {
         self.units.capacity() * std::mem::size_of::<MovementRow>()
@@ -86,7 +98,14 @@ pub(super) fn movement_route_prefixes(
     // Sized to the routes read: zeroing the whole staging buffer per division
     // would cost more than the copy. Stale bytes are
     // harmless because only a fully copied span is decoded.
-    let bytes = (path.len() + alternate_path.len()) * 4;
+    let bytes = path
+        .len()
+        .checked_add(alternate_path.len())
+        .and_then(|len| len.checked_mul(4))
+        .ok_or("movement route byte count overflow")?;
+    if bytes > staging.capacity() {
+        return Err("movement route staging capacity exhausted");
+    }
     if staging.len() < bytes {
         staging.resize(bytes, 0);
     }

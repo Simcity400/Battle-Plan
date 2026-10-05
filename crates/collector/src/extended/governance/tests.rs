@@ -2,6 +2,82 @@ use super::*;
 use engine::cnational_focus;
 
 #[test]
+fn breakdown_capture_keeps_the_original_push_capacity_trace() {
+    use engine::memory::SliceMemory;
+    const STATE: usize = 0x100;
+    const MANAGER: usize = 0x800;
+    const RECORDS: usize = 0x1000;
+    let mut bytes = vec![0_u8; RECORDS + 17 * power_balance_record::STRIDE];
+    bytes[STATE + engine::cgame_state::POWER_BALANCE_MANAGER
+        ..STATE + engine::cgame_state::POWER_BALANCE_MANAGER + 8]
+        .copy_from_slice(&(MANAGER as u64).to_le_bytes());
+    bytes[MANAGER + power_balance_manager::RECORDS..MANAGER + power_balance_manager::RECORDS + 8]
+        .copy_from_slice(&(RECORDS as u64).to_le_bytes());
+    for record in 0..17 {
+        // Empty cached accumulator at +0xC8, with an empty inline +0x48 label.
+        let capacity = RECORDS + record * power_balance_record::STRIDE + 0xc8 + 0x48 + 24;
+        bytes[capacity..capacity + 8].copy_from_slice(&15_u64.to_le_bytes());
+    }
+    let mut captured = Captured::vacant();
+    let mut previous = Vec::<rows::PowerBalanceModifierBreakdownRow>::new();
+    for count in [1_usize, 2, 5, 9, 2, 0, 17] {
+        let header = ((count as u64) << 32) | count as u64;
+        bytes[MANAGER + power_balance_manager::RECORDS + 8
+            ..MANAGER + power_balance_manager::RECORDS + 16]
+            .copy_from_slice(&header.to_le_bytes());
+        captured.breakdowns.clear();
+        captured.balances.outcome = Outcome::Rows { len: count };
+        captured.capture_breakdowns(
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            0,
+            STATE,
+        );
+        previous.clear();
+        for _ in 0..count {
+            previous.push(rows::PowerBalanceModifierBreakdownRow::default());
+        }
+        assert_eq!(captured.breakdown_outcome, Outcome::Rows { len: count });
+        assert_eq!(captured.breakdowns.capacity(), previous.capacity());
+        for (record, row) in captured.breakdowns.iter().enumerate() {
+            assert_eq!(row.record, record as u32);
+            assert!(row.sources.is_empty());
+            for nodes in [&row.daily, &row.weekly] {
+                assert_eq!(nodes.len(), 1);
+                assert_eq!((nodes[0].children, nodes[0].value), (0, 0));
+                assert!(nodes[0].name.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn incomplete_breakdown_tree_cannot_publish_a_default_row() {
+    let mut captured = Captured::vacant();
+    captured.breakdowns = vec![rows::PowerBalanceModifierBreakdownRow {
+        record: 7,
+        sources: Vec::new(),
+        daily: vec![rows::ModifierBreakdownNode {
+            children: 1,
+            value: 11,
+            name: b"missing child".to_vec(),
+        }],
+        weekly: vec![rows::ModifierBreakdownNode {
+            children: 0,
+            value: 21,
+            name: b"weekly root".to_vec(),
+        }],
+    }];
+    captured.breakdown_outcome = Outcome::Rows { len: 1 };
+    assert!(
+        matches!(captured.breakdowns_table(), TableView::Unavailable { reason }
+        if reason == "power balance modifier breakdown copy failed")
+    );
+}
+
+#[test]
 fn party_leader_role_identity_survives_capture_at_country_scale() {
     use engine::{ccharacter, ccountry, ccountry_leader, cideology_group, memory::SliceMemory};
     let mut bytes = vec![0_u8; 0x3000];

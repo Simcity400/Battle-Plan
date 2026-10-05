@@ -2,6 +2,27 @@ use super::*;
 use crate::memory::SliceMemory;
 use std::cell::{Cell, RefCell};
 
+#[test]
+fn checked_snapshot_growth_reports_oom_and_preserves_previous_storage() {
+    let capacity = SnapshotCapacity {
+        nodes: 1,
+        entries: 1,
+    };
+    let mut arena = SnapshotArena::try_new(capacity).unwrap();
+    let error = arena
+        .try_grow(SnapshotCapacity {
+            nodes: usize::MAX,
+            entries: 1,
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::OutOfMemory);
+    assert_eq!(arena.capacity(), capacity);
+    assert_eq!(
+        SnapshotArena::vacant().capacity(),
+        SnapshotCapacity::default()
+    );
+}
+
 struct SnapshotMemory {
     bytes: RefCell<Vec<u8>>,
     calls: Cell<usize>,

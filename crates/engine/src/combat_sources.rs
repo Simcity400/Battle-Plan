@@ -28,6 +28,7 @@ use crate::{
 use std::{
     collections::HashMap,
     hash::{BuildHasherDefault, Hash, Hasher},
+    io,
 };
 
 #[cfg(test)]
@@ -163,13 +164,14 @@ impl Sources {
     ) -> Result<T, &'static str> {
         const { assert!(size_of::<T>() <= 8) };
         let address = pointer.checked_add(offset).ok_or(reason)?;
-        let bytes = *self
-            .fields
-            .entry((address, size_of::<T>()))
-            .or_insert_with(|| {
-                let mut bytes = [0; 8];
-                crate::read_slice(memory, address, &mut bytes[..size_of::<T>()]).then_some(bytes)
-            });
+        let key = (address, size_of::<T>());
+        if self.fields.len() == self.fields.capacity() && !self.fields.contains_key(&key) {
+            crate::allocation::reserve_map(&mut self.fields, 1).map_err(|_| "allocation failed")?;
+        }
+        let bytes = *self.fields.entry(key).or_insert_with(|| {
+            let mut bytes = [0; 8];
+            crate::read_slice(memory, address, &mut bytes[..size_of::<T>()]).then_some(bytes)
+        });
         let bytes = bytes.ok_or(reason)?;
         read(
             &crate::memory::SliceMemory {
@@ -209,6 +211,9 @@ pub(crate) fn share<K: Hash + Eq, V>(
     key: K,
     compute: impl FnOnce() -> Result<V, &'static str>,
 ) -> Result<&V, &'static str> {
+    if map.len() == map.capacity() && !map.contains_key(&key) {
+        crate::allocation::reserve_map(map, 1).map_err(|_| "allocation failed")?;
+    }
     match map.entry(key).or_insert_with(compute) {
         Ok(value) => Ok(value),
         Err(reason) => Err(*reason),
@@ -296,12 +301,29 @@ impl Images {
     }
 
     /// Gathers the images of `armies` (the census's authenticated pointers).
-    pub fn capture(&mut self, memory: &impl Memory, armies: &[usize]) {
+    pub fn capture(&mut self, memory: &impl Memory, armies: &[usize]) -> io::Result<()> {
         let count = armies.len();
         self.armies.clear();
+        self.stats.clear();
+        crate::allocation::reserve(&mut self.armies, count)?;
+        crate::allocation::reserve_push_batch(&mut self.stats, count)?;
+        crate::allocation::resize(
+            &mut self.army_bytes,
+            count
+                .checked_mul(ARMY_STRIDE)
+                .ok_or_else(crate::allocation::oom)?,
+            0,
+        )?;
+        crate::allocation::resize(&mut self.army_complete, count, false)?;
+        crate::allocation::resize(
+            &mut self.stat_bytes,
+            count
+                .checked_mul(STAT_STRIDE)
+                .ok_or_else(crate::allocation::oom)?,
+            0,
+        )?;
+        crate::allocation::resize(&mut self.stat_complete, count, false)?;
         self.armies.extend_from_slice(armies);
-        self.army_bytes.resize(count * ARMY_STRIDE, 0);
-        self.army_complete.resize(count, false);
         gather(
             memory,
             &self.armies,
@@ -309,7 +331,6 @@ impl Images {
             &mut self.army_bytes,
             &mut self.army_complete,
         );
-        self.stats.clear();
         for row in 0..count {
             let at = row * ARMY_STRIDE + STAT_POINTER;
             self.stats.push(if self.army_complete[row] {
@@ -318,8 +339,6 @@ impl Images {
                 0
             });
         }
-        self.stat_bytes.resize(count * STAT_STRIDE, 0);
-        self.stat_complete.resize(count, false);
         gather(
             memory,
             &self.stats,
@@ -327,6 +346,7 @@ impl Images {
             &mut self.stat_bytes,
             &mut self.stat_complete,
         );
+        Ok(())
     }
 
     /// The memory `army`'s readers read through: its image when `row` holds

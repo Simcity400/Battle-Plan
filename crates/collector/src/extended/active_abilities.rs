@@ -99,13 +99,19 @@ mod tests {
         let mut captured = Captured::with_capacities(&Capacities { rows: 2, bytes: 16 });
         captured.buffer.rows.rows[0].token_len = 1;
         captured.buffer.rows.outcome = Outcome::Rows { len: 1 };
-        assert!(matches!(captured.tables()[0], TableView::Unavailable { .. }));
+        assert!(matches!(
+            captured.tables()[0],
+            TableView::Unavailable { .. }
+        ));
         captured.buffer.bytes.len = 1;
         captured.buffer.bytes.required = 1;
         captured.buffer.bytes.first[0] = 0xff;
         captured.buffer.rows.rows[1] = captured.buffer.rows.rows[0];
         captured.buffer.rows.outcome = Outcome::Rows { len: 2 };
-        assert!(matches!(captured.tables()[0], TableView::Unavailable { .. }));
+        assert!(matches!(
+            captured.tables()[0],
+            TableView::Unavailable { .. }
+        ));
         captured.buffer.rows.outcome = Outcome::Rows { len: 1 };
         let [TableView::Complete(TableRows::ActiveAbilities(rows))] = captured.tables() else {
             panic!("complete ability table");
@@ -156,9 +162,17 @@ mod tests {
         );
         for slot in 1..=countries {
             let country = COUNTRY0 + (slot as usize - 1) * STRIDE;
-            put(&mut bytes, CTAB + slot as usize * 8, &(country as u64).to_le_bytes());
+            put(
+                &mut bytes,
+                CTAB + slot as usize * 8,
+                &(country as u64).to_le_bytes(),
+            );
             put(&mut bytes, LTAB + slot as usize * 4, &slot.to_le_bytes());
-            put(&mut bytes, country, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+            put(
+                &mut bytes,
+                country,
+                &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+            );
             put(&mut bytes, country + ccountry::ID, &slot.to_le_bytes());
             if slot % active_every == 0 {
                 let record = RECORDS + (slot as usize - 1) * active_ability_record::STRIDE;
@@ -170,10 +184,22 @@ mod tests {
                 );
             }
         }
-        put(&mut bytes, DEFINITION, &(cability::VTABLE_RVA as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            DEFINITION,
+            &(cability::VTABLE_RVA as u64).to_le_bytes(),
+        );
         put(&mut bytes, DEFINITION + cability::TOKEN, b"ability");
-        put(&mut bytes, DEFINITION + cability::TOKEN_LENGTH, &7_u64.to_le_bytes());
-        put(&mut bytes, DEFINITION + cability::TOKEN_CAPACITY, &15_u64.to_le_bytes());
+        put(
+            &mut bytes,
+            DEFINITION + cability::TOKEN_LENGTH,
+            &7_u64.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            DEFINITION + cability::TOKEN_CAPACITY,
+            &15_u64.to_le_bytes(),
+        );
         bytes
     }
 
@@ -201,16 +227,13 @@ mod tests {
                 bytes: &bytes,
             };
             // Sized for every census read, as the collector sizes it from the live registry.
-            let mut storage = std::sync::Arc::new(engine::country_memory::Cache::with_capacity(
-                (countries as usize + 1) * 16,
-            ));
-            let cache = engine::country_memory::Cache::prepare_shared(
-                &mut storage,
-                &memory,
-                0,
-                GAME_STATE,
-            )
-            .unwrap();
+            let mut storage = std::sync::Arc::new(
+                engine::country_memory::Cache::try_with_capacity((countries as usize + 1) * 16)
+                    .unwrap(),
+            );
+            let cache =
+                engine::country_memory::Cache::prepare_shared(&mut storage, &memory, 0, GAME_STATE)
+                    .unwrap();
             assert!(
                 cache
                     .roster_view(&memory)

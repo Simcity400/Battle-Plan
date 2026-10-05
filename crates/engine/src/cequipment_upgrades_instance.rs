@@ -114,8 +114,7 @@ pub fn walk(
                         .checked_add(entry_copied)
                         .ok_or("upgrade row count overflow")?;
                     if required > output.len() {
-                        output
-                            .try_reserve(required - output.len())
+                        crate::allocation::reserve(output, required - output.len())
                             .map_err(|_| "upgrade row allocation failed")?;
                         output.resize(required, Row::default());
                     }

@@ -1,5 +1,16 @@
 use super::*;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
+
+// Tests retaining payloads exercise decoding directly and publish only after
+// that successful walk; production also gates after payload recycling.
+fn process_test_job(shared: &Shared, job: &mut DecodeJob, memo: &mut AirBasesMemo) {
+    process_job(shared, job, memo);
+    if !crate::allocation::failed() {
+        shared.ready.push(job.index).unwrap();
+        shared.completed[job.index].store(job.game_elapsed.max(1), Ordering::Release);
+    }
+}
 
 /// Calibration globals are shared across tests in this binary; the tests
 /// below that reset or advance them hold this lock so assertions stay
@@ -352,7 +363,6 @@ fn fifo_absent_daily_payloads_preserve_skipped_outcomes_and_idle_pools() {
 #[test]
 fn lazy_world_request_acquires_only_scheduled_parts_and_retires_them_once() {
     use crate::read_accounting;
-    use std::sync::Arc;
 
     let _guard = TEST_LOCK.lock().unwrap();
     reset_calibration_for_test();
@@ -367,7 +377,7 @@ fn lazy_world_request_acquires_only_scheduled_parts_and_retires_them_once() {
     let idle = pool_lengths();
     assert!(idle.iter().all(|&len| len > 0));
     let retired = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
-    let countries = Arc::new(engine::country_memory::Cache::with_capacity(16));
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(16).unwrap());
     let shared = Shared::new(0, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
     for (hour, force_full, parts, economy) in [
@@ -702,9 +712,10 @@ fn fifo_hands_off_every_frame_in_production_order_without_reorder() {
         shared.decode_queue.push(job).unwrap();
     }
     let mut handed = Vec::new();
-    while let Some(mut job) = shared.decode_queue.pop() {
-        process_job(&shared, &mut job, &mut AirBasesMemo::default());
-        handed.push(job.index);
+    while let Some(job) = shared.decode_queue.pop() {
+        let index = job.index;
+        process_owned_job(&shared, job, &mut AirBasesMemo::default());
+        handed.push(index);
     }
     assert_eq!(handed, indices);
     for index in indices {
@@ -897,7 +908,7 @@ fn worker_decodes_a_relations_refresh_payload_into_the_same_typed_rows() {
         weather_payload: None,
         capitulation_payload: None,
     };
-    process_job(&shared, &mut job, &mut AirBasesMemo::default());
+    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 17);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -1048,7 +1059,7 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
         weather_payload: None,
         capitulation_payload: None,
     };
-    process_job(&shared, &mut job, &mut AirBasesMemo::default());
+    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 19);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -1278,7 +1289,7 @@ fn worker_decodes_a_projects_refresh_payload_into_the_same_typed_rows() {
         weather_payload: None,
         capitulation_payload: None,
     };
-    process_job(&shared, &mut job, &mut AirBasesMemo::default());
+    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 23);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -1361,7 +1372,7 @@ fn worker_decodes_a_lexical_refresh_payload_into_the_same_typed_rows() {
         weather_payload: None,
         capitulation_payload: None,
     };
-    process_job(&shared, &mut job, &mut AirBasesMemo::default());
+    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 29);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -1438,7 +1449,7 @@ fn worker_preserves_already_typed_wars_rows() {
         weather_payload: None,
         capitulation_payload: None,
     };
-    process_job(&shared, &mut job, &mut AirBasesMemo::default());
+    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 43);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -1526,7 +1537,7 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
         weather_payload: None,
         capitulation_payload: None,
     };
-    process_job(&shared, &mut job, &mut AirBasesMemo::default());
+    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 47);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -1670,10 +1681,7 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
         memory::{CountedMemory, ReadCounts},
         walk::Outcome,
     };
-    use std::{
-        cell::{Cell, RefCell},
-        sync::Arc,
-    };
+    use std::cell::{Cell, RefCell};
 
     struct NoRead;
     impl Memory for NoRead {
@@ -2112,7 +2120,7 @@ fn worker_decodes_a_focus_payload_into_the_same_typed_rows() {
         weather_payload: None,
         capitulation_payload: None,
     };
-    process_job(&shared, &mut job, &mut AirBasesMemo::default());
+    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 23);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -2199,7 +2207,7 @@ fn worker_decodes_a_wing_pack_payload_into_the_same_typed_rows() {
         air_wing_payload: Some(first),
         air_stats_payload: None,
     };
-    process_job(&shared, &mut job, &mut AirBasesMemo::default());
+    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 31);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -2282,7 +2290,7 @@ fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
         weather_payload: None,
         capitulation_payload: None,
     };
-    process_job(&shared, &mut job, &mut AirBasesMemo::default());
+    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 59);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -2387,7 +2395,7 @@ fn worker_decodes_a_naval_pack_payload_into_the_same_typed_rows() {
         weather_payload: None,
         capitulation_payload: None,
     };
-    process_job(&shared, &mut job, &mut AirBasesMemo::default());
+    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 37);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -2550,7 +2558,7 @@ fn worker_decodes_a_production_rest_payload_into_the_same_typed_rows() {
         weather_payload: None,
         capitulation_payload: None,
     };
-    process_job(&shared, &mut job, &mut AirBasesMemo::default());
+    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 31);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -2645,7 +2653,7 @@ fn worker_decodes_a_construction_rest_payload_into_the_same_typed_rows() {
         weather_payload: None,
         capitulation_payload: None,
     };
-    process_job(&shared, &mut job, &mut AirBasesMemo::default());
+    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 37);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -2795,7 +2803,7 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
         weather_payload: None,
         capitulation_payload: None,
     };
-    process_job(&shared, &mut job, &mut AirBasesMemo::default());
+    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 53);
     // Both families' rows install identically in the one frame.
@@ -2956,7 +2964,7 @@ fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() 
         } else if !job.air_stats_refresh {
             captured.fail_air_stats_capture(replay::cadence::SKIPPED_REASON);
         }
-        process_job(&shared, &mut job, &mut bases_memo);
+        process_test_job(&shared, &mut job, &mut bases_memo);
         assert_eq!(shared.ready.pop(), Some(index));
         assert_eq!(shared.completed[index].load(Ordering::Acquire), 41);
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -3018,7 +3026,7 @@ fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_change
             frame.extended.radar_pilot().registrations_raw_mode = true;
             job.air_bases_payload = Some(payload);
         }
-        process_job(&shared, &mut job, &mut memo);
+        process_test_job(&shared, &mut job, &mut memo);
         assert_eq!(shared.ready.pop(), Some(index));
         assert_eq!(shared.completed[index].load(Ordering::Acquire), 41);
         assert_eq!(
@@ -3080,7 +3088,7 @@ fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
     let mut job = bare_job(index, next_seq(), 7, 41);
     job.air_bases_refresh = true;
     job.air_bases_payload = Some(first);
-    process_job(&shared, &mut job, &mut AirBasesMemo::default());
+    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 41);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -3140,7 +3148,7 @@ fn worker_decodes_a_shared_history_payload_into_the_same_typed_rows() {
     let mut job = bare_job(index, next_seq(), 7, 43);
     job.air_history_refresh = true;
     job.air_history_payload = Some(first);
-    process_job(&shared, &mut job, &mut AirBasesMemo::default());
+    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 43);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -3189,7 +3197,7 @@ fn worker_decodes_a_supremacy_payload_into_the_same_typed_rows() {
     let mut job = bare_job(index, next_seq(), 7, 53);
     job.supremacy_refresh = true;
     job.supremacy_payload = Some(first);
-    process_job(&shared, &mut job, &mut AirBasesMemo::default());
+    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 53);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -3232,7 +3240,7 @@ fn worker_decodes_a_sunk_payload_into_the_same_typed_rows() {
     let mut job = bare_job(index, next_seq(), 7, 59);
     job.sunk_refresh = true;
     job.sunk_payload = Some(first);
-    process_job(&shared, &mut job, &mut AirBasesMemo::default());
+    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 59);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -3280,7 +3288,7 @@ fn worker_decodes_a_radar_payload_into_the_same_typed_rows() {
     let mut job = bare_job(index, next_seq(), 7, 61);
     job.radar_refresh = true;
     job.radar_payload = Some(first);
-    process_job(&shared, &mut job, &mut AirBasesMemo::default());
+    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 61);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -3319,7 +3327,7 @@ fn worker_decodes_an_intel_payload_into_the_same_typed_rows() {
     let mut job = bare_job(index, next_seq(), 7, 67);
     job.intel_refresh = true;
     job.intel_payload = Some(first);
-    process_job(&shared, &mut job, &mut AirBasesMemo::default());
+    process_test_job(&shared, &mut job, &mut AirBasesMemo::default());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 67);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };

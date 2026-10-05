@@ -163,7 +163,7 @@ mod tests {
     }
 
     fn snapshot(bytes: &[u8], cells: usize) -> Arc<Cache> {
-        let mut cache = Arc::new(Cache::with_capacity(cells));
+        let mut cache = Arc::new(Cache::try_with_capacity(cells).unwrap());
         Cache::prepare_shared(&mut cache, &SliceMemory { base: 0, bytes }, 0, STATE).unwrap()
     }
 
@@ -215,7 +215,7 @@ mod tests {
                 let mut traced = Traced::new(&bytes);
                 traced.fault = fault;
                 let memory = CountedMemory::new(traced);
-                let mut storage = Arc::new(Cache::with_capacity(cells));
+                let mut storage = Arc::new(Cache::try_with_capacity(cells).unwrap());
                 let snapshot = read_accounting::with_table(TableId::Countries, || {
                     Cache::prepare_shared(&mut storage, &memory, 0, STATE).unwrap()
                 });
@@ -233,7 +233,7 @@ mod tests {
 
                 let mut original = Traced::new(&bytes);
                 original.fault = fault;
-                let mut original_storage = Arc::new(Cache::with_capacity(cells));
+                let mut original_storage = Arc::new(Cache::try_with_capacity(cells).unwrap());
                 let original_snapshot =
                     Cache::prepare_shared(&mut original_storage, &original, 0, STATE).unwrap();
                 let cached = original_snapshot.view(&original);

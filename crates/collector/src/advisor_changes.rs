@@ -168,14 +168,16 @@ pub fn record(counts: Counts) {
         POISONED.store(true, Ordering::SeqCst);
     }
 }
-pub fn status() -> serde_json::Value {
+pub fn status() -> impl serde::Serialize {
     let counts = COUNTS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    let events: serde_json::Map<String, serde_json::Value> = MUTATIONS
-        .iter()
-        .zip(&EVENTS)
-        .map(|(site, count)| (site.name.to_owned(), count.load(Ordering::Relaxed).into()))
-        .collect();
-    serde_json::json!({ "configured": cfg!(feature = "advisor_changes"), "verify": cfg!(feature = "advisor_verify"),
+    let event_counts = EVENTS.each_ref().map(|value| value.load(Ordering::Relaxed));
+    let events = crate::status::map(
+        MUTATIONS
+            .iter()
+            .zip(event_counts)
+            .map(|(site, count)| (site.name, count)),
+    );
+    crate::status::status!({ "configured": cfg!(feature = "advisor_changes"), "verify": cfg!(feature = "advisor_verify"),
         "poisoned": POISONED.load(Ordering::SeqCst), "reused_characters": counts[0], "read_characters": counts[1],
         "reused_roles": counts[2], "verified_characters": counts[3], "mismatches": counts[4], "planned_sections": counts[5], "events": events,
         "notification_ticks": NOTIFICATION_TICKS.load(Ordering::Relaxed),
@@ -186,7 +188,7 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, String> {
+    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "advisor_changes") {
             let callbacks = [
@@ -204,32 +206,33 @@ impl Hooks {
             ];
             for (index, site) in MUTATIONS.iter().enumerate() {
                 if engine::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
-                    return Err(format!("advisor {} sentinel differs", site.name));
+                    return Err("advisor hook sentinel differs");
                 }
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }?;
+                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+                    .map_err(|_| "native hook construction failed")?;
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }
         }
         Ok(Self { hooks })
     }
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
             ENABLED.store(false, Ordering::SeqCst);
         }
         for hook in &mut self.hooks {
-            if !hook.set_enabled(enabled)? {
+            if !hook
+                .set_enabled(enabled)
+                .map_err(|_| "native hook state change failed")?
+            {
                 return Ok(false);
             }
         }
         ENABLED.store(enabled && !self.hooks.is_empty(), Ordering::SeqCst);
         Ok(true)
     }
-    pub fn executable_ranges(&self) -> Vec<Range<usize>> {
-        self.hooks
-            .iter()
-            .flat_map(Hook::executable_ranges)
-            .collect()
+    pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
+        self.hooks.iter().flat_map(Hook::executable_ranges)
     }
 }
 

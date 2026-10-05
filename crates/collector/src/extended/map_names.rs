@@ -4,6 +4,7 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
+use engine::allocation::{copy_vec, owned_vec};
 use engine::{Memory, cprovince, walk::Outcome};
 use replay::{
     frame::TableView,
@@ -35,7 +36,8 @@ pub struct Captured {
 }
 impl Captured {
     pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
-        self.names.fail(super::failed_capture(TABLES[0], hour, force_full, reason));
+        self.names
+            .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
     }
 
     /// Allocation-free placeholder while a worker owns the capture buffers.
@@ -113,7 +115,7 @@ impl Captured {
             &self.names.rows,
             |r| ProvinceNameRow {
                 province: r.province,
-                name: text(r).unwrap().to_vec(),
+                name: owned_vec(copy_vec(text(r).unwrap())),
             },
         )]
     }
@@ -127,7 +129,13 @@ mod tests {
     fn failed_job_hides_partial_names_without_losing_row_or_arena_growth() {
         for (outcome, required) in [
             (Outcome::Rows { len: 6 }, 6),
-            (Outcome::Truncated { len: 2, unread_rows: 19 }, 19),
+            (
+                Outcome::Truncated {
+                    len: 2,
+                    unread_rows: 19,
+                },
+                19,
+            ),
         ] {
             let mut actual_capacity = Capacities { rows: 8, bytes: 8 };
             let mut expected_capacity = actual_capacity;

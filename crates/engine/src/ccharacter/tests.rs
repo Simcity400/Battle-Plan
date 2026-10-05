@@ -1044,7 +1044,7 @@ fn portrait_census_and_walk_have_no_fixed_character_limit() {
         "a short census is never published"
     );
     assert!(census.needs_growth());
-    census.grow();
+    census.grow().unwrap();
     assert!(!census.needs_growth());
     fill(&mut census);
     let rows = census.rows(0, GS).expect("grown census is complete");
@@ -1234,7 +1234,7 @@ fn observed_portraits_reuse_only_certified_entries_and_verify_missed_writes() {
     bytes[0x1808] = 1;
     // Empty, valid inline descriptor.
     u64_at(&mut bytes, 0x1800 + 0x10 + msvc_string::CAPACITY, 15);
-    let mut cache = Cache::new(2);
+    let mut cache = Cache::new(2).unwrap();
     let mut rows = [PortraitRow::default(); 2];
     let mut entries = [crate::character_portrait_entry::Row::default(); 2];
     let capture = |source: &TracedMemory<'_>,

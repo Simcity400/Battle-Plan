@@ -10,6 +10,7 @@ use crate::{
     spooling::unavailable,
     table_capture::{Arena, CaptureRows, grow_capacity},
 };
+use engine::allocation::{copy_vec, owned_vec};
 use engine::{
     Memory, carmy, carmy::DivisionSeed, ccountry, corders_group_member::MembershipCapacity,
     cprovince, walk::Outcome,
@@ -72,8 +73,9 @@ impl Default for Capacities {
     }
 }
 fn status_packet(c: &Capacities) -> carmy::StatusPacket {
-    let mut packet = carmy::StatusPacket::new(c.status);
-    packet.grow(c.status, c.membership);
+    let mut packet =
+        carmy::StatusPacket::new(c.status).unwrap_or_else(|_| carmy::StatusPacket::vacant());
+    let _ = packet.grow(c.status, c.membership);
     packet
 }
 
@@ -102,11 +104,8 @@ impl Captured {
             bans: CaptureRows::new(0),
             bans_selection: SliceSelection::new(false),
             paths: Arena::new(0),
-            movement_packet: carmy::MovementPacket::new(0, 0),
-            geometry: cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
-                provinces: 0,
-                neighbour_entries: 0,
-            }),
+            movement_packet: carmy::MovementPacket::vacant(),
+            geometry: cprovince::GeometryPacket::vacant(),
             status_packet: carmy::StatusPacket::vacant(),
             membership: MembershipCapacity::default(),
             source_capacity: 0,
@@ -122,8 +121,10 @@ impl Captured {
             bans: CaptureRows::new(c.bans),
             bans_selection: SliceSelection::new(true),
             paths: Arena::new(c.paths),
-            movement_packet: carmy::MovementPacket::new(c.movement, c.paths),
-            geometry: cprovince::GeometryPacket::with_capacities(c.geometry),
+            movement_packet: carmy::MovementPacket::try_new(c.movement, c.paths)
+                .unwrap_or_else(|_| carmy::MovementPacket::vacant()),
+            geometry: cprovince::GeometryPacket::try_with_capacities(c.geometry)
+                .unwrap_or_default(),
             status_packet: status_packet(c),
             membership: c.membership,
             source_capacity: c.movement.max(c.status),
@@ -171,8 +172,8 @@ impl Captured {
             &mut c.geometry.neighbour_entries,
             geometry_required.neighbour_entries,
         );
-        self.geometry.grow(c.geometry);
-        self.movement_packet.reserve(c.movement, c.paths);
+        let _ = self.geometry.grow(c.geometry);
+        let _ = self.movement_packet.reserve(c.movement, c.paths);
         self.reserve_sources(
             self.source_capacity
                 .max(self.source_required)
@@ -184,9 +185,11 @@ impl Captured {
     /// Prepare primary packet storage for the complete shared source census.
     pub(crate) fn reserve_sources(&mut self, capacity: usize) {
         self.source_capacity = self.source_capacity.max(capacity);
-        self.movement_packet
+        let _ = self
+            .movement_packet
             .reserve(self.source_capacity, self.paths.first.len());
-        self.status_packet
+        let _ = self
+            .status_packet
             .grow(self.source_capacity, self.membership);
     }
 
@@ -365,7 +368,11 @@ impl Captured {
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {
-        [self.movement.outcome, self.status.outcome, self.bans.outcome]
+        [
+            self.movement.outcome,
+            self.status.outcome,
+            self.bans.outcome,
+        ]
     }
 
     pub(crate) fn table_inputs(
@@ -421,14 +428,14 @@ impl Captured {
                 strength_factor: r.strength_factor,
                 model_number: r.model_number,
                 acclimatization_maximum: r.acclimatization_maximum,
-                acclimatization: acclimatization(r)
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|entry| DivisionAcclimatization {
-                        category: entry.category,
-                        weight: entry.weight,
-                    })
-                    .collect(),
+                acclimatization: owned_vec(engine::allocation::collect_vec(
+                    acclimatization(r).unwrap_or_default().iter().map(|entry| {
+                        DivisionAcclimatization {
+                            category: entry.category,
+                            weight: entry.weight,
+                        }
+                    }),
+                )),
                 move_flags: r.move_flags,
             },
         );
@@ -443,7 +450,11 @@ impl Captured {
                     || span(r.alternate_start, r.alternate_len).is_none()
             })
         }) {
-            return [unavailable("movement path spans invalid").into(), status, bans];
+            return [
+                unavailable("movement path spans invalid").into(),
+                status,
+                bans,
+            ];
         }
         [
             project_table::<tables::DivisionMovement, _>(
@@ -479,12 +490,14 @@ impl Captured {
                     naval_transfer: r.naval_transfer,
                     combat_count: r.combat_count,
                     path_total: r.path_total,
-                    path: span(r.path_start, r.path_len).unwrap().to_vec(),
+                    path: owned_vec(copy_vec(span(r.path_start, r.path_len).unwrap())),
                     combat_role: r.combat_role,
                     combat_province: r.combat_province,
                     map_entity: r.map_entity,
                     alternate_total: r.alternate_total,
-                    alternate_path: span(r.alternate_start, r.alternate_len).unwrap().to_vec(),
+                    alternate_path: owned_vec(copy_vec(
+                        span(r.alternate_start, r.alternate_len).unwrap(),
+                    )),
                 },
             ),
             status,
@@ -783,7 +796,10 @@ mod tests {
                 .iter()
                 .all(|input| matches!(input, TableInput::ComparedEqual(_)))
         );
-        assert!(matches!(bans, TableInput::Sampled(TableView::Unavailable { .. })));
+        assert!(matches!(
+            bans,
+            TableInput::Sampled(TableView::Unavailable { .. })
+        ));
         // A path-only mutation and an independently changing status must both
         // defeat reuse, without changing their keys or arena spans.
         capture.paths.first[3] ^= 1;

@@ -411,7 +411,9 @@ fn portrait_census_is_fresh_complete_and_never_reuses_a_failed_lease() {
         log.initialize_scattered_read_plan(8192, 8192, 65536);
         CharactersJob {
             log,
-            portrait_census: Some(Arc::new(ccharacter_manager::PortraitCensus::new(8))),
+            portrait_census: Some(Arc::new(
+                ccharacter_manager::PortraitCensus::try_new(8).unwrap(),
+            )),
             ..Default::default()
         }
     };
@@ -526,7 +528,9 @@ fn portrait_census_is_fresh_complete_and_never_reuses_a_failed_lease() {
         assert!(job.portrait_census().is_none(), "fault {blocked:x}");
     }
     let mut job = make();
-    job.portrait_census = Some(Arc::new(ccharacter_manager::PortraitCensus::new(2)));
+    job.portrait_census = Some(Arc::new(
+        ccharacter_manager::PortraitCensus::try_new(2).unwrap(),
+    ));
     copy_characters_refresh(&kit::memory(&baseline), ctx, &mut job);
     assert!(
         job.portrait_census().is_none(),
@@ -681,6 +685,33 @@ fn hourly_plan_reads_fresh_values_and_preserves_every_fault_without_retry() {
         assert!(planned.log.logs_equal(&expected.log));
         kit::assert_matches_direct(&captured(&planned), &captured(&expected));
     }
+}
+
+#[test]
+fn template_cache_keeps_the_first_duplicate_occurrence() {
+    let mut rows = [ccharacter::Row::default(); 64];
+    let bytes = std::array::from_fn::<_, 64, _>(|index| index as u8);
+    for (index, row) in rows.iter_mut().enumerate() {
+        row.id = ((index * 5) % 8) as u32;
+        row.template = row.id as usize + 1;
+        row.template_identity.line = index as i32;
+        row.template_file_start = index;
+        row.template_file_len = 1;
+    }
+    let mut cache = TemplateCache::default();
+    cache.rebuild(Outcome::Rows { len: rows.len() }, &rows, &bytes);
+    for id in 0..8 {
+        let first = rows.iter().find(|row| row.id == id).unwrap();
+        let known = cache.known(id, first.template).unwrap();
+        assert_eq!(known.identity, first.template_identity);
+        assert_eq!(
+            known.file,
+            &bytes[first.template_file_start..first.template_file_start + 1]
+        );
+    }
+    rows[8].template += 1;
+    cache.rebuild(Outcome::Rows { len: rows.len() }, &rows, &bytes);
+    assert!(cache.known(rows[8].id, rows[8].id as usize + 1).is_none());
 }
 
 /// A character's template identity is read once per template pointer:

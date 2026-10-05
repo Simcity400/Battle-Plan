@@ -210,8 +210,14 @@ fn actual_events_every_country_fail_closed_and_detach() {
             assert_eq!(row.country, country as u32);
         }
     }
-    assert_eq!(status()["hourly_peak_events"].as_u64(), Some(5000));
-    assert_eq!(status()["hourly_peak_capacity"].as_u64(), Some(5000));
+    assert_eq!(
+        serde_json::to_value(status()).unwrap()["hourly_peak_events"].as_u64(),
+        Some(5000)
+    );
+    assert_eq!(
+        serde_json::to_value(status()).unwrap()["hourly_peak_capacity"].as_u64(),
+        Some(5000)
+    );
     // Full-pool path preserves multiple exact designs, including rounding.
     world.amount(0, 450001);
     world.amount(1, 300000);
@@ -330,7 +336,10 @@ fn failed_prepare_observations_skip_growth_without_losing_the_branch() {
         usize::MAX,
     );
     assert_eq!(PREPARE_FAILURES.load(Ordering::Relaxed), failures + 2);
-    assert_eq!(status()["prepare_failures"].as_u64(), Some(failures + 2));
+    assert_eq!(
+        serde_json::to_value(status()).unwrap()["prepare_failures"].as_u64(),
+        Some(failures + 2)
+    );
     assert_eq!(LOST.load(Ordering::Relaxed), lost);
     assert_eq!(capacity(), initial_capacity);
     assert_eq!(DESIGNS.load(Ordering::Acquire), initial_designs);
@@ -430,8 +439,14 @@ fn enabled_land_shim_passes_caller_pc_and_records_stable_causes() {
             rows[0].variant,
             (0xf000u64 << 32) | variant::REFERENCE_TYPE as u64
         );
-        assert_eq!(status()["hourly_peak_events"].as_u64(), Some(1));
-        assert_eq!(status()["hourly_peak_capacity"].as_u64(), Some(8));
+        assert_eq!(
+            serde_json::to_value(status()).unwrap()["hourly_peak_events"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            serde_json::to_value(status()).unwrap()["hourly_peak_capacity"].as_u64(),
+            Some(8)
+        );
     }
     ENABLED.store(false, Ordering::SeqCst);
     BASE.store(0, Ordering::Relaxed);

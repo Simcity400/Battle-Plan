@@ -1,4 +1,5 @@
 use super::*;
+use engine::allocation::{default_vec, owned_vec};
 
 // ===========================================================================
 // Scheduled Focus and CompletedFocuses owned native acquisition.
@@ -29,9 +30,9 @@ impl FocusJob {
     pub fn new() -> Self {
         let capacities = Capacities::default();
         let mut job = Self {
-            rows: vec![Default::default(); capacities.rows[0]],
-            completed: vec![Default::default(); capacities.rows[1]],
-            bytes: vec![0; capacities.focus_text],
+            rows: owned_vec(default_vec(capacities.rows[0])),
+            completed: owned_vec(default_vec(capacities.rows[1])),
+            bytes: owned_vec(default_vec(capacities.focus_text)),
             row_grants: [capacities.rows[0], capacities.rows[1]],
             byte_grant: capacities.focus_text,
             provisioned: true,

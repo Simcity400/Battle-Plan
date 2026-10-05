@@ -6,6 +6,7 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows, grow_capacity},
 };
+use engine::allocation::{copy_vec, owned_vec};
 use engine::{Memory, raid_target_statuses as native, walk::Outcome};
 use replay::{
     cadence::{SKIPPED_REASON, should_walk},
@@ -142,7 +143,7 @@ impl Captured {
                 ordinal: row.ordinal,
                 valid: row.valid,
                 scope: scope(&row.scope),
-                detected: bits(row).unwrap().to_vec(),
+                detected: owned_vec(copy_vec(bits(row).unwrap())),
             },
         )]
     }
@@ -195,7 +196,10 @@ mod tests {
         let [TableView::Complete(TableRows::RaidTargetStatuses(rows))] = captured.tables() else {
             panic!("expected complete detection rows");
         };
-        assert_eq!((rows[0].ordinal, rows[0].detected.as_slice()), (7, &[4, 0x80][..]));
+        assert_eq!(
+            (rows[0].ordinal, rows[0].detected.as_slice()),
+            (7, &[4, 0x80][..])
+        );
         captured.rows.rows[0].detected_len = 3;
         assert!(matches!(
             captured.tables()[0],

@@ -84,7 +84,7 @@ static ORIGINAL: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
 static INSTALLED: [AtomicBool; 4] = [const { AtomicBool::new(false) }; 4];
 static SITE_ENABLED: [AtomicBool; 4] = [const { AtomicBool::new(false) }; 4];
 static CALLS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
-static UNHOOKED: OnceLock<String> = OnceLock::new();
+static UNHOOKED: OnceLock<&'static str> = OnceLock::new();
 static EVENTS: AtomicU64 = AtomicU64::new(0);
 static OVERFLOW: AtomicU64 = AtomicU64::new(0);
 static REFUSALS: AtomicU64 = AtomicU64::new(0);
@@ -152,10 +152,10 @@ pub fn prepare(memory: &impl Memory, base: usize, countries: usize) {
     let mut before = Vec::new();
     let mut after = Vec::new();
     let mut raw = Vec::new();
-    if entries.try_reserve_exact(events).is_err()
-        || before.try_reserve_exact(designs).is_err()
-        || after.try_reserve_exact(designs).is_err()
-        || raw.try_reserve_exact(raw_bytes).is_err()
+    if engine::allocation::reserve_exact(&mut entries, events).is_err()
+        || engine::allocation::reserve_exact(&mut before, designs).is_err()
+        || engine::allocation::reserve_exact(&mut after, designs).is_err()
+        || engine::allocation::reserve_exact(&mut raw, raw_bytes).is_err()
     {
         if let Ok(mut store) = STORE.try_lock() {
             store.refuse("equipment destruction buffer allocation failed");
@@ -352,7 +352,11 @@ unsafe extern "system" fn land(
     let _call = Call::enter(0);
     let original: ArmyFn = unsafe { std::mem::transmute(ORIGINAL[0].load(Ordering::Acquire)) };
     let run = || unsafe { original(a, b, c, d, e, f, g, h) };
-    if !ENABLED.load(Ordering::SeqCst) || POISONED.load(Ordering::SeqCst) || b == 0 {
+    if !ENABLED.load(Ordering::SeqCst)
+        || POISONED.load(Ordering::SeqCst)
+        || crate::allocation::failed()
+        || b == 0
+    {
         run();
         return;
     }
@@ -386,7 +390,11 @@ unsafe extern "system" fn air(a: usize, b: usize, c: usize, caller: usize) {
     let original: unsafe extern "system" fn(usize, usize, usize) =
         unsafe { std::mem::transmute(ORIGINAL[2].load(Ordering::Acquire)) };
     let run = || unsafe { original(a, b, c) };
-    if !ENABLED.load(Ordering::SeqCst) || POISONED.load(Ordering::SeqCst) || b as u32 == 0 {
+    if !ENABLED.load(Ordering::SeqCst)
+        || POISONED.load(Ordering::SeqCst)
+        || crate::allocation::failed()
+        || b as u32 == 0
+    {
         run();
         return;
     }
@@ -419,7 +427,10 @@ unsafe extern "system" fn garrison(a: usize, b: usize, c: usize) {
     let original: unsafe extern "system" fn(usize, usize, usize) =
         unsafe { std::mem::transmute(ORIGINAL[3].load(Ordering::Acquire)) };
     let run = || unsafe { original(a, b, c) };
-    if !ENABLED.load(Ordering::SeqCst) || POISONED.load(Ordering::SeqCst) {
+    if !ENABLED.load(Ordering::SeqCst)
+        || POISONED.load(Ordering::SeqCst)
+        || crate::allocation::failed()
+    {
         run();
         return;
     }
@@ -478,7 +489,10 @@ unsafe extern "system" fn attrition(pool: usize, variant: usize, quantity: usize
     let original: unsafe extern "system" fn(usize, usize, usize) =
         unsafe { std::mem::transmute(ORIGINAL[1].load(Ordering::Acquire)) };
     let run = || unsafe { original(pool, variant, quantity) };
-    if !ENABLED.load(Ordering::SeqCst) || POISONED.load(Ordering::SeqCst) {
+    if !ENABLED.load(Ordering::SeqCst)
+        || POISONED.load(Ordering::SeqCst)
+        || crate::allocation::failed()
+    {
         run();
         return;
     }
@@ -510,14 +524,10 @@ impl Hooks {
             air_entry as *const () as usize,
             garrison as *const () as usize,
         ];
-        let install = || -> Result<Vec<Hook>, String> {
+        let install = || -> Result<Vec<Hook>, &'static str> {
             for site in native::SITES {
                 if engine::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
-                    return Err(format!(
-                        "{} sentinel differs or unreadable at {:#x}",
-                        site.name,
-                        base + site.rva
-                    ));
+                    return Err("equipment destruction sentinel differs or unreadable");
                 }
             }
             let mut hooks = Vec::new();
@@ -526,7 +536,8 @@ impl Hooks {
                     unsafe { Hook::new_call(base + site.rva, callbacks[index], site.sentinel) }
                 } else {
                     unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                }?;
+                }
+                .map_err(|_| "native hook construction failed")?;
                 ORIGINAL[index].store(
                     if index == 1 {
                         base + native::ATTRITION_TARGET
@@ -552,12 +563,15 @@ impl Hooks {
             }
         }
     }
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
             ENABLED.store(false, Ordering::SeqCst);
         }
         for (index, hook) in self.hooks.iter_mut().enumerate() {
-            if !hook.set_enabled(enabled)? {
+            if !hook
+                .set_enabled(enabled)
+                .map_err(|_| "native hook state change failed")?
+            {
                 return Ok(false);
             }
             SITE_ENABLED[index].store(enabled, Ordering::SeqCst);
@@ -568,19 +582,22 @@ impl Hooks {
         );
         Ok(true)
     }
-    pub fn executable_ranges(&self) -> Vec<Range<usize>> {
-        self.hooks
-            .iter()
-            .flat_map(Hook::executable_ranges)
-            .collect()
+    pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
+        self.hooks.iter().flat_map(Hook::executable_ranges)
     }
 }
-pub fn status() -> serde_json::Value {
-    let hooks: Vec<_> = native::SITES.iter().enumerate().map(|(i,site)| serde_json::json!({
-        "name":site.name,"rva":site.rva,"sentinel":site.sentinel,"installed":INSTALLED[i].load(Ordering::Acquire),
-        "enabled":SITE_ENABLED[i].load(Ordering::SeqCst),"active":ACTIVE[i].load(Ordering::SeqCst),"calls":CALLS[i].load(Ordering::Relaxed)
-    })).collect();
-    serde_json::json!({"hooks":hooks,"unhooked":UNHOOKED.get(),"branch_unavailable":POISONED.load(Ordering::SeqCst),
+pub fn status() -> impl serde::Serialize {
+    let hooks = std::array::from_fn::<_, { native::SITES.len() }, _>(|i| {
+        let site = &native::SITES[i];
+        crate::status::status!({
+            "name": site.name, "rva": site.rva, "sentinel": site.sentinel,
+            "installed": INSTALLED[i].load(Ordering::Acquire),
+            "enabled": SITE_ENABLED[i].load(Ordering::SeqCst),
+            "active": ACTIVE[i].load(Ordering::SeqCst),
+            "calls": CALLS[i].load(Ordering::Relaxed),
+        })
+    });
+    crate::status::status!({"hooks":crate::status::sequence(hooks.into_iter()),"unhooked":UNHOOKED.get(),"branch_unavailable":POISONED.load(Ordering::SeqCst),
         "events":EVENTS.load(Ordering::Relaxed),"overflow":OVERFLOW.load(Ordering::Relaxed),"refusals":REFUSALS.load(Ordering::Relaxed),
         "lost_drains":LOST.load(Ordering::Relaxed),"overlaps":OVERLAPS.load(Ordering::Relaxed),"drains":DRAINS.load(Ordering::Relaxed),
         "handed_over":HANDED_OVER.load(Ordering::Relaxed),"event_capacity":capacity(),"design_capacity":DESIGNS.load(Ordering::Acquire),

@@ -146,11 +146,11 @@ pub(crate) fn vector_bytes<T>(values: &Vec<T>) -> u64 {
     values.capacity() as u64 * size_of::<T>() as u64
 }
 
-pub(crate) fn diagnostics() -> serde_json::Value {
-    // Release the tracker lock before JSON allocation or formatting.
+pub(crate) fn diagnostics() -> impl serde::Serialize {
+    // Copy the tracker counters while its lock is held.
     let snapshot = TRACKER.snapshot();
     let current = snapshot.current;
-    serde_json::json!({
+    crate::status::status!({
         "scope": "owned raw payload and decode-index capacities across idle, in-flight and retired objects; not process memory or an allocator-level bound",
         "current": {
             "payload_vector_capacity_bytes": current.payload_vectors,

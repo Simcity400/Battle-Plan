@@ -2,7 +2,7 @@
 //! Acquisition keeps each probed handle's result; conversion drops misses and
 //! keeps a base's fields only where the AirBases roster lacks or disagrees.
 
-use engine::{cair_base, map_air_base_reference::BaseReference, walk::Outcome};
+use engine::{allocation, cair_base, map_air_base_reference::BaseReference, walk::Outcome};
 use replay::{
     frame::TableView,
     rows::{AirReferenceWitnessRow, tables},
@@ -28,44 +28,53 @@ pub(super) fn table_view(
     manager: Option<&[cair_base::Row]>,
 ) -> TableView {
     // Conversion runs off the game thread; the census is in manager order.
-    let mut listed: Vec<&cair_base::Row> = manager.into_iter().flatten().collect();
+    let mut listed: Vec<&cair_base::Row> = Vec::new();
+    if allocation::reserve(&mut listed, manager.map_or(0, <[cair_base::Row]>::len)).is_err() {
+        return crate::spooling::unavailable("");
+    }
+    listed.extend(manager.into_iter().flatten());
     listed.sort_unstable_by_key(|row| row.id);
-    let rows: Vec<_> = witnesses
+    let mut rows = Vec::new();
+    let count = witnesses
         .iter()
-        .filter_map(|witness| {
-            let base = witness.base?;
-            let listed = listed
-                .binary_search_by_key(&witness.handle, |row| row.id)
-                .ok()
-                .map(|index| listed[index])
-                .is_some_and(|row| {
-                    row.kind == base.kind
-                        && row.state == base.state
-                        && match base.state {
-                            Some(_) => row.province == base.province,
-                            None => row.host == base.host,
-                        }
-                });
-            Some(if listed {
-                AirReferenceWitnessRow {
-                    handle: witness.handle,
-                    host_owner: witness.host_owner,
-                    host_without_task_force: witness.host_without_task_force,
-                    ..Default::default()
-                }
-            } else {
-                AirReferenceWitnessRow {
-                    handle: witness.handle,
-                    base_kind: Some(base.kind),
-                    state: base.state,
-                    province: base.province,
-                    host: base.state.is_none().then_some(base.host),
-                    host_owner: witness.host_owner,
-                    host_without_task_force: witness.host_without_task_force,
-                }
-            })
+        .filter(|witness| witness.base.is_some())
+        .count();
+    if allocation::reserve_push_batch(&mut rows, count).is_err() {
+        return crate::spooling::unavailable("");
+    }
+    rows.extend(witnesses.iter().filter_map(|witness| {
+        let base = witness.base?;
+        let listed = listed
+            .binary_search_by_key(&witness.handle, |row| row.id)
+            .ok()
+            .map(|index| listed[index])
+            .is_some_and(|row| {
+                row.kind == base.kind
+                    && row.state == base.state
+                    && match base.state {
+                        Some(_) => row.province == base.province,
+                        None => row.host == base.host,
+                    }
+            });
+        Some(if listed {
+            AirReferenceWitnessRow {
+                handle: witness.handle,
+                host_owner: witness.host_owner,
+                host_without_task_force: witness.host_without_task_force,
+                ..Default::default()
+            }
+        } else {
+            AirReferenceWitnessRow {
+                handle: witness.handle,
+                base_kind: Some(base.kind),
+                state: base.state,
+                province: base.province,
+                host: base.state.is_none().then_some(base.host),
+                host_owner: witness.host_owner,
+                host_without_task_force: witness.host_without_task_force,
+            }
         })
-        .collect();
+    }));
     let outcome = match outcome {
         Outcome::Rows { .. } => Outcome::Rows { len: rows.len() },
         Outcome::Truncated { unread_rows, .. } => Outcome::Truncated {

@@ -9,15 +9,73 @@ use std::{
 
 use replay::{
     BranchId, Hour, SessionId,
-    branches::Parentage,
+    branches::{Gap, Parentage},
     container::{RecoveryNote, Replay, SeekResult},
     frame::{DecodedFrame, Frame, FrameDecoder, TABLE_COUNT, TableUpdate, TableView},
     identity::{Identity, SessionStart, Verification, is_campaign_uuid},
     rows::{TableId, TableRows, tables},
     spool::{ControlRecord, Record, Recovery, recover_prefix},
+    witness::{TerminalWitness, WITNESS_BYTES, WITNESS_FILE_NAME},
 };
 
 type Result<T> = std::result::Result<T, String>;
+
+const ALLOCATION_GAP_REASON: &str = "collector allocation failed";
+
+/// A prepared identity record means no collector failure was published.
+pub(crate) fn read_failure_witness(session_dir: &Path) -> Result<Option<TerminalWitness>> {
+    let path = session_dir.join(WITNESS_FILE_NAME);
+    let config_path = session_dir.join("bin/collector.json");
+    let modern = config_path.is_file();
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if modern {
+                return Err(failure(&path, "precreated terminal witness is missing"));
+            }
+            return Ok(None);
+        }
+        Err(error) => return Err(failure(&path, error)),
+    };
+    if bytes.len() != WITNESS_BYTES {
+        return Err(failure(&path, "terminal witness has the wrong length"));
+    }
+    if bytes.iter().all(|byte| *byte == 0) {
+        if modern {
+            return Err(failure(&path, "modern terminal witness is uninitialised"));
+        }
+        return Ok(None);
+    }
+    if let Ok(identity) = TerminalWitness::decode_prepared(&bytes) {
+        if modern {
+            let config: serde_json::Value = serde_json::from_slice(
+                &fs::read(&config_path).map_err(|error| failure(&config_path, error))?,
+            )
+            .map_err(|error| failure(&config_path, error))?;
+            let session_id = config["session_id"].as_u64().ok_or_else(|| {
+                failure(&config_path, "collector configuration has no session id")
+            })?;
+            let session_start: Vec<u8> = serde_json::from_value(config["session_start"].clone())
+                .map_err(|error| failure(&config_path, error))?;
+            let mut decoder = replay::codec::Decoder::new(&session_start);
+            let session =
+                SessionStart::decode(&mut decoder).map_err(|error| failure(&config_path, error))?;
+            decoder
+                .finish()
+                .map_err(|error| failure(&config_path, error))?;
+            if identity != (session_id, session.process_start_time) || session_id != session.id {
+                return Err(failure(
+                    &path,
+                    "prepared witness belongs to a different process session",
+                ));
+            }
+        }
+        return Ok(None);
+    }
+    TerminalWitness::decode(&bytes)
+        .map(Some)
+        .map_err(|error| failure(&path, error))
+}
 
 fn failure(path: &Path, error: impl std::fmt::Display) -> String {
     format!("{}: {error}", path.display())
@@ -87,6 +145,33 @@ fn campaign_filename(id: &[u8]) -> Result<&str> {
 
 /// Call only after detach and module-absence confirmation, or after process exit.
 pub fn finalize_session(session_dir: &Path, replay_dir: &Path) -> Result<Vec<PathBuf>> {
+    let (paths, errors) = finalize_session_outcome(session_dir, replay_dir)?;
+    if errors.is_empty() {
+        Ok(paths)
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+
+/// Keep successfully written campaigns visible when another campaign is incomplete.
+pub(crate) fn finalize_session_outcome(
+    session_dir: &Path,
+    replay_dir: &Path,
+) -> Result<(Vec<PathBuf>, Vec<String>)> {
+    let witness = read_failure_witness(session_dir)?;
+    if witness.is_none()
+        && ["status.json", "completed.json"].iter().any(|name| {
+            fs::read(session_dir.join(name))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                .is_some_and(|status| status["capture_failed"] == true)
+        })
+    {
+        return Err(failure(
+            session_dir,
+            "capture failed without a valid terminal witness; spool retained",
+        ));
+    }
     fs::create_dir_all(replay_dir).map_err(|error| failure(replay_dir, error))?;
     let mut campaigns = Vec::new();
     for entry in fs::read_dir(session_dir).map_err(|error| failure(session_dir, error))? {
@@ -110,16 +195,18 @@ pub fn finalize_session(session_dir: &Path, replay_dir: &Path) -> Result<Vec<Pat
     let mut errors = Vec::new();
     let mut process_context = None;
     for (campaign_dir, paths) in campaigns {
-        match finalize_campaign(&campaign_dir, &paths, replay_dir, &mut process_context) {
+        match finalize_campaign(
+            &campaign_dir,
+            &paths,
+            replay_dir,
+            &mut process_context,
+            witness.as_ref(),
+        ) {
             Ok(path) => outputs.push(path),
             Err(error) => errors.push(error),
         }
     }
-    if errors.is_empty() {
-        Ok(outputs)
-    } else {
-        Err(errors.join("\n"))
-    }
+    Ok((outputs, errors))
 }
 
 fn finalize_campaign(
@@ -127,14 +214,91 @@ fn finalize_campaign(
     paths: &[(u32, PathBuf)],
     replay_dir: &Path,
     process_context: &mut Option<(SessionId, u32, u64, u64)>,
+    witness: Option<&TerminalWitness>,
 ) -> Result<PathBuf> {
     let started = Instant::now();
     let mut spool_bytes = 0_u64;
     let mut segments = Vec::with_capacity(paths.len());
+    let failing_campaign = witness.is_some_and(|witness| {
+        witness.campaign_id.as_ref().is_some_and(|campaign| {
+            campaign_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::as_bytes)
+                == Some(campaign.as_slice())
+        })
+    });
+    let committed_campaign = witness.is_some_and(|witness| {
+        witness
+            .committed_campaign_id
+            .as_ref()
+            .is_some_and(|campaign| {
+                campaign_dir
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::as_bytes)
+                    == Some(campaign.as_slice())
+            })
+    });
+    let pending_campaign = witness.is_some_and(|witness| {
+        witness
+            .pending_campaign_id
+            .as_ref()
+            .is_some_and(|campaign| {
+                campaign_dir
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::as_bytes)
+                    == Some(campaign.as_slice())
+            })
+    });
+    if witness.is_some_and(|witness| witness.committed_campaign_id.is_none())
+        || (pending_campaign && witness.unwrap().pending_segment.is_none())
+    {
+        return Err(failure(
+            campaign_dir,
+            "failure witness has no committed spool watermark",
+        ));
+    }
+    let watermark = witness.and_then(|witness| {
+        let committed = committed_campaign
+            .then(|| (witness.committed_segment.unwrap(), witness.committed_bytes));
+        let pending =
+            pending_campaign.then(|| (witness.pending_segment.unwrap(), witness.pending_bytes));
+        match (committed, pending) {
+            (Some(committed), Some(pending)) => Some(committed.min(pending)),
+            (committed, pending) => committed.or(pending),
+        }
+    });
+    let mut watermark_found = watermark.is_none();
     for (number, path) in paths {
         let bytes = fs::read(path).map_err(|error| failure(path, error))?;
         spool_bytes += bytes.len() as u64;
-        let recovered = recover_prefix(&bytes);
+        let mut prefix = bytes.as_slice();
+        if let Some((committed_segment, committed_bytes)) = watermark {
+            if *number > committed_segment {
+                continue;
+            }
+            if *number == committed_segment {
+                let end = usize::try_from(committed_bytes)
+                    .ok()
+                    .filter(|end| *end <= bytes.len())
+                    .ok_or_else(|| {
+                        failure(path, "failure witness watermark exceeds the spool length")
+                    })?;
+                prefix = &bytes[..end];
+                watermark_found = true;
+            }
+        }
+        let recovered = recover_prefix(prefix);
+        if watermark.is_some_and(|(segment, _)| segment == *number)
+            && recovered.valid_bytes != prefix.len()
+        {
+            return Err(failure(
+                path,
+                "spool damage precedes the committed failure watermark",
+            ));
+        }
         if let Some(reason) = &recovered.damage {
             eprintln!(
                 "{}: recovered {} valid bytes; {reason}",
@@ -144,8 +308,23 @@ fn finalize_campaign(
         }
         segments.push((*number, recovered));
     }
+    if !watermark_found {
+        return Err(failure(
+            campaign_dir,
+            "failure witness committed segment is missing",
+        ));
+    }
     for record in segments.iter().flat_map(|(_, recovery)| &recovery.records) {
         if let Record::SessionStart(session) = record {
+            if witness.is_some_and(|witness| {
+                session.id != witness.session
+                    || session.process_start_time != witness.process_start_time
+            }) {
+                return Err(failure(
+                    campaign_dir,
+                    "failure witness does not match the spool process session",
+                ));
+            }
             let context = (
                 session.id,
                 session.process_id,
@@ -168,6 +347,10 @@ fn finalize_campaign(
             campaign_dir,
             format!("directory differs from recorded campaign {name}"),
         ));
+    }
+    if let Some(witness) = witness {
+        apply_failure_witness(&mut segments, witness, failing_campaign)
+            .map_err(|error| failure(campaign_dir, error))?;
     }
     let destination = replay_dir.join(format!("{name}.battleplan"));
     let mut unchanged = false;
@@ -263,6 +446,223 @@ fn finalize_campaign(
         }
     }
     Ok(destination)
+}
+
+fn apply_failure_witness(
+    segments: &mut [(u32, Recovery)],
+    witness: &TerminalWitness,
+    failing_campaign: bool,
+) -> Result<()> {
+    let mut current_branch = None;
+    let mut current_signal = None;
+    let mut current_observed = false;
+    let mut matching_session = false;
+    for record in segments.iter().flat_map(|(_, recovery)| &recovery.records) {
+        match record {
+            Record::SessionStart(session) => {
+                if session.id != witness.session
+                    || session.process_start_time != witness.process_start_time
+                {
+                    return Err("failure witness does not match the spool session".into());
+                }
+                matching_session = true;
+            }
+            Record::BranchStart(branch) => {
+                if branch.session != witness.session {
+                    return Err("failure witness does not match the spool branch session".into());
+                }
+                if current_branch.map(|previous: &replay::branches::BranchStart| previous.id)
+                    != Some(branch.id)
+                {
+                    current_signal = None;
+                    current_observed = false;
+                }
+                current_branch = Some(branch);
+            }
+            Record::Frame(_) | Record::Gap(_) => current_observed = true,
+            Record::Control(ControlRecord::ClockWitness {
+                session,
+                load_signal,
+                ..
+            }) => {
+                if *session != witness.session {
+                    return Err("failure witness does not match the spool clock session".into());
+                }
+                current_signal = *load_signal;
+                current_observed = true;
+            }
+            _ => {}
+        }
+    }
+    if !matching_session {
+        return Err("failure witness has no recorded session identity".into());
+    }
+    let mut resolved_branch = witness.branch;
+    let recovered_branch = if failing_campaign
+        && let Some(failed_hour) = witness.failed_hour
+        && witness
+            .branch
+            .is_none_or(|branch| current_branch.map(|current| current.id) != Some(branch))
+    {
+        let history = Replay::from_recovered(witness.campaign_id.unwrap().to_vec(), segments)
+            .and_then(Replay::into_history)
+            .map_err(|error| error.to_string())?;
+        let session = history
+            .sessions
+            .iter()
+            .find(|session| session.id == witness.session)
+            .ok_or("failure witness has no matching history session")?;
+        let mut tracker = history
+            .tracker_for(session)
+            .map_err(|error| error.to_string())?;
+        let known_gaps: Vec<_> = segments
+            .iter()
+            .flat_map(|(_, recovery)| &recovery.records)
+            .filter_map(|record| match record {
+                Record::Gap(gap)
+                    if Some(gap.branch) == tracker.current_branch()
+                        && gap.last_hour < failed_hour =>
+                {
+                    Some(gap.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let observation = tracker
+            .observe(None, failed_hour, witness.load_signal, &known_gaps)
+            .map_err(|error| error.to_string())?;
+        if witness
+            .branch
+            .is_some_and(|expected| expected != observation.branch)
+        {
+            return Err("failure witness branch differs from the witnessed clock context".into());
+        }
+        resolved_branch = Some(observation.branch);
+        current_signal = witness.load_signal.or(current_signal);
+        observation.start
+    } else {
+        None
+    };
+    if let Some(branch) = recovered_branch.as_ref() {
+        current_branch = Some(branch);
+    }
+    let mut gap = None;
+    if failing_campaign {
+        if let Some(expected) = witness.branch
+            && current_branch.map(|branch| branch.id) != Some(expected)
+        {
+            return Err("failure witness branch has no matching committed context".into());
+        }
+        if let Some(expected) = witness.load_signal
+            && current_signal != Some(expected)
+        {
+            // A context record can commit before the new branch's first clock.
+            let first_clock_failed = !current_observed
+                && current_signal.is_none()
+                && current_branch.is_some_and(|branch| {
+                    witness.branch == Some(branch.id)
+                        && witness.failed_hour == Some(branch.first_hour)
+                });
+            if !first_clock_failed {
+                return Err("failure witness load signal has no matching committed context".into());
+            }
+        }
+        if let Some(hour) = witness.failed_hour {
+            let branch = current_branch
+                .filter(|branch| Some(branch.id) == resolved_branch)
+                .ok_or("known failure hour has no unambiguous recorded branch context")?;
+            if hour < branch.first_hour {
+                return Err("failure hour precedes the recorded branch context".into());
+            }
+            let mut already_gapped = false;
+            for record in segments.iter().flat_map(|(_, recovery)| &recovery.records) {
+                match record {
+                    Record::Frame(frame) if frame.branch == branch.id && frame.hour >= hour => {
+                        return Err("failure hour overlaps or precedes a committed frame".into());
+                    }
+                    Record::Gap(existing)
+                        if existing.branch == branch.id
+                            && existing.first_hour <= hour
+                            && existing.last_hour >= hour =>
+                    {
+                        if existing.reason != ALLOCATION_GAP_REASON {
+                            return Err(
+                                "failure hour already belongs to a gap with a different reason"
+                                    .into(),
+                            );
+                        }
+                        already_gapped = true;
+                    }
+                    _ => {}
+                }
+            }
+            if !already_gapped {
+                gap = Some(Gap {
+                    branch: branch.id,
+                    first_hour: hour,
+                    last_hour: hour,
+                    reason: ALLOCATION_GAP_REASON.into(),
+                });
+            }
+        }
+    }
+    let partial = ControlRecord::Partial {
+        session: witness.session,
+        reason: ALLOCATION_GAP_REASON.into(),
+        failed_hour: if failing_campaign {
+            witness.failed_hour
+        } else {
+            None
+        },
+    };
+    let mut partial_exists = false;
+    for control in segments
+        .iter()
+        .flat_map(|(_, recovery)| &recovery.records)
+        .filter_map(|record| {
+            if let Record::Control(control @ ControlRecord::Partial { .. }) = record {
+                Some(control)
+            } else {
+                None
+            }
+        })
+    {
+        if control != &partial {
+            return Err("recorded partial outcome differs from the failure witness".into());
+        }
+        partial_exists = true;
+    }
+    let target = segments
+        .iter_mut()
+        .rev()
+        .find(|(_, recovery)| !recovery.records.is_empty())
+        .ok_or("failure witness has no recoverable record prefix")?;
+    let mut position = target
+        .1
+        .records
+        .iter()
+        .position(|record| matches!(record, Record::Control(ControlRecord::Detach { .. })))
+        .unwrap_or(target.1.records.len());
+    if let Some(branch) = recovered_branch {
+        target
+            .1
+            .records
+            .insert(position, Record::BranchStart(branch));
+        position += 1;
+        if let Some(Record::Control(ControlRecord::Detach { last_hour, .. })) =
+            target.1.records.get_mut(position)
+        {
+            *last_hour = None;
+        }
+    }
+    if let Some(gap) = gap {
+        target.1.records.insert(position, Record::Gap(gap));
+        position += 1;
+    }
+    if !partial_exists {
+        target.1.records.insert(position, Record::Control(partial));
+    }
+    Ok(())
 }
 
 fn open(path: &Path) -> Result<Replay> {
@@ -455,6 +855,13 @@ pub fn inspect(path: &Path) -> Result<()> {
             } => println!(
                 "gap_summary session={session} dropped_frames={dropped_frames} hour_range=unknown: {reason}"
             ),
+            ControlRecord::Partial {
+                session,
+                reason,
+                failed_hour,
+            } => {
+                println!("partial session={session} failed_hour={failed_hour:?}: {reason}")
+            }
             _ => {}
         }
     }
@@ -835,7 +1242,9 @@ fn print_throughput<'a>(
                 );
             }
             Some(
-                ControlRecord::Detach { session, .. } | ControlRecord::GapSummary { session, .. },
+                ControlRecord::Detach { session, .. }
+                | ControlRecord::GapSummary { session, .. }
+                | ControlRecord::Partial { session, .. },
             ) => {
                 throughput.previous.remove(session);
             }
@@ -859,6 +1268,1086 @@ fn print_throughput<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use replay::branches::{BranchReason, BranchStart};
+
+    #[test]
+    fn allocation_failure_json_configuration_requires_prepared_identity() {
+        use crate::test_support::{allocation_records, allocation_test_directory};
+        let directory = allocation_test_directory("prepared-identity");
+        let Record::SessionStart(session) = &allocation_records()[0] else {
+            unreachable!()
+        };
+        let mut session_start = Vec::new();
+        session.encode(&mut session_start).unwrap();
+        let config = serde_json::json!({"session_id":session.id,"session_start":session_start});
+        fs::create_dir_all(directory.join("bin")).unwrap();
+        fs::write(
+            directory.join("bin/collector.json"),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
+        let path = directory.join(WITNESS_FILE_NAME);
+        fs::write(&path, TerminalWitness::prepared(7, 13)).unwrap();
+        assert!(read_failure_witness(&directory).unwrap().is_none());
+        fs::write(&path, TerminalWitness::prepared(7, 14)).unwrap();
+        assert!(read_failure_witness(&directory).is_err());
+        fs::write(&path, [0; WITNESS_BYTES]).unwrap();
+        assert!(read_failure_witness(&directory).is_err());
+    }
+
+    #[test]
+    #[ignore = "launched by collector allocation-failure sweeps"]
+    fn allocation_fixture_finalization_child() {
+        let session = PathBuf::from(std::env::var_os("BATTLE_PLAN_ALLOCATION_FIXTURE").or_else(|| std::env::var_os("HOI4_ALLOCATION_FIXTURE")).unwrap());
+        let witness = read_failure_witness(&session).unwrap().unwrap();
+        let mut expected = BTreeMap::new();
+        let mut sources = Vec::new();
+        let mut refused = BTreeSet::new();
+        for campaign in fs::read_dir(&session).unwrap() {
+            let campaign = campaign.unwrap();
+            if !campaign.file_type().unwrap().is_dir() {
+                continue;
+            }
+            for (number, path) in segment_paths(&campaign.path()).unwrap() {
+                let bytes = fs::read(&path).unwrap();
+                let mut prefix = bytes.as_slice();
+                let committed_campaign = witness.committed_campaign_id.is_some_and(|id| {
+                    campaign.file_name().to_str().map(str::as_bytes) == Some(id.as_slice())
+                });
+                let pending_campaign = witness.pending_campaign_id.is_some_and(|id| {
+                    campaign.file_name().to_str().map(str::as_bytes) == Some(id.as_slice())
+                });
+                if witness.committed_campaign_id.is_none()
+                    || (pending_campaign && witness.pending_segment.is_none())
+                {
+                    refused.insert(campaign.file_name());
+                    prefix = &[];
+                } else {
+                    let committed = committed_campaign
+                        .then(|| (witness.committed_segment.unwrap(), witness.committed_bytes));
+                    let pending = pending_campaign
+                        .then(|| (witness.pending_segment.unwrap(), witness.pending_bytes));
+                    if let Some((segment, committed_bytes)) =
+                        [committed, pending].into_iter().flatten().min()
+                    {
+                        if number > segment {
+                            prefix = &[];
+                        } else if number == segment {
+                            prefix = &bytes[..usize::try_from(committed_bytes).unwrap()];
+                        }
+                    }
+                }
+                let recovery = recover_prefix(prefix);
+                for record in recovery.records {
+                    if let Record::Frame(frame) = record {
+                        assert!(
+                            expected
+                                .insert((campaign.file_name(), frame.branch, frame.hour), frame)
+                                .is_none()
+                        );
+                    }
+                }
+                sources.push((path, bytes));
+            }
+        }
+        let output = session.join("replays");
+        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap();
+        assert_eq!(issues.len(), refused.len(), "{issues:?}");
+        assert!(
+            issues
+                .iter()
+                .all(|issue| issue.contains("no committed spool watermark"))
+        );
+        assert_eq!(paths.is_empty(), expected.is_empty());
+        let mut gap_found = false;
+        let mut gap_expected = false;
+        let mut allocation_gap_count = 0;
+        let mut before = Vec::new();
+        for path in &paths {
+            let bytes = fs::read(path).unwrap();
+            let replay = Replay::open(bytes.clone()).unwrap();
+            let expected_failed_hour = if witness.campaign_id.as_ref().map(|id| id.as_slice())
+                == Some(replay.campaign_id.as_slice())
+            {
+                witness.failed_hour
+            } else {
+                None
+            };
+            gap_expected |= expected_failed_hour.is_some();
+            allocation_gap_count += replay
+                .gaps
+                .iter()
+                .filter(|gap| gap.reason == ALLOCATION_GAP_REASON)
+                .count();
+            assert!(replay.controls.iter().any(|control| matches!(control,
+                ControlRecord::Partial { session, reason, failed_hour }
+                if *session == witness.session && reason == ALLOCATION_GAP_REASON
+                    && *failed_hour == expected_failed_hour)));
+            if let Some(detach) = replay
+                .controls
+                .iter()
+                .position(|control| matches!(control, ControlRecord::Detach { .. }))
+            {
+                let partial = replay
+                    .controls
+                    .iter()
+                    .position(|control| matches!(control, ControlRecord::Partial { .. }))
+                    .unwrap();
+                assert!(partial < detach);
+            }
+            // Finalization's SegmentState rejects a gap after Detach.
+            for block in &replay.index {
+                let frames = replay.read_block(block).unwrap();
+                let mut decoder = FrameDecoder::new();
+                for frame in frames {
+                    let key = (
+                        std::ffi::OsString::from(std::str::from_utf8(&replay.campaign_id).unwrap()),
+                        frame.branch,
+                        frame.hour,
+                    );
+                    let expected_frame = expected
+                        .remove(&key)
+                        .expect("replay contains an unrecorded frame");
+                    assert_eq!(frame, expected_frame);
+                    decoder.apply(&frame).unwrap();
+                    assert!(matches!(
+                        replay.seek(frame.branch, frame.hour).unwrap(),
+                        SeekResult::Frame(_)
+                    ));
+                }
+            }
+            if let Some(hour) = expected_failed_hour {
+                let gap = replay
+                    .gaps
+                    .iter()
+                    .find(|gap| {
+                        gap.first_hour <= hour
+                            && gap.last_hour >= hour
+                            && gap.reason == ALLOCATION_GAP_REASON
+                    })
+                    .expect("known attempted hour has no explicit allocation gap");
+                assert!(
+                    matches!(replay.seek(gap.branch, hour).unwrap(), SeekResult::Gap { reason, .. } if reason == ALLOCATION_GAP_REASON)
+                );
+                gap_found = true;
+            } else {
+                assert!(
+                    !replay
+                        .gaps
+                        .iter()
+                        .any(|gap| gap.reason == ALLOCATION_GAP_REASON)
+                );
+            }
+            before.push(bytes);
+        }
+        assert!(expected.is_empty(), "committed prefix frames were lost");
+        assert_eq!(gap_found, gap_expected);
+        assert_eq!(allocation_gap_count, usize::from(gap_expected));
+        let (again, repeated_issues) = finalize_session_outcome(&session, &output).unwrap();
+        assert_eq!(repeated_issues, issues);
+        assert_eq!(again, paths);
+        for (path, bytes) in paths.iter().zip(before) {
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+        for (path, bytes) in sources {
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+        assert_eq!(read_failure_witness(&session).unwrap(), Some(witness));
+    }
+
+    fn allocation_session(name: &str) -> (PathBuf, PathBuf, TerminalWitness) {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, allocation_records, allocation_test_directory, allocation_witness,
+        };
+        let root = allocation_test_directory(name);
+        let session = root.join("session");
+        let campaign = session.join(std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap());
+        let output = root.join("replays");
+        fs::create_dir_all(&campaign).unwrap();
+        let mut spool = Vec::new();
+        for record in allocation_records() {
+            spool.extend(replay::spool::encode_record(&record).unwrap());
+        }
+        let witness = allocation_witness(spool.len() as u64);
+        // A writer can leave a torn record after the last committed watermark.
+        spool.extend_from_slice(b"torn write beyond the committed prefix");
+        fs::write(campaign.join("spool.0000.h4s"), spool).unwrap();
+        fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        (session, output, witness)
+    }
+
+    #[test]
+    fn allocation_failure_finalizes_verified_prefix_with_exact_gap_and_is_idempotent() {
+        let (session, output, witness) = allocation_session("partial-prefix");
+        let paths = finalize_session(&session, &output).unwrap();
+        assert_eq!(paths.len(), 1);
+        let bytes = fs::read(&paths[0]).unwrap();
+        let replay = Replay::open(bytes.clone()).unwrap();
+        assert_eq!(
+            replay
+                .index
+                .iter()
+                .map(|index| replay.read_block(index).unwrap().len())
+                .sum::<usize>(),
+            3
+        );
+        assert_eq!(
+            replay.gaps,
+            [Gap {
+                branch: 9,
+                first_hour: 99,
+                last_hour: 99,
+                reason: ALLOCATION_GAP_REASON.into(),
+            }]
+        );
+        assert!(
+            matches!(replay.seek(9, 99).unwrap(), SeekResult::Gap { reason, .. } if reason == ALLOCATION_GAP_REASON)
+        );
+        let partial = replay.controls.iter().position(|control| matches!(control,
+            ControlRecord::Partial { session: 7, failed_hour: Some(99), reason } if reason.contains(ALLOCATION_GAP_REASON))).unwrap();
+        let detach = replay
+            .controls
+            .iter()
+            .position(|control| matches!(control, ControlRecord::Detach { .. }))
+            .unwrap();
+        assert!(partial < detach);
+        assert_eq!(finalize_session(&session, &output).unwrap(), paths);
+        assert_eq!(fs::read(&paths[0]).unwrap(), bytes);
+        assert!(session.join(WITNESS_FILE_NAME).is_file());
+        let campaign = session.join(std::str::from_utf8(&witness.campaign_id.unwrap()).unwrap());
+        assert!(campaign.join("spool.0000.h4s").is_file());
+    }
+
+    #[test]
+    fn allocation_failure_unknown_hour_does_not_invent_a_tail_gap() {
+        let (session, output, mut witness) = allocation_session("partial-idle");
+        witness.failed_hour = None;
+        witness.drain_complete = true;
+        fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        let paths = finalize_session(&session, &output).unwrap();
+        let replay = open(&paths[0]).unwrap();
+        assert!(replay.gaps.is_empty());
+        assert!(replay.controls.iter().any(|control| matches!(
+            control,
+            ControlRecord::Partial {
+                failed_hour: None,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn allocation_failure_crc_valid_record_after_watermark_is_not_committed() {
+        use crate::test_support::allocation_records;
+        let (session, output, mut witness) = allocation_session("uncommitted-frame");
+        let mut records = allocation_records();
+        records.pop();
+        let mut spool = Vec::new();
+        for record in &records {
+            spool.extend(replay::spool::encode_record(record).unwrap());
+        }
+        witness.committed_bytes = spool.len() as u64;
+        witness.failed_hour = Some(5);
+        let mut frame = records
+            .iter()
+            .rev()
+            .find_map(|record| match record {
+                Record::Frame(frame) => Some(frame.clone()),
+                _ => None,
+            })
+            .unwrap();
+        frame.hour = 5;
+        let TableUpdate::Snapshot(TableRows::Clock(rows)) =
+            &mut frame.tables[TableId::Clock.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].hour = 5;
+        spool.extend(replay::spool::encode_record(&Record::Frame(frame)).unwrap());
+        assert_eq!(recover_prefix(&spool).valid_bytes, spool.len());
+        let campaign = session.join(std::str::from_utf8(&witness.campaign_id.unwrap()).unwrap());
+        let path = campaign.join("spool.0000.h4s");
+        fs::write(&path, &spool).unwrap();
+        fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        let paths = finalize_session(&session, &output).unwrap();
+        let replay = open(&paths[0]).unwrap();
+        assert!(matches!(replay.seek(9, 4).unwrap(), SeekResult::Frame(_)));
+        assert!(matches!(replay.seek(9, 5).unwrap(), SeekResult::Gap { .. }));
+        assert_eq!(fs::read(path).unwrap(), spool);
+    }
+
+    #[test]
+    fn allocation_failure_callback_without_spool_branch_resolves_existing_load_context() {
+        let (session, output, mut witness) = allocation_session("callback-branch");
+        witness.branch = None;
+        witness.failed_hour = Some(5);
+        fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        let paths = finalize_session(&session, &output).unwrap();
+        let replay = open(&paths[0]).unwrap();
+        assert_eq!(replay.branches.len(), 1);
+        assert_eq!(
+            replay.gaps,
+            [Gap {
+                branch: 9,
+                first_hour: 5,
+                last_hour: 5,
+                reason: ALLOCATION_GAP_REASON.into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn allocation_failure_declared_branch_before_initial_clock_preserves_exact_prefix() {
+        use crate::test_support::allocation_records;
+        for (name, signal, failed_hour, recoverable) in [
+            ("declared-no-clock", None, 21, true),
+            ("declared-matching-clock", Some(Some(21)), 21, true),
+            ("declared-wrong-hour", None, 22, false),
+            ("declared-wrong-clock", Some(Some(22)), 21, false),
+            ("declared-unknown-clock", Some(None), 21, false),
+        ] {
+            let (session, output, mut witness) = allocation_session(name);
+            let mut records = allocation_records();
+            records.pop();
+            let expected_frames: Vec<_> = records
+                .iter()
+                .filter_map(|record| match record {
+                    Record::Frame(frame) => Some(frame.clone()),
+                    _ => None,
+                })
+                .collect();
+            let branch = BranchStart {
+                id: 10,
+                session: witness.session,
+                loaded_hour: Some(20),
+                first_hour: 21,
+                parent: Parentage::Unknown,
+                reason: BranchReason::LoadSignal,
+            };
+            records.push(Record::BranchStart(branch.clone()));
+            if let Some(load_signal) = signal {
+                records.push(Record::Control(ControlRecord::ClockWitness {
+                    session: witness.session,
+                    qpc: 2100,
+                    hour: 21,
+                    load_signal,
+                }));
+            }
+            let mut spool = Vec::new();
+            for record in &records {
+                spool.extend(replay::spool::encode_record(record).unwrap());
+            }
+            assert_eq!(recover_prefix(&spool).valid_bytes, spool.len());
+            witness.committed_bytes = spool.len() as u64;
+            witness.branch = Some(branch.id);
+            witness.failed_hour = Some(failed_hour);
+            witness.load_signal = Some(21);
+            spool.extend_from_slice(b"torn bytes after declared branch");
+            let campaign =
+                session.join(std::str::from_utf8(&witness.campaign_id.unwrap()).unwrap());
+            let spool_path = campaign.join("spool.0000.h4s");
+            let witness_path = session.join(WITNESS_FILE_NAME);
+            fs::write(&spool_path, &spool).unwrap();
+            fs::write(&witness_path, witness.encode()).unwrap();
+
+            let result = finalize_session(&session, &output);
+            if recoverable {
+                let paths = result.unwrap();
+                let bytes = fs::read(&paths[0]).unwrap();
+                let replay = Replay::open(bytes.clone()).unwrap();
+                assert_eq!(replay.branches[1], branch);
+                assert_eq!(replay.branches.len(), 2);
+                let frames: Vec<_> = replay
+                    .index
+                    .iter()
+                    .flat_map(|index| replay.read_block(index).unwrap())
+                    .collect();
+                assert_eq!(frames, expected_frames);
+                assert_eq!(
+                    replay.gaps,
+                    [Gap {
+                        branch: 10,
+                        first_hour: 21,
+                        last_hour: 21,
+                        reason: ALLOCATION_GAP_REASON.into(),
+                    }]
+                );
+                assert!(matches!(
+                    replay.seek(10, 21).unwrap(),
+                    SeekResult::Gap { .. }
+                ));
+                assert_eq!(
+                    replay
+                        .controls
+                        .iter()
+                        .filter(|control| matches!(
+                            control,
+                            ControlRecord::ClockWitness { hour: 21, .. }
+                        ))
+                        .count(),
+                    usize::from(signal.is_some())
+                );
+                assert!(replay.controls.iter().any(|control| matches!(control,
+                    ControlRecord::Partial { failed_hour: Some(21), reason, .. }
+                        if reason == ALLOCATION_GAP_REASON)));
+                assert_eq!(finalize_session(&session, &output).unwrap(), paths);
+                assert_eq!(fs::read(&paths[0]).unwrap(), bytes);
+            } else {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .contains("load signal has no matching committed context")
+                );
+                assert!(fs::read_dir(&output).unwrap().next().is_none());
+            }
+            assert_eq!(fs::read(&spool_path).unwrap(), spool);
+            assert_eq!(fs::read(&witness_path).unwrap(), witness.encode());
+        }
+    }
+
+    #[test]
+    fn allocation_failure_known_hour_without_campaign_keeps_prefix_without_a_gap() {
+        let (session, output, mut witness) = allocation_session("unknown-attempted-campaign");
+        witness.campaign_id = None;
+        witness.branch = None;
+        witness.load_signal = Some(77);
+        witness.failed_hour = Some(21);
+        fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        let paths = finalize_session(&session, &output).unwrap();
+        let replay = open(&paths[0]).unwrap();
+        assert!(matches!(replay.seek(9, 4).unwrap(), SeekResult::Frame(_)));
+        assert_eq!(replay.branches.len(), 1);
+        assert!(replay.gaps.is_empty());
+        assert!(replay.controls.iter().any(|control| matches!(
+            control,
+            ControlRecord::Partial {
+                failed_hour: None,
+                ..
+            }
+        )));
+        assert_eq!(read_failure_witness(&session).unwrap(), Some(witness));
+    }
+
+    #[test]
+    fn allocation_failure_same_signal_hour_discontinuity_uses_native_branch_semantics() {
+        let (session, output, mut witness) = allocation_session("callback-hour-discontinuity");
+        witness.branch = None;
+        fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        let paths = finalize_session(&session, &output).unwrap();
+        let before = fs::read(&paths[0]).unwrap();
+        let replay = open(&paths[0]).unwrap();
+        assert_eq!(replay.branches[1].reason, BranchReason::HourDiscontinuity);
+        assert_eq!(replay.branches[1].loaded_hour, None);
+        assert_eq!(replay.branches[1].parent, Parentage::Unknown);
+        assert_eq!(
+            replay.gaps,
+            [Gap {
+                branch: 10,
+                first_hour: 99,
+                last_hour: 99,
+                reason: ALLOCATION_GAP_REASON.into()
+            }]
+        );
+        assert_eq!(finalize_session(&session, &output).unwrap(), paths);
+        assert_eq!(fs::read(&paths[0]).unwrap(), before);
+    }
+
+    #[test]
+    fn allocation_failure_unknown_load_read_retains_last_native_signal() {
+        let (session, output, mut witness) = allocation_session("callback-unknown-load-read");
+        witness.branch = None;
+        witness.load_signal = None;
+        witness.failed_hour = Some(5);
+        fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        let paths = finalize_session(&session, &output).unwrap();
+        let replay = open(&paths[0]).unwrap();
+        assert_eq!(replay.branches.len(), 1);
+        assert_eq!(
+            replay.gaps,
+            [Gap {
+                branch: 9,
+                first_hour: 5,
+                last_hour: 5,
+                reason: ALLOCATION_GAP_REASON.into()
+            }]
+        );
+    }
+
+    #[test]
+    fn allocation_failure_existing_gaps_preserve_native_branch_continuity() {
+        use crate::test_support::allocation_records;
+        let (session, output, mut witness) = allocation_session("callback-known-gaps");
+        let mut records = allocation_records();
+        records.insert(
+            records.len() - 1,
+            Record::Gap(Gap {
+                branch: 9,
+                first_hour: 5,
+                last_hour: 98,
+                reason: "synthetic witnessed missing hours".into(),
+            }),
+        );
+        let mut bytes = Vec::new();
+        for record in records {
+            bytes.extend(replay::spool::encode_record(&record).unwrap());
+        }
+        let campaign = session.join(std::str::from_utf8(&witness.campaign_id.unwrap()).unwrap());
+        witness.branch = None;
+        witness.committed_bytes = bytes.len() as u64;
+        fs::write(campaign.join("spool.0000.h4s"), bytes).unwrap();
+        fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        let paths = finalize_session(&session, &output).unwrap();
+        let replay = open(&paths[0]).unwrap();
+        assert_eq!(replay.branches.len(), 1);
+        assert_eq!(replay.gaps.len(), 2);
+        assert_eq!(
+            replay.gaps[1],
+            Gap {
+                branch: 9,
+                first_hour: 99,
+                last_hour: 99,
+                reason: ALLOCATION_GAP_REASON.into(),
+            }
+        );
+    }
+
+    #[test]
+    fn allocation_failure_changed_load_signal_recovers_a_gap_only_branch_idempotently() {
+        let (session, output, mut witness) = allocation_session("callback-load-failure");
+        witness.branch = None;
+        witness.load_signal = Some(20);
+        witness.failed_hour = Some(1);
+        fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        let paths = finalize_session(&session, &output).unwrap();
+        let bytes = fs::read(&paths[0]).unwrap();
+        let replay = open(&paths[0]).unwrap();
+        assert_eq!(replay.branches.len(), 2);
+        assert_eq!(
+            replay.branches[1],
+            BranchStart {
+                id: 10,
+                session: 7,
+                loaded_hour: None,
+                first_hour: 1,
+                parent: Parentage::Unknown,
+                reason: BranchReason::LoadSignal,
+            }
+        );
+        assert_eq!(
+            replay.gaps,
+            [Gap {
+                branch: 10,
+                first_hour: 1,
+                last_hour: 1,
+                reason: ALLOCATION_GAP_REASON.into(),
+            }]
+        );
+        assert!(
+            matches!(replay.seek(10, 1).unwrap(), SeekResult::Gap { reason, .. } if reason == ALLOCATION_GAP_REASON)
+        );
+        assert!(matches!(
+            replay.controls.last().unwrap(),
+            ControlRecord::Detach {
+                last_hour: None,
+                ..
+            }
+        ));
+        assert_eq!(finalize_session(&session, &output).unwrap(), paths);
+        assert_eq!(fs::read(&paths[0]).unwrap(), bytes);
+    }
+
+    #[test]
+    fn allocation_failure_new_campaign_without_prefix_preserves_previous_campaign() {
+        let (session, output, mut witness) = allocation_session("new-campaign-failure");
+        witness.campaign_id = Some(*b"22b7cc84-3028-4f65-8e0d-adf2f37ca1a6");
+        witness.branch = None;
+        witness.load_signal = Some(20);
+        fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        let paths = finalize_session(&session, &output).unwrap();
+        let replay = open(&paths[0]).unwrap();
+        assert!(replay.gaps.is_empty());
+        assert!(replay.controls.iter().any(|control| matches!(
+            control,
+            ControlRecord::Partial {
+                failed_hour: None,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn allocation_failure_mixed_campaign_completion_keeps_successful_outputs_in_result() {
+        use crate::test_support::allocation_records;
+        let (session, output, mut witness) = allocation_session("mixed-campaign-failure");
+        witness.campaign_id = Some(*b"22b7cc84-3028-4f65-8e0d-adf2f37ca1a6");
+        witness.pending_campaign_id = witness.campaign_id;
+        witness.branch = None;
+        fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        let failed = session.join(std::str::from_utf8(&witness.campaign_id.unwrap()).unwrap());
+        fs::create_dir_all(&failed).unwrap();
+        let context = allocation_records();
+        let mut spool = Vec::new();
+        for record in &context[..2] {
+            spool.extend(replay::spool::encode_record(record).unwrap());
+        }
+        fs::write(failed.join("spool.0000.h4s"), spool).unwrap();
+        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("no committed spool watermark"));
+        assert!(
+            open(&paths[0])
+                .unwrap()
+                .controls
+                .iter()
+                .any(|control| matches!(
+                    control,
+                    ControlRecord::Partial {
+                        failed_hour: None,
+                        ..
+                    }
+                ))
+        );
+    }
+
+    #[test]
+    fn allocation_failure_new_campaign_caps_late_crc_valid_previous_campaign_frame() {
+        use crate::test_support::allocation_records;
+        let (session, output, mut witness) = allocation_session("mixed-late-frame");
+        let committed = witness.committed_campaign_id.unwrap();
+        let old = session.join(std::str::from_utf8(&committed).unwrap());
+        let mut records = allocation_records();
+        records.pop();
+        let mut old_spool = Vec::new();
+        for record in &records {
+            old_spool.extend(replay::spool::encode_record(record).unwrap());
+        }
+        witness.committed_bytes = old_spool.len() as u64;
+        let mut late = records
+            .iter()
+            .rev()
+            .find_map(|record| match record {
+                Record::Frame(frame) => Some(frame.clone()),
+                _ => None,
+            })
+            .unwrap();
+        late.hour = 5;
+        let TableUpdate::Snapshot(TableRows::Clock(rows)) =
+            &mut late.tables[TableId::Clock.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].hour = 5;
+        old_spool.extend(replay::spool::encode_record(&Record::Frame(late.clone())).unwrap());
+        assert_eq!(recover_prefix(&old_spool).valid_bytes, old_spool.len());
+        let old_path = old.join("spool.0000.h4s");
+        fs::write(&old_path, &old_spool).unwrap();
+
+        let attempted = *b"22b7cc84-3028-4f65-8e0d-adf2f37ca1a6";
+        witness.campaign_id = Some(attempted);
+        witness.pending_campaign_id = Some(attempted);
+        witness.branch = None;
+        witness.load_signal = Some(20);
+        witness.failed_hour = Some(99);
+        let failed = session.join(std::str::from_utf8(&attempted).unwrap());
+        fs::create_dir_all(&failed).unwrap();
+        let mut failed_spool = replay::spool::encode_record(&records[0]).unwrap();
+        failed_spool.extend(
+            replay::spool::encode_record(&Record::BranchStart(BranchStart {
+                id: 10,
+                session: 7,
+                loaded_hour: Some(98),
+                first_hour: 99,
+                parent: Parentage::Unknown,
+                reason: BranchReason::LoadSignal,
+            }))
+            .unwrap(),
+        );
+        late.branch = 10;
+        late.hour = 99;
+        let TableUpdate::Snapshot(TableRows::Clock(rows)) =
+            &mut late.tables[TableId::Clock.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].hour = 99;
+        rows[0].play_session_started_at = 20;
+        let TableUpdate::Snapshot(TableRows::Campaign(rows)) =
+            &mut late.tables[TableId::Campaign.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].id = attempted.to_vec();
+        failed_spool.extend(replay::spool::encode_record(&Record::Frame(late)).unwrap());
+        assert_eq!(
+            recover_prefix(&failed_spool).valid_bytes,
+            failed_spool.len()
+        );
+        let failed_path = failed.join("spool.0000.h4s");
+        fs::write(&failed_path, &failed_spool).unwrap();
+        let witness_bytes = witness.encode();
+        fs::write(session.join(WITNESS_FILE_NAME), witness_bytes).unwrap();
+
+        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("no committed spool watermark"));
+        let replay = open(&paths[0]).unwrap();
+        assert_eq!(replay.campaign_id, committed);
+        assert!(replay.index.iter().all(|block| block.last_hour <= 4));
+        assert!(matches!(replay.seek(9, 4).unwrap(), SeekResult::Frame(_)));
+        assert!(replay.gaps.is_empty());
+        assert!(replay.controls.iter().any(|control| matches!(
+            control,
+            ControlRecord::Partial {
+                failed_hour: None,
+                ..
+            }
+        )));
+        assert!(
+            !output
+                .join(format!(
+                    "{}.battleplan",
+                    std::str::from_utf8(&attempted).unwrap()
+                ))
+                .exists()
+        );
+        let before = fs::read(&paths[0]).unwrap();
+        assert_eq!(
+            finalize_session_outcome(&session, &output).unwrap(),
+            (paths.clone(), issues)
+        );
+        assert_eq!(fs::read(&paths[0]).unwrap(), before);
+        assert_eq!(fs::read(old_path).unwrap(), old_spool);
+        assert_eq!(fs::read(failed_path).unwrap(), failed_spool);
+        assert_eq!(
+            fs::read(session.join(WITNESS_FILE_NAME)).unwrap(),
+            witness_bytes
+        );
+    }
+
+    #[test]
+    fn allocation_failure_without_global_watermark_refuses_raw_crc_valid_frames() {
+        let (session, output, mut witness) = allocation_session("uncertified-prefix");
+        witness.campaign_id = None;
+        witness.branch = None;
+        witness.load_signal = None;
+        witness.failed_hour = None;
+        witness.committed_campaign_id = None;
+        witness.committed_segment = None;
+        witness.committed_bytes = 0;
+        fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap();
+        assert!(paths.is_empty());
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("no committed spool watermark"));
+        assert!(fs::read_dir(output).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn allocation_failure_pending_old_campaign_caps_late_frame_with_other_global_watermark() {
+        use crate::test_support::allocation_records;
+        let (session, output, mut witness) = allocation_session("pending-other-campaign");
+        let pending = witness.committed_campaign_id.unwrap();
+        let mut old_records = allocation_records();
+        old_records.pop();
+        let mut old_spool = Vec::new();
+        for record in &old_records {
+            old_spool.extend(replay::spool::encode_record(record).unwrap());
+        }
+        witness.pending_campaign_id = Some(pending);
+        witness.pending_segment = Some(0);
+        witness.pending_bytes = old_spool.len() as u64;
+        let mut late = old_records
+            .iter()
+            .rev()
+            .find_map(|record| match record {
+                Record::Frame(frame) => Some(frame.clone()),
+                _ => None,
+            })
+            .unwrap();
+        late.hour = 5;
+        let TableUpdate::Snapshot(TableRows::Clock(rows)) =
+            &mut late.tables[TableId::Clock.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].hour = 5;
+        old_spool.extend(replay::spool::encode_record(&Record::Frame(late)).unwrap());
+        assert_eq!(recover_prefix(&old_spool).valid_bytes, old_spool.len());
+        let old_path = session
+            .join(std::str::from_utf8(&pending).unwrap())
+            .join("spool.0000.h4s");
+        fs::write(&old_path, &old_spool).unwrap();
+
+        let committed = *b"22b7cc84-3028-4f65-8e0d-adf2f37ca1a6";
+        let mut current_spool = Vec::new();
+        for mut record in old_records {
+            if let Record::Frame(frame) = &mut record {
+                let TableUpdate::Snapshot(TableRows::Campaign(rows)) =
+                    &mut frame.tables[TableId::Campaign.index()]
+                else {
+                    unreachable!()
+                };
+                rows[0].id = committed.to_vec();
+            }
+            current_spool.extend(replay::spool::encode_record(&record).unwrap());
+        }
+        let current = session.join(std::str::from_utf8(&committed).unwrap());
+        fs::create_dir_all(&current).unwrap();
+        let current_path = current.join("spool.0000.h4s");
+        fs::write(&current_path, &current_spool).unwrap();
+        witness.campaign_id = Some(committed);
+        witness.committed_campaign_id = Some(committed);
+        witness.committed_bytes = current_spool.len() as u64;
+        let witness_bytes = witness.encode();
+        fs::write(session.join(WITNESS_FILE_NAME), witness_bytes).unwrap();
+
+        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap();
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(paths.len(), 2);
+        let mut before = Vec::new();
+        for path in &paths {
+            let replay = open(path).unwrap();
+            assert!(replay.index.iter().all(|block| block.last_hour <= 4));
+            assert!(matches!(replay.seek(9, 4).unwrap(), SeekResult::Frame(_)));
+            let failed_hour = if replay.campaign_id == committed {
+                Some(99)
+            } else {
+                None
+            };
+            assert!(replay.controls.iter().any(|control| matches!(control,
+                ControlRecord::Partial { failed_hour: actual, .. } if *actual == failed_hour)));
+            assert_eq!(replay.gaps.len(), usize::from(failed_hour.is_some()));
+            before.push(fs::read(path).unwrap());
+        }
+        assert_eq!(
+            finalize_session_outcome(&session, &output).unwrap(),
+            (paths.clone(), Vec::new())
+        );
+        for (path, bytes) in paths.iter().zip(before) {
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+        assert_eq!(fs::read(old_path).unwrap(), old_spool);
+        assert_eq!(fs::read(current_path).unwrap(), current_spool);
+        assert_eq!(
+            fs::read(session.join(WITNESS_FILE_NAME)).unwrap(),
+            witness_bytes
+        );
+    }
+
+    #[test]
+    fn allocation_failure_stable_failed_campaign_keeps_prefix_with_other_global_watermark() {
+        use crate::test_support::allocation_records;
+        let (session, output, mut witness) = allocation_session("stable-failed-campaign");
+        let committed = *b"22b7cc84-3028-4f65-8e0d-adf2f37ca1a6";
+        let mut spool = Vec::new();
+        for mut record in allocation_records() {
+            if let Record::Frame(frame) = &mut record {
+                let TableUpdate::Snapshot(TableRows::Campaign(rows)) =
+                    &mut frame.tables[TableId::Campaign.index()]
+                else {
+                    unreachable!()
+                };
+                rows[0].id = committed.to_vec();
+            }
+            spool.extend(replay::spool::encode_record(&record).unwrap());
+        }
+        let current = session.join(std::str::from_utf8(&committed).unwrap());
+        fs::create_dir_all(&current).unwrap();
+        fs::write(current.join("spool.0000.h4s"), &spool).unwrap();
+        witness.committed_campaign_id = Some(committed);
+        witness.committed_bytes = spool.len() as u64;
+        witness.failed_hour = Some(5);
+        witness.branch = None;
+        fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap();
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(paths.len(), 2);
+        for path in paths {
+            let replay = open(&path).unwrap();
+            assert!(matches!(replay.seek(9, 4).unwrap(), SeekResult::Frame(_)));
+            assert_eq!(
+                replay.gaps.len(),
+                usize::from(replay.campaign_id != committed)
+            );
+            if replay.campaign_id != committed {
+                assert!(
+                    matches!(replay.seek(9, 5).unwrap(), SeekResult::Gap { reason, .. } if reason == ALLOCATION_GAP_REASON)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn allocation_failure_same_campaign_pending_cap_uses_earlier_watermark() {
+        use crate::test_support::allocation_records;
+        let (session, output, mut witness) = allocation_session("pending-earlier-watermark");
+        let mut prior = Vec::new();
+        for record in allocation_records() {
+            if matches!(&record, Record::Frame(frame) if frame.hour == 4) {
+                break;
+            }
+            prior.extend(replay::spool::encode_record(&record).unwrap());
+        }
+        witness.pending_campaign_id = witness.committed_campaign_id;
+        witness.pending_segment = Some(0);
+        witness.pending_bytes = prior.len() as u64;
+        witness.failed_hour = Some(4);
+        fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        let paths = finalize_session(&session, &output).unwrap();
+        let replay = open(&paths[0]).unwrap();
+        assert!(replay.index.iter().all(|block| block.last_hour <= 3));
+        assert!(matches!(replay.seek(9, 3).unwrap(), SeekResult::Frame(_)));
+        assert!(
+            matches!(replay.seek(9, 4).unwrap(), SeekResult::Gap { reason, .. } if reason == ALLOCATION_GAP_REASON)
+        );
+    }
+
+    #[test]
+    fn allocation_failure_reuses_an_existing_gap_before_detach() {
+        use crate::test_support::{allocation_records, allocation_witness};
+        let mut records = allocation_records();
+        let gap = Gap {
+            branch: 9,
+            first_hour: 99,
+            last_hour: 99,
+            reason: ALLOCATION_GAP_REASON.into(),
+        };
+        records.insert(records.len() - 1, Record::Gap(gap));
+        let mut segments = vec![(
+            0,
+            Recovery {
+                records,
+                valid_bytes: 1,
+                damage: None,
+            },
+        )];
+        let witness = allocation_witness(1);
+        apply_failure_witness(&mut segments, &witness, true).unwrap();
+        apply_failure_witness(&mut segments, &witness, true).unwrap();
+        let records = &segments[0].1.records;
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record, Record::Gap(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record, Record::Control(ControlRecord::Partial { .. })))
+                .count(),
+            1
+        );
+        assert!(matches!(
+            records[records.len() - 1],
+            Record::Control(ControlRecord::Detach { .. })
+        ));
+    }
+
+    #[test]
+    fn allocation_failure_refuses_invalid_identity_context_and_watermarks() {
+        let (session, output, witness) = allocation_session("partial-refusals");
+        for bad in [
+            TerminalWitness {
+                session: 8,
+                ..witness
+            },
+            TerminalWitness {
+                process_start_time: 14,
+                ..witness
+            },
+            TerminalWitness {
+                branch: Some(100),
+                ..witness
+            },
+            TerminalWitness {
+                load_signal: Some(20),
+                ..witness
+            },
+            TerminalWitness {
+                failed_hour: Some(4),
+                ..witness
+            },
+            TerminalWitness {
+                committed_segment: Some(1),
+                ..witness
+            },
+            TerminalWitness {
+                committed_bytes: witness.committed_bytes - 1,
+                ..witness
+            },
+            TerminalWitness {
+                committed_bytes: u64::MAX,
+                ..witness
+            },
+        ] {
+            fs::write(session.join(WITNESS_FILE_NAME), bad.encode()).unwrap();
+            assert!(finalize_session(&session, &output).is_err(), "{bad:?}");
+            assert!(fs::read_dir(&output).unwrap().next().is_none());
+        }
+        let mut torn = witness.encode();
+        torn[31] ^= 1;
+        fs::write(session.join(WITNESS_FILE_NAME), torn).unwrap();
+        assert!(finalize_session(&session, &output).is_err());
+        fs::write(session.join(WITNESS_FILE_NAME), &torn[..WITNESS_BYTES - 1]).unwrap();
+        assert!(finalize_session(&session, &output).is_err());
+        fs::remove_file(session.join(WITNESS_FILE_NAME)).unwrap();
+        fs::write(session.join("status.json"), br#"{"capture_failed":true}"#).unwrap();
+        assert!(finalize_session(&session, &output).is_err());
+    }
+
+    #[test]
+    fn allocation_failure_before_first_frame_retains_evidence_without_a_replay() {
+        use crate::test_support::{allocation_test_directory, allocation_witness};
+        let session = allocation_test_directory("bootstrap-failure");
+        let witness = TerminalWitness {
+            campaign_id: None,
+            branch: None,
+            load_signal: None,
+            failed_hour: None,
+            committed_campaign_id: None,
+            committed_segment: None,
+            committed_bytes: 0,
+            ..allocation_witness(0)
+        };
+        fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        let output = session.join("output");
+        assert!(
+            finalize_session(&session, &output)
+                .unwrap_err()
+                .contains("no campaign spool")
+        );
+        assert!(read_failure_witness(&session).unwrap().is_some());
+    }
+
+    #[test]
+    fn allocation_failure_empty_witness_preserves_healthy_finalization_bytes() {
+        let (session, output, witness) = allocation_session("healthy-witness");
+        let campaign = session.join(std::str::from_utf8(&witness.campaign_id.unwrap()).unwrap());
+        fs::OpenOptions::new()
+            .write(true)
+            .open(campaign.join("spool.0000.h4s"))
+            .unwrap()
+            .set_len(witness.committed_bytes)
+            .unwrap();
+        fs::remove_file(session.join(WITNESS_FILE_NAME)).unwrap();
+        let paths = finalize_session(&session, &output).unwrap();
+        let before = fs::read(&paths[0]).unwrap();
+        fs::write(session.join(WITNESS_FILE_NAME), [0; WITNESS_BYTES]).unwrap();
+        assert_eq!(finalize_session(&session, &output).unwrap(), paths);
+        assert_eq!(fs::read(&paths[0]).unwrap(), before);
+        let replay = Replay::open(before).unwrap();
+        assert!(replay.gaps.is_empty());
+        assert!(
+            !replay
+                .controls
+                .iter()
+                .any(|control| matches!(control, ControlRecord::Partial { .. }))
+        );
+    }
 
     #[test]
     fn character_lines_filter_by_token_or_name_and_resolve_the_template_tag() {

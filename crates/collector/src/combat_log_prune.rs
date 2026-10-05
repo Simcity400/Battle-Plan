@@ -108,7 +108,7 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 pub static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static BASE: AtomicUsize = AtomicUsize::new(0);
-static UNHOOKED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static UNHOOKED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 /// A hook state change since the last drain: the prunes between went unseen.
 static CHANGED: AtomicBool = AtomicBool::new(true);
 /// `[prune calls, calls with deleted logs, rows logged, failed reads,
@@ -209,6 +209,8 @@ pub fn drain(signal: i64, output: &mut Vec<Row>) -> Result<(), &'static str> {
         .load(Ordering::SeqCst)
         .min(OVERFLOW_AT.load(Ordering::SeqCst))
         .min(LOG);
+    engine::allocation::reserve(output, reserved)
+        .map_err(|_| "combat log drain allocation failed")?;
     // Element pointers only (see `Slots`).
     let slots = SLOTS.0.get().cast::<Logged>().cast_const();
     let mut other = 0_u64;
@@ -243,7 +245,7 @@ pub fn drain(signal: i64, output: &mut Vec<Row>) -> Result<(), &'static str> {
     result
 }
 
-pub fn status() -> serde_json::Value {
+pub fn status() -> impl serde::Serialize {
     let c = COUNTERS
         .each_ref()
         .map(|value| value.load(Ordering::Relaxed));
@@ -257,7 +259,7 @@ pub fn status() -> serde_json::Value {
             (u128::from(counter.load(Ordering::Relaxed)) * 1_000_000_000 / frequency as u128) as u64
         })
     };
-    serde_json::json!({
+    crate::status::status!({
         "unhooked": UNHOOKED.get(),
         "enabled": ENABLED.load(Ordering::SeqCst),
         "prune_calls": c[0],
@@ -292,9 +294,9 @@ impl Hooks {
         Self { hook }
     }
 
-    unsafe fn install(memory: &impl Memory, base: usize) -> Result<Hook, String> {
+    unsafe fn install(memory: &impl Memory, base: usize) -> Result<Hook, &'static str> {
         if engine::read::<[u8; 16]>(memory, base + PRUNE_RVA) != Some(PRUNE_SENTINEL) {
-            return Err("combat log prune sentinel differs".into());
+            return Err("combat log prune sentinel differs");
         }
         BASE.store(base, Ordering::Relaxed);
         let hook = unsafe {
@@ -303,12 +305,13 @@ impl Hooks {
                 prune as *const () as usize,
                 PRUNE_SENTINEL,
             )
-        }?;
+        }
+        .map_err(|_| "native hook construction failed")?;
         ORIGINAL.store(hook.trampoline(), Ordering::Release);
         Ok(hook)
     }
 
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
             ENABLED.store(false, Ordering::SeqCst);
         }
@@ -316,15 +319,18 @@ impl Hooks {
         let Some(hook) = self.hook.as_mut() else {
             return Ok(true);
         };
-        if !hook.set_enabled(enabled)? {
+        if !hook
+            .set_enabled(enabled)
+            .map_err(|_| "native hook state change failed")?
+        {
             return Ok(false);
         }
         ENABLED.store(enabled, Ordering::SeqCst);
         Ok(true)
     }
 
-    pub fn executable_ranges(&self) -> Vec<Range<usize>> {
-        self.hook.iter().flat_map(Hook::executable_ranges).collect()
+    pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
+        self.hook.iter().flat_map(Hook::executable_ranges)
     }
 }
 
@@ -407,7 +413,7 @@ mod tests {
         let max = OBSERVE_MAX_TICKS.load(Ordering::Relaxed);
         assert!(total >= before + 1_000_000);
         assert!(max >= 1_000_000 && max <= total);
-        let status = status();
+        let status = serde_json::to_value(status()).unwrap();
         assert!(status["observe_total_ns"].is_u64());
         assert!(status["observe_max_ns"].is_u64());
         assert!(status["observe_total_ns"].as_u64() >= status["observe_max_ns"].as_u64());

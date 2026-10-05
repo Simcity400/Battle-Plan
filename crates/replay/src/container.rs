@@ -3,14 +3,14 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{File, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
 use crate::{
     BranchId, FORMAT_VERSION, Hour, KEYFRAME_INTERVAL, SessionId,
     branches::{BranchReason, BranchStart, BranchTracker, Gap},
-    codec::{Decoder, invalid, put_bytes, put_string},
+    codec::{Decoder, invalid, invalid_static, put_bytes, put_string},
     format::FormatVersion,
     frame::{DecodedFrame, Frame, FrameDecoder, TABLE_COUNT, TableView},
     identity::{Identity, SessionStart, Verification},
@@ -105,6 +105,7 @@ pub struct Replay {
     pub index: Vec<BlockIndex>,
     header_end: usize,
     trailer_start: usize,
+    partial_control: Option<usize>,
 }
 
 /// Exact validated prior hours and provenance, without replay bytes or decoded rows.
@@ -115,7 +116,7 @@ pub struct CampaignHistory {
     pub identity: Identity,
     pub sessions: Vec<SessionStart>,
     pub branches: Vec<RecordedBranchHistory>,
-    tails: BTreeMap<SessionId, SessionTail>,
+    tails: Vec<(SessionId, SessionTail)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -135,20 +136,25 @@ pub struct SessionTail {
 
 impl CampaignHistory {
     pub fn session_tail(&self, session: SessionId) -> Option<SessionTail> {
-        self.tails.get(&session).copied()
+        self.tails
+            .iter()
+            .find(|(id, _)| *id == session)
+            .map(|(_, tail)| *tail)
     }
 
     /// Seed exact history and select a new process session or resume the same process.
     /// Same-process reattachment requires its complete saved session metadata to match.
-    /// A caller whose content verification is still pending can preload against the
-    /// saved SessionStart, then compare it with the final verified session before use.
+    /// A caller whose content verification is pending can preload against the saved
+    /// SessionStart, then compare it with the final verified session before use.
     pub fn tracker_for(&self, session: &SessionStart) -> io::Result<BranchTracker> {
         if !self.identity.same_content(&session.identity) {
-            return Err(invalid("existing campaign replay has different content"));
+            return Err(invalid_static(
+                "existing campaign replay has different content",
+            ));
         }
         let previous = self.sessions.iter().find(|old| old.id == session.id);
         if previous.is_some_and(|old| old != session) {
-            return Err(invalid(
+            return Err(invalid_static(
                 "same process session has conflicting collector or content metadata",
             ));
         }
@@ -158,7 +164,7 @@ impl CampaignHistory {
         }
         if previous.is_some() {
             let tail = self.session_tail(session.id).ok_or_else(|| {
-                invalid("existing process session has no recorded hour to resume")
+                invalid_static("existing process session has no recorded hour to resume")
             })?;
             tracker.resume_session(session.id, tail.branch, tail.hour, tail.load_signal)?;
         } else {
@@ -217,6 +223,77 @@ struct Pending {
 }
 
 impl Replay {
+    pub fn partial(&self) -> Option<&ControlRecord> {
+        self.partial_control
+            .and_then(|index| self.controls.get(index))
+    }
+
+    pub fn is_partial(&self) -> bool {
+        self.partial().is_some()
+    }
+
+    /// Recording-list metadata reads the checksummed trailer without inflating blocks.
+    /// Opening the replay still performs the full header and metadata validation.
+    pub fn read_partial(path: &Path) -> io::Result<Option<ControlRecord>> {
+        let mut file = File::open(path)?;
+        let length = file.metadata()?.len();
+        Self::read_partial_from(&mut file, length)
+    }
+
+    fn read_partial_from(
+        file: &mut (impl Read + Seek),
+        length: u64,
+    ) -> io::Result<Option<ControlRecord>> {
+        if length < (FOOTER_SIZE + 6) as u64 {
+            return Err(invalid("missing replay footer"));
+        }
+        let mut prefix = [0; 6];
+        file.read_exact(&mut prefix)?;
+        if &prefix[..4] != HEADER_MAGIC {
+            return Err(invalid("invalid replay header magic"));
+        }
+        FormatVersion::read(u16::from_le_bytes(prefix[4..].try_into().unwrap()))?;
+        file.seek(SeekFrom::End(-(FOOTER_SIZE as i64)))?;
+        let mut footer_bytes = [0; FOOTER_SIZE];
+        file.read_exact(&mut footer_bytes)?;
+        let mut footer = Decoder::new(&footer_bytes);
+        expect_magic(&mut footer, FOOTER_MAGIC)?;
+        let start = footer.u64()?;
+        let trailer_length = footer.u64()?;
+        let checksum = footer.u32()?;
+        if start < 6 || start.checked_add(trailer_length) != Some(length - FOOTER_SIZE as u64) {
+            return Err(invalid("invalid trailer extent"));
+        }
+        let mut bytes = engine::allocation::filled(to_usize(trailer_length)?, 0)?;
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut bytes)?;
+        if crc32fast::hash(&bytes) != checksum {
+            return Err(invalid("trailer CRC mismatch"));
+        }
+        let mut trailer = Decoder::new(&bytes);
+        expect_magic(&mut trailer, TRAILER_MAGIC)?;
+        let sessions = decode_list(&mut trailer, SessionStart::decode)?;
+        let _branches = decode_list(&mut trailer, BranchStart::decode)?;
+        let _gaps = decode_list(&mut trailer, Gap::decode)?;
+        let controls = decode_list(&mut trailer, ControlRecord::decode)?;
+        let _recovery = decode_list(&mut trailer, RecoveryNote::decode)?;
+        let count = trailer.count(40)?;
+        trailer.take(count * 40)?;
+        trailer.finish()?;
+        validate_partial_controls(&controls)?;
+        for control in &controls {
+            if !sessions
+                .iter()
+                .any(|session| session.id == control.session())
+            {
+                return Err(invalid("replay control refers to an unknown session"));
+            }
+        }
+        Ok(controls
+            .into_iter()
+            .find(|control| matches!(control, ControlRecord::Partial { .. })))
+    }
+
     pub fn from_records(campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Self> {
         let segments: Vec<_> = segments.iter().map(Vec::as_slice).collect();
         Self::from_record_slices(campaign_id, &segments, &mut |_, _, _| Ok(()))
@@ -410,7 +487,7 @@ impl Replay {
                 hours: Vec::new(),
             })
             .collect();
-        let mut tails = BTreeMap::new();
+        let mut tails: Vec<(SessionId, SessionTail)> = Vec::new();
         for block in &self.index {
             let index = *positions
                 .get(&block.branch)
@@ -435,14 +512,20 @@ impl Replay {
                     TableView::Truncated { .. } | TableView::Unavailable { .. } => None,
                 };
             }
-            tails.insert(
-                history.start.session,
-                SessionTail {
-                    branch: block.branch,
-                    hour: block.last_hour,
-                    load_signal,
-                },
-            );
+            let tail = SessionTail {
+                branch: block.branch,
+                hour: block.last_hour,
+                load_signal,
+            };
+            if let Some((_, old)) = tails
+                .iter_mut()
+                .find(|(id, _)| *id == history.start.session)
+            {
+                *old = tail;
+            } else {
+                engine::allocation::reserve(&mut tails, 1)?;
+                tails.push((history.start.session, tail));
+            }
         }
         // Match the existing reattach fallback: latest matching nonempty witness
         // is used only when the last recorded frame has no readable Clock table.
@@ -453,7 +536,7 @@ impl Replay {
                 load_signal: Some(signal),
                 ..
             } = control
-                && let Some(tail) = tails.get_mut(session)
+                && let Some((_, tail)) = tails.iter_mut().find(|(id, _)| id == session)
                 && tail.hour == *hour
                 && tail.load_signal.is_none()
             {
@@ -536,6 +619,9 @@ impl Replay {
             trailer_start,
             keyframe_interval,
         )?;
+        let partial_control = controls
+            .iter()
+            .position(|control| matches!(control, ControlRecord::Partial { .. }));
         Ok(Self {
             bytes,
             format,
@@ -550,6 +636,7 @@ impl Replay {
             index,
             header_end,
             trailer_start,
+            partial_control,
         })
     }
 
@@ -867,9 +954,10 @@ fn to_usize(value: u64) -> io::Result<usize> {
     usize::try_from(value).map_err(|_| invalid("file extent exceeds platform address space"))
 }
 fn put_count(out: &mut Vec<u8>, count: usize) -> io::Result<()> {
+    engine::allocation::reserve(out, 4)?;
     out.extend_from_slice(
         &u32::try_from(count)
-            .map_err(|_| invalid("too many metadata entries"))?
+            .map_err(|_| invalid_static("too many metadata entries"))?
             .to_le_bytes(),
     );
     Ok(())
@@ -892,7 +980,7 @@ fn decode_list<T>(
     decode: impl Fn(&mut Decoder<'_>) -> io::Result<T>,
 ) -> io::Result<Vec<T>> {
     let count = decoder.count(4)?;
-    let mut values = Vec::with_capacity(count);
+    let mut values = engine::allocation::vec(count)?;
     for _ in 0..count {
         let payload = decoder.bytes()?;
         let mut item = Decoder::new(&payload);
@@ -1215,6 +1303,7 @@ fn validate_metadata(
             return Err(invalid("replay control refers to an unknown session"));
         }
     }
+    validate_partial_controls(controls)?;
     let mut expected_offset = header_end as u64;
     let mut last_hours = BTreeMap::new();
     let mut closed_branches = BTreeSet::new();
@@ -1269,6 +1358,17 @@ fn validate_metadata(
     }
     if expected_offset != trailer_start as u64 {
         return Err(invalid("unindexed bytes before replay trailer"));
+    }
+    Ok(())
+}
+
+fn validate_partial_controls(controls: &[ControlRecord]) -> io::Result<()> {
+    for (position, control) in controls.iter().enumerate() {
+        if let ControlRecord::Partial { session, reason, .. } = control
+            && (reason.trim().is_empty() || controls[..position].iter().any(|previous| matches!(previous, ControlRecord::Partial { session: id, .. } if id == session)))
+        {
+            return Err(invalid("duplicate or invalid partial capture"));
+        }
     }
     Ok(())
 }

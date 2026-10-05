@@ -1,7 +1,7 @@
 //! Cached modifier trees walked by FormatModifierBreakdown@14054D0F0.
 //! Labels are CModifier+0x58 bytes (14054C770), not original source keys.
 use crate::{Memory, cpdx_array::Array, modifier_accumulator, msvc_string, read};
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 
 /// Preorder node; child occurrences retain their native order, including aliases.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -33,12 +33,15 @@ pub fn tree(
 ) -> Result<Vec<Node>, &'static str> {
     let mut nodes = Vec::new();
     let mut stack: Vec<(usize, Array, u32)> = Vec::new();
-    let mut active = BTreeSet::new();
+    let mut active = HashSet::<usize>::default();
     let mut address = root;
     loop {
-        if address == 0 || !active.insert(address) {
+        if address == 0 || active.contains(&address) {
             return Err("modifier breakdown null node or ancestor cycle");
         }
+        crate::allocation::reserve_set(&mut active, 1)
+            .map_err(|_| "modifier breakdown allocation failed")?;
+        active.insert(address);
         let children = address
             .checked_add(CHILDREN)
             .and_then(|p| Array::read(memory, p, 8))
@@ -51,6 +54,10 @@ pub fn tree(
                 .checked_add(DISPLAY)
                 .ok_or("modifier breakdown display address overflow")?,
         )?;
+        crate::allocation::reserve(&mut nodes, 1)
+            .map_err(|_| "modifier breakdown allocation failed")?;
+        crate::allocation::reserve(&mut stack, 1)
+            .map_err(|_| "modifier breakdown allocation failed")?;
         nodes.push(Node {
             children: children.count,
             value,
@@ -97,7 +104,10 @@ pub fn balance(memory: &impl Memory, base: usize, record: usize) -> Result<Balan
         .and_then(|p| Array::read(memory, p, 8))
         .ok_or("power balance modifier sources unreadable or invalid")?;
     let mut output = Balance::default();
-    let mut names = Vec::new();
+    let mut names = crate::allocation::vec(sources.count as usize)
+        .map_err(|_| "power balance source allocation failed")?;
+    crate::allocation::reserve_push_batch(&mut output.sources, sources.count as usize)
+        .map_err(|_| "power balance source allocation failed")?;
     for ordinal in 0..sources.count {
         let source = sources
             .element(ordinal, 8)
@@ -135,7 +145,7 @@ pub fn balance(memory: &impl Memory, base: usize, record: usize) -> Result<Balan
             }
         }
         if nonempty {
-            names.push(name.clone());
+            names.push(output.sources.len());
         }
         output.sources.push(name);
     }
@@ -163,8 +173,13 @@ pub fn balance(memory: &impl Memory, base: usize, record: usize) -> Result<Balan
             return Err("power balance cached modifier children do not match static source order");
         }
         nodes[0].name.clear();
-        for (node, name) in nodes[1..].iter_mut().zip(&names) {
-            node.name.clone_from(name);
+        for (node, &source) in nodes[1..].iter_mut().zip(&names) {
+            let name = &output.sources[source];
+            let additional = name.len().saturating_sub(node.name.len());
+            crate::allocation::reserve(&mut node.name, additional)
+                .map_err(|_| "power balance name allocation failed")?;
+            node.name.clear();
+            node.name.extend_from_slice(name);
         }
     }
     Ok(output)

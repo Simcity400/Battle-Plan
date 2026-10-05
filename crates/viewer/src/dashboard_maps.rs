@@ -22,7 +22,7 @@ use eframe::{egui, wgpu};
 
 use crate::{
     Config, Options,
-    app::{Viewer, date, load_scene, map_overlay},
+    app::{Viewer, date, load_scene, map_overlay, partial_notice},
     document::{Content, Document, InitialHour},
     hours::{Resources, SharedDecoder},
     map::scene::Scene,
@@ -879,9 +879,27 @@ impl DashboardMaps {
             // Diagnostics show only when the user turned them on; the loading
             // status always shows.
             let diagnostics = view.viewer.diagnostics && view.viewer.has_map();
-            if state.loading || diagnostics {
+            let replay = view
+                .source
+                .as_ref()
+                .and_then(|key| self.sources.get(key))
+                .map(|source| source.source.replay_ref());
+            let partial = replay.is_some_and(|replay| replay.is_partial());
+            if state.loading || diagnostics || partial {
                 let points = view.viewer.interface_points;
                 map_overlay(ui, clip, (id, "status"), points, |ui, height| {
+                    if partial {
+                        partial_notice(ui, replay.expect("partial recording has a source"));
+                        if frame
+                            .wgpu_render_state()
+                            .is_some_and(|state| crate::render::is_software(&state.adapter))
+                        {
+                            ui.colored_label(
+                                egui::Color32::YELLOW,
+                                crate::render::SOFTWARE_RENDERER_NOTICE,
+                            );
+                        }
+                    }
                     if state.loading {
                         ui.label(match state.hour {
                             Some(hour) => format!(

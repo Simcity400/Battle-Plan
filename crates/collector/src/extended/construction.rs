@@ -8,12 +8,16 @@ use crate::{
     table_capture::{Arena, CaptureRows},
 };
 use engine::{
-    Memory, carmy_manpower_values, cbuilding, cbuilding_production_line, cbuilding_status,
-    ccountry, ccountry_collaboration_data, ccountry_collaboration_status, ccountry_occupation_data,
+    Memory,
+    allocation::{copy_vec, owned_vec, reserve, reserve_exact, vec},
+    carmy_manpower_values, cbuilding, cbuilding_production_line, cbuilding_status, ccountry,
+    ccountry_collaboration_data, ccountry_collaboration_status, ccountry_occupation_data,
     ccountry_occupation_status, cgame_state, cgeneral_production_line, coccupation_law,
-    cpdx_array::Array, cproduction_line, cproduction_status, cprovince, crailway_production_line,
+    cpdx_array::Array,
+    cproduction_line, cproduction_status, cprovince, crailway_production_line,
     creferenced_division_template, cresistance, cstate, cstate_garrison_data, cstate_template,
-    manpower_value_entry, msvc_string, pdx_robin_hood_bucket, state_resource_entry, walk::Outcome,
+    manpower_value_entry, msvc_string, pdx_robin_hood_bucket, state_resource_entry,
+    walk::Outcome,
 };
 use replay::{
     frame::TableView,
@@ -581,7 +585,9 @@ fn railway_table(
         cancelled: row.completed,
         current_segment: row.current_segment,
         remaining_cost: row.remaining_cost,
-        route: routes[row.route_start..row.route_start + row.route_len].to_vec(),
+        route: owned_vec(copy_vec(
+            &routes[row.route_start..row.route_start + row.route_len],
+        )),
     })
 }
 
@@ -606,7 +612,7 @@ fn settings_table(
         country: row.country,
         garrison_template: row.garrison_template,
         default_law_present: row.default_law_present,
-        law: names[row.law_start..row.law_start + row.law_len].to_vec(),
+        law: owned_vec(copy_vec(&names[row.law_start..row.law_start + row.law_len])),
     })
 }
 
@@ -631,7 +637,9 @@ fn law_table(
         controller: row.controller,
         occupied: row.occupied,
         state: row.state,
-        name: names[row.name_start..row.name_start + row.name_len].to_vec(),
+        name: owned_vec(copy_vec(
+            &names[row.name_start..row.name_start + row.name_len],
+        )),
     })
 }
 

@@ -1,7 +1,6 @@
 //! Uncompressed, independently recoverable spool segments.
 
 use std::{
-    collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
@@ -11,10 +10,11 @@ use std::{
 use crate::{
     FORMAT_VERSION,
     branches::{BranchStart, Gap},
-    codec::{Decoder, invalid, put_string},
+    codec::{Decoder, invalid, invalid_static, put_string},
     frame::{EncodedFrame, Frame},
     identity::SessionStart,
 };
+use engine::allocation::allocation_error;
 
 pub const RECORD_MAGIC: [u8; 4] = *b"H4SV";
 /// Magic, recording version, payload length and payload CRC, all scalars little-endian.
@@ -57,27 +57,81 @@ pub enum ControlRecord {
         dropped_frames: u64,
         reason: String,
     },
+    /// The verified capture prefix is readable, but the capture ended in failure.
+    Partial {
+        session: u64,
+        reason: String,
+        failed_hour: Option<i32>,
+    },
 }
 
 impl ControlRecord {
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        let tagged_session = size_of::<u8>() + size_of::<u64>();
+        let (fields, reason) = match self {
+            Self::Detach { last_hour, .. } => (
+                size_of::<u8>() + usize::from(last_hour.is_some()) * size_of::<i32>(),
+                None,
+            ),
+            Self::ClockWitness { load_signal, .. } => (
+                size_of::<u64>()
+                    + size_of::<i32>()
+                    + size_of::<u8>()
+                    + usize::from(load_signal.is_some()) * size_of::<i64>(),
+                None,
+            ),
+            Self::GapSummary { reason, .. } => (size_of::<u64>(), Some(reason)),
+            Self::Partial {
+                reason,
+                failed_hour,
+                ..
+            } => (
+                size_of::<u8>() + usize::from(failed_hour.is_some()) * size_of::<i32>(),
+                Some(reason),
+            ),
+        };
+        engine::allocation::add(
+            tagged_session + fields + usize::from(reason.is_some()) * size_of::<u32>(),
+            reason.map_or(0, String::len),
+        )
+    }
+
     pub const fn session(&self) -> u64 {
         match self {
             Self::Detach { session, .. }
             | Self::ClockWitness { session, .. }
-            | Self::GapSummary { session, .. } => *session,
+            | Self::GapSummary { session, .. }
+            | Self::Partial { session, .. } => *session,
         }
     }
 
     /// These tags are shared by spool payloads and the replay trailer.
     pub fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
+        engine::allocation::reserve(out, self.encoded_bytes()?)?;
         match self {
+            Self::Partial {
+                session,
+                reason,
+                failed_hour,
+            } => {
+                if reason.trim().is_empty() {
+                    return Err(invalid_static("partial capture needs a reason"));
+                }
+                out.push(7);
+                out.extend_from_slice(&session.to_le_bytes());
+                put_string(out, reason)?;
+                out.push(u8::from(failed_hour.is_some()));
+                if let Some(hour) = failed_hour {
+                    out.extend_from_slice(&hour.to_le_bytes());
+                }
+            }
             Self::GapSummary {
                 session,
                 dropped_frames,
                 reason,
             } => {
                 if *dropped_frames == 0 || reason.trim().is_empty() {
-                    return Err(invalid("gap summary needs a count and reason"));
+                    return Err(invalid_static("gap summary needs a count and reason"));
                 }
                 out.push(6);
                 out.extend_from_slice(&session.to_le_bytes());
@@ -117,6 +171,22 @@ impl ControlRecord {
 
     fn decode_tag(tag: u8, input: &mut Decoder<'_>) -> io::Result<Self> {
         Ok(match tag {
+            7 => {
+                let session = input.u64()?;
+                let reason = input.string()?;
+                if reason.trim().is_empty() {
+                    return Err(invalid("partial capture needs a reason"));
+                }
+                Self::Partial {
+                    session,
+                    reason,
+                    failed_hour: if input.bool()? {
+                        Some(input.i32()?)
+                    } else {
+                        None
+                    },
+                }
+            }
             6 => {
                 let session = input.u64()?;
                 let dropped_frames = input.u64()?;
@@ -156,6 +226,7 @@ impl ControlRecord {
 impl Record {
     /// Encode a payload; `encode_record` adds its length and checksum envelope.
     pub fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
+        engine::allocation::reserve(out, 1)?;
         match self {
             Self::SessionStart(value) => {
                 out.push(0);
@@ -186,14 +257,27 @@ impl Record {
             // decoding this payload.
             2 => Self::Frame(Frame::decode(input)?),
             3 => Self::Gap(Gap::decode(input)?),
-            tag @ 4..=6 => Self::Control(ControlRecord::decode_tag(tag, input)?),
+            tag @ 4..=7 => Self::Control(ControlRecord::decode_tag(tag, input)?),
             _ => return Err(invalid("unknown spool record tag")),
         })
     }
 }
 
 pub fn encode_record(record: &Record) -> io::Result<Vec<u8>> {
-    let mut out = vec![0; RECORD_HEADER_BYTES];
+    let payload = match record {
+        Record::Control(control) => control.encoded_bytes()?,
+        Record::BranchStart(branch) => size_of::<u8>() + branch.encoded_bytes(),
+        Record::Gap(gap) => engine::allocation::add(size_of::<u8>(), gap.encoded_bytes()?)?,
+        Record::SessionStart(session) => {
+            engine::allocation::add(size_of::<u8>(), session.encoded_bytes()?)?
+        }
+        Record::Frame(_) => size_of::<u8>(),
+    };
+    let capacity = RECORD_HEADER_BYTES
+        .checked_add(payload)
+        .ok_or_else(engine::allocation::oom)?;
+    let mut out = engine::allocation::vec(capacity)?;
+    out.resize(RECORD_HEADER_BYTES, 0);
     record.encode(&mut out)?;
     seal_record(out)
 }
@@ -206,7 +290,9 @@ fn encode_frame_record(mut frame: EncodedFrame) -> io::Result<Vec<u8>> {
 fn seal_record(mut out: Vec<u8>) -> io::Result<Vec<u8>> {
     let length = out.len() - RECORD_HEADER_BYTES;
     if length > MAX_RECORD_BYTES {
-        return Err(invalid("spool record exceeds the replay block limit"));
+        return Err(invalid_static(
+            "spool record exceeds the replay block limit",
+        ));
     }
     let crc = crc32fast::hash(&out[RECORD_HEADER_BYTES..]);
     out[..4].copy_from_slice(&RECORD_MAGIC);
@@ -217,46 +303,51 @@ fn seal_record(mut out: Vec<u8>) -> io::Result<Vec<u8>> {
 }
 
 /// This checks segment context, not table baselines, which belong to FrameDecoder.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub(crate) struct SegmentState {
     records: usize,
     session: Option<u64>,
     branch: Option<u64>,
-    branches: BTreeSet<u64>,
+    branches: Vec<u64>,
     first_hour: Option<i32>,
     last_hour: Option<i32>,
     needs_keyframe: bool,
     gap_before_keyframe: bool,
     detached: bool,
+    partial: bool,
 }
 
 impl SegmentState {
     pub(crate) fn accept(&mut self, record: &Record) -> io::Result<()> {
         if self.detached {
-            return Err(invalid("record after detach"));
+            return Err(invalid_static("record after detach"));
         }
         if self.records == 0 && !matches!(record, Record::SessionStart(_) | Record::BranchStart(_))
         {
-            return Err(invalid(
+            return Err(invalid_static(
                 "segment does not begin with session or branch context",
             ));
         }
         match record {
             Record::SessionStart(session) => {
                 if self.records != 0 {
-                    return Err(invalid("session start occurs inside a segment"));
+                    return Err(invalid_static("session start occurs inside a segment"));
                 }
                 self.session = Some(session.id);
                 self.needs_keyframe = true;
             }
             Record::BranchStart(branch) => {
                 if self.branch.is_some() && self.needs_keyframe && !self.gap_before_keyframe {
-                    return Err(invalid("branch has no initial keyframe or explicit gap"));
+                    return Err(invalid_static(
+                        "branch has no initial keyframe or explicit gap",
+                    ));
                 }
                 self.require_session(branch.session)?;
-                if !self.branches.insert(branch.id) {
-                    return Err(invalid("repeated branch start inside a segment"));
+                if self.branches.contains(&branch.id) {
+                    return Err(invalid_static("repeated branch start inside a segment"));
                 }
+                engine::allocation::reserve(&mut self.branches, 1)?;
+                self.branches.push(branch.id);
                 self.session = Some(branch.session);
                 self.branch = Some(branch.id);
                 self.first_hour = Some(branch.first_hour);
@@ -269,13 +360,13 @@ impl SegmentState {
             }
             Record::Gap(gap) => {
                 if self.branch != Some(gap.branch) {
-                    return Err(invalid("gap lacks matching branch context"));
+                    return Err(invalid_static("gap lacks matching branch context"));
                 }
                 if gap.first_hour > gap.last_hour || gap.reason.is_empty() {
-                    return Err(invalid("invalid gap range or empty reason"));
+                    return Err(invalid_static("invalid gap range or empty reason"));
                 }
                 if self.first_hour.is_some_and(|hour| gap.first_hour < hour) {
-                    return Err(invalid("gap precedes declared first branch hour"));
+                    return Err(invalid_static("gap precedes declared first branch hour"));
                 }
                 // Disk recovery may preserve only gaps for a branch before a load.
                 // Its first hour may already have a frame in an earlier segment.
@@ -285,13 +376,24 @@ impl SegmentState {
             | Record::Control(ControlRecord::GapSummary { session, .. }) => {
                 self.require_session(*session)?
             }
+            Record::Control(ControlRecord::Partial {
+                session, reason, ..
+            }) => {
+                self.require_session(*session)?;
+                if self.partial || reason.trim().is_empty() {
+                    return Err(invalid_static("duplicate or invalid partial capture"));
+                }
+                self.partial = true;
+            }
             Record::Control(ControlRecord::Detach { session, last_hour }) => {
                 self.require_session(*session)?;
-                if self.needs_keyframe {
-                    return Err(invalid("detach before initial keyframe"));
+                if self.needs_keyframe && !self.partial {
+                    return Err(invalid_static("detach before initial keyframe"));
                 }
                 if last_hour.is_some() && *last_hour != self.last_hour {
-                    return Err(invalid("detach hour differs from last recorded frame"));
+                    return Err(invalid_static(
+                        "detach hour differs from last recorded frame",
+                    ));
                 }
                 self.detached = true;
             }
@@ -301,25 +403,27 @@ impl SegmentState {
     }
 
     fn accept_frame(&mut self, branch: u64, hour: i32, keyframe: bool) -> io::Result<()> {
-        if self.detached {
-            return Err(invalid("record after detach"));
+        if self.detached || self.partial {
+            return Err(invalid_static("record after detach"));
         }
         if self.records == 0 {
-            return Err(invalid(
+            return Err(invalid_static(
                 "segment does not begin with session or branch context",
             ));
         }
         if self.branch != Some(branch) {
-            return Err(invalid("frame lacks matching branch context"));
+            return Err(invalid_static("frame lacks matching branch context"));
         }
         if self.needs_keyframe && !keyframe {
-            return Err(invalid("branch or segment does not start with a keyframe"));
+            return Err(invalid_static(
+                "branch or segment does not start with a keyframe",
+            ));
         }
         if self.first_hour.is_some_and(|first| hour < first) {
-            return Err(invalid("frame precedes declared first branch hour"));
+            return Err(invalid_static("frame precedes declared first branch hour"));
         }
         if self.last_hour.is_some_and(|last| hour <= last) {
-            return Err(invalid("frame hours do not increase within branch"));
+            return Err(invalid_static("frame hours do not increase within branch"));
         }
         self.last_hour = Some(hour);
         self.needs_keyframe = false;
@@ -329,7 +433,7 @@ impl SegmentState {
 
     fn require_session(&self, session: u64) -> io::Result<()> {
         if self.session.is_some_and(|expected| expected != session) {
-            Err(invalid("record belongs to another session"))
+            Err(invalid_static("record belongs to another session"))
         } else {
             Ok(())
         }
@@ -400,7 +504,7 @@ pub fn recover_prefix(bytes: &[u8]) -> Recovery {
             }
         }
     }
-    if state.needs_keyframe {
+    if state.needs_keyframe && !state.partial {
         result.damage = Some("segment ended before initial keyframe".into());
     }
     result
@@ -439,7 +543,7 @@ pub trait SegmentSink: Write {
 
 impl SegmentSink for File {
     fn sync_all(&mut self) -> io::Result<()> {
-        File::sync_all(self)
+        File::sync_all(self).map_err(allocation_error)
     }
 }
 
@@ -470,7 +574,7 @@ fn independent_sync_file(file: &File) -> io::Result<File> {
         )
     };
     if handle == INVALID_HANDLE_VALUE {
-        Err(io::Error::last_os_error())
+        Err(allocation_error(io::Error::last_os_error()))
     } else {
         Ok(unsafe { File::from_raw_handle(handle) })
     }
@@ -486,11 +590,11 @@ impl FileSink {
         if let Some(pending) = self.pending.take() {
             let (elapsed, result) = pending
                 .join()
-                .map_err(|_| io::Error::other("spool durability worker panicked"))?;
+                .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
             self.work.completed += 1;
             self.work.total_ns = self.work.total_ns.saturating_add(elapsed);
             self.work.max_ns = self.work.max_ns.max(elapsed);
-            result?;
+            result.map_err(allocation_error)?;
         }
         Ok(())
     }
@@ -498,11 +602,11 @@ impl FileSink {
 
 impl Write for FileSink {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.file.write(bytes)
+        self.file.write(bytes).map_err(allocation_error)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
+        self.file.flush().map_err(allocation_error)
     }
 }
 
@@ -510,14 +614,14 @@ impl SegmentSink for FileSink {
     fn sync_all(&mut self) -> io::Result<()> {
         self.finish_pending()?;
         // Include writes accepted after the background request began.
-        self.file.sync_all()
+        self.file.sync_all().map_err(allocation_error)
     }
 
     fn start_sync(&mut self) -> io::Result<()> {
         if !self.poll_sync()? {
             return Ok(());
         }
-        let file = self.sync_file.try_clone()?;
+        let file = self.sync_file.try_clone().map_err(allocation_error)?;
         self.pending = Some(
             std::thread::Builder::new()
                 .name("replay-durability".into())
@@ -528,7 +632,8 @@ impl SegmentSink for FileSink {
                         started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
                         result,
                     )
-                })?,
+                })
+                .map_err(allocation_error)?,
         );
         self.work.requested += 1;
         Ok(())
@@ -574,7 +679,7 @@ pub struct FileBackend {
 impl FileBackend {
     pub fn new(directory: impl Into<PathBuf>) -> io::Result<Self> {
         let directory = directory.into();
-        fs::create_dir_all(&directory)?;
+        fs::create_dir_all(&directory).map_err(allocation_error)?;
         Ok(Self { directory })
     }
 
@@ -590,7 +695,8 @@ impl SegmentBackend for FileBackend {
         let file = OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(self.directory.join(format!("spool.{index:04}.h4s")))?;
+            .open(self.directory.join(format!("spool.{index:04}.h4s")))
+            .map_err(allocation_error)?;
         let sync_file = independent_sync_file(&file)?;
         Ok(FileSink {
             file,
@@ -601,13 +707,21 @@ impl SegmentBackend for FileBackend {
     }
 }
 
+pub type SpoolWriteStartHook = fn(Option<(u32, u64)>);
+
 pub struct SegmentedSpool<B: SegmentBackend = FileBackend> {
     backend: B,
     sink: Option<B::Sink>,
     state: SegmentState,
     next_segment: u32,
     last_sync: Instant,
-    last_error: Option<String>,
+    last_error: Option<io::ErrorKind>,
+    committed_segment: Option<u32>,
+    committed_bytes: u64,
+    current_segment: Option<u32>,
+    current_bytes: u64,
+    write_start_hook: Option<SpoolWriteStartHook>,
+    commit_hook: Option<fn(u32, u64, bool)>,
 }
 
 impl<B: SegmentBackend> SegmentedSpool<B> {
@@ -623,6 +737,12 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
             next_segment,
             last_sync: Instant::now(),
             last_error: None,
+            committed_segment: None,
+            committed_bytes: 0,
+            current_segment: None,
+            current_bytes: 0,
+            write_start_hook: None,
+            commit_hook: None,
         }
     }
 
@@ -633,8 +753,25 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
     pub fn is_open(&self) -> bool {
         self.sink.is_some()
     }
-    pub fn last_error(&self) -> Option<&str> {
-        self.last_error.as_deref()
+    pub fn last_error(&self) -> Option<io::ErrorKind> {
+        self.last_error
+    }
+
+    pub fn committed_watermark(&self) -> Option<(u32, u64)> {
+        self.committed_segment
+            .map(|segment| (segment, self.committed_bytes))
+    }
+
+    /// Publish before periodic sync can allocate; true identifies a complete frame.
+    /// The callback must not allocate.
+    pub fn set_commit_hook(&mut self, hook: fn(u32, u64, bool)) {
+        self.commit_hook = Some(hook);
+    }
+
+    /// Publish the preceding campaign watermark before a write can become in flight.
+    /// The callback must not allocate.
+    pub fn set_write_start_hook(&mut self, hook: SpoolWriteStartHook) {
+        self.write_start_hook = Some(hook);
     }
 
     /// Current open segment only; completed durations exclude forced barriers.
@@ -677,19 +814,26 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
         encode: impl FnOnce() -> io::Result<Vec<u8>>,
     ) -> io::Result<()> {
         if self.sink.is_some() {
-            return Err(invalid("close the current segment before starting another"));
+            return Err(invalid_static(
+                "close the current segment before starting another",
+            ));
         }
         if context.is_empty() || !keyframe {
-            return Err(invalid("segment start needs context and a keyframe"));
+            return Err(invalid_static("segment start needs context and a keyframe"));
         }
         let mut state = SegmentState::default();
-        let mut encoded = Vec::with_capacity(context.len() + 1);
+        let count = context
+            .len()
+            .checked_add(1)
+            .ok_or_else(engine::allocation::oom)?;
+        let mut encoded = engine::allocation::vec(count)?;
         for record in context {
             if matches!(
                 record,
-                Record::Frame(_) | Record::Control(ControlRecord::Detach { .. })
+                Record::Frame(_)
+                    | Record::Control(ControlRecord::Detach { .. } | ControlRecord::Partial { .. })
             ) {
-                return Err(invalid("segment context contains frame or detach"));
+                return Err(invalid_static("segment context contains frame or detach"));
             }
             state.accept(record)?;
             encoded.push(encode_record(record)?);
@@ -701,12 +845,14 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
         let index = self.next_segment;
         self.next_segment = index
             .checked_add(1)
-            .ok_or_else(|| invalid("segment index exhausted"))?;
+            .ok_or_else(|| invalid_static("segment index exhausted"))?;
         let sink = match self.backend.create(index) {
             Ok(sink) => sink,
             Err(error) => return self.failed(error),
         };
         self.sink = Some(sink);
+        self.current_segment = Some(index);
+        self.current_bytes = 0;
         for bytes in encoded {
             if let Err(error) = self.write_flushed(&bytes) {
                 return self.failed(error);
@@ -722,15 +868,13 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
 
     pub fn append(&mut self, record: &Record) -> io::Result<()> {
         if self.sink.is_none() {
-            return Err(invalid(
+            return Err(invalid_static(
                 "no writable segment; restart with context and a keyframe",
             ));
         }
-        let mut state = self.state.clone();
-        state.accept(record)?;
         let bytes = encode_record(record)?;
+        self.state.accept(record)?;
         self.append_bytes(
-            state,
             bytes,
             matches!(record, Record::Control(ControlRecord::Detach { .. })),
         )
@@ -738,21 +882,17 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
 
     pub fn append_encoded_frame(&mut self, frame: EncodedFrame) -> io::Result<()> {
         if self.sink.is_none() {
-            return Err(invalid(
+            return Err(invalid_static(
                 "no writable segment; restart with context and a keyframe",
             ));
         }
-        let mut state = self.state.clone();
-        state.accept_frame(frame.branch, frame.hour, frame.keyframe)?;
-        self.append_bytes(state, encode_frame_record(frame)?, false)
+        let (branch, hour, keyframe) = (frame.branch, frame.hour, frame.keyframe);
+        let bytes = encode_frame_record(frame)?;
+        self.state.accept_frame(branch, hour, keyframe)?;
+        self.append_bytes(bytes, false)
     }
 
-    fn append_bytes(
-        &mut self,
-        state: SegmentState,
-        bytes: Vec<u8>,
-        force_sync: bool,
-    ) -> io::Result<()> {
+    fn append_bytes(&mut self, bytes: Vec<u8>, force_sync: bool) -> io::Result<()> {
         if let Some(sink) = &mut self.sink
             && let Err(error) = sink.poll_sync()
         {
@@ -769,7 +909,6 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
         if let Err(error) = synced {
             return self.failed(error);
         }
-        self.state = state;
         Ok(())
     }
 
@@ -804,19 +943,40 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
     }
 
     fn write_flushed(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let preceding = self.committed_watermark();
         let sink = self
             .sink
             .as_mut()
-            .ok_or_else(|| invalid("no writable segment"))?;
+            .ok_or_else(|| invalid_static("no writable segment"))?;
+        if let Some(hook) = self.write_start_hook {
+            hook(preceding);
+        }
+        if engine::allocation::capture_stopped() {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
         sink.write_all(bytes)?;
-        sink.flush()
+        sink.flush()?;
+        if engine::allocation::capture_stopped() {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
+        self.current_bytes = self.current_bytes.saturating_add(bytes.len() as u64);
+        self.committed_segment = self.current_segment;
+        self.committed_bytes = self.current_bytes;
+        if let Some(hook) = self.commit_hook {
+            hook(
+                self.committed_segment.unwrap(),
+                self.committed_bytes,
+                bytes[RECORD_HEADER_BYTES] == 2,
+            );
+        }
+        Ok(())
     }
 
     fn sync_current(&mut self) -> io::Result<()> {
         let sink = self
             .sink
             .as_mut()
-            .ok_or_else(|| invalid("no writable segment"))?;
+            .ok_or_else(|| invalid_static("no writable segment"))?;
         sink.flush()?;
         sink.sync_all()?;
         self.last_sync = Instant::now();
@@ -827,7 +987,7 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
         // Dropping this handle is final: even a partial record is never appended to again.
         self.sink = None;
         self.state = SegmentState::default();
-        self.last_error = Some(error.to_string());
+        self.last_error = Some(error.kind());
         Err(error)
     }
 }

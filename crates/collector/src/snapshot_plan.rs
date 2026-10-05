@@ -6,7 +6,10 @@ use engine::{
     memory::{RecordLayout, RecordSources},
     read_plan::{Control, Hint, Outcome, PreparedPlan, Read},
 };
-use std::cell::{Cell, Ref, RefCell};
+use std::{
+    cell::{Cell, Ref, RefCell},
+    io,
+};
 
 #[derive(Debug, Default)]
 struct Trace {
@@ -52,13 +55,15 @@ pub(crate) struct SnapshotPlan {
 
 impl SnapshotPlan {
     pub fn new(reads: usize, bytes: usize) -> Self {
+        let mut trace = Trace::default();
+        let mut reserve = || -> io::Result<()> {
+            engine::allocation::reserve_exact(&mut trace.reads, reads)?;
+            engine::allocation::reserve_exact(&mut trace.bytes, bytes)?;
+            engine::allocation::reserve_exact(&mut trace.hints, reads)
+        };
+        let _ = reserve();
         Self {
-            trace: RefCell::new(Trace {
-                reads: Vec::with_capacity(reads),
-                bytes: Vec::with_capacity(bytes),
-                hints: Vec::with_capacity(reads),
-                eligible: false,
-            }),
+            trace: RefCell::new(trace),
             compiled: None,
             destination: Vec::new(),
             prefix: 0,
@@ -172,34 +177,53 @@ impl SnapshotPlan {
     /// addresses or affect their validation. Callers apply these fresh values
     /// through completed_bytes before publishing their retained result.
     pub fn prepare_with_data(&mut self, data_reads: &[usize]) {
+        if let Err(error) = self.try_prepare(data_reads) {
+            let _ = engine::allocation::allocation_error(error);
+            self.compiled = None;
+            self.complete = false;
+            self.trace.get_mut().eligible = false;
+            self.rebuild = false;
+        }
+    }
+
+    fn try_prepare(&mut self, data_reads: &[usize]) -> io::Result<()> {
         if !self.rebuild {
-            return;
+            return Ok(());
         }
         self.compiled = None;
         let trace = self.trace.get_mut();
         if trace.eligible {
-            let controls = trace
-                .reads
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| data_reads.binary_search(index).is_err())
-                .map(|(index, read)| Control {
-                    after_reads: index + 1,
-                    offset: read.destination_offset,
-                    len: read.len,
-                    expected_offset: read.destination_offset,
-                })
-                .collect();
-            self.compiled = PreparedPlan::new(
-                trace.reads.clone(),
-                controls,
-                trace.bytes.clone(),
-                trace.bytes.len(),
-            )
-            .and_then(|plan| plan.with_hints(trace.hints.clone()));
+            let mut controls = Vec::new();
+            engine::allocation::reserve_exact(&mut controls, trace.reads.len())?;
+            controls.extend(
+                trace
+                    .reads
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| data_reads.binary_search(index).is_err())
+                    .map(|(index, read)| Control {
+                        after_reads: index + 1,
+                        offset: read.destination_offset,
+                        len: read.len,
+                        expected_offset: read.destination_offset,
+                    }),
+            );
+            let reads = engine::allocation::copy_vec(&trace.reads)?;
+            let bytes = engine::allocation::copy_vec(&trace.bytes)?;
+            let hints = engine::allocation::copy_vec(&trace.hints)?;
+            self.compiled = if let Some(plan) =
+                PreparedPlan::try_new(reads, controls, bytes, trace.bytes.len())?
+            {
+                plan.try_with_hints(hints)?
+            } else {
+                None
+            };
+            let additional = trace.bytes.len().saturating_sub(self.destination.len());
+            engine::allocation::reserve(&mut self.destination, additional)?;
             self.destination.resize(trace.bytes.len(), 0);
         }
         self.rebuild = false;
+        Ok(())
     }
 }
 
@@ -385,8 +409,71 @@ impl<M: Memory> Memory for Observed<'_, M> {
 }
 
 #[cfg(test)]
+pub(crate) fn allocation_failure_exercise() {
+    let memory = engine::memory::SliceMemory {
+        base: 0x1000,
+        bytes: &[0x11; 32],
+    };
+    let mut plan = SnapshotPlan::new(8, 32);
+    if crate::allocation::failed() {
+        return;
+    }
+    plan.begin(&memory, false);
+    let mut output = [0; 4];
+    let view = plan.view(&memory);
+    view.prefetch(0x1000, 12);
+    let mut complete = true;
+    for address in [0x1000, 0x1004, 0x1008] {
+        complete &= view.copy(address, &mut output);
+    }
+    plan.finish(complete);
+    plan.prepare_with_data(&[1]);
+    if crate::allocation::failed() {
+        return;
+    }
+    plan.begin(&memory, true);
+    plan.invalidate();
+    plan.begin(&memory, false);
+    let mut output = [0; 16];
+    let view = plan.view(&memory);
+    view.prefetch(0x1000, 32);
+    let complete = view.copy(0x1000, &mut output) && view.copy(0x1010, &mut output);
+    plan.finish(complete);
+    plan.prepare();
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn destination_preserves_resize_capacity_schedule() {
+        let memory = engine::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &[0x11; 16],
+        };
+        let mut plan = SnapshotPlan::new(8, 16);
+        let mut reference = Vec::new();
+        for len in [2, 3, 5, 9] {
+            plan.begin(&memory, false);
+            let mut output = [0; 16];
+            assert!(plan.view(&memory).copy(0x1000, &mut output[..len]));
+            assert!(plan.finish(true));
+            plan.prepare();
+            reference.resize(len, 0_u8);
+            assert_eq!(plan.destination.capacity(), reference.capacity());
+            let trace = plan.trace.borrow();
+            let retained = trace.reads.capacity() * std::mem::size_of::<Read>()
+                + trace.bytes.capacity()
+                + trace.hints.capacity() * std::mem::size_of::<Hint>()
+                + plan
+                    .compiled
+                    .as_ref()
+                    .map_or(0, PreparedPlan::capacity_bytes);
+            drop(trace);
+            assert_eq!(plan.allocated_bytes(), retained + reference.capacity());
+        }
+    }
 
     #[test]
     fn untracked_payload_keeps_native_batches_and_does_not_consume_control_prefix() {

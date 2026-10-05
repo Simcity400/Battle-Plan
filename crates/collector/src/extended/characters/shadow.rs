@@ -1,4 +1,5 @@
 use super::*;
+use engine::allocation::reserve;
 
 #[derive(Default)]
 pub(super) struct NativeShadow<R> {
@@ -82,7 +83,7 @@ impl<'a> CharacterConversion<'a> {
     }
 }
 
-pub(super) fn shadow_input<R: Clone + PartialEq>(
+pub(super) fn shadow_input<R: Copy + PartialEq>(
     table: TableId,
     buffer: &Buffer<R>,
     shadow: &mut NativeShadow<R>,
@@ -124,8 +125,13 @@ pub(super) fn shadow_input<R: Clone + PartialEq>(
         (Some((rows, bytes)), TableView::Complete(output)) => {
             let output = Arc::new(output);
             shadow.rows.clear();
-            shadow.rows.extend_from_slice(rows);
             shadow.bytes.clear();
+            if reserve(&mut shadow.rows, rows.len()).is_err()
+                || reserve(&mut shadow.bytes, bytes.len()).is_err()
+            {
+                return unavailable("collector allocation failed").into();
+            }
+            shadow.rows.extend_from_slice(rows);
             shadow.bytes.extend_from_slice(bytes);
             shadow.required = buffer.bytes.required;
             shadow.output = Arc::downgrade(&output);

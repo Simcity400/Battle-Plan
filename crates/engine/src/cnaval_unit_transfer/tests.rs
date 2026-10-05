@@ -2,6 +2,17 @@ use super::*;
 use crate::{cstrategic_navy, memory::SliceMemory};
 use std::collections::BTreeMap;
 
+#[test]
+fn allocation_capacity_overflow_preserves_movement_memo() {
+    let mut memo = MovementSpeeds::new(8);
+    let before = memo.allocated_bytes();
+    assert_eq!(
+        memo.reserve(usize::MAX).unwrap_err().kind(),
+        std::io::ErrorKind::OutOfMemory,
+    );
+    assert_eq!(memo.allocated_bytes(), before);
+}
+
 struct Fixture {
     bytes: Vec<u8>,
     globals: BTreeMap<usize, Vec<u8>>,

@@ -487,47 +487,66 @@ pub struct Buffers {
 }
 
 impl Buffers {
-    pub fn new(capacity: &Capacity) -> Self {
-        let keys = capacity.resources * 3 + 2;
+    pub fn new(capacity: &Capacity) -> std::io::Result<Self> {
+        let oom = crate::allocation::oom;
+        let keys = capacity
+            .resources
+            .checked_mul(3)
+            .and_then(|n| n.checked_add(2))
+            .ok_or_else(oom)?;
         let words = capacity
             .states
             .max(capacity.origins)
             .max(capacity.provinces)
             .max(BATCH);
-        let bytes = (capacity.states * 8)
-            .max(capacity.countries * 8)
-            .max(capacity.origins * 16)
-            .max(capacity.provinces * 16)
-            .max(capacity.entries * ccountry_resources::OVERRIDE_STRIDE)
+        let bytes = capacity
+            .states
+            .checked_mul(8)
+            .ok_or_else(oom)?
+            .max(capacity.countries.checked_mul(8).ok_or_else(oom)?)
+            .max(capacity.origins.checked_mul(16).ok_or_else(oom)?)
+            .max(capacity.provinces.checked_mul(16).ok_or_else(oom)?)
+            .max(
+                capacity
+                    .entries
+                    .checked_mul(ccountry_resources::OVERRIDE_STRIDE)
+                    .ok_or_else(oom)?,
+            )
             .max(BATCH * STATE_RECORD);
-        Self {
-            inputs: vec![InputRow::default(); capacity.states],
-            resources: vec![ResourceRow::default(); capacity.resource_rows],
-            modifiers: vec![ModifierRow::default(); capacity.modifier_rows],
-            tokens: vec![0; capacity.token_bytes],
-            overrides: vec![OverrideRow::default(); capacity.override_rows],
-            descriptors: vec![Resource::default(); capacity.resources],
-            resource_keys: vec![[0; 3]; capacity.resources],
-            keys: vec![0; keys],
-            values: vec![Value::default(); keys],
-            states: vec![Scratch::default(); capacity.states],
-            order: vec![(0, 0); capacity.states],
-            by_pointer: vec![(0, 0); capacity.states],
-            words: vec![0; words],
-            addresses: vec![0; words],
-            bytes: vec![0; bytes],
-            routes: vec![0; capacity.routes * 8],
-            links: vec![0; capacity.countries],
-            country_pointers: vec![0; capacity.countries],
-            system_pointers: vec![0; capacity.countries],
-            nations: vec![Nation::default(); capacity.countries],
-            controllers: vec![0; capacity.countries],
-            read_countries: Vec::with_capacity(capacity.countries),
-            names: vec![(0, 0, 0); (capacity.definitions * 2).next_power_of_two()],
-            name_bytes: vec![0; capacity.name_bytes],
-            batch: vec![0; capacity.batch_bytes],
-            memo: DefinitionMemo::with_capacity(keys),
-        }
+        let routes = capacity.routes.checked_mul(8).ok_or_else(oom)?;
+        let names = capacity
+            .definitions
+            .checked_mul(2)
+            .and_then(usize::checked_next_power_of_two)
+            .ok_or_else(oom)?;
+        Ok(Self {
+            inputs: crate::allocation::filled(capacity.states, InputRow::default())?,
+            resources: crate::allocation::filled(capacity.resource_rows, ResourceRow::default())?,
+            modifiers: crate::allocation::filled(capacity.modifier_rows, ModifierRow::default())?,
+            tokens: crate::allocation::filled(capacity.token_bytes, 0)?,
+            overrides: crate::allocation::filled(capacity.override_rows, OverrideRow::default())?,
+            descriptors: crate::allocation::filled(capacity.resources, Resource::default())?,
+            resource_keys: crate::allocation::filled(capacity.resources, [0; 3])?,
+            keys: crate::allocation::filled(keys, 0)?,
+            values: crate::allocation::filled(keys, Value::default())?,
+            states: crate::allocation::filled(capacity.states, Scratch::default())?,
+            order: crate::allocation::filled(capacity.states, (0, 0))?,
+            by_pointer: crate::allocation::filled(capacity.states, (0, 0))?,
+            words: crate::allocation::filled(words, 0)?,
+            addresses: crate::allocation::filled(words, 0)?,
+            bytes: crate::allocation::filled(bytes, 0)?,
+            routes: crate::allocation::filled(routes, 0)?,
+            links: crate::allocation::filled(capacity.countries, 0)?,
+            country_pointers: crate::allocation::filled(capacity.countries, 0)?,
+            system_pointers: crate::allocation::filled(capacity.countries, 0)?,
+            nations: crate::allocation::filled(capacity.countries, Nation::default())?,
+            controllers: crate::allocation::filled(capacity.countries, 0)?,
+            read_countries: crate::allocation::vec(capacity.countries)?,
+            names: crate::allocation::filled(names, (0, 0, 0))?,
+            name_bytes: crate::allocation::filled(capacity.name_bytes, 0)?,
+            batch: crate::allocation::filled(capacity.batch_bytes, 0)?,
+            memo: DefinitionMemo::try_with_capacity(keys)?,
+        })
     }
 
     /// No storage at all, for a parked placeholder.
@@ -558,7 +577,7 @@ impl Buffers {
             names: Vec::new(),
             name_bytes: Vec::new(),
             batch: Vec::new(),
-            memo: DefinitionMemo::with_capacity(0),
+            memo: DefinitionMemo::default(),
         }
     }
 

@@ -40,53 +40,120 @@ pub(crate) use recorded::index_diagnostics;
 #[cfg(test)]
 use {recorded::ReadAddressHasher, std::hash::Hasher};
 
-pub(crate) fn read_plan_diagnostics() -> serde_json::Value {
+pub(crate) fn read_plan_diagnostics() -> impl serde::Serialize {
     crate::raw_plan::diagnostics()
 }
 
-static GROWTH_DIAGNOSTICS: Mutex<std::collections::BTreeMap<&'static str, serde_json::Value>> =
-    Mutex::new(std::collections::BTreeMap::new());
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+pub(crate) enum Growth {
+    Raw(RawGrowth),
+    Fog {
+        row_capacity: usize,
+        required_rows: usize,
+        province_capacity: usize,
+        required_provinces: usize,
+    },
+}
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+pub(crate) enum Faults {
+    Raw(Vec<bool>),
+    Packet([bool; 1]),
+}
+#[derive(serde::Serialize)]
+pub(crate) struct RawGrowth {
+    pub(crate) spans: usize,
+    pub(crate) span_capacity: usize,
+    pub(crate) bytes: usize,
+    pub(crate) byte_capacity: usize,
+    pub(crate) faults: Faults,
+    pub(crate) growing: bool,
+    pub(crate) first_failed_address: Option<usize>,
+    pub(crate) first_failed_length: Option<usize>,
+    pub(crate) first_failed_mask: Option<u32>,
+    pub(crate) last_address: Option<usize>,
+    pub(crate) last_length: Option<usize>,
+    pub(crate) last_mask: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) span_capacity_scope: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) packet_inline_bytes_excluded_from_vector_accounting: Option<usize>,
+}
 
-/// Worker-only capacity diagnostics: distinguish genuine demand from a mirror
-/// following unreadable bytes. Never allocate or take this lock in the callback.
+static GROWTH_DIAGNOSTICS: Mutex<Vec<(&'static str, Growth)>> = Mutex::new(Vec::new());
+
+/// Worker-only capacity diagnostics: never allocate or lock in the callback.
 pub(crate) fn note_growth<const N: usize>(family: &'static str, log: &RawLog<N>) {
     if !log.overflowed {
         return;
     }
     let failed = log.spans.iter().find(|span| !span.ok);
-    let value = serde_json::json!({
-        "spans": log.spans.len(), "span_capacity": log.spans.capacity(),
-        "bytes": log.bytes.len(), "byte_capacity": log.bytes.capacity(),
-        "faults": log.fault.as_slice(), "growing": log.grow_for_next(),
-        "first_failed_address": failed.map(|span| span.addr),
-        "first_failed_length": failed.map(|span| span.len),
-        "first_failed_mask": failed.map(|span| span.mask),
-        "last_address": log.spans.last().map(|span| span.addr),
-        "last_length": log.spans.last().map(|span| span.len),
-        "last_mask": log.spans.last().map(|span| span.mask),
-    });
-    publish_growth(family, value);
+    let mut faults = Vec::new();
+    if engine::allocation::reserve_exact(&mut faults, N).is_err() {
+        return;
+    }
+    faults.extend_from_slice(&log.fault);
+    publish_growth(
+        family,
+        Growth::Raw(RawGrowth {
+            spans: log.spans.len(),
+            span_capacity: log.spans.capacity(),
+            bytes: log.bytes.len(),
+            byte_capacity: log.bytes.capacity(),
+            faults: Faults::Raw(faults),
+            growing: log.grow_for_next(),
+            first_failed_address: failed.map(|span| span.addr),
+            first_failed_length: failed.map(|span| span.len as usize),
+            first_failed_mask: failed.map(|span| span.mask),
+            last_address: log.spans.last().map(|span| span.addr),
+            last_length: log.spans.last().map(|span| span.len as usize),
+            last_mask: log.spans.last().map(|span| span.mask),
+            span_capacity_scope: None,
+            packet_inline_bytes_excluded_from_vector_accounting: None,
+        }),
+    );
 }
 
 /// Publish an equivalent worker-owned packet capacity diagnostic.
-pub(crate) fn publish_growth(family: &'static str, value: serde_json::Value) {
+pub(crate) fn publish_growth(family: &'static str, value: Growth) {
     if let Ok(mut diagnostics) = GROWTH_DIAGNOSTICS.lock() {
-        diagnostics.insert(family, value);
+        match diagnostics.binary_search_by_key(&family, |row| row.0) {
+            Ok(index) => diagnostics[index].1 = value,
+            Err(index) => {
+                if engine::allocation::reserve(&mut diagnostics, 1).is_err() {
+                    return;
+                }
+                diagnostics.insert(index, (family, value));
+            }
+        }
     }
 }
 
-pub(crate) fn growth_diagnostics() -> serde_json::Value {
-    GROWTH_DIAGNOSTICS
-        .lock()
-        .map(|rows| serde_json::json!(*rows))
-        .unwrap_or_default()
+pub(crate) fn growth_diagnostics() -> impl serde::Serialize {
+    GrowthDiagnostics(GROWTH_DIAGNOSTICS.lock().ok())
+}
+struct GrowthDiagnostics(Option<std::sync::MutexGuard<'static, Vec<(&'static str, Growth)>>>);
+impl serde::Serialize for GrowthDiagnostics {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let Some(rows) = &self.0 else {
+            return serializer.serialize_none();
+        };
+        let mut map = serializer.serialize_map(Some(rows.len()))?;
+        for (family, value) in rows.iter() {
+            map.serialize_entry(family, value)?;
+        }
+        map.end()
+    }
 }
 
 /// Increase capacity even when an oversized first request left the vector
 /// empty. `reserve_exact(capacity)` alone is a no-op after `clear()`.
 pub(crate) fn double_capacity<T>(rows: &mut Vec<T>) {
     let target = rows.capacity().max(1).saturating_mul(2);
-    rows.reserve_exact(target.saturating_sub(rows.len()));
+    let additional = target.saturating_sub(rows.len());
+    let _ = engine::allocation::reserve_exact(rows, additional);
 }
 
 /// x86-64 canonical range check, identical to `engine::memory`'s gate.
@@ -138,9 +205,10 @@ pub struct RawBytes {
 
 impl RawBytes {
     fn with_capacity(capacity: usize) -> Self {
-        let mut storage = vec![0; capacity];
-        // Initialize the actual allocation, including any allocator headroom.
-        storage.resize(storage.capacity(), 0);
+        let mut storage = Vec::new();
+        if engine::allocation::reserve_exact(&mut storage, capacity).is_ok() {
+            storage.resize(storage.capacity(), 0);
+        }
         Self {
             storage,
             used: 0,
@@ -197,8 +265,10 @@ impl RawBytes {
 
     /// Worker-only growth. The logical prefix and existing bytes survive.
     fn grow_to(&mut self, capacity: usize) {
-        if capacity > self.storage.capacity() {
-            self.storage.reserve_exact(capacity - self.storage.len());
+        let additional = capacity.saturating_sub(self.storage.len());
+        if capacity > self.storage.capacity()
+            && engine::allocation::reserve_exact(&mut self.storage, additional).is_ok()
+        {
             self.storage.resize(self.storage.capacity(), 0);
         }
     }
@@ -326,9 +396,11 @@ impl<const N: usize> RawLog<N> {
     /// decode-worker acquire/recycle pair, so this never runs per refresh.
     pub fn new(span_cap: usize, byte_cap: usize) -> Self {
         debug_assert!(N <= 32, "span masks cover at most 32 tables");
+        let mut spans = Vec::new();
+        let allocated = engine::allocation::reserve_exact(&mut spans, span_cap).is_ok();
         let mut log = Self {
-            spans: Vec::with_capacity(span_cap),
-            bytes: RawBytes::with_capacity(byte_cap),
+            spans,
+            bytes: RawBytes::with_capacity(if allocated { byte_cap } else { 0 }),
             fault: [false; N],
             raw_bytes: [0; N],
             overflowed: false,
@@ -385,12 +457,16 @@ impl<const N: usize> RawLog<N> {
         control_capacity: usize,
         control_byte_capacity: usize,
     ) {
-        self.plan.enabled = true;
-        self.plan.requests = Vec::with_capacity(read_capacity);
+        let mut requests = Vec::new();
+        if engine::allocation::reserve_exact(&mut requests, read_capacity).is_err() {
+            return;
+        }
+        self.plan.requests = requests;
         self.bytes.observations = Some(RefCell::new(Observations::new(
             control_capacity,
             control_byte_capacity,
         )));
+        self.plan.enabled = !crate::allocation::failed();
         self.update_capacity_charge();
     }
 
@@ -546,6 +622,10 @@ impl<const N: usize> RawLog<N> {
 
     /// Worker-only compilation and retirement, before clear/recycle.
     pub(crate) fn prepare_read_plan(&mut self) {
+        let _phase = crate::allocation::enter(crate::allocation::Phase::Raw);
+        if crate::allocation::failed() {
+            return;
+        }
         self.return_planned_spans();
         let len = self.bytes.len();
         if let Some(observations) = &mut self.bytes.observations {
@@ -574,8 +654,15 @@ impl<const N: usize> RawLog<N> {
     /// Grow only exhausted storage off-thread. Span-heavy censuses must not
     /// repeatedly double a mostly empty byte arena (and vice versa).
     pub fn grow(&mut self) {
+        let _phase = crate::allocation::enter(crate::allocation::Phase::Raw);
+        if crate::allocation::failed() {
+            return;
+        }
         if self.span_exhausted {
             double_capacity(&mut self.spans);
+            if crate::allocation::failed() {
+                return;
+            }
         }
         if self.required_bytes > self.bytes.capacity() {
             let target = self
@@ -1261,6 +1348,71 @@ pub fn lowest_table(mask: u32) -> usize {
     } else {
         mask.trailing_zeros() as usize
     }
+}
+
+/// Child-process fault sweep: discovery, compilation, cursor preparation and
+/// growth all use ordinary production APIs against stack-owned memory.
+#[cfg(test)]
+pub(crate) fn allocation_exercise() -> bool {
+    use engine::memory::SliceMemory;
+    let bytes = [7_u8; 64];
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    let mut log = RawLog::<1>::new(4, 32);
+    if crate::allocation::failed() {
+        return false;
+    }
+    log.initialize_read_plan(4, 8, 32);
+    if crate::allocation::failed() {
+        return false;
+    }
+    if log.begin_planned_capture(&memory, [1, 2, 3, 4]) {
+        return false;
+    }
+    for address in [0x1000, 0x1000, 0x1008] {
+        let Some(start) = log.take_bulk(&memory, address, 8, 1) else {
+            return false;
+        };
+        if log.bytes.get(start..start + 4) != Some(&[7; 4][..]) {
+            return false;
+        }
+    }
+    log.finish_planned_capture();
+    log.prepare_read_plan();
+    if crate::allocation::failed() {
+        return false;
+    }
+    {
+        let recorded = Recorded::build(&log);
+        if crate::allocation::failed() {
+            return false;
+        }
+        if !recorded.copy(0x1000, &mut [0; 8]) || !recorded.copy(0x1002, &mut [0; 3]) {
+            return false;
+        }
+    }
+    log.clear();
+    // Demand grows both arenas beyond their prepared capacities.
+    while !log.span_exhausted {
+        let _ = log.take(&memory, 0x1000, 1, 1);
+    }
+    log.reserve(64);
+    note_growth("synthetic-allocation", &log);
+    if crate::allocation::failed() {
+        return false;
+    }
+    // The second diagnostic replaces the same family without growing keys.
+    note_growth("synthetic-allocation", &log);
+    if crate::allocation::failed() {
+        return false;
+    }
+    log.grow();
+    if crate::allocation::failed() {
+        return false;
+    }
+    crate::raw_plan::allocation_exercise()
 }
 
 #[cfg(test)]

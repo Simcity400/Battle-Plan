@@ -111,8 +111,8 @@ pub fn walk(
                     }
                     let required = len.checked_add(count).ok_or("module row count overflow")?;
                     if required > output.len() {
-                        output
-                            .try_reserve(required - output.len())
+                        let additional = required - output.len();
+                        crate::allocation::reserve(output, additional)
                             .map_err(|_| "module row allocation failed")?;
                         output.resize(required, Row::default());
                     }

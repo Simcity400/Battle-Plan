@@ -63,7 +63,7 @@ static CONSUMED: &AtomicU64 = &OBSERVATION.consumed;
 /// Why the hooks are not installed, when they are not.
 static REFUSED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 static REFUSAL_PENDING: AtomicBool = AtomicBool::new(false);
-static UNHOOKED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static UNHOOKED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 /// `[building spends, other speed reads, railway advances, railway spends,
 /// railway carries, entries, inexact entries, drains, entries handed over,
 /// overflowed logs, unobserved drains, refused operand reads]`.
@@ -228,7 +228,7 @@ fn entry(slot: usize) -> Entry {
 pub fn drain(output: &mut [Entry]) -> Result<Drained, &'static str> {
     let unavailable = || {
         if let Some(reason) = UNHOOKED.get() {
-            Some(reason.as_str())
+            Some(*reason)
         } else if REFUSAL_PENDING.swap(false, Ordering::SeqCst) {
             REFUSED.get().copied()
         } else if !ENABLED.load(Ordering::SeqCst) {
@@ -251,12 +251,12 @@ pub fn drain(output: &mut [Entry]) -> Result<Drained, &'static str> {
     )
 }
 
-pub fn status() -> serde_json::Value {
+pub fn status() -> impl serde::Serialize {
     let counters = COUNTERS
         .each_ref()
         .map(|value| value.load(Ordering::Relaxed));
-    let mut status = output_hooks::status(&OBSERVATION, &UNHOOKED, Some(&INSTALLED));
-    status.as_object_mut().unwrap().extend(serde_json::json!({
+    let base = output_hooks::status(&OBSERVATION, &UNHOOKED, Some(&INSTALLED));
+    base.join(crate::status::status!({
         "building_spends": counters[0],
         "other_speed_reads": counters[1],
         "railway_advances": counters[2],
@@ -271,8 +271,7 @@ pub fn status() -> serde_json::Value {
         "refused_entries": counters[11],
         "refused": REFUSED.get(),
         "scope": "cumulative since attach; building_spends count the speed reads at the advance's spend site (other_speed_reads every other caller, such as the repair rate and the production screen); entries include spends, railway carries and zero-IC building advances"
-    }).as_object().unwrap().clone());
-    status
+    }))
 }
 
 pub struct Hooks {
@@ -280,12 +279,12 @@ pub struct Hooks {
 }
 const SITES: [&Site; 3] = [&BUILDING_SPEED, &RAILWAY_ADVANCE, &RAILWAY_PROGRESS];
 #[cfg(test)]
-fn validate_sentinels(memory: &impl Memory, base: usize) -> Result<(), String> {
+fn validate_sentinels(memory: &impl Memory, base: usize) -> Result<(), &'static str> {
     output_hooks::validate_sentinels(
         memory,
         base,
         &SITES.map(output_hooks::Site::from),
-        "construction line",
+        "construction line sentinel differs",
     )
 }
 
@@ -294,7 +293,7 @@ impl Hooks {
     /// the output table unavailable; site order preserves paired observation.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
         let domain = output_hooks::Domain {
-            name: "construction line",
+            sentinel_error: "construction line sentinel differs",
             failure: output_hooks::Failure::Unavailable,
             observation: &OBSERVATION,
             base: &BASE,
@@ -319,10 +318,10 @@ impl Hooks {
             },
         }
     }
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         self.shared.set_enabled(enabled)
     }
-    pub fn executable_ranges(&self) -> Vec<Range<usize>> {
+    pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
         self.shared.executable_ranges()
     }
 }
@@ -789,10 +788,7 @@ mod tests {
             bytes: &bytes,
         };
         let hooks = validate_sentinels(&memory, 0);
-        assert_eq!(
-            hooks.err().as_deref(),
-            Some("construction line building speed sentinel differs")
-        );
+        assert_eq!(hooks.err(), Some("construction line sentinel differs"));
     }
 
     #[test]
@@ -810,13 +806,13 @@ mod tests {
                 true
             }
         }
-        for (bad, site) in SITES.iter().enumerate() {
+        for bad in 0..SITES.len() {
             let mut memory = Prologues(SITES.map(|s| s.sentinel));
             assert!(validate_sentinels(&memory, 0).is_ok());
             memory.0[bad][15] ^= 1;
             assert_eq!(
                 validate_sentinels(&memory, 0).unwrap_err(),
-                format!("construction line {} sentinel differs", site.name)
+                "construction line sentinel differs"
             );
         }
     }

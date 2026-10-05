@@ -13,6 +13,7 @@ use crate::{
     slicing::{SliceFingerprints, SliceSelection},
     spooling::{table, unavailable},
 };
+use engine::allocation::{copy_vec, default_vec, owned_vec, reserve_exact, vec};
 use engine::{Memory, ccountry, raid_state_inputs as native, walk::Outcome};
 use replay::{
     cadence::{SKIPPED_REASON, should_walk},
@@ -118,15 +119,17 @@ impl Captured {
     }
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
-            buffers: native::Buffers::new(&capacity.walk),
-            cores: vec![native::CoreRow::default(); capacity.walk.states],
-            core_links: vec![0; capacity.core_links],
+            buffers: native::Buffers::new(&capacity.walk)
+                .map_err(crate::allocation::io)
+                .unwrap_or_else(|_| native::Buffers::empty()),
+            cores: owned_vec(default_vec(capacity.walk.states)),
+            core_links: owned_vec(default_vec(capacity.core_links)),
             core_required: 0,
             outcomes: [super::MISSING; N],
             token_bytes: 0,
             required: native::Capacity::zero(),
             built: capacity.walk,
-            census: Vec::with_capacity(capacity.walk.states),
+            census: owned_vec(vec(capacity.walk.states)),
             states: SliceSelection::new(true),
             countries: SliceSelection::new(true),
         }
@@ -149,13 +152,23 @@ impl Captured {
         // Capacities only rise, so a difference is a buffer below capacity,
         // whichever frame raised it.
         if self.built != capacity.walk {
-            self.buffers = native::Buffers::new(&capacity.walk);
+            let Ok(buffers) = native::Buffers::new(&capacity.walk).map_err(crate::allocation::io)
+            else {
+                return;
+            };
+            self.buffers = buffers;
             self.built = capacity.walk;
         }
         let states = capacity.walk.states;
-        self.census
-            .reserve_exact(states.saturating_sub(self.census.len()));
+        let additional = states.saturating_sub(self.census.len());
+        if reserve_exact(&mut self.census, additional).is_err() {
+            return;
+        }
         if self.cores.len() < states {
+            let additional = states - self.cores.len();
+            if reserve_exact(&mut self.cores, additional).is_err() {
+                return;
+            }
             self.cores.resize(states, native::CoreRow::default());
         }
         crate::country_scale::raise(
@@ -163,6 +176,10 @@ impl Captured {
             crate::country_scale::rows(self.core_required, 1),
         );
         if self.core_links.len() < capacity.core_links {
+            let additional = capacity.core_links - self.core_links.len();
+            if reserve_exact(&mut self.core_links, additional).is_err() {
+                return;
+            }
             self.core_links.resize(capacity.core_links, 0);
         }
     }
@@ -225,7 +242,9 @@ impl Captured {
         if let Some(stores) = stores {
             // Scan first, so a new owner joins this hour's read.
             let scan = qpc();
-            let states = native::state_census(memory, game_state, &mut self.census).is_ok();
+            let states = native::state_census(memory, game_state, &mut self.census)
+                .map_err(crate::allocation::io)
+                .is_ok();
             for &state in &self.census {
                 self.states.scan(stores.states, state, Some(0));
             }
@@ -272,7 +291,16 @@ impl Captured {
             native::state_census(memory, game_state, &mut self.census)
         };
         let cores = match census {
-            Err(reason) => Outcome::Unavailable { reason },
+            Err(error) => {
+                crate::allocation::observe(&error);
+                Outcome::Unavailable {
+                    reason: if error.kind() == std::io::ErrorKind::OutOfMemory {
+                        "collector allocation failed"
+                    } else {
+                        "state census unreadable or invalid"
+                    },
+                }
+            }
             Ok(()) => native::state_cores(
                 memory,
                 base,
@@ -306,7 +334,9 @@ impl Captured {
     pub fn tables(&self) -> [TableView; N] {
         let buffers = &self.buffers;
         let Some(names) = buffers.tokens.get(..self.token_bytes) else {
-            return std::array::from_fn(|_| unavailable("state modifier name arena length invalid"));
+            return std::array::from_fn(|_| {
+                unavailable("state modifier name arena length invalid")
+            });
         };
         let modifiers = buffers
             .modifiers
@@ -347,7 +377,7 @@ impl Captured {
                     |row| rows::StateDynamicModifierRow {
                         state: row.state,
                         ordinal: row.ordinal,
-                        token: name(row).unwrap().to_vec(),
+                        token: owned_vec(copy_vec(name(row).unwrap())),
                         scope_country: row.scope_country,
                         scope_state: row.scope_state,
                     },
@@ -385,7 +415,7 @@ impl Captured {
         }
         table::<tables::StateCores, _>(outcome, &self.cores, |row| rows::StateCoreRow {
             state: row.state,
-            cores: links(row).unwrap().to_vec(),
+            cores: owned_vec(copy_vec(links(row).unwrap())),
         })
     }
 }
@@ -420,8 +450,13 @@ mod tests {
             Outcome::Rows { len: 0 },
             Outcome::Rows { len: 0 },
         ];
-        let [_, _, TableView::Complete(TableRows::StateDynamicModifiers(rows)), _, _] =
-            captured.tables()
+        let [
+            _,
+            _,
+            TableView::Complete(TableRows::StateDynamicModifiers(rows)),
+            _,
+            _,
+        ] = captured.tables()
         else {
             panic!("expected complete modifier rows");
         };
@@ -431,5 +466,4 @@ mod tests {
         assert!(matches!(views[2], TableView::Unavailable { .. }));
         assert!(matches!(views[0], TableView::Complete(_)));
     }
-
 }

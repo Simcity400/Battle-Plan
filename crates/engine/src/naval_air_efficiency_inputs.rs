@@ -294,6 +294,11 @@ fn capture_kills(
             required = required
                 .checked_add(kills.count as usize)
                 .ok_or("naval air kill demand overflow")?;
+            if sources.capacity() == 0 {
+                crate::allocation::reserve_exact(&mut sources, wings.count as usize)
+                    .map_err(|_| "collector allocation failed")?;
+            }
+            // One source at most per wing, covered by the batch reservation.
             sources.push((reference, kills));
         }
     }
@@ -411,6 +416,7 @@ mod tests {
             result
         }
     }
+
     #[test]
     fn kills_preserve_full_wing_category_duplicates_and_signed_counts() {
         let fixture = Fixture::new();

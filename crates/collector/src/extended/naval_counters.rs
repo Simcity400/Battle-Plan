@@ -6,6 +6,7 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows, grow_capacity},
 };
+use engine::allocation::{collect_vec, copy_vec, owned_vec};
 use engine::{Memory, cfleet, ctask_force, cunit::FirstCombatMemo, walk::Outcome};
 use replay::{
     frame::TableView,
@@ -87,7 +88,9 @@ impl Captured {
             rosters: Arena::new(capacity.rosters),
             motion: CaptureRows::new(capacity.motion),
             paths: Arena::new(capacity.paths),
-            combats: FirstCombatMemo::new(capacity.motion),
+            combats: FirstCombatMemo::try_new(capacity.motion)
+                .map_err(crate::allocation::io)
+                .unwrap_or_default(),
             missions: CaptureRows::new(capacity.missions),
             regions: Arena::new(capacity.regions),
         }
@@ -120,7 +123,14 @@ impl Captured {
         self.motion.grow(&mut capacity.motion);
         grow_capacity(&mut capacity.paths, self.paths.required);
         self.paths.grow(&mut capacity.paths);
-        self.combats.reserve(capacity.motion);
+        if self
+            .combats
+            .reserve(capacity.motion)
+            .map_err(crate::allocation::io)
+            .is_err()
+        {
+            return;
+        }
         self.missions.grow(&mut capacity.missions);
         grow_capacity(&mut capacity.regions, self.regions.required);
         self.regions.grow(&mut capacity.regions);
@@ -222,7 +232,7 @@ impl Captured {
                     blue: r.rgba[2],
                     alpha: r.rgba[3],
                     mission_region_count: r.mission_region_count,
-                    task_forces: rosters[r.start..r.start + r.len].to_vec(),
+                    task_forces: owned_vec(copy_vec(&rosters[r.start..r.start + r.len])),
                 }
             }),
             motion,
@@ -234,8 +244,7 @@ impl Captured {
         let Some(regions) = self.regions.first.get(..self.regions.len) else {
             return unavailable("task-force mission region arena length invalid");
         };
-        let rows =
-            &self.missions.rows[..self.missions.outcome.len().min(self.missions.rows.len())];
+        let rows = &self.missions.rows[..self.missions.outcome.len().min(self.missions.rows.len())];
         if rows.iter().any(|row| {
             row.regions_start
                 .checked_add(row.regions_len)
@@ -248,7 +257,9 @@ impl Captured {
                 task_force: r.id,
                 owner: r.owner,
                 current_region: r.current_region,
-                regions: regions[r.regions_start..r.regions_start + r.regions_len].to_vec(),
+                regions: owned_vec(copy_vec(
+                    &regions[r.regions_start..r.regions_start + r.regions_len],
+                )),
             }
         })
     }
@@ -268,7 +279,9 @@ impl Captured {
         }
         // Each task force sits in one fleet roster; a repeated handle is a torn census. Checked
         // here, off the game thread.
-        let mut handles: Vec<u64> = rows.iter().map(|row| row.id).collect();
+        let Ok(mut handles) = collect_vec(rows.iter().map(|row| row.id)) else {
+            return unavailable("collector allocation failed");
+        };
         handles.sort_unstable();
         if handles.windows(2).any(|pair| pair[0] == pair[1]) {
             return unavailable("task force appears in more than one fleet roster");
@@ -279,8 +292,8 @@ impl Captured {
                 task_force: r.id,
                 target: r.target,
                 combat_role: r.combat_role,
-                path: paths[r.ordinary_start..alternate].to_vec(),
-                alternate_path: paths[alternate..alternate + r.alternate_len].to_vec(),
+                path: owned_vec(copy_vec(&paths[r.ordinary_start..alternate])),
+                alternate_path: owned_vec(copy_vec(&paths[alternate..alternate + r.alternate_len])),
             }
         })
     }
@@ -343,7 +356,11 @@ mod tests {
         capture.fleets.outcome = Outcome::Rows { len: 1 };
         capture.task_forces.outcome = Outcome::Rows { len: 0 };
         capture.motion.outcome = Outcome::Rows { len: 0 };
-        let [_, TableView::Complete(TableRows::FleetCounterInputs(rows)), ..] = capture.tables()
+        let [
+            _,
+            TableView::Complete(TableRows::FleetCounterInputs(rows)),
+            ..,
+        ] = capture.tables()
         else {
             panic!("complete");
         };
@@ -428,7 +445,8 @@ mod tests {
         capture.regions.first.copy_from_slice(&[2, 1, 2]);
         capture.regions.len = 3;
         capture.missions.outcome = Outcome::Rows { len: 1 };
-        let TableView::Complete(TableRows::TaskForceMissions(rows)) = capture.mission_table() else {
+        let TableView::Complete(TableRows::TaskForceMissions(rows)) = capture.mission_table()
+        else {
             panic!("complete mission table");
         };
         assert_eq!(

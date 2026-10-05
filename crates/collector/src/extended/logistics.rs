@@ -2,11 +2,7 @@
 //! archetype (CLogisticsStatus series 16 and 15, current daily record), for
 //! each country the game computes them for. Daily, in the first slot after
 //! the daily update that writes them.
-use crate::{
-    sampling::qpc,
-    spooling::table,
-    table_capture::CaptureRows,
-};
+use crate::{sampling::qpc, spooling::table, table_capture::CaptureRows};
 use engine::{Memory, clogistics_status as native, walk::Outcome};
 use replay::{
     cadence::{SKIPPED_REASON, should_walk},

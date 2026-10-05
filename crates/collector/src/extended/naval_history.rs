@@ -21,6 +21,7 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows, bounded},
 };
+use engine::allocation::{collect_vec, copy_vec, default_vec, owned_vec, resize_default};
 use engine::{
     Memory, cair_group, cair_theatre, cair_wing, cdominance_values, cgame_date, cgame_state,
     cnaval_combat_results, cnaval_region_dominance, corders_group, cpdx_array::Array, cprovince,
@@ -32,7 +33,6 @@ use replay::{
     frame::TableView,
     rows::{self, TableId, TableRows, tables},
 };
-use std::collections::BTreeMap;
 
 pub const N: usize = 17;
 pub const TABLES: [TableId; N] = [
@@ -207,7 +207,7 @@ impl Captured {
             results: CaptureRows::new(capacity.rows[10]),
             result_members: CaptureRows::new(capacity.rows[11]),
             result_countries: CaptureRows::new(capacity.rows[12]),
-            result_slots: vec![Default::default(); capacity.rows[10]],
+            result_slots: owned_vec(default_vec(capacity.rows[10])),
             sunk: CaptureRows::new(capacity.rows[13]),
             groups: CaptureRows::new(capacity.rows[14]),
             group_members: CaptureRows::new(capacity.rows[15]),
@@ -322,7 +322,11 @@ impl Captured {
         self.air_groups.grow(&mut capacity.rows[8]);
         self.air_members.grow(&mut capacity.rows[9]);
         self.results.grow(&mut capacity.rows[10]);
-        crate::table_capture::grow_vec(&mut self.result_slots, self.results.rows.len());
+        if self.result_slots.len() < self.results.rows.len()
+            && resize_default(&mut self.result_slots, self.results.rows.len()).is_err()
+        {
+            return;
+        }
         self.result_members.grow(&mut capacity.rows[11]);
         self.result_countries.grow(&mut capacity.rows[12]);
         self.sunk.grow(&mut capacity.rows[13]);
@@ -909,7 +913,7 @@ impl Captured {
                 theatre: r.theatre,
                 ordinal: r.ordinal,
                 priority: r.priority,
-                name: bytes[r.name_start..r.name_start + r.name_len].to_vec(),
+                name: owned_vec(copy_vec(&bytes[r.name_start..r.name_start + r.name_len])),
             }
         })
     }
@@ -927,7 +931,7 @@ impl Captured {
             id: r.id,
             owner: r.owner,
             ordinal: r.ordinal,
-            name: bytes[r.name_start..r.name_start + r.name_len].to_vec(),
+            name: owned_vec(copy_vec(&bytes[r.name_start..r.name_start + r.name_len])),
         })
     }
 
@@ -945,7 +949,7 @@ impl Captured {
                 id: r.id,
                 theatre: r.theatre,
                 ordinal: r.ordinal,
-                name: bytes[r.name_start..r.name_start + r.name_len].to_vec(),
+                name: owned_vec(copy_vec(&bytes[r.name_start..r.name_start + r.name_len])),
             }
         })
     }
@@ -973,11 +977,10 @@ impl Captured {
         }
         let bytes = &self.sunk_names.first[..self.sunk_names.len];
         let text = |range: csunk_ship_info::TextRange| {
-            bytes[range.start..range.start + range.len].to_vec()
+            owned_vec(copy_vec(&bytes[range.start..range.start + range.len]))
         };
-        let entries = self.sunk.rows[..outcome.len()]
-            .iter()
-            .map(|r| rows::SunkShipEntry {
+        let entries = owned_vec(collect_vec(self.sunk.rows[..outcome.len()].iter().map(
+            |r| rows::SunkShipEntry {
                 ship_name: text(r.ship_name),
                 attribution_name: text(r.attribution_name),
                 class_name: text(r.class_name),
@@ -996,9 +999,11 @@ impl Captured {
                 battle: r.battle,
                 cause_record: r.cause_record,
                 assisted_kill: r.assisted_kill,
-            })
-            .collect();
-        TableView::Complete(TableRows::SunkShips(vec![rows::SunkShipsRow { entries }]))
+            },
+        )));
+        TableView::Complete(TableRows::SunkShips(owned_vec(collect_vec([
+            rows::SunkShipsRow { entries },
+        ]))))
     }
 }
 
@@ -1140,27 +1145,38 @@ fn membership_issue<A, B>(
     let Some(sources) = sources.get(..source_len) else {
         return Some("theatre reverse census exceeds captured rows");
     };
-    let mut expected = BTreeMap::new();
-    for source in sources {
-        let (id, group) = backlink(source);
-        if expected.insert(id, group).is_some() {
-            return Some("duplicate identity in theatre reverse census");
-        }
+    let Ok(mut expected) = collect_vec(sources.iter().map(backlink)) else {
+        return Some("collector allocation failed");
+    };
+    let Ok(mut seen) = collect_vec(rows.iter().map(member)) else {
+        return Some("collector allocation failed");
+    };
+    if crate::allocation::failed() {
+        return Some("collector allocation failed");
     }
-    let mut seen = BTreeMap::new();
-    for row in rows {
-        let (id, group) = member(row);
-        if seen.insert(id, group).is_some() {
-            return Some("unit belongs to multiple theatre membership entries");
-        }
-        if expected.get(&id) != Some(&group) || group == 0 {
+    expected.sort_unstable_by_key(|&(id, _)| id);
+    seen.sort_unstable_by_key(|&(id, _)| id);
+    if expected.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Some("duplicate identity in theatre reverse census");
+    }
+    if seen.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Some("unit belongs to multiple theatre membership entries");
+    }
+    for &(id, group) in &seen {
+        if group == 0
+            || expected
+                .binary_search_by_key(&id, |&(id, _)| id)
+                .map_or(true, |index| expected[index].1 != group)
+        {
             return Some("theatre membership disagrees with native unit backlink");
         }
     }
-    if expected
-        .iter()
-        .any(|(id, group)| *group != 0 && seen.get(id) != Some(group))
-    {
+    if expected.iter().any(|&(id, group)| {
+        group != 0
+            && seen
+                .binary_search_by_key(&id, |&(id, _)| id)
+                .map_or(true, |index| seen[index].1 != group)
+    }) {
         return Some("native unit backlink is absent from theatre membership");
     }
     None

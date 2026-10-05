@@ -9,6 +9,7 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
+use engine::allocation::{copy_vec, map_slice, owned_vec, vec};
 use engine::{
     Memory,
     character_inputs::{self as native, Role},
@@ -216,7 +217,10 @@ impl Captured {
         let Some(rows) = self.traits.rows.get(..self.traits.outcome.len()) else {
             return unavailable("character role trait rows exceed buffer");
         };
-        if rows.iter().any(|row| span(values, row.start, row.len).is_none()) {
+        if rows
+            .iter()
+            .any(|row| span(values, row.start, row.len).is_none())
+        {
             return unavailable("character role traits outside captured arena");
         }
         table::<tables::CharacterRoleTraits, _>(self.traits.outcome, rows, |row| {
@@ -232,17 +236,25 @@ impl Captured {
                 character: row.character,
                 kind,
                 role,
-                tokens: traits.iter().map(|value| value.token).collect(),
-                definitions: traits.iter().filter_map(|value| value.ordinal).collect(),
+                tokens: owned_vec(map_slice(traits, |value| value.token)),
+                definitions: owned_vec((|| {
+                    let mut definitions = vec(traits.len())?;
+                    definitions.extend(traits.iter().filter_map(|value| value.ordinal));
+                    Ok(definitions)
+                })()),
             }
         })
     }
     fn operatives_table(&self) -> TableView {
-        let values = &self.definitions.first[..self.definitions.len.min(self.definitions.first.len())];
+        let values =
+            &self.definitions.first[..self.definitions.len.min(self.definitions.first.len())];
         let Some(rows) = self.operatives.rows.get(..self.operatives.outcome.len()) else {
             return unavailable("character operative rows exceed buffer");
         };
-        if rows.iter().any(|row| span(values, row.start, row.len).is_none()) {
+        if rows
+            .iter()
+            .any(|row| span(values, row.start, row.len).is_none())
+        {
             return unavailable("character operative traits outside captured arena");
         }
         table::<tables::CharacterOperatives, _>(self.operatives.outcome, rows, |row| {
@@ -254,10 +266,60 @@ impl Captured {
                 category: leader.category,
                 owner: leader.owner,
                 skill_level: leader.skill_level,
-                trait_definitions: span(values, row.start, row.len).unwrap().to_vec(),
+                trait_definitions: owned_vec(copy_vec(span(values, row.start, row.len).unwrap())),
             }
         })
     }
+}
+
+#[cfg(test)]
+pub(crate) fn allocation_failure_exercise() {
+    let _home = super::daily_intel::Home::try_new(2, 16);
+    if crate::allocation::failed() {
+        return;
+    }
+    let _roles = super::characters::census::RoleCensus::new(2);
+    if crate::allocation::failed() {
+        return;
+    }
+    let mut captured = Captured::with_capacities(&Capacities {
+        traits: 1,
+        values: 2,
+        operatives: 1,
+        definitions: 2,
+    });
+    if crate::allocation::failed() {
+        return;
+    }
+    captured.values.first[..2].copy_from_slice(&[
+        native::Trait {
+            token: 11,
+            ordinal: Some(21),
+        },
+        native::Trait {
+            token: 12,
+            ordinal: None,
+        },
+    ]);
+    captured.values.len = 2;
+    captured.traits.rows[0] = native::TraitRow {
+        character: 1,
+        role: Role::CountryLeader(0),
+        start: 0,
+        len: 2,
+    };
+    captured.traits.outcome = Outcome::Rows { len: 1 };
+    captured.definitions.first[..2].copy_from_slice(&[31, 32]);
+    captured.definitions.len = 2;
+    captured.operatives.rows[0] = native::OperativeRow {
+        character: 1,
+        reference: 1,
+        leader: None,
+        start: 0,
+        len: 2,
+    };
+    captured.operatives.outcome = Outcome::Rows { len: 1 };
+    let _ = captured.tables();
 }
 
 fn span<V>(values: &[V], start: usize, len: usize) -> Option<&[V]> {
@@ -397,7 +459,10 @@ mod tests {
     fn escaped_spans_and_failures_publish_nothing() {
         let mut captured = captured();
         captured.traits.rows[1].len = 2;
-        assert!(matches!(captured.tables()[0], TableView::Unavailable { .. }));
+        assert!(matches!(
+            captured.tables()[0],
+            TableView::Unavailable { .. }
+        ));
         let mut capacity = Capacities::default();
         captured.values.required = 1 << 20;
         captured.fail_capture(5, false, "job failed");

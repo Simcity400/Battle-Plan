@@ -25,6 +25,10 @@ enum FolderCommand {
         game: PathBuf,
         user: PathBuf,
     },
+    RecordingSummaries {
+        id: String,
+        paths: Vec<PathBuf>,
+    },
 }
 
 #[derive(Deserialize)]
@@ -98,6 +102,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let mut command = match serde_json::from_slice(&line)? {
             Command::Data(command) => command,
+            Command::Folders(FolderCommand::RecordingSummaries { id, paths }) => {
+                let partials: Vec<_> = paths
+                    .iter()
+                    .map(|path| {
+                        dashboard::metadata::read_partial_recording(path)
+                            .ok()
+                            .flatten()
+                    })
+                    .collect();
+                let payload = serde_json::to_string(&partials)?;
+                for event in ReplyChunks::new(id, payload).map_err(invalid)? {
+                    if !emit(&event) {
+                        return Err("Browser connection closed".into());
+                    }
+                }
+                continue;
+            }
             Command::Folders(FolderCommand::SetContentFolders { id, game, user }) => {
                 let next = Config {
                     game_dir: game,

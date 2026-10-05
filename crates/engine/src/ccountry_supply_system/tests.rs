@@ -638,7 +638,7 @@ fn repeated_global_edges_keep_rows_path_occurrences_pressure_and_first_faults() 
         reads: RefCell::default(),
         fail: Cell::new(usize::MAX),
     };
-    let mut retained = node::ProvinceMemo::with_scratch();
+    let mut retained = node::ProvinceMemo::with_scratch().unwrap();
     let baseline = capture(&memory, &mut node::ProvinceMemo::default(), 6);
     let cold = memory.reads.take();
     let actual = capture(&memory, &mut retained, 6);
@@ -760,7 +760,7 @@ fn parent_headers_reuse_interleaved_keys_but_refresh_root_and_route_payloads() {
     let expected = [(1, 2), (2, 3), (1, 2), (2, 3)]
         .map(|(parent, province)| observe(&mut baseline, parent, province));
     let cold = memory.reads.take();
-    let mut retained = InnerMemo::with_scratch();
+    let mut retained = InnerMemo::try_with_scratch().unwrap();
     let actual = [(1, 2), (2, 3), (1, 2), (2, 3)]
         .map(|(parent, province)| observe(&mut retained, parent, province));
     let reused = memory.reads.take();
@@ -880,7 +880,7 @@ fn parent_chains_record_each_node_less_vertex_once_and_stop_at_nodes() {
 #[test]
 fn parent_vertex_membership_keeps_sorted_rows_cycles_country_scope_and_truncation() {
     use crate::{supply_node as node, supply_parent_map};
-    let mut memo = node::ProvinceMemo::with_scratch();
+    let mut memo = node::ProvinceMemo::with_scratch().unwrap();
     // The large ID exercises the exact fallback outside the bounded bitset.
     for high in [6_u32, 65536] {
         for terminal in [4_i32, high as i32, -1] {

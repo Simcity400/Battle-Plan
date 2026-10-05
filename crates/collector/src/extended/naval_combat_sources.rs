@@ -6,12 +6,11 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
+use engine::allocation::{copy_vec, owned_vec, resize_default};
 use engine::{Memory, cprovince, naval_combat_transfers as transfers, walk::Outcome};
 use replay::{
     frame::TableView,
-    rows::{
-        NavalCombatTransferRow, NavalProvinceCombatRow, NavalTransferUnitRow, TableId, tables,
-    },
+    rows::{NavalCombatTransferRow, NavalProvinceCombatRow, NavalTransferUnitRow, TableId, tables},
 };
 
 // The collector copies the engine's entry classes into the row unchanged.
@@ -113,7 +112,11 @@ impl Captured {
         self.provinces.grow(&mut c.provinces);
         self.province_combats.grow(&mut c.province_combats);
         self.province_kinds.required = self.province_combats.required;
-        crate::table_capture::grow_vec(&mut self.province_kinds.first, c.province_combats);
+        if self.province_kinds.first.len() < c.province_combats
+            && resize_default(&mut self.province_kinds.first, c.province_combats).is_err()
+        {
+            return;
+        }
         self.combats.grow(&mut c.combats);
         self.transfer_handles.grow(&mut c.transfer_handles);
         self.transfers.grow(&mut c.transfers);
@@ -183,11 +186,16 @@ impl Captured {
 
     pub fn tables(&self) -> [TableView; N] {
         let [provinces, combats, transfers] = self.outcomes();
-        fn slice<T: Clone>(arena: &Arena<T>, [start, len]: [usize; 2]) -> Option<Vec<T>> {
-            arena.first.get(start..start.checked_add(len)?).map(<[T]>::to_vec)
+        fn slice<T: Copy>(arena: &Arena<T>, [start, len]: [usize; 2]) -> Option<Vec<T>> {
+            arena
+                .first
+                .get(start..start.checked_add(len)?)
+                .map(|source| owned_vec(copy_vec(source)))
         }
-        fn fits<T: Clone>(arena: &Arena<T>, range: [usize; 2]) -> bool {
-            slice(arena, range).is_some()
+        fn fits<T>(arena: &Arena<T>, [start, len]: [usize; 2]) -> bool {
+            start
+                .checked_add(len)
+                .is_some_and(|end| end <= arena.first.len())
         }
         let written = |outcome: Outcome, len: usize| outcome.len().min(len);
         let valid = self.provinces.rows[..written(provinces, self.provinces.rows.len())]
@@ -251,10 +259,10 @@ mod tests {
         };
         capture.provinces.outcome = Outcome::Rows { len: 1 };
         capture.province_combats.first.copy_from_slice(&[5, 6]);
-        capture.province_kinds.first.copy_from_slice(&[
-            cprovince::COMBAT_NAVAL,
-            cprovince::COMBAT_LAND,
-        ]);
+        capture
+            .province_kinds
+            .first
+            .copy_from_slice(&[cprovince::COMBAT_NAVAL, cprovince::COMBAT_LAND]);
         capture.combats.rows[0] = transfers::CombatTransfers {
             combat: 5,
             transfers: [0, 1],

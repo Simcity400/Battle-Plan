@@ -135,7 +135,8 @@ impl StaticGeometry {
         let province = self.read_province(memory, base, id)?;
         if self.usable() {
             if self.provinces.len() <= id as usize {
-                self.provinces.resize(id as usize + 1, None);
+                crate::allocation::resize(&mut self.provinces, id as usize + 1, None)
+                    .map_err(|_| "static geometry allocation failed")?;
             }
             self.provinces[id as usize] = Some(province);
         }
@@ -279,6 +280,8 @@ impl StaticGeometry {
             }
         }
         if self.usable() {
+            crate::allocation::reserve_map(&mut self.edges, 1)
+                .map_err(|_| "static geometry allocation failed")?;
             self.edges.insert(key, edge);
         }
         Ok(edge)

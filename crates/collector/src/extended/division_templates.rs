@@ -8,6 +8,7 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
+use engine::allocation::{copy_vec, owned_vec};
 use engine::{Memory, creferenced_division_template as native, walk::Outcome};
 use replay::{
     frame::TableView,
@@ -100,7 +101,8 @@ pub struct Captured {
 }
 impl Captured {
     pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
-        self.rows.fail(super::failed_capture(TABLES[0], hour, force_full, reason));
+        self.rows
+            .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
         self.icon_rows
             .fail(super::failed_capture(TABLES[1], hour, force_full, reason));
         // A failed capture has no rows of its own to count.
@@ -269,7 +271,7 @@ impl Captured {
         table::<tables::DivisionTemplates, _>(outcome, &self.rows.rows, |r| DivisionTemplateRow {
             template: r.template,
             owner: r.owner,
-            name: span(bytes, r.name).unwrap().to_vec(),
+            name: owned_vec(copy_vec(span(bytes, r.name).unwrap())),
             unit_type: r.unit_type,
         })
     }
@@ -300,25 +302,28 @@ impl Captured {
             DivisionTemplateIconRow {
                 template: r.template,
                 priority_unit: r.priority_unit,
-                priority_unit_name: span(bytes, r.priority_unit_name).unwrap().to_vec(),
+                priority_unit_name: owned_vec(copy_vec(span(bytes, r.priority_unit_name).unwrap())),
                 custom_icon: r.custom_icon,
                 custom_icon_nato: r.custom_icon_nato,
                 representative: r.representative.token,
                 representative_local: u8::from(r.representative.local),
-                subunits: span(counts, r.counts)
-                    .unwrap()
-                    .iter()
-                    .map(|unit| TemplateSubunit {
-                        token: unit.token,
-                        local: u8::from(unit.local),
-                        count: unit.count,
-                    })
-                    .collect(),
+                subunits: owned_vec(engine::allocation::collect_vec(
+                    span(counts, r.counts)
+                        .unwrap()
+                        .iter()
+                        .map(|unit| TemplateSubunit {
+                            token: unit.token,
+                            local: u8::from(unit.local),
+                            count: unit.count,
+                        }),
+                )),
                 country: r.country,
                 foreign_country: r.foreign_country,
                 model_category: r.model_category,
-                model_entity: span(bytes, r.model_entity).unwrap().to_vec(),
-                excluded_variants: span(variants, r.excluded_variants).unwrap().to_vec(),
+                model_entity: owned_vec(copy_vec(span(bytes, r.model_entity).unwrap())),
+                excluded_variants: owned_vec(copy_vec(
+                    span(variants, r.excluded_variants).unwrap(),
+                )),
                 model_unreadable: u8::from(r.model_failure.is_some()),
             }
         })
@@ -422,7 +427,10 @@ mod tests {
             // The counter inputs are walked every hour.
             assert!(read[TABLES[1].index()].spans > 0);
             if !replay::cadence::should_walk(TABLES[0], hour, force) {
-                assert_eq!(read[TABLES[0].index()], crate::read_accounting::ZERO[TABLES[0].index()]);
+                assert_eq!(
+                    read[TABLES[0].index()],
+                    crate::read_accounting::ZERO[TABLES[0].index()]
+                );
                 assert_eq!(
                     capture.outcomes(),
                     [
@@ -443,8 +451,7 @@ mod tests {
             let reads = crate::read_accounting::Capture::new();
             capture.capture(&missing, 0, 0x1000, hour, force);
             assert!(reads.finish()[TABLES[0].index()].spans > 0);
-            let [Outcome::Unavailable { reason }, Outcome::Unavailable { .. }] =
-                capture.outcomes()
+            let [Outcome::Unavailable { reason }, Outcome::Unavailable { .. }] = capture.outcomes()
             else {
                 panic!("unreadable templates must fail at hour {hour}");
             };
@@ -457,7 +464,9 @@ mod tests {
     #[test]
     fn a_failed_capture_counts_no_model_failures() {
         let mut capture = Captured::with_capacities(&capacity());
-        capture.model_failures.add("template grouped subunits unreadable");
+        capture
+            .model_failures
+            .add("template grouped subunits unreadable");
         assert_eq!(capture.model_failures().rows, 1);
         capture.fail_capture(3, false, "slow acquisition failed");
         assert_eq!(capture.model_failures(), ModelFailures::default());
@@ -477,7 +486,10 @@ mod tests {
         assert_eq!(rows[0].template, 0xffff_ffff_0000_0034);
         assert_eq!(rows[0].name, &[b'A', 0, 255]);
         assert_eq!(icons[0].model_entity, b"GER_x_entity");
-        assert_eq!((icons[0].representative, icons[0].representative_local), (777, 0));
+        assert_eq!(
+            (icons[0].representative, icons[0].representative_local),
+            (777, 0)
+        );
         assert_eq!(
             icons[0].subunits,
             [TemplateSubunit {
@@ -493,8 +505,10 @@ mod tests {
         // counter fields and is counted by reason.
         let good = capture.icon_rows.rows[0];
         capture.icon_rows.rows[0].model_failure = Some("template grouped subunits unreadable");
-        let [_, TableView::Complete(replay::rows::TableRows::DivisionTemplateIcons(flagged))] =
-            capture.tables()
+        let [
+            _,
+            TableView::Complete(replay::rows::TableRows::DivisionTemplateIcons(flagged)),
+        ] = capture.tables()
         else {
             panic!("complete icons");
         };

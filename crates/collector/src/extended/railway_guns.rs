@@ -9,6 +9,7 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows, grow_capacity},
 };
+use engine::allocation::{collect_vec, copy_vec, owned_vec};
 use engine::{Memory, cunit::FirstCombatMemo, railway_gun_counter_inputs, walk::Outcome};
 use replay::{
     frame::TableView,
@@ -50,7 +51,9 @@ impl Captured {
         Self {
             rows: CaptureRows::new(capacity.rows),
             paths: Arena::new(capacity.paths),
-            combats: FirstCombatMemo::new(capacity.rows),
+            combats: FirstCombatMemo::try_new(capacity.rows)
+                .map_err(crate::allocation::io)
+                .unwrap_or_default(),
         }
     }
 
@@ -68,7 +71,10 @@ impl Captured {
         self.rows.grow(&mut capacity.rows);
         grow_capacity(&mut capacity.paths, self.paths.required);
         self.paths.grow(&mut capacity.paths);
-        self.combats.reserve(capacity.rows);
+        let _ = self
+            .combats
+            .reserve(capacity.rows)
+            .map_err(crate::allocation::io);
     }
 
     pub fn capture(&mut self, memory: &impl Memory, base: usize, game_state: usize) -> [u64; N] {
@@ -107,16 +113,21 @@ impl Captured {
             .iter()
             .any(|end| end.is_none_or(|end| end > paths.len()))
         }) {
-            return [unavailable("railway-gun route lies outside the captured arena")];
+            return [unavailable(
+                "railway-gun route lies outside the captured arena",
+            )];
         }
         // Each gun sits in exactly one country roster; a repeated handle is a
         // torn census. Checked here, off the game thread, in n log n.
-        let mut handles: Vec<u64> = rows.iter().map(|row| row.gun).collect();
+        let mut handles: Vec<u64> = match collect_vec(rows.iter().map(|row| row.gun)) {
+            Ok(handles) => handles,
+            Err(_) => return [unavailable("collector allocation failed")],
+        };
         handles.sort_unstable();
         if handles.windows(2).any(|pair| pair[0] == pair[1]) {
             return [unavailable("railway gun appears in more than one roster")];
         }
-        let route = |start: usize, len: usize| paths[start..start + len].to_vec();
+        let route = |start: usize, len: usize| owned_vec(copy_vec(&paths[start..start + len]));
         [table::<tables::RailwayGunCounterInputs, _>(
             self.rows.outcome,
             &self.rows.rows,
@@ -208,9 +219,15 @@ mod tests {
             panic!("complete railway-gun table");
         };
         let row = &rows[0];
-        assert_eq!((row.ordinary_path.as_slice(), row.alternate_path.as_slice()), (&[13, 14][..], &[15][..]));
+        assert_eq!(
+            (row.ordinary_path.as_slice(), row.alternate_path.as_slice()),
+            (&[13, 14][..], &[15][..])
+        );
         assert_eq!(row.railway_building_level, Some(-3));
-        assert_eq!((row.retreat, row.reference_entry_count, row.exiled), (1, 2, 0));
+        assert_eq!(
+            (row.retreat, row.reference_entry_count, row.exiled),
+            (1, 2, 0)
+        );
         assert_eq!(row.received_supply_ratio, -500);
 
         capture.rows.rows[0].alternate_len = 2;

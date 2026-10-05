@@ -1,6 +1,7 @@
 //! Role fields of the roster job's admitted census, loaned to the role jobs
 //! of the same stopped-world callback so they need not walk the roster again.
 
+use engine::allocation::{default_vec, owned_vec, reserve_exact, vec};
 use engine::{
     Memory, ccharacter,
     ccharacter_manager::PortraitIdentity,
@@ -66,8 +67,14 @@ impl RoleCensus {
 
     pub fn new(capacity: usize) -> Self {
         Self {
-            pointers: Vec::with_capacity(capacity),
-            rows: vec![0; capacity * ROW],
+            pointers: owned_vec(vec(capacity)),
+            rows: capacity.checked_mul(ROW).map_or_else(
+                || {
+                    let _ = crate::allocation::oom();
+                    Vec::new()
+                },
+                |bytes| owned_vec(default_vec(bytes)),
+            ),
             historical: 0,
             scope: (0, 0),
             complete: false,
@@ -92,10 +99,19 @@ impl RoleCensus {
     /// Off-thread only: reserve the whole observed roster in one step.
     pub fn grow(&mut self) {
         if self.needs_growth() {
-            self.pointers
-                .reserve_exact(self.required - self.pointers.len());
-            self.rows
-                .resize((self.required * ROW).max(self.rows.len()), 0);
+            let additional = self.required - self.pointers.len();
+            if reserve_exact(&mut self.pointers, additional).is_err() {
+                return;
+            }
+            let Some(bytes) = self.required.checked_mul(ROW) else {
+                let _ = reserve_exact(&mut self.rows, usize::MAX);
+                return;
+            };
+            let additional = bytes.saturating_sub(self.rows.len());
+            if reserve_exact(&mut self.rows, additional).is_err() {
+                return;
+            }
+            self.rows.resize(bytes.max(self.rows.len()), 0);
         }
     }
 

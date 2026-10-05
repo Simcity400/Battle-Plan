@@ -149,7 +149,7 @@ fn order_counter_capture_gates_and_clears_recycled_metadata_without_allocation()
         base: 0x1000,
         bytes: &bytes,
     };
-    let mut cache = Cache::with_capacity(32);
+    let mut cache = Cache::try_with_capacity(32).unwrap();
     let cached = cache.prepare(&memory, 0, 0x1000);
     assert_eq!(cached.seed_status(), SeedStatus::Ready);
     let mut sample = OrderCounterCapture::with_capacity(2);
@@ -1177,7 +1177,7 @@ fn divisions_owned_success_supplies_both_live_companions_before_decode_without_e
     first.supply_sources(&mut frame.extended, frame.divisions.len());
     frame
         .extended
-        .install_unit_inputs(first.census.unit_inputs().map(Arc::clone));
+        .install_unit_inputs(first.census.unit_inputs().cloned());
     frame.extended.set_divisions_raw_mode(true);
     let ticks = frame
         .extended

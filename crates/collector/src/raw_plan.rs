@@ -19,8 +19,8 @@ static BACKEND_NS: AtomicU64 = AtomicU64::new(0);
 static OVERFLOW_NO_RETRY: AtomicU64 = AtomicU64::new(0);
 static REDUNDANT_CONTROLS: AtomicU64 = AtomicU64::new(0);
 
-pub(crate) fn diagnostics() -> serde_json::Value {
-    serde_json::json!({
+pub(crate) fn diagnostics() -> impl serde::Serialize {
+    crate::status::status!({
         "scope": "opted-in raw acquisition since attach; every plan executes fresh source reads",
         "attempts": ATTEMPTS.load(Ordering::Relaxed),
         "complete": COMPLETE.load(Ordering::Relaxed),
@@ -56,13 +56,21 @@ pub(crate) struct Observations {
 
 impl Observations {
     pub fn new(controls: usize, bytes: usize) -> Self {
+        let mut control_rows = Vec::new();
+        let mut expected = Vec::new();
+        let mut hints = Vec::new();
+        if engine::allocation::reserve_exact(&mut control_rows, controls).is_ok()
+            && engine::allocation::reserve_exact(&mut expected, bytes).is_ok()
+        {
+            let _ = engine::allocation::reserve_exact(&mut hints, controls);
+        }
         Self {
             active: false,
             eligible: false,
             after_reads: 0,
-            controls: Vec::with_capacity(controls),
-            expected: Vec::with_capacity(bytes),
-            hints: Vec::with_capacity(controls),
+            controls: control_rows,
+            expected,
+            hints,
             required_controls: 0,
             required_bytes: 0,
         }
@@ -132,12 +140,14 @@ impl Observations {
 
     pub fn grow_for_next(&mut self) {
         if self.required_controls > self.controls.capacity() {
-            self.controls
-                .reserve_exact(self.required_controls - self.controls.len());
+            let additional = self.required_controls - self.controls.len();
+            if engine::allocation::reserve_exact(&mut self.controls, additional).is_err() {
+                return;
+            }
         }
         if self.required_bytes > self.expected.capacity() {
-            self.expected
-                .reserve_exact(self.required_bytes - self.expected.len());
+            let additional = self.required_bytes - self.expected.len();
+            let _ = engine::allocation::reserve_exact(&mut self.expected, additional);
         }
     }
 }
@@ -310,40 +320,64 @@ impl<const N: usize> CapturePlan<N> {
         raw_bytes: [u64; N],
         len: usize,
     ) {
+        if self
+            .try_prepare(observations, has_bulk, raw_bytes, len)
+            .is_err()
+        {
+            // A failed compilation never installs partial geometry.
+            self.compiled = None;
+            self.sealed = false;
+            self.retire = false;
+        }
+    }
+
+    fn try_prepare(
+        &mut self,
+        observations: &mut Observations,
+        has_bulk: bool,
+        raw_bytes: [u64; N],
+        len: usize,
+    ) -> std::io::Result<()> {
         let started = std::time::Instant::now();
         if self.sealed && observations.eligible && !self.requests.is_empty() {
-            let reads = self
-                .requests
-                .iter()
-                .map(|request| Read {
-                    address: request.address,
-                    destination_offset: request.start,
-                    len: request.len,
-                })
-                .collect();
-            let (controls, expected) = compact_controls(&self.requests, observations, len);
-            if let Some(plan) = PreparedPlan::new(reads, controls, expected, len)
-                .and_then(|plan| plan.with_hints(observations.hints.clone()))
-            {
-                let requests = self.requests.clone();
-                let spans = requests
-                    .iter()
-                    .filter(|request| request.len != 0)
-                    .map(|request| crate::raw::Span {
-                        addr: request.address,
-                        len: request.len as u32,
-                        ok: true,
-                        mask: request.mask,
-                        start: request.start as u32,
-                        bulk: request.bulk,
-                    })
-                    .collect();
+            let mut reads = Vec::new();
+            engine::allocation::reserve_exact(&mut reads, self.requests.len())?;
+            reads.extend(self.requests.iter().map(|request| Read {
+                address: request.address,
+                destination_offset: request.start,
+                len: request.len,
+            }));
+            let (controls, expected) = compact_controls(&self.requests, observations, len)?;
+            let hints = checked_copy(&observations.hints)?;
+            let plan = PreparedPlan::try_new(reads, controls, expected, len)
+                .map_err(engine::allocation::allocation_error)?;
+            let plan = match plan {
+                Some(plan) => plan
+                    .try_with_hints(hints)
+                    .map_err(engine::allocation::allocation_error)?,
+                None => None,
+            };
+            if let Some(plan) = plan {
+                let requests = checked_copy(&self.requests)?;
+                let mut spans = Vec::new();
+                engine::allocation::reserve_exact(&mut spans, requests.len())?;
+                spans.extend(
+                    requests
+                        .iter()
+                        .filter(|request| request.len != 0)
+                        .map(|request| crate::raw::Span {
+                            addr: request.address,
+                            len: request.len as u32,
+                            ok: true,
+                            mask: request.mask,
+                            start: request.start as u32,
+                            bulk: request.bulk,
+                        }),
+                );
                 let first_source_read = requests.iter().position(|request| request.len != 0);
-                let mut frontiers: Vec<usize> = plan
-                    .controls()
-                    .iter()
-                    .map(|control| control.after_reads)
-                    .collect();
+                let mut frontiers = Vec::new();
+                engine::allocation::reserve_exact(&mut frontiers, plan.controls().len())?;
+                frontiers.extend(plan.controls().iter().map(|control| control.after_reads));
                 frontiers.dedup();
                 self.compiled = Some(Compiled {
                     key: self.key,
@@ -366,8 +400,8 @@ impl<const N: usize> CapturePlan<N> {
             self.retire = false;
         }
         if observations.after_reads > self.requests.capacity() {
-            self.requests
-                .reserve_exact(observations.after_reads - self.requests.len());
+            let additional = observations.after_reads - self.requests.len();
+            engine::allocation::reserve_exact(&mut self.requests, additional)?;
         }
         observations.grow_for_next();
         self.sealed = false;
@@ -375,6 +409,7 @@ impl<const N: usize> CapturePlan<N> {
             started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
             Ordering::Relaxed,
         );
+        Ok(())
     }
 
     pub fn capacity_bytes(&self) -> u64 {
@@ -397,7 +432,7 @@ fn compact_controls(
     requests: &[Request],
     observations: &Observations,
     len: usize,
-) -> (Vec<Control>, Vec<u8>) {
+) -> std::io::Result<(Vec<Control>, Vec<u8>)> {
     let mut end = 0;
     let append_only = requests.iter().all(|request| {
         let valid = request.start == end;
@@ -412,11 +447,18 @@ fn compact_controls(
                 .is_none_or(|end| end > len)
         })
     {
-        return (observations.controls.clone(), observations.expected.clone());
+        return Ok((
+            checked_copy(&observations.controls)?,
+            checked_copy(&observations.expected)?,
+        ));
     }
-    let mut checked = vec![0_u8; len];
-    let mut controls = Vec::with_capacity(observations.controls.len());
-    let mut expected = Vec::with_capacity(observations.expected.len());
+    let mut checked = Vec::new();
+    engine::allocation::reserve_exact(&mut checked, len)?;
+    checked.resize(len, 0_u8);
+    let mut controls = Vec::new();
+    engine::allocation::reserve_exact(&mut controls, observations.controls.len())?;
+    let mut expected = Vec::new();
+    engine::allocation::reserve_exact(&mut expected, observations.expected.len())?;
     for control in &observations.controls {
         let covered = &mut checked[control.offset..control.offset + control.len];
         if !covered.contains(&0) {
@@ -435,7 +477,39 @@ fn compact_controls(
         (observations.controls.len() - controls.len()) as u64,
         Ordering::Relaxed,
     );
-    (controls, expected)
+    Ok((controls, expected))
+}
+
+fn checked_copy<T: Copy>(source: &[T]) -> std::io::Result<Vec<T>> {
+    let mut rows = Vec::new();
+    engine::allocation::reserve_exact(&mut rows, source.len())?;
+    rows.extend_from_slice(source);
+    Ok(rows)
+}
+
+#[cfg(test)]
+pub(crate) fn allocation_exercise() -> bool {
+    let mut observations = Observations::new(1, 1);
+    if crate::allocation::failed() {
+        return false;
+    }
+    observations.begin();
+    observations.observe(0, &[1, 2, 3, 4]);
+    observations.grow_for_next();
+    if crate::allocation::failed() {
+        return false;
+    }
+    observations.begin();
+    observations.observe(0, &[1, 2, 3, 4]);
+    let request = Request {
+        address: 0x1000,
+        len: 4,
+        start: 1,
+        mask: 1,
+        bulk: false,
+    };
+    // The ordinary fallback also copies through checked capacity.
+    compact_controls(&[request], &observations, 4).is_ok()
 }
 
 #[cfg(test)]
@@ -469,9 +543,9 @@ mod tests {
         observations.observe(2, &[3, 4]);
         observations.observe(4, &[5, 6]);
         observations.observe(0, &[1, 2, 3, 4]);
-        let (controls, expected) = compact_controls(&requests, &observations, 8);
+        let (controls, expected) = compact_controls(&requests, &observations, 8).unwrap();
         assert_eq!(controls.len(), 2);
-        let plan = PreparedPlan::new(
+        let plan = PreparedPlan::try_new(
             requests
                 .iter()
                 .map(|r| Read {
@@ -484,6 +558,7 @@ mod tests {
             expected,
             8,
         )
+        .unwrap()
         .unwrap();
         for (byte, outcome) in [
             (1, Outcome::ControlChanged { completed_reads: 1 }),
@@ -508,7 +583,7 @@ mod tests {
         let mut overlap = requests;
         overlap[1].start = 2;
         assert_eq!(
-            compact_controls(&overlap, &observations, 6),
+            compact_controls(&overlap, &observations, 6).unwrap(),
             (observations.controls.clone(), observations.expected.clone())
         );
     }

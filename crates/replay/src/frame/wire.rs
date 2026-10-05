@@ -3,14 +3,16 @@ use super::{
     validate_delta, validate_rows,
 };
 use crate::{
-    codec::{Decoder, invalid, put_string},
+    codec::{Decoder, invalid_static as invalid, put_string},
     rows::{self, TableId, TableRows},
 };
+use engine::allocation;
 use std::io;
 
 impl Frame {
     pub fn encoded(&self) -> io::Result<EncodedFrame> {
-        let mut bytes = vec![0; EncodedFrame::PREFIX_BYTES];
+        let mut bytes = allocation::vec(EncodedFrame::PREFIX_BYTES)?;
+        bytes.resize(EncodedFrame::PREFIX_BYTES, 0);
         self.encode(&mut bytes)?;
         Ok(EncodedFrame {
             branch: self.branch,
@@ -28,6 +30,7 @@ impl Frame {
     }
 
     pub fn encode_with_sizes(&self, out: &mut Vec<u8>) -> io::Result<[usize; TABLE_COUNT]> {
+        allocation::reserve(out, 37 + 8 * TABLE_COUNT)?;
         out.extend_from_slice(&self.branch.to_le_bytes());
         out.extend_from_slice(&self.hour.to_le_bytes());
         out.push(u8::from(self.keyframe));
@@ -40,6 +43,7 @@ impl Frame {
         out.extend_from_slice(&self.metrics.dropped_frames.to_le_bytes());
         let mut sizes = [0; TABLE_COUNT];
         for table in TableId::ALL {
+            allocation::reserve(out, 9)?;
             let update = &self.tables[table.index()];
             let table_start = out.len();
             if self.keyframe
@@ -127,14 +131,14 @@ impl Frame {
             pool_bytes: input.u64()?,
             dropped_frames: input.u64()?,
         };
-        let mut tables = Vec::with_capacity(TABLE_COUNT);
+        let mut tables = allocation::vec(TABLE_COUNT)?;
         for table in TableId::ALL {
             let update = match input.u8()? {
                 0 => TableUpdate::Snapshot(decode_rows(table, input)?),
                 1 => {
                     let baseline = input.i32()?;
                     let count = decode_row_count(table, input, table.minimum_delta_bytes())?;
-                    let mut changed = Vec::with_capacity(count);
+                    let mut changed = allocation::vec(count)?;
                     let mut previous_key = 0;
                     for _ in 0..count {
                         let row = rows::decode_delta(table, previous_key, input)?;
@@ -142,7 +146,7 @@ impl Frame {
                         changed.push(row);
                     }
                     let count = decode_row_count(table, input, 1)?;
-                    let mut deleted = Vec::with_capacity(count);
+                    let mut deleted = allocation::vec(count)?;
                     let mut previous_key = 0;
                     for _ in 0..count {
                         let key = table.decode_key(previous_key, input)?;

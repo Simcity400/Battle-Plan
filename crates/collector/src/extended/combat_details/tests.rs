@@ -919,3 +919,26 @@ fn detail_arenas_grow_from_live_demand() {
     assert!(captured.detail_text.first.len() >= 100_000);
     assert!(captured.timed_traits.first.len() >= 500);
 }
+
+#[test]
+fn invalid_modifier_breakdown_projection_is_unavailable() {
+    let mut captured = Captured::vacant();
+    captured
+        .breakdowns
+        .push(replay::rows::ReserveModifierBreakdownRow {
+            kind: 0,
+            owner: 9,
+            nodes: vec![engine::modifier_breakdown::Node {
+                children: 1,
+                value: 3,
+                name: b"source".to_vec(),
+            }],
+        });
+    captured.breakdown_outcome = Outcome::Rows { len: 1 };
+    assert_eq!(
+        captured.tables()[4],
+        TableView::Unavailable {
+            reason: "reserve modifier breakdown projection failed".into(),
+        },
+    );
+}

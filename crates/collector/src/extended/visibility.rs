@@ -9,6 +9,7 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
+use engine::allocation::{copy_vec, owned_vec};
 use engine::{
     Memory, crelation_status, cstrategic_navy, visibility_inputs as native, walk::Outcome,
 };
@@ -158,7 +159,9 @@ impl Captured {
         self.countries.grow(&mut capacity.countries);
         self.states.grow(&mut capacity.states);
         self.links.grow(&mut capacity.links);
-        self.resolver.grow();
+        if self.resolver.grow().is_err() {
+            return;
+        }
         self.wars.grow(&mut capacity.wars);
         self.war_links.grow(&mut capacity.war_links);
         self.naval_access.grow(&mut capacity.naval_access);
@@ -199,9 +202,9 @@ impl Captured {
             let started = qpc();
             match index {
                 0 => {
-                    self.dlc_mask.outcome = match native::dlc_mask(memory, base).and_then(
-                        |mask| Ok((mask, native::human_ai(memory, base)?)),
-                    ) {
+                    self.dlc_mask.outcome = match native::dlc_mask(memory, base)
+                        .and_then(|mask| Ok((mask, native::human_ai(memory, base)?)))
+                    {
                         Ok(row) => {
                             self.dlc_mask.rows[0] = row;
                             Outcome::Rows { len: 1 }
@@ -285,15 +288,13 @@ impl Captured {
                     unit_modifier: r.unit_modifier,
                 },
             ),
-            table::<tables::StateVisibility, _>(
-                self.states.outcome,
-                &self.states.rows,
-                |r| StateVisibilityRow {
+            table::<tables::StateVisibility, _>(self.states.outcome, &self.states.rows, |r| {
+                StateVisibilityRow {
                     state: r.state,
                     country: r.country,
                     network_modifier: r.network_modifier,
-                },
-            ),
+                }
+            }),
             table::<tables::RelationLinks, _>(self.links.outcome, &self.links.rows, |r| {
                 RelationLinkRow {
                     country: r.country,
@@ -326,7 +327,8 @@ impl Captured {
         let Some(links) = self.war_links.first.get(..self.war_links.len) else {
             return unavailable("country war link arena length invalid");
         };
-        let span = |start: usize, len: usize| start.checked_add(len).and_then(|end| links.get(start..end));
+        let span =
+            |start: usize, len: usize| start.checked_add(len).and_then(|end| links.get(start..end));
         let outcome = self.wars.outcome;
         let rows = &self.wars.rows[..outcome.len().min(self.wars.rows.len())];
         if rows
@@ -339,7 +341,7 @@ impl Captured {
             country: r.country,
             can_occupy_non_war: r.can_occupy_non_war,
             enemies_read: u8::from(r.enemies_read),
-            enemies: span(r.enemies_start, r.enemies_len).unwrap().to_vec(),
+            enemies: owned_vec(copy_vec(span(r.enemies_start, r.enemies_len).unwrap())),
         })
     }
 }
@@ -476,8 +478,7 @@ mod tests {
             enemies_len: 2,
         };
         captured.wars.outcome = Outcome::Rows { len: 1 };
-        let TableView::Complete(replay::rows::TableRows::CountryWars(rows)) =
-            captured.wars_table()
+        let TableView::Complete(replay::rows::TableRows::CountryWars(rows)) = captured.wars_table()
         else {
             panic!("war table stays complete");
         };

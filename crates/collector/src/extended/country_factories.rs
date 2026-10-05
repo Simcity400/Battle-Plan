@@ -73,8 +73,7 @@ impl Captured {
         }
         let _reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();
-        self.rows.outcome =
-            native::walk_factories(memory, base, game_state, &mut self.rows.rows);
+        self.rows.outcome = native::walk_factories(memory, base, game_state, &mut self.rows.rows);
         [qpc().saturating_sub(started).max(0) as u64]
     }
     pub fn outcomes(&self) -> [Outcome; N] {

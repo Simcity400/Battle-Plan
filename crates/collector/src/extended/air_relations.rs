@@ -21,7 +21,7 @@ use crate::{
     spooling::table,
     table_capture::{CaptureRows, grow_capacity},
 };
-use engine::{Memory, air_participant_vectors as native, ccountry, walk::Outcome};
+use engine::{Memory, air_participant_vectors as native, allocation, ccountry, walk::Outcome};
 use replay::{
     frame::TableView,
     rows::{AirCountryRelationRow, TableId, tables},
@@ -140,7 +140,7 @@ impl Staging {
 
     fn without_verify(capacity: &Capacities) -> Self {
         let mut staging = Self {
-            bytes: vec![0; capacity.bytes],
+            bytes: allocation::owned_vec(allocation::filled(capacity.bytes, 0)),
             ..Self::default()
         };
         staging.reserve_countries(capacity.countries);
@@ -150,9 +150,9 @@ impl Staging {
     /// Off the hour: room for a part's share of `slots` countries.
     fn reserve_countries(&mut self, slots: usize) {
         let owned = slots.div_ceil(PARTS);
-        self.staged.reserve(owned.saturating_sub(self.staged.len()));
-        self.certify.reserve(owned.saturating_sub(self.certify.len()));
-        self.removed.reserve(owned.saturating_sub(self.removed.len()));
+        let _ = reserve(&mut self.staged, owned);
+        let _ = reserve(&mut self.certify, owned);
+        let _ = reserve(&mut self.removed, owned);
     }
 
     fn clear(&mut self) {
@@ -226,7 +226,11 @@ impl Captured {
 
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
-            + self.parts.iter().map(Staging::allocated_bytes).sum::<usize>()
+            + self
+                .parts
+                .iter()
+                .map(Staging::allocated_bytes)
+                .sum::<usize>()
     }
 
     pub fn grow(&mut self, capacity: &mut Capacities) {
@@ -237,6 +241,9 @@ impl Captured {
         crate::country_scale::raise(&mut capacity.countries, slots as usize);
         for part in &mut self.parts {
             if part.bytes.len() < capacity.bytes {
+                if reserve(&mut part.bytes, capacity.bytes).is_err() {
+                    return;
+                }
                 part.bytes.resize(capacity.bytes, 0);
             }
             part.reserve_countries(capacity.countries);
@@ -245,6 +252,9 @@ impl Captured {
                 let fresh = &mut verify.staging;
                 let bytes = capacity.bytes.max(fresh.needed);
                 if fresh.bytes.len() < bytes {
+                    if reserve(&mut fresh.bytes, bytes).is_err() {
+                        return;
+                    }
                     fresh.bytes.resize(bytes, 0);
                 }
                 fresh.reserve_countries(capacity.countries);
@@ -313,10 +323,19 @@ impl Captured {
 
     fn decode_into(&mut self, held: &mut Held) {
         self.staged = false;
-        let mut fingerprints = held
-            .fingerprints
-            .take()
-            .unwrap_or_else(|| Box::new(SliceFingerprints::new()));
+        let mut fingerprints = match held.fingerprints.take() {
+            Some(fingerprints) => fingerprints,
+            None => {
+                let fingerprints = SliceFingerprints::new();
+                if allocation::capture_stopped() {
+                    self.rows.fail(Outcome::Unavailable {
+                        reason: "collector allocation failed",
+                    });
+                    return;
+                }
+                Box::new(fingerprints)
+            }
+        };
         self.apply(held, &mut fingerprints);
         held.fingerprints = Some(fingerprints);
     }
@@ -333,7 +352,10 @@ impl Captured {
                     quiet = false;
                     reused += part.reused;
                     read += part.staged.len() as u64;
-                    held.apply(part);
+                    if held.apply(part).is_err() {
+                        failure = Some("collector allocation failed");
+                        break;
+                    }
                 }
             }
         }
@@ -395,11 +417,16 @@ fn same_countries(
     part: usize,
     known: &[Certificate],
 ) -> Result<bool, &'static str> {
-    for (index, slot) in (part..countries.count() as usize).step_by(PARTS).enumerate() {
+    for (index, slot) in (part..countries.count() as usize)
+        .step_by(PARTS)
+        .enumerate()
+    {
         if slot == 0 {
             continue;
         }
-        let pointer = countries.at(slot as u32)?.map_or(0, |country| country.pointer);
+        let pointer = countries
+            .at(slot as u32)?
+            .map_or(0, |country| country.pointer);
         if known.get(index).map_or(0, |known| known.country) != pointer {
             return Ok(false);
         }
@@ -461,8 +488,15 @@ pub(crate) fn stage(
 ) {
     let begin = qpc();
     staging.clear();
-    staging.state = match stage_part(memory, base, game_state, part, changes, certificates, staging)
-    {
+    staging.state = match stage_part(
+        memory,
+        base,
+        game_state,
+        part,
+        changes,
+        certificates,
+        staging,
+    ) {
         Ok(state) => state,
         Err(reason) => {
             certificates.forget();
@@ -514,7 +548,9 @@ fn stage_part(
     let complete = std::mem::replace(&mut certificates.complete, false);
     certificates.slots = countries.count() as usize;
     staging.slots = countries.count();
-    let owned = (staging.slots as usize).saturating_sub(part).div_ceil(PARTS);
+    let owned = (staging.slots as usize)
+        .saturating_sub(part)
+        .div_ceil(PARTS);
     // Presized off the hour; a larger registry grows here, failing the part
     // rather than aborting the game when memory runs out.
     reserve(&mut certificates.known, owned)?;
@@ -594,9 +630,8 @@ fn stage_part(
 
 /// Room for `len` elements, allocated fallibly.
 fn reserve<T>(vector: &mut Vec<T>, len: usize) -> Result<(), &'static str> {
-    vector
-        .try_reserve(len.saturating_sub(vector.len()))
-        .map_err(|_| "air relation staging allocation failed")
+    let additional = len.saturating_sub(vector.len());
+    allocation::reserve(vector, additional).map_err(|_| "air relation staging allocation failed")
 }
 
 /// Up to [`native::BATCH`] countries awaiting their headers.
@@ -664,7 +699,7 @@ impl Pending {
 }
 
 /// One country's vectors as last applied.
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct HeldCountry {
     /// Zero for an empty slot.
     country: usize,
@@ -710,13 +745,17 @@ impl Held {
     /// Rows held.
     #[cfg(test)]
     pub(crate) fn rows(&self) -> usize {
-        self.countries.iter().map(|country| country.entries.len()).sum()
+        self.countries
+            .iter()
+            .map(|country| country.entries.len())
+            .sum()
     }
 
-    fn apply(&mut self, part: &Staging) {
+    fn apply(&mut self, part: &Staging) -> Result<(), &'static str> {
         let slots = part.slots as usize;
         if self.countries.len() != slots {
-            self.countries.resize(slots, HeldCountry::default());
+            reserve(&mut self.countries, slots)?;
+            self.countries.resize_with(slots, HeldCountry::default);
         }
         for &slot in &part.removed {
             let country = &mut self.countries[slot as usize];
@@ -735,6 +774,7 @@ impl Held {
             country.country = staged.country;
             country.counts = staged.counts;
             country.entries.clear();
+            reserve(&mut country.entries, bytes.len() / 4)?;
             country.entries.extend(
                 bytes
                     .chunks_exact(4)
@@ -743,6 +783,7 @@ impl Held {
             self.generation += 1;
             country.generation = self.generation;
         }
+        Ok(())
     }
 
     /// `relation_verify`: compare each part's fresh copy with the held rows
@@ -790,8 +831,12 @@ impl Held {
                 .enumerate()
                 .filter(|(slot, country)| country.country != 0 && selection.contains(*slot as u32))
         };
-        let needed = selected().map(|(_, country)| country.entries.len()).sum();
-        crate::table_capture::grow_vec(output, needed);
+        let needed: usize = selected().map(|(_, country)| country.entries.len()).sum();
+        if !crate::table_capture::grow_vec(output, needed) {
+            return Outcome::Unavailable {
+                reason: "collector allocation failed",
+            };
+        }
         let mut len = 0;
         for (slot, country) in selected() {
             let staged = native::Staged {
@@ -806,6 +851,51 @@ impl Held {
         }
         Outcome::Rows { len }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn allocation_failure_exercise() {
+    let mut part = Staging::with_capacity(&Capacities {
+        rows: 3,
+        bytes: 12,
+        countries: PARTS,
+    });
+    if crate::allocation::failed() {
+        return;
+    }
+    for (bytes, value) in part.bytes.chunks_exact_mut(4).zip([2u32, 3, 4]) {
+        bytes.copy_from_slice(&value.to_le_bytes());
+    }
+    part.staged.push(native::Staged {
+        slot: 1,
+        country: 0x1000,
+        counts: [1, 1, 1],
+        offset: 0,
+        ..native::Staged::default()
+    });
+    part.slots = 3;
+    part.state = State::Copied;
+    let mut held = Held::new();
+    if held.apply(&part).is_err() {
+        return;
+    }
+    let mut selection = SliceSelection::new(true);
+    if crate::allocation::failed() {
+        return;
+    }
+    selection.reset(0, true);
+    let mut output = Vec::new();
+    let outcome = held.publish(&selection, &mut output);
+    if crate::allocation::failed() {
+        return;
+    }
+    let _ =
+        table::<tables::AirCountryRelations, _>(outcome, &output, |row| AirCountryRelationRow {
+            country: row.country,
+            kind: row.kind,
+            ordinal: row.ordinal,
+            other: row.other,
+        });
 }
 
 /// Bench and test access to one hour outside the frame pool: stage every
@@ -855,13 +945,29 @@ pub(crate) mod hour {
                 std::thread::scope(|scope| {
                     for (part, (staging, certificates)) in parts.enumerate() {
                         scope.spawn(move || {
-                            stage(memory, base, game_state, part, changes, certificates, staging)
+                            stage(
+                                memory,
+                                base,
+                                game_state,
+                                part,
+                                changes,
+                                certificates,
+                                staging,
+                            )
                         });
                     }
                 });
             } else {
                 for (part, (staging, certificates)) in parts.enumerate() {
-                    stage(memory, base, game_state, part, changes, certificates, staging);
+                    stage(
+                        memory,
+                        base,
+                        game_state,
+                        part,
+                        changes,
+                        certificates,
+                        staging,
+                    );
                 }
             }
             let wall = started.elapsed();

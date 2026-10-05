@@ -57,14 +57,14 @@ mod tests {
 
     fn request(bytes: &[u8], capacity: usize) -> Request {
         let memory = kit::memory(bytes);
-        let mut countries = Cache::with_capacity(1024);
+        let mut countries = Cache::try_with_capacity(1024).unwrap();
         assert_eq!(
             countries
                 .prepare(&memory, kit::BASE, kit::GAME_STATE)
                 .seed_status(),
             engine::country_memory::SeedStatus::Ready
         );
-        let mut snapshot = cwar_relation::OwnedSnapshotScratch::with_capacity(5);
+        let mut snapshot = cwar_relation::OwnedSnapshotScratch::try_with_capacity(5).unwrap();
         cwar_relation::walk_owned(
             &memory,
             &memory,
@@ -73,7 +73,7 @@ mod tests {
             &mut [cwar_relation::Row::default(); 4],
             &mut snapshot,
         );
-        snapshot.grow(5);
+        snapshot.grow(5).unwrap();
         Request {
             countries: Arc::new(countries),
             table: acquisition_gather::Request {

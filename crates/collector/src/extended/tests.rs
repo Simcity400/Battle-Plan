@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 #[test]
 fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     let mut orders = Orders::vacant();
     orders.geometry = vec![11, 13, 17];
     orders.geometry_len = 3;
@@ -54,6 +54,7 @@ fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
         assert_eq!(
             captured
                 .allocated_by_pack()
+                .unwrap()
                 .iter()
                 .map(|(_, bytes)| bytes)
                 .sum::<usize>(),
@@ -224,7 +225,7 @@ fn late_handoff_retains_only_the_current_input_lease() {
 #[test]
 fn presentation_handoff_restores_storage_and_exact_source_leases() {
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     let inputs = Arc::new(UnitInputs::fixture(
         vec![carmy::DivisionSeed {
             pointer: 0x1234,
@@ -274,7 +275,7 @@ fn presentation_handoff_restores_storage_and_exact_source_leases() {
 #[test]
 fn eta_input_handoff_restores_storage_leases_and_a_terminal_failure() {
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     let inputs = Arc::new(UnitInputs::fixture(
         vec![carmy::DivisionSeed {
             pointer: 0x1234,
@@ -360,7 +361,7 @@ fn presentation_terminal_reports_scatter_once_without_live_retry() {
         }
     }
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     let inputs = Arc::new(UnitInputs::empty_rows());
     let bytes = captured.allocated_bytes();
     let report = division_presentation::CaptureReport {
@@ -466,7 +467,7 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
         army_icon_inputs::TABLES.as_slice(),
     ]
     .concat();
-    let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     let memory = CountedMemory::new(SliceMemory {
         base: 0,
         bytes: &[],
@@ -686,7 +687,7 @@ fn failed_pack_jobs_preserve_separately_acquired_tables_and_raw_gates() {
 
 #[test]
 fn a_refused_air_missions_job_fails_its_tables_without_allocating() {
-    let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     let mut captured = Captured::with_capacities(&Capacities::default());
     captured.prepare_hour(0, true);
     let before = captured.allocated_bytes();
@@ -719,7 +720,7 @@ fn ordinary_terminal_results_cannot_retry_or_publish_partial_tables() {
             false
         }
     }
-    let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     for reason in [
         "ordinary worker admission failed",
         "acquisition worker panicked",
@@ -774,7 +775,7 @@ fn ordinary_terminal_results_cannot_retry_or_publish_partial_tables() {
 #[test]
 fn unpublished_raid_slices_are_read_again_at_the_next_hour() {
     use crate::slicing::{SliceFingerprints, SliceSelection};
-    let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     let memory = engine::memory::SliceMemory {
         base: 0,
         bytes: &[],
@@ -835,7 +836,7 @@ fn unpublished_raid_slices_are_read_again_at_the_next_hour() {
 #[test]
 fn unpublished_retreat_ban_reads_are_read_again_at_the_next_hour() {
     use crate::slicing::{SliceFingerprints, SliceSelection};
-    let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     let memory = engine::memory::SliceMemory {
         base: 0,
         bytes: &[],
@@ -906,7 +907,7 @@ fn unpublished_retreat_ban_reads_are_read_again_at_the_next_hour() {
 
 #[test]
 fn research_handoff_maps_failures_scatters_ticks_and_survives_a_governance_failure() {
-    let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     let (hour, force_full) = (7, false);
     for failure in [
         None,
@@ -1073,7 +1074,7 @@ fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results(
         captured.governance_report = Some(governance::CaptureReport::default());
         let bytes = captured.allocated_bytes();
         let governance_bytes = captured.governance.allocated_bytes();
-        let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+        let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
         let request = captured.take_governance_request(
             &countries,
             11,
@@ -1234,7 +1235,7 @@ fn intel_residual_handoff_preserves_terminal_results_without_repeating_live_read
         captured.intel.relations_raw_mode = true;
         let bytes = captured.allocated_bytes();
         let family_bytes = captured.intel.allocated_bytes();
-        let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+        let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
         let context = intel::CaptureContext {
             base: 11,
             game_state: 0x1000,
@@ -1282,7 +1283,7 @@ fn ship_model_parts_restore_part_zero_first_sum_ticks_and_match_the_unsplit_walk
             false
         }
     }
-    let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     let walked = |ships: u64| {
         let mut captured = Captured::with_capacities(&Capacities::default());
         captured.ship_models.begin_sources();
@@ -1366,7 +1367,7 @@ fn ship_models_late_terminal_handoff_is_unavailable_until_new_sources() {
         }
     }
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     captured.ship_models.begin_sources();
     captured
         .ship_models
@@ -1438,7 +1439,7 @@ fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_onc
     }
     use crate::acquisition::Failure::{Panicked, Stopped};
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     let bytes = captured.allocated_bytes();
     let supply_bytes = captured.supply_trains.allocated_bytes();
     let portrait_bytes = captured.character_portraits.allocated_bytes();
@@ -1740,6 +1741,7 @@ fn metadata_partitions_every_extended_table_once_and_preserves_cost_membership()
         .collect();
     assert_eq!(actual, expected);
     for (name, anchor, members) in read_groups() {
+        let members = members.to_vec();
         assert!(!name.is_empty());
         assert!(members.contains(&anchor));
         if anchor == TableId::Divisions {
@@ -1778,7 +1780,7 @@ fn metadata_partitions_every_extended_table_once_and_preserves_cost_membership()
             assert!(members.iter().all(|table| actual.contains(table)));
         }
     }
-    let groups = read_groups();
+    let groups: Vec<_> = read_groups().collect();
     for table in DIVISION_SOURCE_TABLES {
         assert_eq!(
             groups
@@ -1866,7 +1868,7 @@ fn registry_false_counts_are_rejected_and_incomplete_censuses_remain_incomplete(
 #[test]
 fn the_slow_job_stores_travel_with_it_and_always_return() {
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     for completed in [true, false] {
         let stores = SlowStores {
             stability: Some(Box::new(crate::slicing::SliceFingerprints::new())),
@@ -1892,7 +1894,7 @@ fn the_slow_job_stores_travel_with_it_and_always_return() {
 #[test]
 fn modifier_header_verdict_travels_with_the_slow_pack_and_returns() {
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let countries = Arc::new(engine::country_memory::Cache::with_capacity(0));
+    let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     captured.set_modifier_definitions_moved(true);
     let request =
         captured.take_slow_request(&countries, 11, 0x1000, 9, false, SlowStores::default());

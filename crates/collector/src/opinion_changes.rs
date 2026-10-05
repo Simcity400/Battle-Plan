@@ -50,7 +50,7 @@ static ORIGINAL: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
 /// pair each day, so only its changes are counted (as marks).
 static EVENTS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 /// Why the hooks are not installed, when they are not.
-static UNHOOKED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static UNHOOKED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 /// `[observed refreshes, unobserved refreshes, overflowed logs, verified
 /// refreshes, mismatches, unverified refreshes, refreshes that found the
 /// store lent, marks drained]`.
@@ -258,16 +258,18 @@ pub fn record(
     *previous = counts;
 }
 
-pub fn status() -> serde_json::Value {
+pub fn status() -> impl serde::Serialize {
     let counts = COUNTS.each_ref().map(|value| value.load(Ordering::Relaxed));
     let walks = WALKS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    let events: serde_json::Map<String, serde_json::Value> = MUTATIONS
-        .iter()
-        .zip(&EVENTS)
-        .skip(1)
-        .map(|(site, count)| (site.name.to_owned(), count.load(Ordering::Relaxed).into()))
-        .collect();
-    serde_json::json!({
+    let event_counts = EVENTS.each_ref().map(|value| value.load(Ordering::Relaxed));
+    let events = crate::status::map(
+        MUTATIONS
+            .iter()
+            .zip(event_counts)
+            .skip(1)
+            .map(|(site, count)| (site.name, count)),
+    );
+    crate::status::status!({
         "configured": cfg!(feature = "opinion_changes"),
         "unhooked": UNHOOKED.get(),
         "verify": verify(),
@@ -298,7 +300,7 @@ pub struct Hooks {
 impl Hooks {
     /// The enclosing runtime verified the executable hash before construction.
     /// Never fails: without every hook, refreshes read every status.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, String> {
+    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let hooks = if cfg!(feature = "opinion_changes") {
             unsafe { Self::install(memory, base) }.unwrap_or_else(|reason| {
                 let _ = UNHOOKED.set(reason);
@@ -311,7 +313,7 @@ impl Hooks {
     }
 
     /// Every sentinel is checked before any detour is created.
-    unsafe fn install(memory: &impl Memory, base: usize) -> Result<Vec<Hook>, String> {
+    unsafe fn install(memory: &impl Memory, base: usize) -> Result<Vec<Hook>, &'static str> {
         let callbacks = [
             recompute_opinion as *const () as usize,
             reset as *const () as usize,
@@ -320,12 +322,13 @@ impl Hooks {
         ];
         for site in &MUTATIONS {
             if engine::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
-                return Err(format!("opinion {} sentinel differs", site.name));
+                return Err("opinion hook sentinel differs");
             }
         }
         let mut hooks = Vec::new();
         for (index, site) in MUTATIONS.iter().enumerate() {
-            let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }?;
+            let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+                .map_err(|_| "native hook construction failed")?;
             ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
             hooks.push(hook);
         }
@@ -334,13 +337,16 @@ impl Hooks {
 
     /// Writes while the hooks were not all enabled went unobserved, so every
     /// change of state starts a new epoch.
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
             ENABLED.store(false, Ordering::SeqCst);
         }
         invalidate();
         for hook in &mut self.hooks {
-            if !hook.set_enabled(enabled)? {
+            if !hook
+                .set_enabled(enabled)
+                .map_err(|_| "native hook state change failed")?
+            {
                 return Ok(false);
             }
         }
@@ -348,11 +354,8 @@ impl Hooks {
         Ok(true)
     }
 
-    pub fn executable_ranges(&self) -> Vec<Range<usize>> {
-        self.hooks
-            .iter()
-            .flat_map(Hook::executable_ranges)
-            .collect()
+    pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
+        self.hooks.iter().flat_map(Hook::executable_ranges)
     }
 }
 
@@ -520,13 +523,13 @@ mod tests {
             bytes: &bytes,
         };
         let mut hooks = unsafe { Hooks::new(&memory, 0) }.unwrap();
-        assert!(hooks.executable_ranges().is_empty());
+        assert!(hooks.executable_ranges().next().is_none());
         assert_eq!(hooks.set_enabled(true), Ok(true));
         let (mut consumed, mut output, mut required) = (cursor(), [Mark::default(); 4], 0);
         assert_eq!(drain(&mut consumed, &mut output, &mut required), None);
         assert_eq!(
-            status()["unhooked"],
-            "opinion recompute_opinion sentinel differs"
+            serde_json::to_value(status()).unwrap()["unhooked"],
+            "opinion hook sentinel differs"
         );
     }
 

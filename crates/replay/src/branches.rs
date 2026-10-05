@@ -1,9 +1,8 @@
 //! Branch evidence is separate from the hours that actually reached the spool.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
-use crate::codec::{Decoder, invalid, put_string};
+use crate::codec::{Decoder, invalid_static as invalid, put_string};
 use crate::{BranchId, Hour, SessionId};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,6 +32,20 @@ pub struct BranchStart {
 }
 
 impl BranchStart {
+    pub(crate) fn encoded_bytes(&self) -> usize {
+        size_of::<BranchId>()
+            + size_of::<SessionId>()
+            + size_of::<u8>()
+            + usize::from(self.loaded_hour.is_some()) * size_of::<Hour>()
+            + size_of::<Hour>()
+            + size_of::<u8>()
+            + match self.parent {
+                Parentage::Unknown => 0,
+                Parentage::Probable { .. } => size_of::<BranchId>() + size_of::<Hour>(),
+            }
+            + size_of::<u8>()
+    }
+
     pub fn validate(&self) -> io::Result<()> {
         if let Parentage::Probable { branch, hour } = self.parent {
             if branch == self.id {
@@ -47,6 +60,7 @@ impl BranchStart {
 
     pub fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
         self.validate()?;
+        engine::allocation::reserve(out, self.encoded_bytes())?;
         out.extend_from_slice(&self.id.to_le_bytes());
         out.extend_from_slice(&self.session.to_le_bytes());
         match self.loaded_hour {
@@ -118,6 +132,22 @@ pub struct Gap {
 }
 
 impl Gap {
+    pub(crate) fn encoded_bytes(&self) -> io::Result<usize> {
+        engine::allocation::add(
+            size_of::<BranchId>() + 2 * size_of::<Hour>() + size_of::<u32>(),
+            self.reason.len(),
+        )
+    }
+
+    pub fn try_clone(&self) -> io::Result<Self> {
+        Ok(Self {
+            branch: self.branch,
+            first_hour: self.first_hour,
+            last_hour: self.last_hour,
+            reason: engine::allocation::string(&self.reason)?,
+        })
+    }
+
     pub fn validate(&self) -> io::Result<()> {
         if self.first_hour > self.last_hour {
             return Err(invalid("gap hour range is reversed"));
@@ -130,6 +160,7 @@ impl Gap {
 
     pub fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
         self.validate()?;
+        engine::allocation::reserve(out, self.encoded_bytes()?)?;
         out.extend_from_slice(&self.branch.to_le_bytes());
         out.extend_from_slice(&self.first_hour.to_le_bytes());
         out.extend_from_slice(&self.last_hour.to_le_bytes());
@@ -157,8 +188,8 @@ pub struct Observation {
 #[derive(Debug)]
 struct BranchHistory {
     start: BranchStart,
-    recorded: BTreeSet<Hour>,
-    pending: BTreeSet<Hour>,
+    recorded: Vec<Hour>,
+    pending: Vec<Hour>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -170,20 +201,20 @@ struct LastObservation {
 
 #[derive(Debug)]
 pub struct BranchTracker {
-    sessions: BTreeSet<SessionId>,
+    sessions: Vec<SessionId>,
     session: Option<SessionId>,
     last: Option<LastObservation>,
-    branches: BTreeMap<BranchId, BranchHistory>,
+    branches: Vec<BranchHistory>,
     next_branch: Option<BranchId>,
 }
 
 impl Default for BranchTracker {
     fn default() -> Self {
         Self {
-            sessions: BTreeSet::new(),
+            sessions: Vec::new(),
             session: None,
             last: None,
-            branches: BTreeMap::new(),
+            branches: Vec::new(),
             next_branch: Some(1),
         }
     }
@@ -205,28 +236,40 @@ impl BranchTracker {
         if self.session.is_some() {
             return Err(invalid("seed branch history before beginning a session"));
         }
-        if self.branches.contains_key(&start.id) {
+        if self.history(start.id).is_some() {
             return Err(invalid("duplicate branch id"));
         }
-        let mut recorded = BTreeSet::new();
+        let mut recorded = Vec::new();
         for hour in hours {
             if hour < start.first_hour {
                 return Err(invalid("recorded hour precedes branch start"));
             }
-            if !recorded.insert(hour) {
+            if recorded.contains(&hour) {
                 return Err(invalid("duplicate recorded hour in branch history"));
             }
+            engine::allocation::reserve(&mut recorded, 1)?;
+            recorded.push(hour);
+        }
+        recorded.sort_unstable();
+        engine::allocation::reserve(&mut self.branches, 1)?;
+        if !self.sessions.contains(&start.session) {
+            engine::allocation::reserve(&mut self.sessions, 1)?;
         }
         if self.next_branch.is_some_and(|next| start.id >= next) {
             self.next_branch = start.id.checked_add(1);
         }
-        self.sessions.insert(start.session);
+        if !self.sessions.contains(&start.session) {
+            self.sessions.push(start.session);
+        }
+        let position = self
+            .branches
+            .partition_point(|history| history.start.id < start.id);
         self.branches.insert(
-            start.id,
+            position,
             BranchHistory {
                 start,
                 recorded,
-                pending: BTreeSet::new(),
+                pending: Vec::new(),
             },
         );
         Ok(())
@@ -234,9 +277,11 @@ impl BranchTracker {
 
     /// A process is a session. Reusing its id is an error, even before its first frame.
     pub fn begin_session(&mut self, session: SessionId) -> io::Result<()> {
-        if !self.sessions.insert(session) {
+        if self.sessions.contains(&session) {
             return Err(invalid("session id has already been used"));
         }
+        engine::allocation::reserve(&mut self.sessions, 1)?;
+        self.sessions.push(session);
         self.session = Some(session);
         self.last = None;
         Ok(())
@@ -259,8 +304,7 @@ impl BranchTracker {
             return Err(invalid("resume before beginning or observing a session"));
         }
         let history = self
-            .branches
-            .get(&branch)
+            .history(branch)
             .ok_or_else(|| invalid("unknown resumed branch"))?;
         if history.start.session != session || history.recorded.last() != Some(&hour) {
             return Err(invalid(
@@ -277,15 +321,32 @@ impl BranchTracker {
     }
 
     pub fn branch_start(&self, branch: BranchId) -> Option<&BranchStart> {
-        self.branches.get(&branch).map(|history| &history.start)
+        self.history(branch).map(|history| &history.start)
     }
 
     pub fn branches(&self) -> impl ExactSizeIterator<Item = &BranchStart> {
-        self.branches.values().map(|history| &history.start)
+        self.branches.iter().map(|history| &history.start)
     }
 
-    pub fn recorded_hours(&self, branch: BranchId) -> Option<&BTreeSet<Hour>> {
-        self.branches.get(&branch).map(|history| &history.recorded)
+    pub fn recorded_hours(&self, branch: BranchId) -> Option<&[Hour]> {
+        self.history(branch)
+            .map(|history| history.recorded.as_slice())
+    }
+
+    fn history(&self, branch: BranchId) -> Option<&BranchHistory> {
+        let index = self
+            .branches
+            .binary_search_by_key(&branch, |history| history.start.id)
+            .ok()?;
+        Some(&self.branches[index])
+    }
+
+    fn history_mut(&mut self, branch: BranchId) -> Option<&mut BranchHistory> {
+        let index = self
+            .branches
+            .binary_search_by_key(&branch, |history| history.start.id)
+            .ok()?;
+        Some(&mut self.branches[index])
     }
 
     /// Observe a callback before attempting to write it. `known_gaps` are explicit
@@ -310,12 +371,14 @@ impl BranchTracker {
             if self.current_branch() != Some(gap.branch) {
                 return Err(invalid("gap does not belong to the current branch"));
             }
-            let history = &self.branches[&gap.branch];
+            let history = self.history(gap.branch).unwrap();
+            let first = history
+                .recorded
+                .partition_point(|hour| *hour < gap.first_hour);
             if history
                 .recorded
-                .range(gap.first_hour..=gap.last_hour)
-                .next()
-                .is_some()
+                .get(first)
+                .is_some_and(|hour| *hour <= gap.last_hour)
             {
                 return Err(invalid("gap includes an already recorded hour"));
             }
@@ -326,7 +389,7 @@ impl BranchTracker {
             Some(last) if matches!((last.load_signal, load_signal), (Some(a), Some(b)) if a != b) => {
                 Some(BranchReason::LoadSignal)
             }
-            Some(last) if !continues(last.hour, recorded_hour, known_gaps) => {
+            Some(last) if !continues(last.hour, recorded_hour, known_gaps)? => {
                 Some(BranchReason::HourDiscontinuity)
             }
             Some(_) => None,
@@ -351,9 +414,23 @@ impl BranchTracker {
             })
             .transpose()?;
 
-        // All fallible validation is above this point.
+        if start.is_some() {
+            engine::allocation::reserve(&mut self.branches, 1)?;
+        } else {
+            engine::allocation::reserve(
+                &mut self.history_mut(self.last.unwrap().branch).unwrap().pending,
+                1,
+            )?;
+        }
+        let mut first_pending = Vec::new();
+        if start.is_some() {
+            engine::allocation::reserve(&mut first_pending, 1)?;
+            first_pending.push(recorded_hour);
+        }
+
+        // All fallible validation and growth are above this point.
         if let Some(last) = self.last {
-            let history = self.branches.get_mut(&last.branch).unwrap();
+            let history = self.history_mut(last.branch).unwrap();
             for gap in known_gaps {
                 history
                     .pending
@@ -363,23 +440,21 @@ impl BranchTracker {
         let branch = match &start {
             Some(start) => {
                 self.next_branch = start.id.checked_add(1);
-                self.branches.insert(
-                    start.id,
-                    BranchHistory {
-                        start: start.clone(),
-                        recorded: BTreeSet::new(),
-                        pending: BTreeSet::new(),
-                    },
-                );
+                self.branches.push(BranchHistory {
+                    start: start.clone(),
+                    recorded: Vec::new(),
+                    pending: first_pending,
+                });
                 start.id
             }
             None => self.last.unwrap().branch,
         };
-        self.branches
-            .get_mut(&branch)
-            .unwrap()
-            .pending
-            .insert(recorded_hour);
+        if start.is_none() {
+            self.history_mut(branch)
+                .unwrap()
+                .pending
+                .push(recorded_hour);
+        }
         self.last = Some(LastObservation {
             branch,
             hour: recorded_hour,
@@ -392,15 +467,19 @@ impl BranchTracker {
     /// a branch start alone never constitute parentage evidence.
     pub fn record_hour(&mut self, branch: BranchId, hour: Hour) -> io::Result<()> {
         let history = self
-            .branches
-            .get_mut(&branch)
+            .history_mut(branch)
             .ok_or_else(|| invalid("unknown branch"))?;
-        if !history.pending.remove(&hour) {
+        let Some(position) = history.pending.iter().position(|pending| *pending == hour) else {
             return Err(invalid(
                 "hour was not observed, was already recorded, or was declared missing",
             ));
-        }
-        history.recorded.insert(hour);
+        };
+        engine::allocation::reserve(&mut history.recorded, 1)?;
+        history.pending.remove(position);
+        let index = history
+            .recorded
+            .partition_point(|recorded| *recorded < hour);
+        history.recorded.insert(index, hour);
         Ok(())
     }
 
@@ -408,8 +487,8 @@ impl BranchTracker {
         let mut containing = self
             .branches
             .iter()
-            .filter(|(_, history)| history.recorded.contains(&hour))
-            .map(|(&branch, _)| branch);
+            .filter(|history| history.recorded.binary_search(&hour).is_ok())
+            .map(|history| history.start.id);
         match (containing.next(), containing.next()) {
             (Some(branch), None) => Parentage::Probable { branch, hour },
             _ => Parentage::Unknown,
@@ -417,20 +496,20 @@ impl BranchTracker {
     }
 }
 
-fn continues(previous: Hour, next: Hour, gaps: &[Gap]) -> bool {
+fn continues(previous: Hour, next: Hour, gaps: &[Gap]) -> io::Result<bool> {
     // Widen before arithmetic: i32::MAX followed by i32::MIN is a discontinuity.
     let first_missing = i64::from(previous) + 1;
     let next = i64::from(next);
     if next < first_missing {
-        return false;
+        return Ok(false);
     }
     if next == first_missing {
-        return true;
+        return Ok(true);
     }
-    let mut ranges: Vec<_> = gaps
-        .iter()
-        .map(|gap| (gap.first_hour, gap.last_hour))
-        .collect();
+    let mut ranges = engine::allocation::vec(gaps.len())?;
+    for gap in gaps {
+        ranges.push((gap.first_hour, gap.last_hour));
+    }
     ranges.sort_unstable();
     let mut uncovered = first_missing;
     for (first, last) in ranges {
@@ -438,14 +517,14 @@ fn continues(previous: Hour, next: Hour, gaps: &[Gap]) -> bool {
             continue;
         }
         if i64::from(first) > uncovered {
-            return false;
+            return Ok(false);
         }
         uncovered = i64::from(last) + 1;
         if uncovered >= next {
-            return true;
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -717,15 +796,11 @@ mod tests {
 
     #[test]
     fn hour_arithmetic_does_not_wrap() {
-        assert!(continues(i32::MAX - 1, i32::MAX, &[]));
-        assert!(!continues(i32::MAX, i32::MIN, &[]));
-        assert!(continues(
-            i32::MIN,
-            i32::MAX,
-            &[gap(1, i32::MIN + 1, i32::MAX - 1)]
-        ));
-        assert!(!continues(10, 10, &[gap(1, 10, 10)]));
-        assert!(!continues(10, 9, &[gap(1, 9, 10)]));
+        assert!(continues(i32::MAX - 1, i32::MAX, &[]).unwrap());
+        assert!(!continues(i32::MAX, i32::MIN, &[]).unwrap());
+        assert!(continues(i32::MIN, i32::MAX, &[gap(1, i32::MIN + 1, i32::MAX - 1)]).unwrap());
+        assert!(!continues(10, 10, &[gap(1, 10, 10)]).unwrap());
+        assert!(!continues(10, 9, &[gap(1, 9, 10)]).unwrap());
     }
 
     #[test]

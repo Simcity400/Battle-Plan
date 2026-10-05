@@ -267,6 +267,15 @@ pub(crate) fn map_overlay(
         });
 }
 
+pub(crate) fn partial_notice(ui: &mut egui::Ui, replay: &replay::container::Replay) {
+    if let Some(replay::spool::ControlRecord::Partial { reason, .. }) = replay.partial() {
+        ui.horizontal_wrapped(|ui| {
+            ui.colored_label(egui::Color32::YELLOW, "Partial recording:");
+            ui.colored_label(egui::Color32::YELLOW, reason);
+        });
+    }
+}
+
 /// The ids of the shared hour layers the scene holds (`hours::Shared`), so an
 /// hour that shares one with the hour on screen uploads nothing for it.
 #[derive(Clone, Default)]
@@ -2446,13 +2455,19 @@ impl Viewer {
         // Every map on the software adapter, windowed or on a dashboard, says so.
         let software = render::is_software(&state.adapter);
         let diagnostics = self.diagnostics && self.embedded.is_some() && !self.dashboard_map;
-        if software || diagnostics {
+        let partial = document.playback.replay().is_partial()
+            && self.embedded.is_some()
+            && !self.dashboard_map;
+        if software || diagnostics || partial {
             map_overlay(
                 ui,
                 rect.intersect(ui.clip_rect()),
                 "diagnostics",
                 self.interface_points,
                 |ui, height| {
+                    if partial {
+                        partial_notice(ui, document.playback.replay());
+                    }
                     if software {
                         ui.colored_label(egui::Color32::YELLOW, render::SOFTWARE_RENDERER_NOTICE);
                     }
@@ -2662,6 +2677,7 @@ impl eframe::App for Viewer {
         if let Some(mut document) = self.document.take() {
             if self.embedded.is_none() {
                 egui::Panel::bottom("timeline").show(ui, |ui| {
+                    partial_notice(ui, document.playback.replay());
                     ui.horizontal(|ui| {
                         ui.weak(
                             document
@@ -3624,6 +3640,44 @@ mod tests {
             None
         );
         assert!(seek.matches(path, Some("120:30:0")));
+    }
+
+    #[test]
+    fn partial_recording_notice_names_the_failure_without_diagnostics() {
+        use replay::spool::{ControlRecord, Record};
+        let healthy = crate::playback::tests::fixture();
+        let partial = healthy
+            .append(&[vec![
+                Record::SessionStart(healthy.sessions[0].clone()),
+                Record::BranchStart(healthy.branches[0].clone()),
+                Record::Control(ControlRecord::Partial {
+                    session: 1,
+                    reason: "collector allocation failed".into(),
+                    failed_hour: None,
+                }),
+            ]])
+            .unwrap();
+        let labels = |replay: &replay::container::Replay| {
+            let ctx = egui::Context::default();
+            let mut output = ctx.run_ui(Default::default(), |ui| super::partial_notice(ui, replay));
+            output.textures_delta.clear();
+            output
+                .shapes
+                .into_iter()
+                .filter_map(|shape| match shape.shape {
+                    egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(labels(&healthy).is_empty());
+        let text = labels(&partial);
+        assert!(text.iter().any(|text| text == "Partial recording:"));
+        assert!(
+            text.iter()
+                .any(|text| text == "collector allocation failed")
+        );
+        assert!(!text.iter().any(|text| text.contains("hour")));
     }
 
     #[test]

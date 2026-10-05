@@ -62,9 +62,9 @@ use crate::{
     map_capture::PlayersJob,
     sampling::{self, BUFFERS, DivisionsJob, Shared},
 };
-use crossbeam_queue::ArrayQueue;
 use replay::rows::TableId;
-use serde_json::{Value, json};
+
+use crossbeam_queue::ArrayQueue;
 use std::sync::{
     Mutex,
     atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering},
@@ -749,6 +749,9 @@ impl Drop for PayloadPools {
 pub fn prepare_payload_pools() -> PayloadPools {
     prepare_retirement();
     for _ in 0..JOB_POOL_KEEP + 1 {
+        if crate::allocation::failed() {
+            break;
+        }
         release_relations_job(RelationsJob::new());
         for part in 0..CHARACTER_PARTS {
             release_characters_job(CharactersJob::new_part(part));
@@ -779,6 +782,9 @@ pub fn prepare_payload_pools() -> PayloadPools {
 
 fn defer_payload(payload: RetiredPayload) {
     let queue = RETIRED_PAYLOADS.load(Ordering::Acquire);
+    if queue.is_null() && crate::allocation::failed() {
+        return;
+    }
     assert!(
         !queue.is_null(),
         "payload retirement initialized before hook"
@@ -830,6 +836,9 @@ fn reclaim_payloads() {
 /// The loader starts the worker before enabling the hook. A full queue returns the job for
 /// the existing gap path and counts the drop on the existing counters.
 pub fn enqueue(shared: &Shared, job: DecodeJob) -> Option<DecodeJob> {
+    if crate::allocation::failed() {
+        return Some(job);
+    }
     match shared.decode_queue.push(job) {
         Ok(()) => {
             JOBS.fetch_add(1, Ordering::Relaxed);
@@ -866,11 +875,15 @@ fn decode_loop() {
         match shared.decode_queue.pop() {
             Some(job) => process_owned_job(shared, job, &mut air_bases_memo),
             None => {
+                let _phase = crate::allocation::enter(crate::allocation::Phase::Decode);
+                crate::allocation::attempted_hour(None);
                 reclaim_payloads();
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
     }
+    let _phase = crate::allocation::enter(crate::allocation::Phase::Teardown);
+    crate::allocation::attempted_hour(None);
     reclaim_payloads();
 }
 
@@ -878,11 +891,25 @@ fn decode_loop() {
 /// family to its pool. Dropping this envelope without recycling used to
 /// allocate a fresh payload on the game thread on every subsequent hour.
 fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut AirBasesMemo) {
+    let _phase = crate::allocation::enter(crate::allocation::Phase::Decode);
+    let frame = unsafe { &*shared.frames[job.index].load(Ordering::Acquire) };
+    if let Some(clock) = frame.clock {
+        crate::allocation::set_context(crate::allocation::Context {
+            campaign_id: clock.campaign_id.as_bytes().try_into().ok(),
+            load_signal: Some(clock.play_session_started_at),
+            failed_hour: Some(job.hour),
+            ..Default::default()
+        });
+    } else {
+        crate::allocation::attempted_hour(Some(job.hour));
+    }
     // Enqueue follows the callback's failed-payload retirement. Drain after
     // taking this frame, before publication lets the spool thread return its
     // lease. Draining before the queue pop permits one slot to retire twice.
     reclaim_payloads();
-    process_job(shared, &mut job, air_bases_memo);
+    if !crate::allocation::failed() {
+        process_job(shared, &mut job, air_bases_memo);
+    }
 
     if let Some(payload) = job.relations_payload.take() {
         release_relations_job(payload);
@@ -955,14 +982,52 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
     if let Some(payload) = job.capitulation_payload.take() {
         release_capitulation_job(payload);
     }
+    if crate::allocation::failed() {
+        // The lease never becomes ready after a failed decode or recycle.
+        shared.completed[job.index].store(0, Ordering::Release);
+        return;
+    }
+    // This worker owns one frame and hence one spare queue slot.
+    while shared.ready.push(job.index).is_err() {
+        std::thread::yield_now();
+    }
+    shared.completed[job.index].store(job.game_elapsed.max(1), Ordering::Release);
+    crate::allocation::attempted_hour(None);
 }
 
-pub fn start_worker() -> Result<(), String> {
-    let mut slot = WORKER
-        .lock()
-        .map_err(|_| "decode worker lock poisoned".to_string())?;
+#[cfg(test)]
+pub(crate) fn allocation_exercise(shared: &Shared, index: usize, hour: i32) -> bool {
+    use engine::memory::SliceMemory;
+    let bytes = [7_u8; 64];
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    let mut payload = ProjectsJob::default();
+    payload.log = crate::raw::RawLog::new(4, 64);
+    payload.active = true;
+    if crate::allocation::failed() {
+        return false;
+    }
+    if payload.log.take(&memory, 0x1000, 8, 1).is_none() {
+        return false;
+    }
+    let job = DecodeJob {
+        index,
+        hour,
+        game_elapsed: 1,
+        projects_refresh: true,
+        projects_payload: Some(payload),
+        ..Default::default()
+    };
+    process_owned_job(shared, job, &mut AirBasesMemo::default());
+    !crate::allocation::failed()
+}
+
+pub fn start_worker() -> Result<(), &'static str> {
+    let mut slot = WORKER.lock().map_err(|_| "decode worker lock poisoned")?;
     if slot.as_ref().is_some_and(|handle| !handle.is_finished()) {
-        return Err("decode worker already running".into());
+        return Err("decode worker already running");
     }
     STOP.store(false, Ordering::Release);
     WORKER_ID.store(0, Ordering::Release);
@@ -976,7 +1041,7 @@ pub fn start_worker() -> Result<(), String> {
                 );
                 decode_loop();
             })
-            .map_err(|error| format!("cannot start decode worker: {error}"))?,
+            .map_err(|_| "cannot start decode worker")?,
     );
     while worker_id() == 0 {
         std::thread::yield_now();
@@ -1572,33 +1637,26 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     {
         total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
     }
-    // Pool invariant: this frame is owned by the worker, so it occupies no
-    // ready slot and the push below always has room: the ready queue has one
-    // slot for every reusable frame, including this worker-owned frame.
-    while shared.ready.push(job.index).is_err() {
-        std::thread::yield_now();
-    }
-    shared.completed[job.index].store(job.game_elapsed.max(1), Ordering::Release);
 }
 
 /// Detach drain (runtime only, after callback quiescence): stop the worker,
 /// join it, then synchronously decode any remaining FIFO items in order and
 /// hand them to the spool ready queue before the existing spool drain runs.
 /// The spool thread is still consuming, so handoffs make progress.
-pub fn detach_drain() -> Result<(), String> {
+pub fn detach_drain() -> Result<(), &'static str> {
     STOP.store(true, Ordering::Release);
     let (worker, mut error) = match WORKER.lock() {
         Ok(mut slot) => (slot.take(), None),
         Err(poisoned) => (
             poisoned.into_inner().take(),
-            Some("decode worker lock poisoned".to_string()),
+            Some("decode worker lock poisoned"),
         ),
     };
     if let Some(handle) = worker
         && handle.join().is_err()
     {
         crate::equipment_destruction::lost_drain();
-        error = Some("decode worker panicked; its in-flight frame may be incomplete".into());
+        error = Some("decode worker panicked; its in-flight frame may be incomplete");
     }
     WORKER_ID.store(0, Ordering::Release);
     let shared_ptr = sampling::SHARED.load(Ordering::Acquire);
@@ -1618,7 +1676,7 @@ pub fn detach_drain() -> Result<(), String> {
     .is_err()
     {
         crate::equipment_destruction::lost_drain();
-        error = Some("decode detach drain panicked; queued frames remain incomplete".into());
+        error = Some("decode detach drain panicked; queued frames remain incomplete");
     }
     STOP.store(false, Ordering::Release);
     error.map_or(Ok(()), Err)
@@ -1917,8 +1975,13 @@ pub struct Calibration {
 }
 
 impl Calibration {
-    pub fn json(&self) -> Value {
-        json!({
+    #[cfg(test)]
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::to_value((*self).status()).unwrap()
+    }
+
+    pub fn status(self) -> crate::status::Object<impl crate::status::Fields> {
+        crate::status::status!({
             "scope": "decode worker totals since attach; monotonic counters except live capacity fields",
             "raw_growth": crate::raw::growth_diagnostics(),
             "raw_indexes": crate::raw::index_diagnostics(),
@@ -1942,95 +2005,95 @@ impl Calibration {
             "drops": self.drops,
             "last_seq": self.last_seq,
             "last_hour": self.last_hour,
-            "relations_copy_ns": self.relations_copy_ns.as_slice(),
-            "relations_decode_ns": self.relations_decode_ns.as_slice(),
-            "relations_raw_bytes": self.relations_raw_bytes.as_slice(),
+            "relations_copy_ns": self.relations_copy_ns,
+            "relations_decode_ns": self.relations_decode_ns,
+            "relations_raw_bytes": self.relations_raw_bytes,
             "relations_tables": ["RelationOpinions", "RelationTuples"],
-            "characters_copy_ns": self.characters_copy_ns.as_slice(),
-            "characters_decode_ns": self.characters_decode_ns.as_slice(),
-            "characters_raw_bytes": self.characters_raw_bytes.as_slice(),
+            "characters_copy_ns": self.characters_copy_ns,
+            "characters_decode_ns": self.characters_decode_ns,
+            "characters_raw_bytes": self.characters_raw_bytes,
             "characters_tables": ["Characters", "CountryLeaderRoles", "AdvisorRoles", "UnitLeaders", "UnitLeaderTraits", "UnitLeaderTraitExperience"],
-            "projects_copy_ns": self.projects_copy_ns.as_slice(),
-            "projects_decode_ns": self.projects_decode_ns.as_slice(),
-            "projects_raw_bytes": self.projects_raw_bytes.as_slice(),
+            "projects_copy_ns": self.projects_copy_ns,
+            "projects_decode_ns": self.projects_decode_ns,
+            "projects_raw_bytes": self.projects_raw_bytes,
             "projects_tables": ["ProjectPrograms", "Projects", "ProjectHistory", "ProjectBreakthroughs"],
-            "lexical_copy_ns": self.lexical_copy_ns.as_slice(),
-            "lexical_decode_ns": self.lexical_decode_ns.as_slice(),
-            "lexical_raw_bytes": self.lexical_raw_bytes.as_slice(),
+            "lexical_copy_ns": self.lexical_copy_ns,
+            "lexical_decode_ns": self.lexical_decode_ns,
+            "lexical_raw_bytes": self.lexical_raw_bytes,
             "lexical_tables": ["LexicalTokens"],
-            "divisions_copy_ns": self.divisions_copy_ns.as_slice(),
-            "divisions_decode_ns": self.divisions_decode_ns.as_slice(),
-            "division_presentation_decode_ns": self.division_presentation_decode_ns.as_slice(),
+            "divisions_copy_ns": self.divisions_copy_ns,
+            "divisions_decode_ns": self.divisions_decode_ns,
+            "division_presentation_decode_ns": self.division_presentation_decode_ns,
             "division_presentation_tables": ["DivisionMovement", "DivisionStatus"],
-            "divisions_raw_bytes": self.divisions_raw_bytes.as_slice(),
+            "divisions_raw_bytes": self.divisions_raw_bytes,
             "divisions_tables": ["Divisions", "DivisionEquipment", "ArmyUpgradeGroups", "ArmyUpgradeRequests", "ArmyUpgradeDeliveries", "ArmyUpgradeProduced"],
-            "focus_copy_ns": self.focus_copy_ns.as_slice(),
-            "focus_decode_ns": self.focus_decode_ns.as_slice(),
-            "focus_raw_bytes": self.focus_raw_bytes.as_slice(),
+            "focus_copy_ns": self.focus_copy_ns,
+            "focus_decode_ns": self.focus_decode_ns,
+            "focus_raw_bytes": self.focus_raw_bytes,
             "focus_tables": ["Focus", "CompletedFocuses"],
-            "air_wing_copy_ns": self.air_wing_copy_ns.as_slice(),
-            "air_wing_decode_ns": self.air_wing_decode_ns.as_slice(),
-            "air_wing_raw_bytes": self.air_wing_raw_bytes.as_slice(),
+            "air_wing_copy_ns": self.air_wing_copy_ns,
+            "air_wing_decode_ns": self.air_wing_decode_ns,
+            "air_wing_raw_bytes": self.air_wing_raw_bytes,
             "air_wing_tables": ["WingEquipment", "WingCumulative"],
-            "air_stats_copy_ns": self.air_stats_copy_ns.as_slice(),
-            "air_stats_decode_ns": self.air_stats_decode_ns.as_slice(),
-            "air_stats_raw_bytes": self.air_stats_raw_bytes.as_slice(),
+            "air_stats_copy_ns": self.air_stats_copy_ns,
+            "air_stats_decode_ns": self.air_stats_decode_ns,
+            "air_stats_raw_bytes": self.air_stats_raw_bytes,
             "air_stats_tables": ["AirStatistics"],
-            "naval_copy_ns": self.naval_copy_ns.as_slice(),
-            "naval_decode_ns": self.naval_decode_ns.as_slice(),
-            "naval_raw_bytes": self.naval_raw_bytes.as_slice(),
+            "naval_copy_ns": self.naval_copy_ns,
+            "naval_decode_ns": self.naval_decode_ns,
+            "naval_raw_bytes": self.naval_raw_bytes,
             "naval_tables": ["LandTheatres", "LandTheatreGroups", "LandTheatreMembers", "AirTheatres", "AirTheatreGroups", "AirTheatreMembers", "OrdersGroups", "OrdersGroupMembers", "ArmyGroupMembers"],
-            "players_copy_ns": self.players_copy_ns.as_slice(),
-            "players_decode_ns": self.players_decode_ns.as_slice(),
-            "players_raw_bytes": self.players_raw_bytes.as_slice(),
+            "players_copy_ns": self.players_copy_ns,
+            "players_decode_ns": self.players_decode_ns,
+            "players_raw_bytes": self.players_raw_bytes,
             "players_tables": ["Players", "HumanControllers"],
-            "session_copy_ns": self.session_copy_ns.as_slice(),
-            "session_decode_ns": self.session_decode_ns.as_slice(),
-            "session_raw_bytes": self.session_raw_bytes.as_slice(),
+            "session_copy_ns": self.session_copy_ns,
+            "session_decode_ns": self.session_decode_ns,
+            "session_raw_bytes": self.session_raw_bytes,
             "session_tables": ["WorldTension", "ThreatSources", "ThreatCountryAggregates"],
-            "production_rest_copy_ns": self.production_rest_copy_ns.as_slice(),
-            "production_rest_decode_ns": self.production_rest_decode_ns.as_slice(),
-            "production_rest_raw_bytes": self.production_rest_raw_bytes.as_slice(),
+            "production_rest_copy_ns": self.production_rest_copy_ns,
+            "production_rest_decode_ns": self.production_rest_decode_ns,
+            "production_rest_raw_bytes": self.production_rest_raw_bytes,
             "production_rest_tables": ["ProductionLines", "Stockpiles", "ProductionLicenses", "DeploymentConveyors", "DeploymentLines", "DeploymentManpower", "DeploymentEquipment", "ProductionLicenseRecords"],
-            "construction_rest_copy_ns": self.construction_rest_copy_ns.as_slice(),
-            "construction_rest_decode_ns": self.construction_rest_decode_ns.as_slice(),
-            "construction_rest_raw_bytes": self.construction_rest_raw_bytes.as_slice(),
+            "construction_rest_copy_ns": self.construction_rest_copy_ns,
+            "construction_rest_decode_ns": self.construction_rest_decode_ns,
+            "construction_rest_raw_bytes": self.construction_rest_raw_bytes,
             "construction_rest_tables": ["StateBaseResources", "BuildingConstruction", "RailwayConstruction", "OccupationSettings", "StateOccupationLaws", "StateGarrisons", "StateAssignedManpower", "CountryOccupationReserveManpower", "StateResistance", "CountryCollaboration"],
-            "economy_rest_copy_ns": self.economy_rest_copy_ns.as_slice(),
-            "economy_rest_decode_ns": self.economy_rest_decode_ns.as_slice(),
-            "economy_rest_raw_bytes": self.economy_rest_raw_bytes.as_slice(),
+            "economy_rest_copy_ns": self.economy_rest_copy_ns,
+            "economy_rest_decode_ns": self.economy_rest_decode_ns,
+            "economy_rest_raw_bytes": self.economy_rest_raw_bytes,
             "economy_rest_tables": ["CountryFuel", "CountryExperience", "ProvinceSupply", "HubMotorization", "DisruptedSupply", "ForeignHomebases", "ResourceDefinitions", "CountryResources", "ResourceExchanges", "PurchaseContracts", "CountryFuelConsumers"],
-            "air_bases_copy_ns": self.air_bases_copy_ns.as_slice(),
-            "air_bases_decode_ns": self.air_bases_decode_ns.as_slice(),
-            "air_bases_raw_bytes": self.air_bases_raw_bytes.as_slice(),
+            "air_bases_copy_ns": self.air_bases_copy_ns,
+            "air_bases_decode_ns": self.air_bases_decode_ns,
+            "air_bases_raw_bytes": self.air_bases_raw_bytes,
             "air_bases_tables": ["AirBases", "AirBaseRegistrations", "AirAces"],
-            "air_history_copy_ns": self.air_history_copy_ns.as_slice(),
-            "air_history_decode_ns": self.air_history_decode_ns.as_slice(),
-            "air_history_raw_bytes": self.air_history_raw_bytes.as_slice(),
+            "air_history_copy_ns": self.air_history_copy_ns,
+            "air_history_decode_ns": self.air_history_decode_ns,
+            "air_history_raw_bytes": self.air_history_raw_bytes,
             "air_history_tables": ["AirRegionHistory", "AirRegionDamage"],
-            "supremacy_copy_ns": self.supremacy_copy_ns.as_slice(),
-            "supremacy_decode_ns": self.supremacy_decode_ns.as_slice(),
-            "supremacy_raw_bytes": self.supremacy_raw_bytes.as_slice(),
+            "supremacy_copy_ns": self.supremacy_copy_ns,
+            "supremacy_decode_ns": self.supremacy_decode_ns,
+            "supremacy_raw_bytes": self.supremacy_raw_bytes,
             "supremacy_tables": ["NavalSupremacy"],
-            "sunk_copy_ns": self.sunk_copy_ns.as_slice(),
-            "sunk_decode_ns": self.sunk_decode_ns.as_slice(),
-            "sunk_raw_bytes": self.sunk_raw_bytes.as_slice(),
+            "sunk_copy_ns": self.sunk_copy_ns,
+            "sunk_decode_ns": self.sunk_decode_ns,
+            "sunk_raw_bytes": self.sunk_raw_bytes,
             "sunk_tables": ["SunkShips"],
-            "radar_copy_ns": self.radar_copy_ns.as_slice(),
-            "radar_decode_ns": self.radar_decode_ns.as_slice(),
-            "radar_raw_bytes": self.radar_raw_bytes.as_slice(),
+            "radar_copy_ns": self.radar_copy_ns,
+            "radar_decode_ns": self.radar_decode_ns,
+            "radar_raw_bytes": self.radar_raw_bytes,
             "radar_tables": ["RadarCoverage"],
-            "intel_copy_ns": self.intel_copy_ns.as_slice(),
-            "intel_decode_ns": self.intel_decode_ns.as_slice(),
-            "intel_raw_bytes": self.intel_raw_bytes.as_slice(),
+            "intel_copy_ns": self.intel_copy_ns,
+            "intel_decode_ns": self.intel_decode_ns,
+            "intel_raw_bytes": self.intel_raw_bytes,
             "intel_tables": ["UnitIntel"],
-            "weather_copy_ns": self.weather_copy_ns.as_slice(),
-            "weather_decode_ns": self.weather_decode_ns.as_slice(),
-            "weather_raw_bytes": self.weather_raw_bytes.as_slice(),
+            "weather_copy_ns": self.weather_copy_ns,
+            "weather_decode_ns": self.weather_decode_ns,
+            "weather_raw_bytes": self.weather_raw_bytes,
             "weather_tables": ["WeatherRegions", "WeatherProvinces"],
-            "capitulation_copy_ns": self.capitulation_copy_ns.as_slice(),
-            "capitulation_decode_ns": self.capitulation_decode_ns.as_slice(),
-            "capitulation_raw_bytes": self.capitulation_raw_bytes.as_slice(),
+            "capitulation_copy_ns": self.capitulation_copy_ns,
+            "capitulation_decode_ns": self.capitulation_decode_ns,
+            "capitulation_raw_bytes": self.capitulation_raw_bytes,
             "capitulation_tables": ["Capitulation"],
             "queue_high_water": self.queue_high_water,
             "queue_capacity": BUFFERS,
@@ -2039,17 +2102,17 @@ impl Calibration {
 }
 
 /// Additive status merge for the runtime statuswriters. Existing keys survive.
-pub fn calibration_json() -> Value {
-    let mut status = calibration().json();
-    status["characters_acquisition"] = crate::extended::characters::acquisition_diagnostics();
-    status
+pub fn calibration_json() -> impl serde::Serialize {
+    calibration().status().join(crate::status::status!({
+        "characters_acquisition": crate::extended::characters::acquisition_diagnostics(),
+    }))
 }
 
 /// Bounded raw FIFO type shared with sampling's pool (indices only).
 pub type DecodeQueue = ArrayQueue<DecodeJob>;
 
 pub fn new_queue() -> DecodeQueue {
-    ArrayQueue::new(BUFFERS)
+    DecodeQueue::new(BUFFERS)
 }
 
 #[cfg(test)]

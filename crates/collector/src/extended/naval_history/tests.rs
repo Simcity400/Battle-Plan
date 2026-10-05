@@ -621,7 +621,7 @@ fn roster_land_theatres_match_the_census_copy_and_the_typed_walk() {
             memory: kit::memory(bytes),
             fault: *fault,
         };
-        let mut cache = Cache::with_capacity(Cache::cells_for_countries(4, 64));
+        let mut cache = Cache::try_with_capacity(Cache::cells_for_countries(4, 64)).unwrap();
         let _ = cache.prepare(&memory, kit::BASE, kit::GAME_STATE);
         let roster = cache.roster_view(&memory);
         let has_roster = roster
@@ -680,7 +680,7 @@ fn roster_land_theatres_match_the_census_copy_and_the_typed_walk() {
             }
             // Without room for the roster the census copy is taken.
             let mut tight = NavalJob::new();
-            tight.roster = ccountry::RosterSnapshot::with_capacity(0);
+            tight.roster = ccountry::RosterSnapshot::try_with_capacity(0).unwrap();
             let short = hourly(&|job| copy_naval_refresh(&roster, context, job), &mut tight);
             assert_eq!(short, expected, "{case}");
             assert!(tight.roster.roster(kit::BASE, kit::GAME_STATE).is_none());

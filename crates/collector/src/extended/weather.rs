@@ -14,6 +14,7 @@ use crate::{
     spooling::table,
     table_capture::{CaptureRows, bounded},
 };
+use engine::allocation::{filled, owned_vec, resize};
 use engine::{
     Memory, cweather_manager,
     memory::{RecordLayout, RecordSources},
@@ -41,7 +42,9 @@ pub struct Capacities {
 impl Default for Capacities {
     fn default() -> Self {
         // Starting sizes only: rows grow to the live counts off the capture.
-        Self { rows: [512, 20_000] }
+        Self {
+            rows: [512, 20_000],
+        }
     }
 }
 
@@ -243,7 +246,7 @@ struct DensePayload {
 impl DensePayload {
     fn new(capacity: usize) -> Self {
         Self {
-            bytes: vec![0; capacity],
+            bytes: owned_vec(filled(capacity, 0)),
             ..Default::default()
         }
     }
@@ -264,8 +267,8 @@ impl DensePayload {
     }
     fn grow(&mut self) {
         if self.needs_growth() {
-            self.bytes
-                .resize(self.required.max(self.bytes.len().saturating_mul(2)), 0);
+            let required = self.required.max(self.bytes.len().saturating_mul(2));
+            let _ = resize(&mut self.bytes, required, 0).map_err(crate::allocation::io);
         }
     }
     fn capture(&mut self, memory: &impl Memory, stride: usize, layout: &RecordLayout<'_>) {
@@ -370,10 +373,7 @@ fn header(
     mask: u32,
 ) -> Option<engine::cpdx_array::Array> {
     let start = log.take(memory, address?, 16, mask)?;
-    engine::cpdx_array::Array::from_header(
-        log.bytes[start..start + 16].try_into().unwrap(),
-        stride,
-    )
+    engine::cpdx_array::Array::from_header(log.bytes[start..start + 16].try_into().unwrap(), stride)
 }
 
 /// Acquire the manager topology once and preflight every destination. Returns
@@ -393,7 +393,9 @@ fn prepare_weather_pass(
         M_W_ALL,
     )?;
     let pointer = usize::try_from(u64::from_le_bytes(
-        log.bytes[pointer_start..pointer_start + 8].try_into().unwrap(),
+        log.bytes[pointer_start..pointer_start + 8]
+            .try_into()
+            .unwrap(),
     ))
     .ok()
     .filter(|&pointer| pointer != 0)?;
@@ -462,9 +464,7 @@ fn copy_weather_dense(
     reads.select(TableId::WeatherProvinces);
     job.provinces
         .capture(memory, sweather_per_province::STRIDE, &PROVINCES_LAYOUT);
-    let provinces_complete = !job
-        .provinces
-        .faulted(sweather_per_province::FIELDS.len());
+    let provinces_complete = !job.provinces.faulted(sweather_per_province::FIELDS.len());
     let log = &mut job.log;
     // The display arrays are only read after a clean province census, as the
     // typed walk reads them only after its rows.
@@ -680,9 +680,7 @@ mod tests {
     fn split(memory: &impl Memory, capacities: &Capacities) -> (Captured, WeatherJob) {
         let mut captured = Captured::with_capacities(capacities);
         let mut job = WeatherJob::new();
-        let ctx = WeatherCopyContext {
-            game_state: 0x1000,
-        };
+        let ctx = WeatherCopyContext { game_state: 0x1000 };
         let report = copy_weather_refresh(memory, ctx, &mut job);
         assert!(report.raw_ok);
         captured.raw_mode = true;
@@ -730,11 +728,17 @@ mod tests {
         let mut cases = vec![clean.clone()];
         for (address, value) in [
             // Region header invalid: provinces stay available.
-            (0x2000 + cweather_manager::REGIONS_COUNT, (-1_i32).to_le_bytes()),
+            (
+                0x2000 + cweather_manager::REGIONS_COUNT,
+                (-1_i32).to_le_bytes(),
+            ),
             // Province identity mismatch.
             (0x4000 + sweather_per_province::ID, 7_i32.to_le_bytes()),
             // Display array sized for another province count.
-            (0x2000 + cweather_manager::DISPLAY_MUD + 12, 2_i32.to_le_bytes()),
+            (
+                0x2000 + cweather_manager::DISPLAY_MUD + 12,
+                2_i32.to_le_bytes(),
+            ),
         ] {
             let mut bytes = clean.clone();
             put(&mut bytes, address, &value);
@@ -762,31 +766,56 @@ mod tests {
     fn display_arrays_longer_than_a_read_chunk_decode_from_the_bulk_copy() {
         const PROVINCES: usize = 1500;
         let stride = sweather_per_province::STRIDE;
-        let (array, snow, mud) = (0x10000, 0x10000 + PROVINCES * stride, 0x10000 + PROVINCES * stride + 0x1000);
+        let (array, snow, mud) = (
+            0x10000,
+            0x10000 + PROVINCES * stride,
+            0x10000 + PROVINCES * stride + 0x1000,
+        );
         let mut bytes = fixture();
         bytes.resize(mud + PROVINCES - 0x1000, 0);
-        put(&mut bytes, 0x2000 + cweather_manager::PROVINCES, &(array as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            0x2000 + cweather_manager::PROVINCES,
+            &(array as u64).to_le_bytes(),
+        );
         for (offset, data) in [
             (cweather_manager::PROVINCES, array),
             (cweather_manager::DISPLAY_SNOW, snow),
             (cweather_manager::DISPLAY_MUD, mud),
         ] {
             put(&mut bytes, 0x2000 + offset, &(data as u64).to_le_bytes());
-            put(&mut bytes, 0x2000 + offset + 8, &(PROVINCES as u32).to_le_bytes());
-            put(&mut bytes, 0x2000 + offset + 12, &(PROVINCES as u32).to_le_bytes());
+            put(
+                &mut bytes,
+                0x2000 + offset + 8,
+                &(PROVINCES as u32).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                0x2000 + offset + 12,
+                &(PROVINCES as u32).to_le_bytes(),
+            );
         }
         for index in 0..PROVINCES {
             let row = array + index * stride;
-            put(&mut bytes, row, &(sweather_per_province::VTABLE_RVA as u64).to_le_bytes());
+            put(
+                &mut bytes,
+                row,
+                &(sweather_per_province::VTABLE_RVA as u64).to_le_bytes(),
+            );
             put(&mut bytes, row + 8, &(index as u32).to_le_bytes());
             put(&mut bytes, snow + index, &[index as u8]);
             put(&mut bytes, mud + index, &[(index % 2 * 255) as u8]);
         }
-        let capacities = Capacities { rows: [8, PROVINCES] };
+        let capacities = Capacities {
+            rows: [8, PROVINCES],
+        };
         let (split, _) = split(&memory(&bytes), &capacities);
         assert_eq!(split.provinces.outcome, Outcome::Rows { len: PROVINCES });
         assert_eq!(
-            (split.provinces.rows[1499].display_snow, split.provinces.rows[1499].display_mud),
+            (
+                split.provinces.rows[1499].display_snow,
+                split.provinces.rows[1499].display_mud
+            ),
             (1499_u32 as u8, 255)
         );
         assert_matches(&split, &direct(&memory(&bytes), &capacities));
@@ -838,9 +867,7 @@ mod tests {
     #[test]
     fn staging_overflow_falls_back_to_the_typed_walk_and_grows() {
         let bytes = fixture();
-        let ctx = WeatherCopyContext {
-            game_state: 0x1000,
-        };
+        let ctx = WeatherCopyContext { game_state: 0x1000 };
         let mut tiny = WeatherJob {
             log: RawLog::new(8, 8),
             ..Default::default()

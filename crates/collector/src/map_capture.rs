@@ -190,12 +190,18 @@ impl Orders {
     fn new(capacity: &MapCapacities) -> Self {
         Self {
             rows: CaptureRows::new(capacity.rows[9]),
-            geometry: vec![0; capacity.order_geometry],
+            geometry: engine::allocation::owned_vec(engine::allocation::default_vec(
+                capacity.order_geometry,
+            )),
             geometry_len: 0,
             geometry_required: 0,
-            groups: vec![corders_group::Root::default(); capacity.order_groups],
+            groups: engine::allocation::owned_vec(engine::allocation::default_vec::<
+                corders_group::Root,
+            >(capacity.order_groups)),
             groups_required: 0,
-            visits: vec![corder_instance::Visit::default(); capacity.order_visits],
+            visits: engine::allocation::owned_vec(engine::allocation::default_vec::<
+                corder_instance::Visit,
+            >(capacity.order_visits)),
             visits_required: 0,
             successors: corder_instance::SuccessorLists::default(),
             root_outcome: NOT_WALKED,
@@ -392,13 +398,19 @@ impl MapCaptured {
             owned_air_captured: false,
             air_capture_failure: None,
             orders: Orders::new(capacity),
-            player_names: vec![0; capacity.player_names],
+            player_names: engine::allocation::owned_vec(engine::allocation::default_vec(
+                capacity.player_names,
+            )),
             player_names_len: 0,
             player_names_required: 0,
-            land_participants: vec![0; capacity.land_participants],
+            land_participants: engine::allocation::owned_vec(engine::allocation::default_vec(
+                capacity.land_participants,
+            )),
             land_participants_len: 0,
             land_participants_required: 0,
-            naval_groups: vec![0; capacity.naval_groups],
+            naval_groups: engine::allocation::owned_vec(engine::allocation::default_vec(
+                capacity.naval_groups,
+            )),
             naval_groups_required: 0,
             players_raw_mode: false,
         }
@@ -1064,7 +1076,7 @@ mod players_split_tests {
     }
 
     fn fixture() -> Vec<u8> {
-        let mut bytes = vec![0; 0x20000];
+        let mut bytes = engine::allocation::owned_vec(engine::allocation::default_vec(0x20000));
         // Country census: 1 canonical country (slot1, id1).
         array(&mut bytes, GS + cgame_state::COUNTRIES, COUNTRY_PTR, 2);
         put(&mut bytes, COUNTRY_PTR + 8, &(COUNTRY as u64).to_le_bytes());

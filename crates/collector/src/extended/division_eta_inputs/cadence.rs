@@ -1,6 +1,6 @@
 //! Worker-owned latest operands, loaned across consecutive callbacks.
 use super::*;
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 /// Every order and path field the ETA reader takes from the census, the exact
 /// ordinary route, and the combat vector header, so entering or leaving combat
@@ -37,7 +37,13 @@ impl Witness {
         }
         // SetMovementTarget (140bf5730) and AssignUnitMovementRoute (140be87d0)
         // rewrite the route in place, so compare its contents, not its header.
-        self.route.resize(route.count as usize, 0);
+        let count = route.count as usize;
+        if count > self.route.len() {
+            let additional = count - self.route.len();
+            engine::allocation::reserve(&mut self.route, additional)
+                .map_err(|_| "collector allocation failed")?;
+        }
+        self.route.resize(count, 0);
         engine::cpdx_array::copy_u32s(
             memory,
             route,
@@ -83,7 +89,7 @@ pub(crate) struct Census {
 
 #[derive(Default)]
 pub(crate) struct Store {
-    entries: BTreeMap<u64, Entry>,
+    entries: Vec<(u64, Entry)>,
     scratch: Witness,
     pub(super) selected: Vec<DivisionSeed>,
     hour: Option<i32>,
@@ -131,6 +137,25 @@ impl Store {
         let expected = base
             .checked_add(carmy::VTABLE_RVA)
             .ok_or("division ETA witness module overflow")? as u64;
+        // Existing keys need no node storage. Count only new moving keys in
+        // this partition; the seed headers are already owned by this pass.
+        let missing = seeds
+            .iter()
+            .filter(|seed| {
+                (seed.division ^ (seed.division >> 32)) % partition.1 as u64 == partition.0 as u64
+                    && seed
+                        .ordinary_route
+                        .and_then(|header| engine::cpdx_array::Array::from_header(header, 4))
+                        .is_some_and(|route| route.count != 0)
+                    && self
+                        .entries
+                        .binary_search_by_key(&seed.division, |entry| entry.0)
+                        .is_err()
+            })
+            .count();
+        engine::allocation::reserve(&mut self.entries, missing)
+            .map_err(|_| "collector allocation failed")?;
+        let mut selected = 0_usize;
         for seed in seeds {
             let owner = (seed.division ^ (seed.division >> 32)) % partition.1 as u64;
             if owner != partition.0 as u64 {
@@ -146,12 +171,29 @@ impl Store {
             if !self.scratch.read(memory, seed)? {
                 continue;
             }
-            let entry = self.entries.entry(seed.division).or_insert_with(|| Entry {
-                witness: Witness::default(),
-                row: None,
-                terrain: 0,
-                seen: hour.wrapping_sub(1),
-            });
+            let index = match self
+                .entries
+                .binary_search_by_key(&seed.division, |entry| entry.0)
+            {
+                Ok(index) => index,
+                Err(index) => {
+                    // The census reserve covers every possible new entry this pass.
+                    self.entries.insert(
+                        index,
+                        (
+                            seed.division,
+                            Entry {
+                                witness: Witness::default(),
+                                row: None,
+                                terrain: 0,
+                                seen: hour.wrapping_sub(1),
+                            },
+                        ),
+                    );
+                    index
+                }
+            };
+            let entry = &mut self.entries[index].1;
             if entry.seen == hour {
                 return Err("division ETA witness duplicate division");
             }
@@ -162,10 +204,24 @@ impl Store {
             if changed || due {
                 std::mem::swap(&mut entry.witness, &mut self.scratch);
                 entry.row = None;
+                selected += 1;
+            }
+        }
+        self.entries.retain(|(_, entry)| entry.seen == hour);
+        engine::allocation::reserve_push_batch(&mut self.selected, selected)
+            .map_err(|_| "collector allocation failed")?;
+        // A missing row marks a selected witness. Preserve native census order
+        // without another native read or another copy of a selected seed.
+        for seed in seeds {
+            if (seed.division ^ (seed.division >> 32)) % partition.1 as u64 == partition.0 as u64
+                && let Ok(index) = self
+                    .entries
+                    .binary_search_by_key(&seed.division, |entry| entry.0)
+                && self.entries[index].1.row.is_none()
+            {
                 self.selected.push(*seed);
             }
         }
-        self.entries.retain(|_, entry| entry.seen == hour);
         Ok(())
     }
 
@@ -177,37 +233,51 @@ impl Store {
         rows: impl IntoIterator<Item = (DivisionEtaInputsRow, usize)>,
     ) -> Result<Vec<Arc<DivisionEtaInputsRow>>, &'static str> {
         for (row, terrain) in rows {
-            let entry = self
+            let index = self
                 .entries
-                .get_mut(&row.division)
-                .ok_or("division ETA result missing witness")?;
+                .binary_search_by_key(&row.division, |entry| entry.0)
+                .map_err(|_| "division ETA result missing witness")?;
+            let entry = &mut self.entries[index].1;
             entry.row = Some(Arc::new(row));
             entry.terrain = terrain;
         }
-        let output: Option<Vec<_>> = self
-            .entries
-            .values()
-            .map(|entry| entry.row.clone())
-            .collect();
-        let output = output.ok_or("division ETA selected row missing")?;
+        let mut output = Vec::new();
+        engine::allocation::reserve_push_batch(&mut output, self.entries.len())
+            .map_err(|_| "collector allocation failed")?;
+        for (_, entry) in &self.entries {
+            output.push(Arc::clone(
+                entry
+                    .row
+                    .as_ref()
+                    .ok_or("division ETA selected row missing")?,
+            ));
+        }
         self.hour = Some(hour);
         // A full read needs room for the whole census, not just this hour's
         // selection: route admission reserves every stored leg.
         self.census = Census {
             rows: self.entries.len(),
-            terrain: self.entries.values().map(|entry| entry.terrain).sum(),
+            terrain: self
+                .entries
+                .iter()
+                .map(|(_, entry)| entry)
+                .map(|entry| entry.terrain)
+                .sum(),
             legs: self
                 .entries
-                .values()
+                .iter()
+                .map(|(_, entry)| entry)
                 .map(|entry| entry.witness.route.len())
                 .sum(),
         };
-        // Conservative map-node estimate; computed on the worker, never at join.
+        // Keep the recorded logical-entry estimate used before checked storage.
+        // It is a compatibility metric, not the retained slab's actual capacity.
         self.bytes = self.selected.capacity() * size_of::<DivisionSeed>()
             + self.scratch.route.capacity() * 4
             + self
                 .entries
-                .values()
+                .iter()
+                .map(|(_, entry)| entry)
                 .map(|entry| {
                     let row = entry.row.as_ref().unwrap();
                     size_of::<Entry>()
@@ -358,7 +428,11 @@ mod tests {
                     }
                 }
                 let row = read(&mut store, hour, &[unit], &path, false).remove(0);
-                assert_eq!(row.sample_hour == hour, fresh, "change {change} hour {hour}");
+                assert_eq!(
+                    row.sample_hour == hour,
+                    fresh,
+                    "change {change} hour {hour}"
+                );
                 if hour == 1 {
                     assert!(Arc::ptr_eq(&first, &row));
                 }
@@ -496,6 +570,150 @@ mod tests {
         assert_eq!(
             read(&mut store, 3, &[unit], &[0; 8], false)[0].sample_hour,
             3
+        );
+    }
+
+    #[test]
+    fn retained_capacities_and_metric_match_pinned_btree_behavior() {
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &[0; 8],
+        };
+        let mut store = Store::default();
+        let mut previous_selected = Vec::<DivisionSeed>::new();
+        let mut previous_entries = std::collections::BTreeMap::<u64, Entry>::new();
+        let mut previous_scratch = Witness::default();
+        let mut previous_hour: Option<i32> = None;
+        for (hour, count, force) in [
+            (0, 50, false),
+            (1, 50, false),
+            (2, 50, false),
+            (3, 5, false),
+            (4, 70, false),
+            (5, 0, false),
+            (6, 2, false),
+            (10, 7, false),
+            (11, 7, true),
+        ] {
+            let mut seeds: Vec<_> = (1..=count).map(seed).collect();
+            if hour % 2 != 0 {
+                seeds.reverse();
+            }
+            let rows = read(&mut store, hour, &seeds, &[0; 8], force);
+            // Pinned e46's BTreeMap witness selection, push growth, optional
+            // row collection and recorded logical-entry estimate.
+            if force || previous_hour.and_then(|last| last.checked_add(1)) != Some(hour) {
+                previous_entries.clear();
+            }
+            previous_selected.clear();
+            for seed in &seeds {
+                if !previous_scratch.read(&memory, seed).unwrap() {
+                    continue;
+                }
+                let entry = previous_entries
+                    .entry(seed.division)
+                    .or_insert_with(|| Entry {
+                        witness: Witness::default(),
+                        row: None,
+                        terrain: 0,
+                        seen: hour.wrapping_sub(1),
+                    });
+                entry.seen = hour;
+                let changed = entry.witness != previous_scratch;
+                let due = entry.row.as_ref().is_none_or(|row| !row.valid_at(hour))
+                    || seed.division % 5 == hour.rem_euclid(5) as u64;
+                if changed || due {
+                    std::mem::swap(&mut entry.witness, &mut previous_scratch);
+                    entry.row = None;
+                    previous_selected.push(*seed);
+                }
+            }
+            previous_entries.retain(|_, entry| entry.seen == hour);
+            for seed in &previous_selected {
+                let entry = previous_entries.get_mut(&seed.division).unwrap();
+                entry.row = Some(Arc::new(DivisionEtaInputsRow {
+                    division: seed.division,
+                    sample_hour: hour,
+                    ..Default::default()
+                }));
+                entry.terrain = 3;
+            }
+            let previous_output: Option<Vec<_>> = previous_entries
+                .values()
+                .map(|entry| entry.row.clone())
+                .collect();
+            let previous_output = previous_output.unwrap();
+            previous_hour = Some(hour);
+            let previous_bytes = previous_selected.capacity() * size_of::<DivisionSeed>()
+                + previous_scratch.route.capacity() * 4
+                + previous_entries
+                    .values()
+                    .map(|entry| {
+                        let row = entry.row.as_ref().unwrap();
+                        size_of::<Entry>()
+                            + size_of::<DivisionEtaInputsRow>()
+                            + 64
+                            + entry.witness.route.capacity() * 4
+                            + row.terrain_speed.capacity() * size_of::<TerrainSpeed>()
+                            + (row.leg_river_combined.capacity()
+                                + row.leg_transport_speed.capacity()
+                                + row.leg_rail_speed.capacity())
+                                * 8
+                    })
+                    .sum::<usize>();
+            assert_eq!(
+                store.selected.capacity(),
+                previous_selected.capacity(),
+                "selected hour {hour}"
+            );
+            assert_eq!(
+                rows.capacity(),
+                previous_output.capacity(),
+                "carried hour {hour}"
+            );
+            assert_eq!(
+                store.allocated_bytes(),
+                previous_bytes,
+                "metric hour {hour}"
+            );
+            assert!(
+                store
+                    .selected
+                    .iter()
+                    .zip(&previous_selected)
+                    .all(|(seed, previous)| seed.division == previous.division)
+            );
+            assert!(
+                rows.iter()
+                    .zip(&previous_output)
+                    .all(|(row, previous)| row.division == previous.division
+                        && row.sample_hour == previous.sample_hour)
+            );
+        }
+    }
+
+    #[test]
+    fn deletion_releases_rows_but_retains_checked_entry_slab() {
+        let mut store = Store::default();
+        let seeds: Vec<_> = (1..=50).map(seed).collect();
+        let rows = read(&mut store, 0, &seeds, &[0; 8], false);
+        let owner = Arc::downgrade(&rows[0]);
+        drop(rows);
+        let capacity = store.entries.capacity();
+        let bytes = store.allocated_bytes();
+        assert!(read(&mut store, 1, &[], &[0; 8], false).is_empty());
+        assert!(owner.upgrade().is_none());
+        assert!(store.entries.is_empty());
+        assert_eq!(store.entries.capacity(), capacity);
+        assert!(store.allocated_bytes() < bytes);
+        let retained_slab_bytes = capacity * size_of::<(u64, Entry)>();
+        assert!(retained_slab_bytes != 0);
+        // The compatibility estimate excludes vacant entry storage; its named
+        // rule does not certify actual retained allocation after deletions.
+        assert_eq!(
+            store.allocated_bytes(),
+            store.selected.capacity() * size_of::<DivisionSeed>()
+                + store.scratch.route.capacity() * 4
         );
     }
 }

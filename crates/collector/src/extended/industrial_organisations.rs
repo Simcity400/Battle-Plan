@@ -6,13 +6,12 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
+use engine::allocation::{copy_vec, owned_vec};
 use engine::{Memory, nindustrial_organisation_corganisation as native, walk::Outcome};
 use replay::{
     cadence::{SKIPPED_REASON, should_walk},
     frame::TableView,
-    rows::{
-        IndustrialOrganisationHistoryRow, IndustrialOrganisationRow, TableId, tables,
-    },
+    rows::{IndustrialOrganisationHistoryRow, IndustrialOrganisationRow, TableId, tables},
 };
 
 pub const N: usize = 2;
@@ -52,10 +51,7 @@ impl Capacities {
         let rows = crate::country_scale::rows(slots, PER_COUNTRY);
         crate::country_scale::raise(&mut self.organisations, rows);
         crate::country_scale::raise(&mut self.history, rows);
-        crate::country_scale::raise(
-            &mut self.bytes,
-            rows.saturating_mul(BYTES_PER_ORGANISATION),
-        );
+        crate::country_scale::raise(&mut self.bytes, rows.saturating_mul(BYTES_PER_ORGANISATION));
     }
 }
 
@@ -165,8 +161,8 @@ impl Captured {
                         ordinal: row.ordinal,
                         owner: row.owner,
                         token: row.token,
-                        name: text(bytes, row.name).unwrap().to_vec(),
-                        icon: text(bytes, row.icon).unwrap().to_vec(),
+                        name: owned_vec(copy_vec(text(bytes, row.name).unwrap())),
+                        icon: owned_vec(copy_vec(text(bytes, row.icon).unwrap())),
                     },
                 )
             }
@@ -267,7 +263,10 @@ mod tests {
         assert_eq!(history[0].units, i32::MIN);
         // A span outside the captured arena withholds only the organisations.
         captured.organisations.rows[0].icon.start = 4;
-        assert!(matches!(captured.tables()[0], TableView::Unavailable { .. }));
+        assert!(matches!(
+            captured.tables()[0],
+            TableView::Unavailable { .. }
+        ));
         assert!(matches!(captured.tables()[1], TableView::Complete(_)));
         // A truncated walk stays truncated and grows off-thread.
         captured.history.outcome = Outcome::Truncated {

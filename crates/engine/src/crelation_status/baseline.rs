@@ -168,9 +168,9 @@ impl Baseline {
 
     /// Off the game thread: room for `marks` marks in one walk, as when the
     /// caller knows its observation's bound.
-    pub fn reserve_marks(&mut self, marks: usize) {
+    pub fn reserve_marks(&mut self, marks: usize) -> std::io::Result<()> {
         self.required[2] = self.required[2].max(marks);
-        self.grow();
+        self.grow()
     }
 
     /// Forget every owner: each is read in full at its next slice.
@@ -207,42 +207,39 @@ impl Baseline {
     }
 
     /// Grow to the last walk's demand, with a quarter headroom for rows and
-    /// marks. Allocation failure keeps the smaller storage.
-    pub fn grow(&mut self) {
-        fn fit<T: Default + Clone>(vector: &mut Vec<T>, required: usize) {
+    /// marks. Allocation failure is reported before admitting another walk.
+    pub fn grow(&mut self) -> std::io::Result<()> {
+        fn fit<T: Default>(vector: &mut Vec<T>, required: usize) -> std::io::Result<()> {
             if required > vector.len() {
-                let len = required.saturating_add(required / 4);
-                if vector.try_reserve_exact(len - vector.len()).is_ok() {
-                    vector.resize(len, T::default());
-                }
+                let len = required
+                    .checked_add(required / 4)
+                    .ok_or_else(crate::allocation::oom)?;
+                crate::allocation::reserve_exact(vector, len - vector.len())?;
+                vector.resize_with(len, T::default);
             }
+            Ok(())
         }
-        fn reserve<T>(vector: &mut Vec<T>, required: usize) {
+        fn reserve<T>(vector: &mut Vec<T>, required: usize) -> std::io::Result<()> {
             if required > vector.capacity() {
-                let len = required.saturating_add(required / 4);
-                let _ = vector.try_reserve_exact(len - vector.len());
+                let len = required
+                    .checked_add(required / 4)
+                    .ok_or_else(crate::allocation::oom)?;
+                crate::allocation::reserve_exact(vector, len - vector.len())?;
             }
+            Ok(())
         }
         let [slots, scratch, take] = self.required;
-        if slots > self.owners.len()
-            && self
-                .owners
-                .try_reserve_exact(slots - self.owners.len())
-                .is_ok()
-            && self.rows.try_reserve_exact(slots - self.rows.len()).is_ok()
-            && self
-                .pending
-                .try_reserve_exact(slots - self.pending.len())
-                .is_ok()
-            && self
-                .demand
-                .try_reserve_exact(slots - self.demand.len())
-                .is_ok()
-            && self
-                .by_diplomacy
-                .try_reserve_exact(slots - self.by_diplomacy.len())
-                .is_ok()
-        {
+        if slots > self.owners.len() {
+            let additional = slots - self.owners.len();
+            crate::allocation::reserve_exact(&mut self.owners, additional)?;
+            let additional = slots - self.rows.len();
+            crate::allocation::reserve_exact(&mut self.rows, additional)?;
+            let additional = slots - self.pending.len();
+            crate::allocation::reserve_exact(&mut self.pending, additional)?;
+            let additional = slots - self.demand.len();
+            crate::allocation::reserve_exact(&mut self.demand, additional)?;
+            let additional = slots - self.by_diplomacy.len();
+            crate::allocation::reserve_exact(&mut self.by_diplomacy, additional)?;
             self.owners.resize(slots, Identity::default());
             self.rows.resize_with(slots, Vec::new);
             self.pending.resize_with(slots, Vec::new);
@@ -251,16 +248,17 @@ impl Baseline {
         }
         for (slot, demand) in self.demand.iter_mut().enumerate() {
             if let Some(rows) = self.rows.get_mut(slot) {
-                reserve(rows, demand[0] as usize);
+                reserve(rows, demand[0] as usize)?;
             }
             if let Some(pending) = self.pending.get_mut(slot) {
-                reserve(pending, (demand[1] as usize).max(Self::MIN_PENDING));
+                reserve(pending, (demand[1] as usize).max(Self::MIN_PENDING))?;
             }
             *demand = [0, 0];
         }
-        fit(&mut self.scratch, scratch.max(Self::MIN_SCRATCH));
-        fit(&mut self.take, take.max(Self::MIN_MARKS));
-        fit(&mut self.updates, take.max(Self::MIN_MARKS));
+        fit(&mut self.scratch, scratch.max(Self::MIN_SCRATCH))?;
+        fit(&mut self.take, take.max(Self::MIN_MARKS))?;
+        fit(&mut self.updates, take.max(Self::MIN_MARKS))?;
+        Ok(())
     }
 
     /// Tests: `updates` shorter than `take`, as after its growth failed.

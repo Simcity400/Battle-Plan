@@ -1608,10 +1608,10 @@ fn exact_length_mask_reuse_rebuild_empty_and_bulk_gate_follow_current_shape() {
         &[(0x1000, 64, Some(7), true), (0x2000, 12, Some(11), false)],
     );
     let mut index = RecordedIndex::default();
-    assert!(!index.prepare(&log.spans, log.has_bulk));
+    assert!(!index.prepare(&log.spans, log.has_bulk).unwrap());
     let mask = index.exact_lengths;
     assert!(index.may_have_exact_length(12));
-    assert!(index.prepare(&log.spans, log.has_bulk));
+    assert!(index.prepare(&log.spans, log.has_bulk).unwrap());
     assert_index_fixture(&log);
 
     // Identical ordered shape retains the mask but serves current bytes
@@ -1623,33 +1623,33 @@ fn exact_length_mask_reuse_rebuild_empty_and_bulk_gate_follow_current_shape() {
         log.bytes
             .resize(log.bytes.len() + span.len as usize, 31 + position as u8);
     }
-    assert!(index.prepare(&log.spans, log.has_bulk));
+    assert!(index.prepare(&log.spans, log.has_bulk).unwrap());
     assert_eq!(index.exact_lengths, mask);
     assert_index_fixture(&log);
 
     // Removing a width clears its bit on rebuild; changes to bulk or
     // failure flags alone must also invalidate the full-shape reuse.
     set_index_fixture(&mut log, &[(0x1000, 64, Some(41), true)]);
-    assert!(!index.prepare(&log.spans, log.has_bulk));
+    assert!(!index.prepare(&log.spans, log.has_bulk).unwrap());
     assert!(!index.may_have_exact_length(12));
     assert_index_fixture(&log);
     log.spans[0].ok = false;
-    assert!(!index.prepare(&log.spans, log.has_bulk));
+    assert!(!index.prepare(&log.spans, log.has_bulk).unwrap());
     assert!(index.may_have_exact_length(64));
     assert_index_fixture(&log);
     log.spans[0].ok = true;
     log.spans[0].bulk = false;
-    assert!(!index.prepare(&log.spans, log.has_bulk));
+    assert!(!index.prepare(&log.spans, log.has_bulk).unwrap());
     assert_index_fixture(&log);
     log.has_bulk = false;
-    assert!(!index.prepare(&log.spans, log.has_bulk));
+    assert!(!index.prepare(&log.spans, log.has_bulk).unwrap());
     assert!(index.may_have_exact_length(64));
     assert_index_fixture(&log);
 
     log.clear();
-    assert!(!index.prepare(&log.spans, log.has_bulk));
+    assert!(!index.prepare(&log.spans, log.has_bulk).unwrap());
     assert_eq!(index.exact_lengths, [0; 4]);
-    assert!(index.prepare(&log.spans, log.has_bulk));
+    assert!(index.prepare(&log.spans, log.has_bulk).unwrap());
     assert_index_fixture(&log);
     assert_eq!(log.index.borrow().as_ref().unwrap().exact_lengths, [0; 4]);
 }
@@ -2014,7 +2014,7 @@ fn index_refresh_drops_inactive_keys_and_retains_only_peak_capacity() {
             .map(|row| (0x1000 + refresh * 0x1000 + row * 16, 4, Some(7), false))
             .collect();
         set_index_fixture(&mut log, &reads);
-        index.prepare(&log.spans, false);
+        index.prepare(&log.spans, false).unwrap();
         assert_eq!(index.distinct, count);
         if count > peak_count {
             peak_count = count;

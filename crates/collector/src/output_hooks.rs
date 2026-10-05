@@ -11,14 +11,12 @@ use std::{
 
 #[derive(Clone, Copy)]
 pub struct Site {
-    pub name: &'static str,
     pub rva: usize,
     pub sentinel: [u8; 16],
 }
 impl From<&engine::construction_ic_sites::Site> for Site {
     fn from(site: &engine::construction_ic_sites::Site) -> Self {
         Self {
-            name: site.name,
             rva: site.rva,
             sentinel: site.sentinel,
         }
@@ -27,7 +25,6 @@ impl From<&engine::construction_ic_sites::Site> for Site {
 impl From<&engine::line_output_sites::HookSite> for Site {
     fn from(site: &engine::line_output_sites::HookSite) -> Self {
         Self {
-            name: site.name,
             rva: site.rva,
             sentinel: site.sentinel,
         }
@@ -42,24 +39,24 @@ pub enum Failure {
     Unavailable,
 }
 pub struct Domain<const N: usize> {
-    pub name: &'static str,
+    pub sentinel_error: &'static str,
     pub failure: Failure,
     pub observation: &'static Log,
     pub base: &'static AtomicUsize,
     pub originals: &'static [AtomicUsize; N],
     pub installed: Option<&'static [AtomicBool; N]>,
-    pub unhooked: &'static OnceLock<String>,
+    pub unhooked: &'static OnceLock<&'static str>,
 }
 
 pub fn validate_sentinels(
     memory: &impl Memory,
     base: usize,
     sites: &[Site],
-    name: &str,
-) -> Result<(), String> {
+    sentinel_error: &'static str,
+) -> Result<(), &'static str> {
     for site in sites {
         if engine::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
-            return Err(format!("{name} {} sentinel differs", site.name));
+            return Err(sentinel_error);
         }
     }
     Ok(())
@@ -67,7 +64,6 @@ pub fn validate_sentinels(
 
 pub struct Hooks<const N: usize> {
     hooks: Vec<Hook>,
-    sites: [Site; N],
     domain: Domain<N>,
 }
 impl<const N: usize> Hooks<N> {
@@ -79,22 +75,16 @@ impl<const N: usize> Hooks<N> {
         sites: [Site; N],
         callbacks: [usize; N],
         domain: Domain<N>,
-        ready: Result<(), String>,
+        ready: Result<(), &'static str>,
     ) -> Self {
-        let install = || -> Result<Vec<Hook>, String> {
-            validate_sentinels(memory, base, &sites, domain.name)?;
+        let install = || -> Result<Vec<Hook>, &'static str> {
+            validate_sentinels(memory, base, &sites, domain.sentinel_error)?;
             ready?;
             domain.base.store(base, Ordering::Relaxed);
             let mut hooks = Vec::new();
             for (index, site) in sites.iter().enumerate() {
                 let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                    .map_err(|reason| match domain.failure {
-                    Failure::Propagate => reason,
-                    Failure::Unavailable => format!(
-                        "{} {} detour creation failed: {reason}",
-                        domain.name, site.name
-                    ),
-                })?;
+                    .map_err(|_| "native hook construction failed")?;
                 domain.originals[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }
@@ -109,13 +99,9 @@ impl<const N: usize> Hooks<N> {
                 value.store(!hooks.is_empty(), Ordering::Relaxed);
             }
         }
-        Self {
-            hooks,
-            sites,
-            domain,
-        }
+        Self { hooks, domain }
     }
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         let domain = &self.domain;
         if !enabled {
             domain.observation.enabled.store(false, Ordering::SeqCst);
@@ -127,39 +113,42 @@ impl<const N: usize> Hooks<N> {
         {
             return Ok(true);
         }
-        let mut order: Vec<_> = self.hooks.iter_mut().enumerate().collect();
-        if !enabled {
-            order.reverse();
-        }
         let mut failure = None;
-        for (index, hook) in order {
-            match hook.set_enabled(enabled) {
+        for step in 0..self.hooks.len() {
+            let index = if enabled {
+                step
+            } else {
+                self.hooks.len() - step - 1
+            };
+            let hook = &mut self.hooks[index];
+            match hook
+                .set_enabled(enabled)
+                .map_err(|_| "native hook state change failed")
+            {
                 Ok(true) => {}
                 Ok(false) => return Ok(false),
                 Err(reason) => match domain.failure {
                     Failure::Propagate => return Err(reason),
                     Failure::Unavailable if enabled => {
-                        failure = Some(format!("{}: {reason}", self.sites[index].name));
+                        failure = Some(reason);
                         break;
                     }
                     Failure::Unavailable => {
-                        return Err(format!(
-                            "{} {} detour disable failed: {reason}",
-                            domain.name, self.sites[index].name
-                        ));
+                        return Err(reason);
                     }
                 },
             }
         }
         if let Some(reason) = failure {
             domain.observation.enabled.store(false, Ordering::SeqCst);
-            let _ = domain
-                .unhooked
-                .set(format!("{} detour enable failed: {reason}", domain.name));
+            let _ = domain.unhooked.set(reason);
             // Continue attaching only after all partial patches are restored.
             for hook in self.hooks.iter_mut().rev() {
-                if !hook.set_enabled(false)? {
-                    return Err(format!("{} detour rollback is still in use", domain.name));
+                if !hook
+                    .set_enabled(false)
+                    .map_err(|_| "native hook state change failed")?
+                {
+                    return Err("output hook rollback is still in use");
                 }
             }
             if let Some(installed) = domain.installed {
@@ -175,27 +164,35 @@ impl<const N: usize> Hooks<N> {
             .store(enabled && !self.hooks.is_empty(), Ordering::SeqCst);
         Ok(true)
     }
-    pub fn executable_ranges(&self) -> Vec<Range<usize>> {
-        self.hooks
-            .iter()
-            .flat_map(Hook::executable_ranges)
-            .collect()
+    pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
+        self.hooks.iter().flat_map(Hook::executable_ranges)
     }
 }
 
-pub fn status(
+pub fn status<'a, const N: usize>(
     observation: &Log,
-    unhooked: &OnceLock<String>,
-    installed: Option<&[AtomicBool]>,
-) -> serde_json::Value {
-    let mut status = serde_json::json!({ "unhooked": unhooked.get(), "enabled": observation.enabled.load(Ordering::SeqCst) });
-    if let Some(installed) = installed {
-        status["installed"] = serde_json::json!(
-            installed
-                .iter()
-                .map(|value| value.load(Ordering::Relaxed))
-                .collect::<Vec<_>>()
-        );
+    unhooked: &'a OnceLock<&'static str>,
+    installed: Option<&[AtomicBool; N]>,
+) -> crate::status::Object<impl crate::status::Fields + 'a> {
+    // Optional fields preserve the previous status schema.
+    crate::status::status!({
+        "unhooked": unhooked.get(),
+        "enabled": observation.enabled.load(Ordering::SeqCst),
+    })
+    .join(crate::status::Object(InstalledStatus(installed.map(
+        |values| values.each_ref().map(|value| value.load(Ordering::Relaxed)),
+    ))))
+}
+
+struct InstalledStatus<const N: usize>(Option<[bool; N]>);
+impl<const N: usize> crate::status::Fields for InstalledStatus<N> {
+    fn len(&self) -> usize {
+        usize::from(self.0.is_some())
     }
-    status
+    fn serialize<M: serde::ser::SerializeMap>(&self, map: &mut M) -> Result<(), M::Error> {
+        if let Some(installed) = self.0 {
+            map.serialize_entry("installed", &installed.as_slice())?;
+        }
+        Ok(())
+    }
 }

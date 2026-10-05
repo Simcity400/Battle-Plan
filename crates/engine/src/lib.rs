@@ -21,6 +21,7 @@ pub mod air_kamikaze;
 pub mod air_mission;
 pub mod air_participant_vectors;
 pub mod air_token_record;
+pub mod allocation;
 pub mod allocation_equipment_row;
 pub mod ambient_battle_cluster;
 pub mod ambient_instance_layout;

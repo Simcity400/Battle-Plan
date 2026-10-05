@@ -23,6 +23,7 @@ import { contentRevision } from '../dashboard/contentRevision';
 import type { ContentFolders, ReplayMetadata } from './api';
 import { hasMapOverlay, isMapOverlay } from './mapOverlays';
 import { useDiagnosticsShortcut } from './diagnosticsSetting';
+import { RecordingNotice } from './recordingNotice';
 
 const browserRecordings = import.meta.env.DEV && !desktopAvailable;
 
@@ -278,6 +279,7 @@ export default function App() {
         {sidebar.hidden && <button type="button" className="icon-button sidebar-toggle" onClick={sidebar.toggle} aria-label="Show sidebar" data-tooltip="Show sidebar · Ctrl+B"><Icon name="sidebar" /></button>}
         <div className="shell-campaign-controls" ref={setPlaybackHost} hidden={tab === 'settings'} />
         {tab === 'settings' && <nav className="shell-location" aria-label="Location"><span>Settings</span><Icon name="chevron-right" /><strong aria-current="page">{sectionLabel}</strong></nav>}
+        {tab !== 'settings' && <RecordingNotice partial={metadata?.partial} />}
       </header>
 
       <main className="workspace" ref={content}>

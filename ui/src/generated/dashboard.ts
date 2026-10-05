@@ -18,7 +18,16 @@ playerCountryId: string | null,
 /**
  * The recorder's identity witness, not a new local asset verification.
  */
-contentVerified: boolean, warnings: Array<string>, };
+contentVerified: boolean,
+/**
+ * The capture stopped after the verified prefix; independent of gap coverage.
+ */
+partial: PartialRecording | null, warnings: Array<string>, };
+export type PartialRecording = { sessionId: string, reason: string,
+/**
+ * No hour is inferred for an idle or status failure.
+ */
+failedHour: number | null, };
 export type BranchMetadata = { id: string, sessionId: string,
 /**
  * Includes missing leading/trailing hours. This range is not a count of frames.

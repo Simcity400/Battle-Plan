@@ -24,8 +24,9 @@ fn naval_tree_stack_headroom_refusal_is_counted_in_status() {
         },
         required: [0; 5],
         capacity: [0; 5],
-    });
-    let status = work.json();
+    })
+    .unwrap();
+    let status = serde_json::to_value(work.status()).unwrap();
     assert_eq!(status["hours"], 1);
     assert_eq!(status["available_hours"], 0);
     assert_eq!(status["refused_hours"], 1);
@@ -160,7 +161,7 @@ fn naval_tree_live_demand_survives_production_loan_restore_and_growth() {
     let memory = live_shape();
     let mut capacities = crate::extended::Capacities::default();
     let mut captured = crate::extended::Captured::with_capacities(&capacities);
-    let countries = std::sync::Arc::new(engine::country_memory::Cache::with_capacity(0));
+    let countries = std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     let mut work = BreakdownWork::default();
     let mut first_demand = [0; 5];
     for hour in 0..2 {
@@ -180,7 +181,7 @@ fn naval_tree_live_demand_survives_production_loan_restore_and_growth() {
                     && plane.efficiency.pool_type_flags & 0x400 != 0)
         );
         let status = naval.breakdown_status();
-        work.observe(status);
+        work.observe(status).unwrap();
         if hour == 0 {
             assert_eq!(
                 status.outcome,
@@ -222,7 +223,7 @@ fn naval_tree_live_demand_survives_production_loan_restore_and_growth() {
             assert!(used.contains(&key), "missing hover key {key:#x}");
         }
         assert!(trees.iter().any(|tree| tree.nodes.len() > 200));
-        let json = work.json();
+        let json = serde_json::to_value(work.status()).unwrap();
         assert_eq!(json["hours"], 2);
         assert_eq!(json["available_hours"], 1);
         assert_eq!(json["refused_hours"], 1);
@@ -259,7 +260,7 @@ fn naval_tree_later_demand_rise_grows_all_arenas_after_a_full_capture() {
     }
     let mut capacities = crate::extended::Capacities::default();
     let mut captured = crate::extended::Captured::with_capacities(&capacities);
-    let countries = std::sync::Arc::new(engine::country_memory::Cache::with_capacity(0));
+    let countries = std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     let capture_hour = |captured: &mut crate::extended::Captured, memory: &LiveShape| {
         captured.reset();
         let mut request = captured.take_ordinary_request(&countries, IMAGE, STATE);
@@ -283,7 +284,7 @@ fn naval_tree_later_demand_rise_grows_all_arenas_after_a_full_capture() {
         capture_hour(&mut captured, memory);
         let naval = &captured.naval_details;
         let status = naval.breakdown_status();
-        work.observe(status);
+        work.observe(status).unwrap();
         assert_eq!(
             naval.details.outcome,
             Outcome::Rows {
@@ -343,7 +344,7 @@ fn naval_tree_later_demand_rise_grows_all_arenas_after_a_full_capture() {
             );
         }
     }
-    let status = work.json();
+    let status = serde_json::to_value(work.status()).unwrap();
     assert_eq!(status["hours"], 5);
     assert_eq!(status["available_hours"], 4);
     assert_eq!(status["refused_hours"], 1);

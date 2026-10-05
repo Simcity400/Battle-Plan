@@ -566,7 +566,7 @@ fn owned_subject_walk_matches_the_plain_walk_and_scans_each_owner_once() {
             let mut rows = vec![Row::default(); 600];
             let mut names = vec![0; 600 * 6];
             walk_owned(&memory, 0, GS, &mut rows, &mut names, &mut scratch);
-            scratch.grow(0);
+            scratch.grow(0).unwrap();
         }
         let mut rows = vec![Row::default(); 600];
         let mut names = vec![0; 600 * 6];
@@ -615,7 +615,7 @@ fn owned_subject_walk_at_census_scale_is_linear_in_relations() {
     let cold = walk_owned(&counting, 0, GS, &mut rows, &mut names, &mut scratch);
     assert_eq!(cold, unavailable(SUBJECT_MEMBERSHIP.budget));
     assert!(counting.hits.get() <= 1_000_000 + 3 * hub.count as usize);
-    scratch.grow(0);
+    scratch.grow(0).unwrap();
     let allocated = scratch.allocated_bytes();
     counting.hits.set(0);
     let result = walk_owned(&counting, 0, GS, &mut rows, &mut names, &mut scratch);

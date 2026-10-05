@@ -4,8 +4,9 @@ use crate::{
     extended::naval_details::{air_hit, naval_hit},
     sampling::qpc,
     spooling::table,
-    table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
+    table_capture::{Arena, CaptureRows, grow_capacity},
 };
+use engine::allocation::{collect_vec, copy_vec, owned_vec, reserve_map, resize_default};
 use engine::{
     Memory, cnaval_combat_air_entry as plane, cnaval_combat_result_side as side,
     cnaval_combat_results as result, cnaval_combat_ship_entry as ship, naval_combat_air_hit,
@@ -85,11 +86,15 @@ impl Captured {
             sources: Arena::new(0),
             terms: Arena::new(0),
             commanders: Arena::new(0),
-            commander_keys: HashMap::new(),
+            commander_keys: HashMap::default(),
         }
     }
 
     pub fn with_capacities(c: &Capacities) -> Self {
+        let mut commander_keys = HashMap::default();
+        if reserve_map(&mut commander_keys, c.commanders).is_err() {
+            return Self::vacant();
+        }
         Self {
             results: CaptureRows::new(c.results),
             ships: Arena::new(c.ships),
@@ -99,7 +104,7 @@ impl Captured {
             sources: Arena::new(c.sources),
             terms: Arena::new(c.terms),
             commanders: Arena::new(c.commanders),
-            commander_keys: HashMap::with_capacity(c.commanders),
+            commander_keys,
         }
     }
     pub fn reset(&mut self) {
@@ -144,13 +149,35 @@ impl Captured {
         self.results.grow(&mut c.results);
         // All owned arenas grow from readable entries in the original pass;
         // copy their allocations without trusting a failed payload's count.
-        grow_vec(&mut self.ships.first, c.ships);
-        grow_vec(&mut self.planes.first, c.planes);
-        grow_vec(&mut self.air.first, c.air);
-        grow_vec(&mut self.hits.first, c.hits);
-        grow_vec(&mut self.sources.first, c.sources);
-        grow_vec(&mut self.terms.first, c.terms);
-        grow_vec(&mut self.commanders.first, c.commanders);
+        if self.ships.first.len() < c.ships
+            && resize_default(&mut self.ships.first, c.ships).is_err()
+        {
+            return;
+        }
+        if self.planes.first.len() < c.planes
+            && resize_default(&mut self.planes.first, c.planes).is_err()
+        {
+            return;
+        }
+        if self.air.first.len() < c.air && resize_default(&mut self.air.first, c.air).is_err() {
+            return;
+        }
+        if self.hits.first.len() < c.hits && resize_default(&mut self.hits.first, c.hits).is_err() {
+            return;
+        }
+        if self.sources.first.len() < c.sources
+            && resize_default(&mut self.sources.first, c.sources).is_err()
+        {
+            return;
+        }
+        if self.terms.first.len() < c.terms
+            && resize_default(&mut self.terms.first, c.terms).is_err()
+        {
+            return;
+        }
+        if self.commanders.first.len() < c.commanders {
+            let _ = resize_default(&mut self.commanders.first, c.commanders);
+        }
     }
     fn pass(&mut self, memory: &impl Memory, base: usize, state: usize) -> Outcome {
         self.commander_keys.clear();
@@ -229,7 +256,7 @@ impl Captured {
                 sides: r.sides.each_ref().map(|s| rows::NavalResultSideDetails {
                     leader: s.details.leader,
                     hq_leader: s.details.hq_leader,
-                    hq_influences: s.details.hq_influences.clone(),
+                    hq_influences: owned_vec(copy_vec(&s.details.hq_influences)),
                     commander_context: s.commanders[0]
                         .filter(|index| self.commanders.first[*index].commander != 0)
                         .map(|index| {
@@ -240,30 +267,31 @@ impl Captured {
                         .map(|index| {
                             super::naval_details::commander_inputs(&self.commanders.first[index])
                         }),
-                    hq_modifiers: range(&self.sources.first, s.hq_modifiers)
-                        .iter()
-                        .map(|v| rows::NavalShipModifierSource {
-                            scope: v.scope,
-                            index: v.index,
-                            selector: v.selector,
-                            reference: v.reference,
-                        weights: v.weights,
-                        movement: v.movement,
-                            dynamic_keys: v.dynamic_keys,
-                            terms: range(&self.terms.first, v.terms)
-                                .iter()
-                                .map(|t| rows::NavalShipModifierTerm {
-                                    key: t.key,
-                                    raw: t.raw,
-                                    metadata_flags: t.metadata_flags,
-                                    feature_selector: t.feature_selector,
-                                })
-                                .collect(),
-                        })
-                        .collect(),
-                    ships: range(&self.ships.first, s.ships)
-                        .iter()
-                        .map(|r| rows::NavalResultShip {
+                    hq_modifiers: owned_vec(collect_vec(
+                        range(&self.sources.first, s.hq_modifiers).iter().map(|v| {
+                            rows::NavalShipModifierSource {
+                                scope: v.scope,
+                                index: v.index,
+                                selector: v.selector,
+                                reference: v.reference,
+                                weights: v.weights,
+                                movement: v.movement,
+                                dynamic_keys: v.dynamic_keys,
+                                terms: owned_vec(collect_vec(
+                                    range(&self.terms.first, v.terms).iter().map(|t| {
+                                        rows::NavalShipModifierTerm {
+                                            key: t.key,
+                                            raw: t.raw,
+                                            metadata_flags: t.metadata_flags,
+                                            feature_selector: t.feature_selector,
+                                        }
+                                    }),
+                                )),
+                            }
+                        }),
+                    )),
+                    ships: owned_vec(collect_vec(range(&self.ships.first, s.ships).iter().map(
+                        |r| rows::NavalResultShip {
                             member: r.member,
                             owner: r.owner,
                             subunit_index: r.subunit_index,
@@ -272,41 +300,42 @@ impl Captured {
                             strength_ratio: r.strength_ratio,
                             pride: r.pride,
                             is_convoy: r.is_convoy,
-                            name: r.name.as_bytes().to_vec(),
-                            type_name: r.type_name.as_bytes().to_vec(),
-                            sprite: r.sprite.as_bytes().to_vec(),
-                            sunk_by: r.sunk_by.as_bytes().to_vec(),
+                            name: owned_vec(copy_vec(r.name.as_bytes())),
+                            type_name: owned_vec(copy_vec(r.type_name.as_bytes())),
+                            sprite: owned_vec(copy_vec(r.sprite.as_bytes())),
+                            sunk_by: owned_vec(copy_vec(r.sunk_by.as_bytes())),
                             variant: r.variant,
                             convoy_client: r.convoy_client,
                             convoy_index: r.convoy_index,
-                            naval_hits: range(&self.hits.first, r.naval_hits)
-                                .iter()
-                                .map(naval_hit)
-                                .collect(),
+                            naval_hits: owned_vec(collect_vec(
+                                range(&self.hits.first, r.naval_hits).iter().map(naval_hit),
+                            )),
                             air_hits: r.air_hits.map(|span| {
-                                range(&self.air.first, span).iter().map(air_hit).collect()
+                                owned_vec(collect_vec(
+                                    range(&self.air.first, span).iter().map(air_hit),
+                                ))
                             }),
-                        })
-                        .collect(),
-                    planes: range(&self.planes.first, s.planes)
-                        .iter()
-                        .map(|r| rows::NavalResultPlane {
+                        },
+                    ))),
+                    planes: owned_vec(collect_vec(range(&self.planes.first, s.planes).iter().map(
+                        |r| rows::NavalResultPlane {
                             variant: r.variant,
                             variant_summary_inputs: r.variant_summary_inputs,
                             initial_planes: r.initial_planes,
                             current_planes: r.current_planes,
                             lost_planes: r.lost_planes,
                             country: r.country,
-                            name: r.name.as_bytes().to_vec(),
-                            naval_hits: range(&self.hits.first, r.naval_hits)
-                                .iter()
-                                .map(naval_hit)
-                                .collect(),
+                            name: owned_vec(copy_vec(r.name.as_bytes())),
+                            naval_hits: owned_vec(collect_vec(
+                                range(&self.hits.first, r.naval_hits).iter().map(naval_hit),
+                            )),
                             air_hits: r.air_hits.map(|span| {
-                                range(&self.air.first, span).iter().map(air_hit).collect()
+                                owned_vec(collect_vec(
+                                    range(&self.air.first, span).iter().map(air_hit),
+                                ))
                             }),
-                        })
-                        .collect(),
+                        },
+                    ))),
                 }),
             },
         )]
@@ -343,10 +372,13 @@ impl Pass<'_> {
             return Ok(Some(index));
         }
         let index = self.commanders_required;
-        let end = index.checked_add(1).ok_or("naval result commander demand overflow")?;
+        let end = index
+            .checked_add(1)
+            .ok_or("naval result commander demand overflow")?;
+        reserve_map(self.commander_keys, 1).map_err(|_| "collector allocation failed")?;
         self.commander_keys.insert(handle, index);
         self.commanders_required = end;
-        ensure(self.commanders, end);
+        ensure(self.commanders, end)?;
         // P: 1417C8060 hides a missing retained commander portrait. Preserve
         // the side's full handle while the optional context is absent.
         self.commanders[index] =
@@ -369,7 +401,7 @@ impl Pass<'_> {
             self.len
                 .checked_add(1)
                 .ok_or("naval result row count overflow")?,
-        );
+        )?;
         let mut row = Row {
             result: source.id,
             ..Row::default()
@@ -408,7 +440,7 @@ impl Pass<'_> {
                 self.required_arenas[0] = self.required_arenas[0]
                     .checked_add(1)
                     .ok_or("naval result ship count overflow")?;
-                ensure(self.ships, self.required_arenas[0]);
+                ensure(self.ships, self.required_arenas[0])?;
                 let handle = engine::read(
                     memory,
                     entry
@@ -434,7 +466,7 @@ impl Pass<'_> {
                 self.required_arenas[1] = self.required_arenas[1]
                     .checked_add(1)
                     .ok_or("naval result plane count overflow")?;
-                ensure(self.planes, self.required_arenas[1]);
+                ensure(self.planes, self.required_arenas[1])?;
                 let mut buffers = ship::HitBuffers {
                     air_hits: self.air,
                     naval_hits: self.hits,
@@ -456,10 +488,13 @@ impl Pass<'_> {
         Ok(())
     }
 }
-fn ensure<T: Default + Clone>(rows: &mut Vec<T>, required: usize) {
+fn ensure<T: Default + Clone>(rows: &mut Vec<T>, required: usize) -> Result<(), &'static str> {
     let mut capacity = rows.len();
     grow_capacity(&mut capacity, required);
-    grow_vec(rows, capacity);
+    if rows.len() < capacity {
+        resize_default(rows, capacity).map_err(|_| "collector allocation failed")?;
+    }
+    Ok(())
 }
 fn range<T>(items: &[T], span: [usize; 2]) -> &[T] {
     &items[span[0]..span[0] + span[1]]
@@ -531,13 +566,22 @@ mod tests {
     fn failed_owned_payload_demand_cannot_size_the_recycled_pool() {
         let mut c = capacities(1);
         let mut captured = Captured::with_capacities(&c);
-        captured.results.outcome = Outcome::Unavailable { reason: "naval detail nested pointer unreadable" };
+        captured.results.outcome = Outcome::Unavailable {
+            reason: "naval detail nested pointer unreadable",
+        };
         captured.hits.required = i32::MAX as usize;
         captured.air.required = 2 * i32::MAX as usize;
         captured.terms.required = i32::MAX as usize;
         captured.grow(&mut c);
         assert_eq!((c.hits, c.air, c.terms), (1, 1, 1));
-        assert_eq!((captured.hits.first.len(), captured.air.first.len(), captured.terms.first.len()), (1, 1, 1));
+        assert_eq!(
+            (
+                captured.hits.first.len(),
+                captured.air.first.len(),
+                captured.terms.first.len()
+            ),
+            (1, 1, 1)
+        );
     }
     #[test]
     fn commander_growth_keeps_unique_missing_context_and_checked_demand() {
@@ -558,7 +602,7 @@ mod tests {
             sources: &mut Vec::new(),
             terms: &mut Vec::new(),
             commanders: &mut Vec::new(),
-            commander_keys: &mut HashMap::new(),
+            commander_keys: &mut HashMap::default(),
             commanders_len: 0,
             commanders_required: 0,
             len: 0,
@@ -631,9 +675,16 @@ mod tests {
             assert_eq!(pass.commander(&Missing, 0, handle), Ok(Some(index)));
         }
         assert_eq!(pass.commander_keys.len(), COUNT);
-        assert_eq!((pass.commanders_len, pass.commanders_required), (COUNT, COUNT));
+        assert_eq!(
+            (pass.commanders_len, pass.commanders_required),
+            (COUNT, COUNT)
+        );
         assert!(pass.commanders.len() >= COUNT);
-        assert!(pass.commanders[..COUNT].iter().all(|row| row.commander == 0));
+        assert!(
+            pass.commanders[..COUNT]
+                .iter()
+                .all(|row| row.commander == 0)
+        );
     }
 
     #[test]

@@ -8,15 +8,17 @@
 //! Runners must not submit, collect, stop, or drop this pool. Dependency barriers
 //! belong to the callback; a worker never waits for a job.
 
+use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::{
+    cell::UnsafeCell,
     collections::VecDeque,
     mem::{size_of, size_of_val},
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Condvar, Mutex, MutexGuard,
+        Condvar, Mutex, MutexGuard,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
-    thread::JoinHandle,
 };
 
 use serde::Serialize;
@@ -95,9 +97,20 @@ pub(crate) enum SubmitError {
     Exhausted,
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ThreadIds {
+    values: [u32; MAX_WORKERS],
+    len: usize,
+}
+impl Serialize for ThreadIds {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.values[..self.len].serialize(serializer)
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub(crate) struct Calibration {
-    pub thread_ids: Vec<u32>,
+    pub thread_ids: ThreadIds,
     pub capacity: usize,
     pub queued: usize,
     pub active: usize,
@@ -158,18 +171,18 @@ struct State<J, R> {
 }
 
 impl<J, R> State<J, R> {
-    fn new(capacity: usize) -> Result<Self, String> {
+    fn new(capacity: usize) -> Result<Self, &'static str> {
         let mut slots = Vec::new();
         let mut free = Vec::new();
         let mut ready = VecDeque::new();
         slots
             .try_reserve_exact(capacity)
-            .map_err(|e| e.to_string())?;
+            .map_err(|_| "acquisition slot allocation failed")?;
         free.try_reserve_exact(capacity)
-            .map_err(|e| e.to_string())?;
+            .map_err(|_| "acquisition free queue allocation failed")?;
         ready
             .try_reserve_exact(capacity)
-            .map_err(|e| e.to_string())?;
+            .map_err(|_| "acquisition ready queue allocation failed")?;
         for index in 0..capacity {
             slots.push(Slot {
                 generation: 0,
@@ -272,6 +285,11 @@ impl<J, R> State<J, R> {
 
 type Runner<J, R> = dyn Fn(&mut J) -> R + Send + Sync;
 
+struct BatchContext(UnsafeCell<crate::allocation::Context>);
+// The queue mutex allows writes only with every slot vacant; runners stop
+// borrowing before completion publication, so the next batch has no reader.
+unsafe impl Sync for BatchContext {}
+
 struct Shared<J, R> {
     id: u64,
     state: Mutex<State<J, R>>,
@@ -284,6 +302,7 @@ struct Shared<J, R> {
     /// itself is still taken under the lock.
     published: Vec<AtomicU64>,
     join_failed: AtomicBool,
+    context: BatchContext,
 }
 
 impl<J, R> Shared<J, R> {
@@ -310,6 +329,11 @@ impl<J, R> Shared<J, R> {
     }
 
     fn execute(&self, index: usize, mut request: J, caller: bool) {
+        let _phase = crate::allocation::enter(crate::allocation::Phase::Acquisition);
+        // This field lives beside State in the shared owner; queue mutation
+        // cannot alias it. Its context cannot change
+        // until this job's completion is collected with every other slot free.
+        let borrowed_context = unsafe { crate::allocation::borrow_context(self.context.0.get()) };
         // Ownership stays outside the unwind guard. Locally constructed live
         // readers have dropped before either outcome is made collectable.
         let reads = crate::read_accounting::Capture::new();
@@ -319,13 +343,18 @@ impl<J, R> Shared<J, R> {
         let runner_begin_qpc = crate::sampling::qpc();
         #[cfg(feature = "callback_profile")]
         let runner_cycles_begin = crate::callback_profile::thread_cycles();
-        let report = match catch_unwind(AssertUnwindSafe(|| (self.run)(&mut request))) {
-            Ok(report) => Ok(report),
-            Err(payload) => {
-                // Arbitrary panic payload Drop can itself panic. A stopped
-                // pool bounds these leaks by the number of active runners.
-                std::mem::forget(payload);
-                Err(Failure::Panicked)
+        let report = if crate::allocation::failed() {
+            Err(Failure::Stopped)
+        } else {
+            match catch_unwind(AssertUnwindSafe(|| (self.run)(&mut request))) {
+                Ok(report) if !crate::allocation::failed() => Ok(report),
+                Ok(_) => Err(Failure::Stopped),
+                Err(payload) => {
+                    // Arbitrary panic payload Drop can itself panic. A stopped
+                    // pool bounds these leaks by the number of active runners.
+                    std::mem::forget(payload);
+                    Err(Failure::Panicked)
+                }
             }
         };
         #[cfg(feature = "callback_profile")]
@@ -333,6 +362,7 @@ impl<J, R> Shared<J, R> {
         #[cfg(feature = "callback_profile")]
         let runner_end_qpc = crate::sampling::qpc();
         let table_reads = reads.finish();
+        drop(borrowed_context);
         #[cfg(feature = "callback_profile")]
         let completion_lock_begin = crate::sampling::qpc();
         let mut state = self.lock();
@@ -342,7 +372,11 @@ impl<J, R> Shared<J, R> {
             .max(0) as u64;
         let stopped = report.is_err();
         if stopped {
-            state.counters.panicked = state.counters.panicked.saturating_add(1);
+            if matches!(report, Err(Failure::Panicked)) {
+                state.counters.panicked = state.counters.panicked.saturating_add(1);
+            } else {
+                state.counters.stopped = state.counters.stopped.saturating_add(1);
+            }
             state.stop(&self.published);
         }
         state.slots[index].payload = Payload::Complete(Completion {
@@ -408,11 +442,9 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         worker_count: usize,
         capacity: usize,
         run: impl Fn(&mut J) -> R + Send + Sync + 'static,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, &'static str> {
         if worker_count > MAX_WORKERS || capacity == 0 {
-            return Err(format!(
-                "acquisition pool requires 0..={MAX_WORKERS} workers and nonzero capacity"
-            ));
+            return Err("acquisition pool requires an admitted worker count and nonzero capacity");
         }
         let id = NEXT_POOL_ID
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
@@ -421,15 +453,23 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         let mut threads = Vec::new();
         threads
             .try_reserve_exact(worker_count)
-            .map_err(|e| e.to_string())?;
-        let thread_ids: Vec<_> = (0..worker_count).map(|_| AtomicU32::new(0)).collect();
-        // Jobs' heap payloads are counted by their frame/workspace owners;
-        // this counts fixed executor storage, not OS thread stacks.
-        let allocated_bytes = size_of::<Shared<J, R>>()
+            .map_err(|_| "acquisition thread handle allocation failed")?;
+        let mut thread_ids = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            thread_ids.push(AtomicU32::new(0));
+        }
+        let mut published = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
+            published.push(AtomicU64::new(0));
+        }
+        // Jobs' heap payloads are counted by their frame/workspace owners.
+        // Preserve the recorded executor estimate: recovery context and native
+        // thread bookkeeping do not change healthy Metrics.
+        let allocated_bytes = size_of::<Shared<J, R>>() - size_of::<BatchContext>()
             + state.allocated_bytes()
             + capacity * size_of::<AtomicU64>()
             + thread_ids.capacity() * size_of::<AtomicU32>()
-            + threads.capacity() * size_of::<JoinHandle<()>>()
+            + threads.capacity() * size_of::<std::thread::JoinHandle<()>>()
             + size_of_val(&run);
         let shared = Arc::new(Shared {
             id,
@@ -438,8 +478,9 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             work_ready: Condvar::new(),
             run: Box::new(run),
             thread_ids,
-            published: (0..capacity).map(|_| AtomicU64::new(0)).collect(),
+            published,
             join_failed: AtomicBool::new(false),
+            context: BatchContext(UnsafeCell::new(crate::allocation::Context::default())),
         });
         let pool = Self {
             shared,
@@ -458,9 +499,9 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
                     .push(thread),
-                Err(error) => {
+                Err(_) => {
                     let _ = pool.shutdown();
-                    return Err(format!("start native acquisition worker: {error}"));
+                    return Err("start native acquisition worker failed");
                 }
             }
         }
@@ -526,7 +567,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             .rposition(|index| (*index < state.reserved_workers) == worker_only);
         let rejection = if request.is_none() {
             Some(SubmitError::Empty)
-        } else if state.stop {
+        } else if state.stop || crate::allocation::failed() {
             Some(SubmitError::Stopped)
         } else if free.is_none() {
             Some(SubmitError::Full)
@@ -538,6 +579,12 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         if let Some(rejection) = rejection {
             state.counters.rejected = state.counters.rejected.saturating_add(1);
             return Err(rejection);
+        }
+        if state.free.len() == state.slots.len() {
+            // No accepted slot or runner can still borrow the preceding context.
+            unsafe {
+                *self.shared.context.0.get() = crate::allocation::context();
+            }
         }
         let index = state
             .free
@@ -657,7 +704,11 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     }
 
     pub(crate) fn calibration(&self) -> Calibration {
-        let thread_ids = self.thread_ids();
+        let mut thread_ids = ThreadIds::default();
+        thread_ids.len = self.shared.thread_ids.len();
+        for (out, id) in thread_ids.values.iter_mut().zip(&self.shared.thread_ids) {
+            *out = id.load(Ordering::Acquire);
+        }
         let state = self.shared.lock();
         Calibration {
             thread_ids,
@@ -680,15 +731,14 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     /// admission and cancels queued jobs before joining workers, then also
     /// waits for any caller-executed job. Completed payloads remain collectable.
     /// Idempotent; a join failure remains an error on subsequent calls.
-    pub(crate) fn shutdown(&self) -> Result<(), String> {
+    pub(crate) fn shutdown(&self) -> Result<(), &'static str> {
         self.shared.stop();
         let mut threads = self
             .threads
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         for thread in threads.drain(..) {
-            if let Err(payload) = thread.join() {
-                std::mem::forget(payload);
+            if thread.join().is_err() {
                 self.shared.join_failed.store(true, Ordering::Release);
             }
         }
@@ -696,9 +746,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         // An unexpected executor panic may leave a Running marker. Runtime
         // must refuse unload in that case, rather than waiting forever here.
         if self.shared.join_failed.load(Ordering::Acquire) {
-            return Err(
-                "native acquisition worker terminated outside its acquisition guard".into(),
-            );
+            return Err("native acquisition worker terminated outside its acquisition guard");
         }
         let mut state = self.shared.lock();
         while state.active != 0 {
@@ -772,6 +820,72 @@ fn worker_count_for_topology(available: usize) -> usize {
 mod tests {
     use super::*;
     use std::sync::{Barrier, mpsc};
+
+    #[test]
+    fn recorded_executor_bytes_preserve_legacy_accounting() {
+        // The pre-recovery shared layout is the compatibility reference.
+        #[allow(dead_code)]
+        struct LegacyShared<J, R> {
+            id: u64,
+            state: Mutex<State<J, R>>,
+            changed: Condvar,
+            work_ready: Condvar,
+            run: Box<Runner<J, R>>,
+            thread_ids: Vec<AtomicU32>,
+            published: Vec<AtomicU64>,
+            join_failed: AtomicBool,
+        }
+        fn verify<J: Send + 'static, R: Copy + Send + 'static>(
+            workers: usize,
+            capacity: usize,
+            run: impl Fn(&mut J) -> R + Send + Sync + 'static,
+        ) {
+            assert_eq!(
+                size_of::<Shared<J, R>>() - size_of::<BatchContext>(),
+                size_of::<LegacyShared<J, R>>()
+            );
+            let runner_bytes = size_of_val(&run);
+            let mut legacy_ready = VecDeque::<usize>::new();
+            legacy_ready.try_reserve_exact(capacity).unwrap();
+            let pool = Pool::start(workers, capacity, run).unwrap();
+            {
+                let state = pool.shared.lock();
+                assert_eq!(state.slots.capacity(), capacity);
+                assert_eq!(state.free.capacity(), capacity);
+                assert_eq!(state.ready.capacity(), legacy_ready.capacity());
+            }
+            let expected = size_of::<LegacyShared<J, R>>()
+                + capacity * size_of::<Slot<J, R>>()
+                + capacity * size_of::<usize>()
+                + legacy_ready.capacity() * size_of::<usize>()
+                + capacity * size_of::<AtomicU64>()
+                + workers * size_of::<AtomicU32>()
+                + workers * size_of::<std::thread::JoinHandle<()>>()
+                + runner_bytes;
+            assert_eq!(pool.allocated_bytes(), expected);
+            pool.shutdown().unwrap();
+        }
+        for workers in [0, 2] {
+            for capacity in [1, 3, crate::acquisition_jobs::MAX_JOBS] {
+                let bias = 7u64;
+                verify(workers, capacity, move |request: &mut u8| {
+                    u64::from(*request) + bias
+                });
+                verify(
+                    workers,
+                    capacity,
+                    move |_: &mut crate::acquisition_jobs::Job| {
+                        crate::acquisition_jobs::Report::World(
+                            crate::acquisition_jobs::WorldReport {
+                                ticks: bias,
+                                ..Default::default()
+                            },
+                        )
+                    },
+                );
+            }
+        }
+    }
 
     #[cfg(feature = "callback_profile")]
     #[test]

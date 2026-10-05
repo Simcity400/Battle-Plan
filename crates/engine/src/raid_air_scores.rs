@@ -87,15 +87,20 @@ impl Held {
         self.hour = None;
     }
 
-    pub fn grow(&mut self, regions: usize, countries: usize, rows: usize) {
+    pub fn grow(&mut self, regions: usize, countries: usize, rows: usize) -> std::io::Result<()> {
         for list in [&mut self.regions, &mut self.next_regions] {
-            list.resize(list.len().max(regions), Region::default());
+            let len = list.len().max(regions);
+            crate::allocation::resize(list, len, Region::default())?;
         }
         for list in [&mut self.countries, &mut self.next_countries] {
-            list.resize(list.len().max(countries), Country::default());
+            let len = list.len().max(countries);
+            crate::allocation::resize(list, len, Country::default())?;
         }
-        self.slots.resize(self.slots.len().max(regions), 0);
-        self.rows.resize(self.rows.len().max(rows), Row::default());
+        let len = self.slots.len().max(regions);
+        crate::allocation::resize(&mut self.slots, len, 0)?;
+        let len = self.rows.len().max(rows);
+        crate::allocation::resize(&mut self.rows, len, Row::default())?;
+        Ok(())
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -606,7 +611,7 @@ mod tests {
 
     fn held(regions: usize, countries: usize, rows: usize) -> Held {
         let mut held = Held::default();
-        held.grow(regions, countries, rows);
+        held.grow(regions, countries, rows).unwrap();
         held
     }
 
@@ -615,6 +620,45 @@ mod tests {
             .iter()
             .map(|row| (row.country, row.region, row.friendly, row.enemy))
             .collect()
+    }
+
+    #[test]
+    fn allocation_growth_preserves_the_previous_capacity_trace() {
+        let mut held = Held::default();
+        let mut regions = Vec::new();
+        let mut countries = Vec::new();
+        let mut slots = Vec::new();
+        let mut rows = Vec::new();
+        for (region_count, country_count, row_count) in
+            [(1, 1, 1), (5, 5, 5), (3, 3, 3), (11, 9, 17)]
+        {
+            regions.resize(regions.len().max(region_count), Region::default());
+            countries.resize(countries.len().max(country_count), Country::default());
+            slots.resize(slots.len().max(region_count), 0_u32);
+            rows.resize(rows.len().max(row_count), Row::default());
+            held.grow(region_count, country_count, row_count).unwrap();
+            assert_eq!(held.regions.capacity(), regions.capacity());
+            assert_eq!(held.next_regions.capacity(), regions.capacity());
+            assert_eq!(held.countries.capacity(), countries.capacity());
+            assert_eq!(held.next_countries.capacity(), countries.capacity());
+            let previous = regions.capacity() * 2 * size_of::<Region>()
+                + countries.capacity() * 2 * size_of::<Country>()
+                + slots.capacity() * size_of::<u32>()
+                + rows.capacity() * size_of::<Row>();
+            assert_eq!(held.allocated_bytes(), previous);
+        }
+    }
+
+    #[test]
+    fn failed_growth_reports_allocation_failure() {
+        let mut held = Held::default();
+        held.grow(2, 2, 2).unwrap();
+        let pointer = held.regions.as_ptr();
+        assert_eq!(
+            held.grow(usize::MAX, 2, 2).unwrap_err().kind(),
+            std::io::ErrorKind::OutOfMemory
+        );
+        assert_eq!(held.regions.as_ptr(), pointer);
     }
 
     #[test]

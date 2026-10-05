@@ -198,6 +198,12 @@ fn set_bit(words: &mut [u64], owner: u32, value: bool) {
     }
 }
 
+fn boxed_words(len: usize) -> std::io::Result<Box<[u64]>> {
+    let words = engine::allocation::filled(len, 0)?;
+    debug_assert_eq!(words.len(), words.capacity());
+    engine::allocation::boxed_slice(words).map_err(engine::allocation::allocation_error)
+}
+
 /// The owners one hour's read of a family covered. Preallocated per frame;
 /// no allocation on the hour.
 pub(crate) struct SliceSelection {
@@ -226,14 +232,21 @@ pub(crate) struct SliceSelection {
 impl SliceSelection {
     /// `storage` false gives an allocation-free placeholder that must not scan.
     pub(crate) fn new(storage: bool) -> Self {
+        let words = if storage { OWNER_WORDS } else { 0 };
+        let storage = boxed_words(words).and_then(|early| {
+            let seen = boxed_words(words)?;
+            let walked = boxed_words(words)?;
+            Ok((early, seen, walked))
+        });
+        let (early, seen, walked) = storage.unwrap_or_default();
         Self {
             hour: 0,
             force_full: true,
-            early: vec![0; if storage { OWNER_WORDS } else { 0 }].into_boxed_slice(),
+            early,
             early_count: 0,
-            seen: vec![0; if storage { OWNER_WORDS } else { 0 }].into_boxed_slice(),
+            seen,
             census: false,
-            walked: vec![0; if storage { OWNER_WORDS } else { 0 }].into_boxed_slice(),
+            walked,
             tracked: false,
             scanned: 0,
             out_of_range: 0,
@@ -420,10 +433,16 @@ pub(crate) struct SliceFingerprints {
 impl SliceFingerprints {
     /// Allocated once, before the hook is installed.
     pub(crate) fn new() -> Self {
+        let storage = boxed_words(FINGERPRINT_OWNERS).and_then(|values| {
+            let known = boxed_words(OWNER_WORDS)?;
+            let stale = boxed_words(OWNER_WORDS)?;
+            Ok((values, known, stale))
+        });
+        let (values, known, stale) = storage.unwrap_or_default();
         Self {
-            values: vec![0; FINGERPRINT_OWNERS].into_boxed_slice(),
-            known: vec![0; OWNER_WORDS].into_boxed_slice(),
-            stale: vec![0; OWNER_WORDS].into_boxed_slice(),
+            values,
+            known,
+            stale,
             stale_slices: 0,
         }
     }
@@ -464,7 +483,9 @@ impl SliceFingerprints {
         let known = bit(&self.known, owner);
         let stale = bit(&self.stale, owner)
             || self.stale_slices & (1 << replay::cadence::slice_of(owner)) != 0;
-        let previous = self.values[index];
+        let Some(&previous) = self.values.get(index) else {
+            return true;
+        };
         set_bit(&mut self.known, owner, value.is_some());
         set_bit(&mut self.stale, owner, value.is_none());
         if let Some(value) = value {
@@ -485,6 +506,87 @@ impl SliceFingerprints {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boxed_selection_layout_and_storage_match_pinned_recording_accounting() {
+        // Pinned e46 field shapes: Captured accounts embedded selection size.
+        #[allow(dead_code)]
+        struct OriginalSelection {
+            hour: i32,
+            force_full: bool,
+            early: Box<[u64]>,
+            early_count: u32,
+            seen: Box<[u64]>,
+            census: bool,
+            walked: Box<[u64]>,
+            tracked: bool,
+            scanned: u32,
+            out_of_range: u32,
+            scan_ticks: u64,
+        }
+        #[allow(dead_code)]
+        struct OriginalFingerprints {
+            values: Box<[u64]>,
+            known: Box<[u64]>,
+            stale: Box<[u64]>,
+            stale_slices: u32,
+        }
+        assert_eq!(
+            std::mem::size_of::<SliceSelection>(),
+            std::mem::size_of::<OriginalSelection>()
+        );
+        assert_eq!(
+            std::mem::align_of::<SliceSelection>(),
+            std::mem::align_of::<OriginalSelection>()
+        );
+        assert_eq!(
+            std::mem::size_of::<SliceFingerprints>(),
+            std::mem::size_of::<OriginalFingerprints>()
+        );
+        assert_eq!(
+            std::mem::align_of::<SliceFingerprints>(),
+            std::mem::align_of::<OriginalFingerprints>()
+        );
+        for storage in [false, true] {
+            let selection = SliceSelection::new(storage);
+            let len = if storage { OWNER_WORDS } else { 0 };
+            for words in [&selection.early, &selection.seen, &selection.walked] {
+                assert_eq!(words.len(), len);
+                assert!(words.iter().all(|&word| word == 0));
+            }
+            let owned_bytes = [&selection.early, &selection.seen, &selection.walked]
+                .into_iter()
+                .map(|words| std::mem::size_of_val(&**words))
+                .sum::<usize>();
+            assert_eq!(owned_bytes, 3 * len * std::mem::size_of::<u64>());
+        }
+        let fingerprints = SliceFingerprints::new();
+        assert_eq!(fingerprints.values.len(), FINGERPRINT_OWNERS);
+        for words in [&fingerprints.known, &fingerprints.stale] {
+            assert_eq!(words.len(), OWNER_WORDS);
+            assert!(words.iter().all(|&word| word == 0));
+        }
+        assert!(fingerprints.values.iter().all(|&word| word == 0));
+        assert_eq!(
+            std::mem::size_of_val(&*fingerprints.values)
+                + std::mem::size_of_val(&*fingerprints.known)
+                + std::mem::size_of_val(&*fingerprints.stale),
+            (FINGERPRINT_OWNERS + 2 * OWNER_WORDS) * std::mem::size_of::<u64>()
+        );
+    }
+
+    #[test]
+    fn exact_word_storage_transfers_to_a_box_without_reallocation() {
+        for len in [0, 1, OWNER_WORDS, FINGERPRINT_OWNERS] {
+            let words = engine::allocation::filled(len, 0_u64).unwrap();
+            assert_eq!(words.len(), words.capacity());
+            let pointer = words.as_ptr();
+            let boxed = engine::allocation::boxed_slice(words).unwrap();
+            assert_eq!(boxed.as_ptr(), pointer);
+            assert_eq!(boxed.len(), len);
+            assert!(boxed.iter().all(|&word| word == 0));
+        }
+    }
 
     fn scan(
         selection: &mut SliceSelection,

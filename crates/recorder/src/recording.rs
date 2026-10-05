@@ -5,7 +5,10 @@ use crate::{
 };
 use engine::{PINNED_BUILD, build::hash_executable};
 use installed_content::content::{GatherOptions, gather};
-use replay::identity::SessionStart;
+use replay::{
+    identity::SessionStart,
+    witness::{TerminalWitness, WITNESS_FILE_NAME},
+};
 use serde_json::{Value, json};
 use std::{
     ffi::{OsStr, OsString},
@@ -40,11 +43,68 @@ struct Options {
     output: PathBuf,
     user: Option<PathBuf>,
     once: bool,
+    #[cfg(feature = "alloc-fault-injection")]
+    alloc_fault: Option<AllocationFault>,
+}
+
+#[cfg(feature = "alloc-fault-injection")]
+#[derive(Debug, PartialEq, Eq)]
+struct AllocationFault {
+    phase: String,
+    ordinal: u64,
+    after_hours: u64,
+}
+
+#[cfg(feature = "alloc-fault-injection")]
+fn allocation_fault(value: &OsStr) -> Result<AllocationFault, String> {
+    let (phase, ordinal) = value
+        .to_str()
+        .and_then(|value| value.split_once(':'))
+        .ok_or(
+            "--alloc-fault requires <phase>:<positive allocation ordinal>[:<committed-hours>]",
+        )?;
+    let (ordinal, after_hours) = if let Some((ordinal, after_hours)) = ordinal.split_once(':') {
+        let after_hours = after_hours
+            .parse::<u64>()
+            .map_err(|_| "--alloc-fault requires a nonnegative committed-hours count")?;
+        (ordinal, after_hours)
+    } else {
+        (ordinal, 0)
+    };
+    let ordinal = ordinal
+        .parse::<u64>()
+        .ok()
+        .filter(|ordinal| *ordinal != 0)
+        .ok_or("--alloc-fault requires a positive allocation ordinal")?;
+    if phase.is_empty() {
+        return Err("--alloc-fault requires a phase name".into());
+    }
+    Ok(AllocationFault {
+        phase: phase.into(),
+        ordinal,
+        after_hours,
+    })
+}
+
+#[cfg(feature = "alloc-fault-injection")]
+fn fault_config(mut config: Value, fault: Option<&AllocationFault>) -> Value {
+    if let Some(fault) = fault {
+        let mut requested = json!({"phase":fault.phase,"ordinal":fault.ordinal});
+        if fault.after_hours != 0 {
+            requested["after_hours"] = json!(fault.after_hours);
+        }
+        config["alloc_fault"] = requested;
+    }
+    config
 }
 
 fn usage() -> String {
+    #[cfg(feature = "alloc-fault-injection")]
+    let fault_option = " [--alloc-fault <phase>:<ordinal>[:<committed-hours>]]";
+    #[cfg(not(feature = "alloc-fault-injection"))]
+    let fault_option = "";
     format!(
-        "recorder [record] [--out <directory>] [--user-dir <Paradox directory>] [--once]
+        "recorder [record] [--out <directory>] [--user-dir <Paradox directory>] [--once]{fault_option}
 recorder detach [--out <directory>]
 recorder refresh [--out <directory>]
 recorder finalize <session-directory> [--out <directory>]
@@ -91,6 +151,8 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
         output: PathBuf::from(r"captures"),
         user: None,
         once: false,
+        #[cfg(feature = "alloc-fault-injection")]
+        alloc_fault: None,
     };
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -100,6 +162,14 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
                 options.user = Some(PathBuf::from(args.next().ok_or_else(usage)?))
             }
             Some("--once") if command == "record" => options.once = true,
+            #[cfg(feature = "alloc-fault-injection")]
+            Some("--alloc-fault") if command == "record" && options.alloc_fault.is_none() => {
+                options.alloc_fault = Some(allocation_fault(&args.next().ok_or_else(usage)?)?);
+            }
+            #[cfg(not(feature = "alloc-fault-injection"))]
+            Some("--alloc-fault") if command == "record" => {
+                return Err("--alloc-fault requires recorder feature alloc-fault-injection".into());
+            }
             _ => return Err(usage()),
         }
     }
@@ -111,8 +181,46 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
         "refresh" => request_refresh(&options.output),
         "finalize" => {
             let session = session.ok_or_else(usage)?;
-            ensure_finalizable(&session)?;
+            let (process_exited, expected) = ensure_finalizable(&session)?;
             let _lock = finalization_lock(&options.output)?;
+            if let Some(witness) = replay_io::read_failure_witness(&session)? {
+                if witness.session != expected.id
+                    || witness.process_start_time != expected.process_start_time
+                {
+                    return Err("collector failure witness belongs to a different process session; spool retained".into());
+                }
+                publish_failure_status(&session, &witness)?;
+                let mut issues = vec!["collector allocation failed".to_owned()];
+                let paths = match replay_io::finalize_session_outcome(&session, &options.output) {
+                    Ok((paths, errors)) => {
+                        issues.extend(
+                            errors
+                                .into_iter()
+                                .map(|error| format!("replay finalization failed: {error}")),
+                        );
+                        paths
+                    }
+                    Err(error) => {
+                        issues.push(format!("replay finalization failed: {error}"));
+                        Vec::new()
+                    }
+                };
+                write_json(
+                    &session.join("completed.json"),
+                    &json!({
+                        "replays":paths,"detach_requested":true,"detached":!process_exited,
+                        "process_exited":process_exited,"drain_complete":witness.drain_complete,
+                        "capture_failed":true,"failure_code":"allocation_failed",
+                        "failed_hour":witness.failed_hour,"partial":true,
+                        "issues":issues,"warnings":[],
+                    }),
+                )?;
+                return Err(format!(
+                    "recording completion is partial: {}; spool retained at {}",
+                    issues.join("; "),
+                    session.display()
+                ));
+            }
             replay_io::finalize_session(&session, &options.output)?;
             Ok(())
         }
@@ -188,6 +296,9 @@ fn record(options: Options) -> Result<(), String> {
             std::thread::sleep(Duration::from_secs(2));
             continue;
         };
+        #[cfg(feature = "alloc-fault-injection")]
+        let detached = capture(pid, &options.output, &user, options.alloc_fault.as_ref())?;
+        #[cfg(not(feature = "alloc-fault-injection"))]
         let detached = capture(pid, &options.output, &user)?;
         if detached || options.once || STOP.load(Ordering::Acquire) {
             return Ok(());
@@ -196,7 +307,12 @@ fn record(options: Options) -> Result<(), String> {
     }
 }
 
-fn capture(pid: u32, output: &Path, user: &Path) -> Result<bool, String> {
+fn capture(
+    pid: u32,
+    output: &Path,
+    user: &Path,
+    #[cfg(feature = "alloc-fault-injection")] alloc_fault: Option<&AllocationFault>,
+) -> Result<bool, String> {
     let process = Process::open(pid, true)?;
     let exe = hash_executable(File::open(&process.path).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
@@ -317,7 +433,10 @@ fn capture(pid: u32, output: &Path, user: &Path) -> Result<bool, String> {
     let done = Event::new(&done_name)?;
     let cancel_file = bin.join("collector.cancel");
     let expected_mounts = &content.expected_mounts;
+    create_failure_witness(&directory, session.id, session.process_start_time)?;
     let config = json!({"session_id":session.id,"output_dir":directory,"replay_dir":output,"session_start":session_bytes,"ready_event":ready_name,"detach_event":detach_name,"done_event":done_name,"cancel_file":cancel_file,"content_order_note":content.order_note,"expected_mounts":expected_mounts,"mod_descriptors":content.mod_descriptors});
+    #[cfg(feature = "alloc-fault-injection")]
+    let config = fault_config(config, alloc_fault);
     write_json(&bin.join("collector.json"), &config)?;
     struct DetachOnDrop<'a> {
         event: &'a Event,
@@ -424,7 +543,13 @@ fn capture(pid: u32, output: &Path, user: &Path) -> Result<bool, String> {
     // files become terminal evidence only after unload or process termination.
     let process_exited = process.handle.signaled()?;
     requested_detach |= STOP.load(Ordering::Acquire) || detach.handle.signaled()?;
-    let mut outcome = terminal_outcome(&directory, session.id, requested_detach, process_exited);
+    let mut outcome = terminal_outcome(
+        &directory,
+        session.id,
+        session.process_start_time,
+        requested_detach,
+        process_exited,
+    );
     if process_exited {
         println!("Game process exited; recovering the flushed spool.");
     } else {
@@ -433,22 +558,57 @@ fn capture(pid: u32, output: &Path, user: &Path) -> Result<bool, String> {
     for warning in &outcome.warnings {
         eprintln!("Collector warning: {warning}");
     }
+    if let Some(witness) = &outcome.witness
+        && let Err(error) = publish_failure_status(&directory, witness)
+    {
+        outcome
+            .issues
+            .push(format!("terminal status publication failed: {error}"));
+    }
+    if !outcome.recovery_allowed
+        && let Err(error) = write_json(
+            &directory.join("status.json"),
+            &json!({
+                "state":"incomplete","session":session.id,"partial":true,
+                "capture_failed":outcome.capture_failed,"failure_code":null,"failed_hour":null,
+                "drain_complete":outcome.drain_complete,"error":outcome.issues.join("; "),
+            }),
+        )
+    {
+        outcome
+            .issues
+            .push(format!("incomplete status publication failed: {error}"));
+    }
     let _lock = finalization_lock(output)?;
-    let finalized = match replay_io::finalize_session(&directory, output) {
-        Ok(paths) => paths,
-        Err(error) => {
+    let finalized = match outcome
+        .recovery_allowed
+        .then(|| replay_io::finalize_session_outcome(&directory, output))
+    {
+        Some(Ok((paths, errors))) => {
+            outcome.issues.extend(
+                errors
+                    .into_iter()
+                    .map(|error| format!("replay finalization failed: {error}")),
+            );
+            paths
+        }
+        Some(Err(error)) => {
             outcome
                 .issues
                 .push(format!("replay finalization failed: {error}"));
             Vec::new()
         }
+        None => Vec::new(),
     };
     let completed = json!({
         "replays":finalized,
         "detach_requested":requested_detach,
-        "detached":outcome.drain_complete == Some(true),
+        "detached":!process_exited,
         "process_exited":process_exited,
         "drain_complete":outcome.drain_complete,
+        "capture_failed":outcome.capture_failed,
+        "failure_code":outcome.witness.as_ref().map(|_| "allocation_failed"),
+        "failed_hour":outcome.witness.as_ref().and_then(|witness| witness.failed_hour),
         "partial":!outcome.issues.is_empty(),
         "issues":outcome.issues,
         "warnings":outcome.warnings,
@@ -477,6 +637,9 @@ struct TerminalOutcome {
     drain_complete: Option<bool>,
     issues: Vec<String>,
     warnings: Vec<String>,
+    witness: Option<TerminalWitness>,
+    recovery_allowed: bool,
+    capture_failed: bool,
 }
 
 fn classify_terminal(
@@ -490,6 +653,9 @@ fn classify_terminal(
         drain_complete: None,
         issues: Vec::new(),
         warnings: Vec::new(),
+        witness: None,
+        recovery_allowed: true,
+        capture_failed: status.is_some_and(|status| status["capture_failed"] == true),
     };
     let mut issue = |reason: String| {
         if !outcome.issues.contains(&reason) {
@@ -546,13 +712,14 @@ fn classify_terminal(
 fn terminal_outcome(
     directory: &Path,
     session: u64,
+    process_start_time: u64,
     requested_detach: bool,
     process_exited: bool,
 ) -> TerminalOutcome {
     let mut status_read_issues = Vec::new();
     let mut error_read_issues = Vec::new();
     let status_path = directory.join("status.json");
-    let status = match fs::read(&status_path) {
+    let mut status = match fs::read(&status_path) {
         Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
             Ok(status) => Some(status),
             Err(error) => {
@@ -572,6 +739,18 @@ fn terminal_outcome(
             None
         }
     };
+    let witness = replay_io::read_failure_witness(directory).and_then(|witness| {
+        if witness.as_ref().is_some_and(|witness| {
+            witness.session != session || witness.process_start_time != process_start_time
+        }) {
+            Err("collector failure witness belongs to a different process session".into())
+        } else {
+            Ok(witness)
+        }
+    });
+    if let Ok(Some(witness)) = &witness {
+        status = Some(failure_status(status, witness));
+    }
     let error_path = directory.join("bin/collector.error.txt");
     let error_file = match fs::read_to_string(&error_path) {
         Ok(error) => Some(error),
@@ -597,7 +776,68 @@ fn terminal_outcome(
         outcome.warnings.extend(status_read_issues);
     }
     outcome.issues.extend(error_read_issues);
+    match witness {
+        Ok(Some(witness)) => outcome.witness = Some(witness),
+        Ok(None) => {
+            if status
+                .as_ref()
+                .is_some_and(|status| status["capture_failed"] == true)
+            {
+                outcome.issues.push("collector capture failed without a valid terminal witness; spool retained and not finalized".into());
+                outcome.recovery_allowed = false;
+            } else if requested_detach && outcome.drain_complete != Some(true) {
+                outcome.recovery_allowed = false;
+            }
+        }
+        Err(error) => {
+            outcome.issues.push(format!(
+                "invalid collector failure witness: {error}; spool retained and not finalized"
+            ));
+            outcome.recovery_allowed = false;
+        }
+    }
     outcome
+}
+
+fn create_failure_witness(
+    directory: &Path,
+    session: u64,
+    process_start_time: u64,
+) -> Result<(), String> {
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(directory.join(WITNESS_FILE_NAME))
+        .map_err(|error| error.to_string())?;
+    file.write_all(&TerminalWitness::prepared(session, process_start_time))
+        .and_then(|_| file.sync_all())
+        .map_err(|error| error.to_string())
+}
+
+fn failure_status(status: Option<Value>, witness: &TerminalWitness) -> Value {
+    let mut status = status
+        .filter(|status| status.is_object() && status["session"].as_u64() == Some(witness.session))
+        .unwrap_or_else(|| json!({}));
+    status["state"] = json!("detached");
+    status["session"] = json!(witness.session);
+    status["drain_complete"] = json!(witness.drain_complete);
+    status["capture_failed"] = json!(true);
+    status["failure_code"] = json!("allocation_failed");
+    status["failure_phase"] = json!(witness.phase);
+    status["failure_detail"] = json!(witness.code);
+    status["failed_hour"] = json!(witness.failed_hour);
+    status["partial"] = json!(true);
+    status["error"] = json!("collector allocation failed");
+    status
+}
+
+fn publish_failure_status(directory: &Path, witness: &TerminalWitness) -> Result<(), String> {
+    let path = directory.join("status.json");
+    let previous = fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    write_json(&path, &failure_status(previous, witness))
 }
 
 /// Validate the recorder's terminal result before a second console claims success.
@@ -799,7 +1039,8 @@ fn collector_present(process: &Process, dll: &Path) -> Result<bool, String> {
     }
 }
 
-fn ensure_finalizable(directory: &Path) -> Result<(), String> {
+/// Returns whether the original process has exited, after proving DLL absence.
+fn ensure_finalizable(directory: &Path) -> Result<(bool, SessionStart), String> {
     let config: Value = serde_json::from_slice(
         &fs::read(directory.join("bin/collector.json")).map_err(|e| e.to_string())?,
     )
@@ -810,15 +1051,15 @@ fn ensure_finalizable(directory: &Path) -> Result<(), String> {
     let session = SessionStart::decode(&mut decoder).map_err(|e| e.to_string())?;
     decoder.finish().map_err(|e| e.to_string())?;
     if !windows::games()?.contains(&session.process_id) {
-        return Ok(());
+        return Ok((true, session));
     }
     let process = match Process::open(session.process_id, false) {
         Ok(process) => process,
-        Err(_) if !windows::games()?.contains(&session.process_id) => return Ok(()),
+        Err(_) if !windows::games()?.contains(&session.process_id) => return Ok((true, session)),
         Err(error) => return Err(error),
     };
     if process.start_time != session.process_start_time {
-        return Ok(());
+        return Ok((true, session));
     }
     let done = config["done_event"]
         .as_str()
@@ -836,14 +1077,19 @@ fn ensure_finalizable(directory: &Path) -> Result<(), String> {
     {
         // A completed recorder has already observed done and module absence; the
         // named event ceases to exist when all process handles have closed.
-        if !directory.join("completed.json").is_file() {
+        if !directory.join("completed.json").is_file()
+            && !replay_io::read_failure_witness(directory)?.is_some_and(|witness| {
+                witness.session == session.id
+                    && witness.process_start_time == session.process_start_time
+            })
+        {
             return Err(
                 "live process has no completed detach witness; wait for its recorder or game exit"
                     .into(),
             );
         }
     }
-    Ok(())
+    Ok((process.handle.signaled()?, session))
 }
 
 fn finalization_lock(output: &Path) -> Result<File, String> {
@@ -926,6 +1172,163 @@ pub(crate) fn resolve_user_directory() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "alloc-fault-injection")]
+    #[test]
+    fn allocation_fault_cli_requires_a_named_phase_and_positive_ordinal() {
+        assert_eq!(
+            allocation_fault(OsStr::new("callback:17")).unwrap(),
+            AllocationFault {
+                phase: "callback".into(),
+                ordinal: 17,
+                after_hours: 0,
+            }
+        );
+        assert_eq!(
+            allocation_fault(OsStr::new("encode:1:3")).unwrap(),
+            AllocationFault {
+                phase: "encode".into(),
+                ordinal: 1,
+                after_hours: 3,
+            }
+        );
+        assert_eq!(
+            allocation_fault(OsStr::new("teardown:1:0"))
+                .unwrap()
+                .after_hours,
+            0
+        );
+        for value in [
+            "callback",
+            "callback:0",
+            "callback:-1",
+            ":1",
+            "callback:1:",
+            "callback:1:-1",
+            "callback:1:2:3",
+            "callback:1:18446744073709551616",
+        ] {
+            assert!(allocation_fault(OsStr::new(value)).is_err(), "{value}");
+        }
+    }
+
+    #[cfg(feature = "alloc-fault-injection")]
+    #[test]
+    fn allocation_fault_json_is_omitted_until_requested() {
+        let healthy = json!({"session_id":7});
+        assert_eq!(fault_config(healthy.clone(), None), healthy);
+        let fault = allocation_fault(OsStr::new("spool:540")).unwrap();
+        assert_eq!(
+            fault_config(healthy.clone(), Some(&fault)),
+            json!({"session_id":7,"alloc_fault":{"phase":"spool","ordinal":540}})
+        );
+        let fault = allocation_fault(OsStr::new("encode:1:3")).unwrap();
+        assert_eq!(
+            fault_config(healthy, Some(&fault)),
+            json!({"session_id":7,"alloc_fault":{"phase":"encode","ordinal":1,"after_hours":3}})
+        );
+    }
+
+    #[cfg(not(feature = "alloc-fault-injection"))]
+    #[test]
+    fn allocation_fault_cli_refuses_feature_option_in_default_build() {
+        assert!(!usage().contains("--alloc-fault"));
+        assert_eq!(
+            command(vec![
+                "record".into(),
+                "--alloc-fault".into(),
+                "spool:1".into()
+            ])
+            .unwrap_err(),
+            "--alloc-fault requires recorder feature alloc-fault-injection"
+        );
+    }
+
+    #[test]
+    fn allocation_failure_witness_overrides_stale_success_and_publishes_terminal_status() {
+        use crate::test_support::{allocation_test_directory, allocation_witness};
+        let directory = allocation_test_directory("terminal-status");
+        create_failure_witness(&directory, 7, 13).unwrap();
+        assert!(
+            replay_io::read_failure_witness(&directory)
+                .unwrap()
+                .is_none()
+        );
+        assert!(create_failure_witness(&directory, 7, 13).is_err());
+        write_json(
+            &directory.join("status.json"),
+            &json!({
+                "session":7,"state":"detached","drain_complete":true,"hours":3,
+            }),
+        )
+        .unwrap();
+        let witness = allocation_witness(1);
+        fs::write(directory.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        let outcome = terminal_outcome(&directory, 7, 13, true, false);
+        assert_eq!(outcome.witness, Some(witness));
+        assert_eq!(outcome.drain_complete, Some(false));
+        assert!(outcome.recovery_allowed);
+        assert!(
+            outcome
+                .issues
+                .iter()
+                .any(|issue| issue.contains("collector allocation failed"))
+        );
+        publish_failure_status(&directory, &witness).unwrap();
+        let status: Value =
+            serde_json::from_slice(&fs::read(directory.join("status.json")).unwrap()).unwrap();
+        assert_eq!(status["state"], "detached");
+        assert_eq!(status["capture_failed"], true);
+        assert_eq!(status["failure_code"], "allocation_failed");
+        assert_eq!(status["failed_hour"], 99);
+        assert_eq!(status["partial"], true);
+        assert_eq!(status["drain_complete"], false);
+        assert_eq!(status["hours"], 3);
+        let completed = json!({"partial":true,"capture_failed":true,"failure_code":"allocation_failed","failed_hour":99,"issues":outcome.issues});
+        assert!(completed_detach(&completed).is_err());
+    }
+
+    #[test]
+    fn allocation_failure_missing_invalid_or_foreign_witness_never_reports_success() {
+        use crate::test_support::{allocation_test_directory, allocation_witness};
+        let directory = allocation_test_directory("terminal-refusals");
+        write_json(
+            &directory.join("status.json"),
+            &json!({
+                "session":7,"state":"detached","drain_complete":true,"capture_failed":true,
+            }),
+        )
+        .unwrap();
+        let missing = terminal_outcome(&directory, 7, 13, true, false);
+        assert!(!missing.recovery_allowed);
+        assert!(!missing.issues.is_empty());
+        fs::create_dir_all(directory.join("bin")).unwrap();
+        fs::write(directory.join("bin/collector.json"), b"configured").unwrap();
+        write_json(
+            &directory.join("status.json"),
+            &json!({"session":7,"state":"detached","drain_complete":true}),
+        )
+        .unwrap();
+        let missing = terminal_outcome(&directory, 7, 13, true, false);
+        assert!(!missing.recovery_allowed);
+        assert!(
+            missing
+                .issues
+                .iter()
+                .any(|issue| issue.contains("precreated terminal witness is missing"))
+        );
+        let witness = allocation_witness(1);
+        fs::write(directory.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        let foreign = terminal_outcome(&directory, 7, 14, true, false);
+        assert!(!foreign.recovery_allowed);
+        assert!(foreign.witness.is_none());
+        let mut invalid = witness.encode();
+        invalid[31] ^= 1;
+        fs::write(directory.join(WITNESS_FILE_NAME), invalid).unwrap();
+        let invalid = terminal_outcome(&directory, 7, 13, true, false);
+        assert!(!invalid.recovery_allowed);
+        assert!(invalid.witness.is_none());
+    }
 
     #[test]
     fn refresh_request_is_renamed_whole_and_acknowledged() {

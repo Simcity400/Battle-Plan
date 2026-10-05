@@ -199,7 +199,7 @@ fn census_reuses_the_callback_country_roster_and_matches_the_native_checks() {
         .to_vec();
     assert_eq!(direct_entries.len(), COUNTRIES as usize);
 
-    let mut owner = Arc::new(Cache::with_capacity(1 << 17));
+    let mut owner = Arc::new(Cache::try_with_capacity(1 << 17).unwrap());
     let snapshot = Cache::prepare_shared(&mut owner, &plain, 0, many::GAME_STATE).unwrap();
     assert_eq!(snapshot.view(&plain).seed_status(), SeedStatus::Ready);
     let observed = Observed {

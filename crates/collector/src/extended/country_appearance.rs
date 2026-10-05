@@ -2,6 +2,7 @@
 //! names and the ruling party's first leader's character,
 //! sampled hourly.
 use crate::{sampling::qpc, spooling::table, table_capture::CaptureRows};
+use engine::allocation::{copy_vec, owned_vec};
 use engine::{Memory, ccountry, walk::Outcome};
 use replay::{
     frame::TableView,
@@ -56,13 +57,8 @@ impl Captured {
         let begin = qpc();
         match ccountry::dynamic_boundary(memory, base) {
             Some(boundary) => {
-                self.rows.outcome = ccountry::walk_appearance(
-                    memory,
-                    base,
-                    state,
-                    boundary,
-                    &mut self.rows.rows,
-                );
+                self.rows.outcome =
+                    ccountry::walk_appearance(memory, base, state, boundary, &mut self.rows.rows);
             }
             None => {
                 self.rows.outcome = Outcome::Unavailable {
@@ -86,20 +82,26 @@ impl Captured {
                 green: r.rgba[1],
                 blue: r.rgba[2],
                 alpha: r.rgba[3],
-                cosmetic_tag: r.cosmetic_tag.as_bytes().to_vec(),
-                name_tag: r.name_tag.as_bytes().to_vec(),
-                leader_ideology: r.leader_ideology.as_bytes().to_vec(),
+                cosmetic_tag: owned_vec(copy_vec(r.cosmetic_tag.as_bytes())),
+                name_tag: owned_vec(copy_vec(r.name_tag.as_bytes())),
+                leader_ideology: owned_vec(copy_vec(r.leader_ideology.as_bytes())),
                 overlord: r.overlord,
-                graphical_culture: r.graphical_culture.as_bytes().to_vec(),
-                graphical_culture_2d: r.graphical_culture_2d.as_bytes().to_vec(),
+                graphical_culture: owned_vec(copy_vec(r.graphical_culture.as_bytes())),
+                graphical_culture_2d: owned_vec(copy_vec(r.graphical_culture_2d.as_bytes())),
                 leader_character: r.leader_character,
                 ui_red: r.ui_rgba[0],
                 ui_green: r.ui_rgba[1],
                 ui_blue: r.ui_rgba[2],
                 ui_alpha: r.ui_rgba[3],
-                old_name: r.old_names.map(|names| names[0].as_bytes().to_vec()),
-                old_adjective: r.old_names.map(|names| names[1].as_bytes().to_vec()),
-                old_definite_name: r.old_names.map(|names| names[2].as_bytes().to_vec()),
+                old_name: r
+                    .old_names
+                    .map(|names| owned_vec(copy_vec(names[0].as_bytes()))),
+                old_adjective: r
+                    .old_names
+                    .map(|names| owned_vec(copy_vec(names[1].as_bytes()))),
+                old_definite_name: r
+                    .old_names
+                    .map(|names| owned_vec(copy_vec(names[2].as_bytes()))),
             },
         )]
     }
@@ -138,7 +140,12 @@ mod tests {
         assert_eq!(rows[0].alpha, 0x3f800000);
         assert_eq!(rows[0].leader_character, Some(0));
         assert_eq!(
-            [rows[0].ui_red, rows[0].ui_green, rows[0].ui_blue, rows[0].ui_alpha],
+            [
+                rows[0].ui_red,
+                rows[0].ui_green,
+                rows[0].ui_blue,
+                rows[0].ui_alpha
+            ],
             [0x3f000000, 0x00000001, 0x7f800000, 0xbf800000]
         );
         assert_eq!(rows[0].old_name, None);

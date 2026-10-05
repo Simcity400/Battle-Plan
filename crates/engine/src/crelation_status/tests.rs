@@ -240,8 +240,8 @@ fn run(bytes: &[u8]) -> (Walk, Vec<OpinionRow>, Vec<TupleRow>) {
                 }),
                 |_| true,
             );
-            resolver.grow();
-            baseline.grow();
+            resolver.grow().unwrap();
+            baseline.grow().unwrap();
             (
                 result,
                 opinions[..result.opinions.len()].to_vec(),
@@ -1087,7 +1087,7 @@ fn observed_slice(
         }),
         select,
     );
-    baseline.grow();
+    baseline.grow().unwrap();
     (
         result.opinions,
         opinions[..result.opinions.len()].to_vec(),
@@ -2044,7 +2044,7 @@ fn sliced_observed_days_equal_the_dense_walk_up_to_five_thousand_countries() {
         let mut load = None;
         for _ in 0..3 {
             let (_, _, cost, time) = walk(&[], &mut baseline, &|_| true, &mut resolver);
-            baseline.grow();
+            baseline.grow().unwrap();
             load = Some((cost, time));
         }
         assert_eq!(baseline.valid_owners(), countries);
@@ -2055,7 +2055,7 @@ fn sliced_observed_days_equal_the_dense_walk_up_to_five_thousand_countries() {
         // A day of opinion writes, observed at the next hour.
         world.next_day();
         let marks = world.marks();
-        baseline.reserve_marks(marks.len());
+        baseline.reserve_marks(marks.len()).unwrap();
         let (mut opinions, mut tuples) = (Vec::new(), Vec::new());
         let mut hours = Vec::new();
         for hour in 0..24_u32 {
@@ -2293,7 +2293,7 @@ fn links_walk_scales_to_five_thousand_partners() {
             )
             .links;
             times.push(begin.elapsed());
-            resolver.grow();
+            resolver.grow().unwrap();
             assert_eq!(outcome, Outcome::Rows { len: partners * 2 }, "{partners}");
             assert_eq!(rows, expected, "{partners}");
         }

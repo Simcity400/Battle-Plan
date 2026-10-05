@@ -19,7 +19,9 @@ use replay::{
     rows::{CountryLinkRow, CountryRow, TableId, tables},
 };
 
-use crate::{BranchMetadata, CountryMetadata, RecordingGap, ReplayMetadata, invalid};
+use crate::{
+    BranchMetadata, CountryMetadata, PartialRecording, RecordingGap, ReplayMetadata, invalid,
+};
 
 const MAX_WARNINGS: usize = 32;
 
@@ -48,6 +50,7 @@ pub fn read(
         countries: Vec::new(),
         player_country_id: None,
         content_verified: replay.content_verified(),
+        partial: replay.partial().and_then(partial_recording),
         warnings: Vec::new(),
     };
     if !metadata.content_verified {
@@ -98,6 +101,30 @@ pub fn read(
     }
     check_cancel(cancelled)?;
     Ok(metadata)
+}
+
+/// The terminal marker is separate from gaps: an unknown failed hour has none.
+pub fn partial_recording(control: &replay::spool::ControlRecord) -> Option<PartialRecording> {
+    let replay::spool::ControlRecord::Partial {
+        session,
+        reason,
+        failed_hour,
+    } = control
+    else {
+        return None;
+    };
+    Some(PartialRecording {
+        session_id: session.to_string(),
+        reason: reason.clone(),
+        failed_hour: *failed_hour,
+    })
+}
+
+/// Lists terminal metadata without reading or inflating recorded frame blocks.
+pub fn read_partial_recording(path: &Path) -> io::Result<Option<PartialRecording>> {
+    Ok(Replay::read_partial(path)?
+        .as_ref()
+        .and_then(partial_recording))
 }
 
 pub fn country_tables(frame: &DecodedFrame) -> io::Result<(&[CountryRow], &[CountryLinkRow])> {

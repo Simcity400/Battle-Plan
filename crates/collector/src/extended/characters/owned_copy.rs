@@ -1,4 +1,5 @@
 use super::*;
+use engine::allocation::{owned_vec, reserve, vec};
 
 /// One refresh of raw character payload. Trait occurrences reference owned,
 /// verified definitions; all other observations retain the raw replay order.
@@ -59,7 +60,7 @@ pub(super) struct CharacterSourceBindings {
 impl CharacterSourceBindings {
     pub(super) fn new() -> Self {
         let mut value = Self {
-            sources: Vec::with_capacity(8192),
+            sources: owned_vec(vec(8192)),
             overflowed: false,
             ready: false,
             rows: [0; 2],
@@ -168,17 +169,21 @@ impl CharactersJob {
         let mut log = crate::raw::RawLog::new(spans, bytes);
         let trace_capacity = spans.min(1 << 18);
         log.initialize_scattered_read_plan(trace_capacity, trace_capacity, bytes.min(4 << 20));
-        let census = (part == 0).then(|| {
-            ccharacter_manager::PortraitCensus::new(
-                ccharacter_manager::PortraitCensus::INITIAL_CAPACITY,
-            )
-        });
+        let census = (part == 0)
+            .then(|| {
+                ccharacter_manager::PortraitCensus::try_new(
+                    ccharacter_manager::PortraitCensus::INITIAL_CAPACITY,
+                )
+                .map_err(crate::allocation::io)
+                .ok()
+            })
+            .flatten();
         let role_census =
             (part == 0).then(|| census::RoleCensus::new(census::RoleCensus::INITIAL_CAPACITY));
         // A pass visits at most every census occurrence, so the list is seeded
         // at the live census length (none before the first census) and
         // follows it off-thread.
-        let census_visited = Vec::with_capacity(if part == 0 { 0 } else { census::live_len() });
+        let census_visited = owned_vec(vec(if part == 0 { 0 } else { census::live_len() }));
         let mut census_charge = crate::raw_memory::Charge::default();
         census_charge.set(crate::raw_memory::Capacity {
             auxiliary_vectors: census
@@ -273,14 +278,14 @@ impl CharactersJob {
 
     pub(crate) fn portrait_census(&self) -> Option<Arc<ccharacter_manager::PortraitCensus>> {
         self.census_current
-            .then(|| self.portrait_census.as_ref().map(Arc::clone))
+            .then(|| self.portrait_census.clone())
             .flatten()
     }
 
     /// This pass's role census; role jobs return the loan at their join.
     pub(crate) fn role_census(&self) -> Option<Arc<census::RoleCensus>> {
         self.role_census_current
-            .then(|| self.role_census.as_ref().map(Arc::clone))
+            .then(|| self.role_census.clone())
             .flatten()
     }
 
@@ -351,17 +356,21 @@ impl CharactersJob {
         if let Some(census) = self.portrait_census.as_mut().and_then(Arc::get_mut)
             && census.needs_growth()
         {
-            census.grow();
+            if census.grow().map_err(crate::allocation::io).is_err() {
+                return;
+            }
             self.log.invalidate_read_plan();
         }
         // Role loans also return before recycle.
         if let Some(census) = self.role_census.as_mut().and_then(Arc::get_mut) {
             census.grow();
         }
-        self.census_visited.reserve(
-            self.visits_required(census::live_len())
-                .saturating_sub(self.census_visited.len()),
-        );
+        let visits = self
+            .visits_required(census::live_len())
+            .saturating_sub(self.census_visited.len());
+        if reserve(&mut self.census_visited, visits).is_err() {
+            return;
+        }
         self.update_census_charge();
         if let Some(cache) = &mut self.advisor_cache {
             cache.grow();

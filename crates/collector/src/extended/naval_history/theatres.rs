@@ -1,4 +1,5 @@
 use super::*;
+use engine::allocation::{owned_vec, reserve, reserve_exact, resize_default, vec};
 
 /// Fault-attribution masks in closure order: [LandTheatres,
 /// LandTheatreGroups, LandTheatreMembers, AirTheatres, AirTheatreGroups,
@@ -119,16 +120,18 @@ impl NavalJob {
             log: RawLog::new(1 << 17, 4 << 20),
             game_state: 0,
             theatres_active: false,
-            wing_sources: Vec::with_capacity(4096),
+            wing_sources: owned_vec(vec(4096)),
             wing_outcome: None,
             wing_required: 0,
-            oob_theatres: Vec::with_capacity(oob_theatre_rows()),
-            oob_theatre_positions: Vec::with_capacity(oob_theatre_rows()),
+            oob_theatres: owned_vec(vec(oob_theatre_rows())),
+            oob_theatre_positions: owned_vec(vec(oob_theatre_rows())),
             oob_theatres_required: 0,
-            roster: engine::ccountry::RosterSnapshot::with_capacity(
+            roster: engine::ccountry::RosterSnapshot::try_with_capacity(
                 crate::country_scale::census_rows(1024),
-            ),
-            roots: Vec::with_capacity(oob_theatre_rows()),
+            )
+            .map_err(crate::allocation::io)
+            .unwrap_or_default(),
+            roots: owned_vec(vec(oob_theatre_rows())),
             roots_len: None,
             roots_required: 0,
             capacity_charge: crate::raw_memory::Charge::default(),
@@ -198,25 +201,40 @@ impl NavalJob {
         };
         if required > self.wing_sources.capacity() {
             let target = required.max(self.wing_sources.capacity().saturating_mul(2));
-            self.wing_sources
-                .reserve_exact(target.saturating_sub(self.wing_sources.len()));
+            let additional = target.saturating_sub(self.wing_sources.len());
+            if reserve_exact(&mut self.wing_sources, additional).is_err() {
+                return;
+            }
         }
         if self.oob_theatres_required > self.oob_theatres.capacity() {
             let target = self
                 .oob_theatres_required
                 .max(self.oob_theatres.capacity().saturating_mul(2));
-            self.oob_theatres
-                .reserve_exact(target.saturating_sub(self.oob_theatres.len()));
-            self.oob_theatre_positions
-                .reserve_exact(target.saturating_sub(self.oob_theatre_positions.len()));
+            let additional = target.saturating_sub(self.oob_theatres.len());
+            if reserve_exact(&mut self.oob_theatres, additional).is_err() {
+                return;
+            }
+            let additional = target.saturating_sub(self.oob_theatre_positions.len());
+            if reserve_exact(&mut self.oob_theatre_positions, additional).is_err() {
+                return;
+            }
         }
-        self.roster.reserve(self.roster.required());
+        if self
+            .roster
+            .reserve(self.roster.required())
+            .map_err(crate::allocation::io)
+            .is_err()
+        {
+            return;
+        }
         if self.roots_required > self.roots.capacity() {
             let target = self
                 .roots_required
                 .max(self.roots.capacity().saturating_mul(2));
-            self.roots
-                .reserve_exact(target.saturating_sub(self.roots.len()));
+            let additional = target.saturating_sub(self.roots.len());
+            if reserve_exact(&mut self.roots, additional).is_err() {
+                return;
+            }
         }
         self.update_capacity_charge();
     }
@@ -234,13 +252,26 @@ impl NavalJob {
         {
             return;
         }
-        self.roster.reserve(roster);
-        self.roots
-            .reserve_exact(target.saturating_sub(self.roots.len()));
-        self.oob_theatres
-            .reserve_exact(target.saturating_sub(self.oob_theatres.len()));
-        self.oob_theatre_positions
-            .reserve_exact(target.saturating_sub(self.oob_theatre_positions.len()));
+        if self
+            .roster
+            .reserve(roster)
+            .map_err(crate::allocation::io)
+            .is_err()
+        {
+            return;
+        }
+        let additional = target.saturating_sub(self.roots.len());
+        if reserve_exact(&mut self.roots, additional).is_err() {
+            return;
+        }
+        let additional = target.saturating_sub(self.oob_theatres.len());
+        if reserve_exact(&mut self.oob_theatres, additional).is_err() {
+            return;
+        }
+        let additional = target.saturating_sub(self.oob_theatre_positions.len());
+        if reserve_exact(&mut self.oob_theatre_positions, additional).is_err() {
+            return;
+        }
         self.update_capacity_charge();
     }
 
@@ -1430,7 +1461,12 @@ pub(crate) fn decode_naval_payload(
                 let outcome = corders_group::walk_roots(&recorded, base, &mut walked);
                 match outcome {
                     Outcome::Truncated { .. } => {
-                        walked.resize(walked.len() * 2 + 16, corders_group::Root::default());
+                        let target = walked.len().saturating_mul(2).saturating_add(16);
+                        let additional = target - walked.len();
+                        if reserve(&mut walked, additional).is_err() {
+                            return;
+                        }
+                        walked.resize(target, corders_group::Root::default());
                         continue;
                     }
                     _ => break outcome,
@@ -1443,7 +1479,11 @@ pub(crate) fn decode_naval_payload(
     // when the independent group-row output intentionally truncates.
     if let Outcome::Rows { len } = roots_outcome {
         captured.roster_scratch.required = captured.roster_scratch.required.max(len);
-        crate::table_capture::grow_vec(&mut captured.roster_scratch.first, len);
+        if captured.roster_scratch.first.len() < len
+            && resize_default(&mut captured.roster_scratch.first, len).is_err()
+        {
+            return;
+        }
     }
     // Order sources + OOB through the existing setters (identical rows,
     // outcomes and ticks to the game thread's source callbacks).

@@ -113,7 +113,7 @@ fn bench_division_move_flags() {
         );
         // DivisionRetreatBans: every division of the read owners, a
         // daily slice in a steady hour, every owner in the first.
-        let mut packet = StatusPacket::new(seeds.len());
+        let mut packet = StatusPacket::new(seeds.len()).unwrap();
         let mut rows = vec![RetreatBanRow::default(); seeds.len()];
         for (label, slice) in [
             ("DivisionRetreatBans, first hour (every owner)", false),

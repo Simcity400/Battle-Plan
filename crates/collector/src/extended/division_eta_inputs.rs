@@ -4,6 +4,7 @@
 //! edge constants once, and a thin route scan for the per-leg vectors.
 use super::production::Sources;
 use crate::{sampling::qpc, spooling::table, table_capture::grow_capacity};
+use engine::allocation::{copy_vec, owned_vec};
 use engine::{
     Memory, carmy,
     carmy::DivisionSeed,
@@ -19,7 +20,8 @@ use replay::{
     frame::TableView,
     rows::{DivisionEtaInputsRow, TableId, TerrainSpeed, tables},
 };
-use std::{cell::RefCell, sync::Arc};
+use std::cell::RefCell;
+use std::sync::Arc;
 mod cadence;
 pub(crate) use cadence::Store as CadenceStore;
 
@@ -72,7 +74,7 @@ impl AirDefenseMemo {
     fn with_capacity(rows: usize) -> Self {
         Self {
             // One bounded slot per range row; a vacant range allocates nothing.
-            slots: vec![None; rows],
+            slots: owned_vec(engine::allocation::filled(rows, None)),
             requests: 0,
             hits: 0,
         }
@@ -85,6 +87,10 @@ impl AirDefenseMemo {
 
     fn reserve(&mut self, rows: usize) {
         if self.slots.len() < rows {
+            let additional = rows - self.slots.len();
+            if engine::allocation::reserve(&mut self.slots, additional).is_err() {
+                return;
+            }
             self.slots.resize(rows, None);
             // Changing the modulus changes slot placement. Discard old entries
             // off capture rather than rehashing with another allocation.
@@ -286,6 +292,7 @@ impl Capacities {
 
 fn packet(c: &Capacities) -> carmy::EtaInputPacket {
     carmy::EtaInputPacket::new(c.rows, c.terrain, c.legs)
+        .unwrap_or_else(|_| carmy::EtaInputPacket::vacant())
 }
 
 /// One stable partition of the census, acquired by one worker with its own
@@ -321,9 +328,12 @@ impl RangeCaptured {
             carried: None,
             census: cadence::Census::default(),
             packet: packet(c),
-            geometry: cprovince::GeometryPacket::with_capacities(c.geometry),
+            geometry: cprovince::GeometryPacket::try_with_capacities(c.geometry)
+                .unwrap_or_default(),
             statics: cprovince::StaticGeometry::default(),
-            modifiers: RefCell::new(SnapshotArena::new(bounded_snapshot_capacity(c.modifiers))),
+            modifiers: RefCell::new(
+                SnapshotArena::try_new(bounded_snapshot_capacity(c.modifiers)).unwrap_or_default(),
+            ),
             definitions: PassDefinitions::default(),
             air_defense: RefCell::new(AirDefenseMemo::with_capacity(c.rows)),
             required_modifiers: SnapshotCapacity::default(),
@@ -399,11 +409,16 @@ impl RangeCaptured {
 
     /// Apply grown capacities. Allocation happens outside acquisition.
     fn reserve(&mut self, c: &Capacities) {
-        self.geometry.grow(c.geometry);
-        self.packet.reserve(c.rows, c.terrain, c.legs);
-        self.modifiers
-            .get_mut()
-            .grow(bounded_snapshot_capacity(c.modifiers));
+        if self.geometry.grow(c.geometry).is_err()
+            || self.packet.reserve(c.rows, c.terrain, c.legs).is_err()
+            || self
+                .modifiers
+                .get_mut()
+                .try_grow(bounded_snapshot_capacity(c.modifiers))
+                .is_err()
+        {
+            return;
+        }
         self.air_defense.get_mut().reserve(c.rows);
     }
 
@@ -461,7 +476,11 @@ impl RangeCaptured {
                 return Err("division ETA input spans invalid");
             }
             let terrain = self.rows().iter().map(|row| row.terrain_len);
-            let rows = self.project(context.hour).into_iter().zip(terrain);
+            let rows = self
+                .project(context.hour)
+                .map_err(|_| "collector allocation failed")?
+                .into_iter()
+                .zip(terrain);
             self.carried = Some(store.finish(context.hour, rows)?);
             self.census = store.census();
             Ok(())
@@ -562,47 +581,47 @@ impl RangeCaptured {
         &rows[..self.outcome().len().min(rows.len())]
     }
 
-    fn project(&self, sample_hour: i32) -> Vec<DivisionEtaInputsRow> {
-        self.rows()
-            .iter()
-            .map(|r| {
-                let terrain = self.packet.terrain();
-                let legs = self.packet.legs();
-                let terrain_speed = terrain[r.terrain_start..r.terrain_start + r.terrain_len]
+    fn project(&self, sample_hour: i32) -> std::io::Result<Vec<DivisionEtaInputsRow>> {
+        let mut rows = engine::allocation::vec(self.rows().len())?;
+        for r in self.rows() {
+            let terrain = self.packet.terrain();
+            let legs = self.packet.legs();
+            let terrain_speed = engine::allocation::collect_vec(
+                terrain[r.terrain_start..r.terrain_start + r.terrain_len]
                     .iter()
-                    .map(|&(terrain, modifier)| TerrainSpeed { terrain, modifier })
-                    .collect();
-                let span = r.leg_start..r.leg_start + r.leg_len;
-                let optional = |values: &[i64], present: bool| {
-                    if present {
-                        values[span.clone()].to_vec()
-                    } else {
-                        Vec::new()
-                    }
-                };
-                DivisionEtaInputsRow {
-                    division: r.division,
-                    sample_hour,
-                    speed_modifier: r.speed_modifier,
-                    speed_base: r.speed_base,
-                    speed_org: r.speed_org,
-                    speed_fuel: r.speed_fuel,
-                    current_speed: r.current_speed,
-                    terrain_speed,
-                    fort_penalty: r.fort_penalty,
-                    snow_penalty: r.snow_penalty,
-                    river_adjustment: r.river_adjustment,
-                    river_leader: r.river_leader,
-                    class: r.class,
-                    rail_country_modifier: r.rail_country_modifier,
-                    rail_state_modifier: r.rail_state_modifier,
-                    rail_friendly_state_modifier: r.rail_friendly_state_modifier,
-                    leg_river_combined: optional(legs.river, r.any_river),
-                    leg_transport_speed: optional(legs.transport, r.any_transport),
-                    leg_rail_speed: optional(legs.rail, r.any_rail),
+                    .map(|&(terrain, modifier)| TerrainSpeed { terrain, modifier }),
+            )?;
+            let span = r.leg_start..r.leg_start + r.leg_len;
+            let optional = |values: &[i64], present: bool| {
+                if present {
+                    copy_vec(&values[span.start..span.end])
+                } else {
+                    Ok(Vec::new())
                 }
-            })
-            .collect()
+            };
+            rows.push(DivisionEtaInputsRow {
+                division: r.division,
+                sample_hour,
+                speed_modifier: r.speed_modifier,
+                speed_base: r.speed_base,
+                speed_org: r.speed_org,
+                speed_fuel: r.speed_fuel,
+                current_speed: r.current_speed,
+                terrain_speed,
+                fort_penalty: r.fort_penalty,
+                snow_penalty: r.snow_penalty,
+                river_adjustment: r.river_adjustment,
+                river_leader: r.river_leader,
+                class: r.class,
+                rail_country_modifier: r.rail_country_modifier,
+                rail_state_modifier: r.rail_state_modifier,
+                rail_friendly_state_modifier: r.rail_friendly_state_modifier,
+                leg_river_combined: optional(legs.river, r.any_river)?,
+                leg_transport_speed: optional(legs.transport, r.any_transport)?,
+                leg_rail_speed: optional(legs.rail, r.any_rail)?,
+            });
+        }
+        Ok(rows)
     }
 
     /// True when every row's terrain and leg span lies inside this range's arenas.
@@ -739,18 +758,55 @@ impl Captured {
     pub fn tables(&self) -> [TableView; N] {
         // A range publishes rows only after a complete acquisition; any other
         // range state makes the outcome unavailable.
-        let rows: Vec<_> = self
+        let count = self
             .active()
             .iter()
-            .flat_map(|range| range.carried.iter().flatten().map(Arc::as_ref))
-            .collect();
+            .try_fold(0_usize, |count, range| {
+                count.checked_add(range.carried.as_ref().map_or(0, Vec::len))
+            })
+            .unwrap_or(usize::MAX);
+        let Ok(mut rows) = engine::allocation::vec(count) else {
+            return [crate::spooling::unavailable("collector allocation failed")];
+        };
+        for range in self.active() {
+            if let Some(carried) = &range.carried {
+                rows.extend(carried.iter().map(Arc::as_ref));
+            }
+        }
         [table::<tables::DivisionEtaInputs, _>(
             self.outcomes()[0],
             &rows,
-            |row| (*row).clone(),
+            |row| copy_row(row),
         )]
     }
 }
+
+fn copy_row(row: &DivisionEtaInputsRow) -> DivisionEtaInputsRow {
+    DivisionEtaInputsRow {
+        division: row.division,
+        sample_hour: row.sample_hour,
+        speed_modifier: row.speed_modifier,
+        speed_base: row.speed_base,
+        speed_org: row.speed_org,
+        speed_fuel: row.speed_fuel,
+        current_speed: row.current_speed,
+        terrain_speed: owned_vec(copy_vec(&row.terrain_speed)),
+        fort_penalty: row.fort_penalty,
+        snow_penalty: row.snow_penalty,
+        river_adjustment: row.river_adjustment,
+        river_leader: row.river_leader,
+        class: row.class,
+        rail_country_modifier: row.rail_country_modifier,
+        rail_state_modifier: row.rail_state_modifier,
+        rail_friendly_state_modifier: row.rail_friendly_state_modifier,
+        leg_river_combined: owned_vec(copy_vec(&row.leg_river_combined)),
+        leg_transport_speed: owned_vec(copy_vec(&row.leg_transport_speed)),
+        leg_rail_speed: owned_vec(copy_vec(&row.leg_rail_speed)),
+    }
+}
+
+#[cfg(test)]
+pub(crate) use tests::allocation_failure_route_exercise;
 
 #[cfg(test)]
 mod tests;

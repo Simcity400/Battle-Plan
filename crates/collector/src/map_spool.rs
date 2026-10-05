@@ -25,6 +25,7 @@ pub(crate) fn table_inputs(
     captured: &MapCaptured,
     mut projection: Option<&mut Projection<'_>>,
 ) -> [TableInput; 10] {
+    let _phase = crate::allocation::enter(crate::allocation::Phase::Map);
     [
         players(
             &captured.players,
@@ -107,8 +108,12 @@ fn players(
             id: row.id,
             country: row.country,
             flags: row.flags,
-            user: names[row.user_start..row.user_start + row.user_len].to_vec(),
-            name: names[row.name_start..row.name_start + row.name_len].to_vec(),
+            user: engine::allocation::owned_vec(engine::allocation::copy_vec(
+                &names[row.user_start..row.user_start + row.user_len],
+            )),
+            name: engine::allocation::owned_vec(engine::allocation::copy_vec(
+                &names[row.name_start..row.name_start + row.name_len],
+            )),
         },
     )
 }
@@ -144,6 +149,14 @@ fn land_combats(
         return unavailable("land combat members lie outside the captured reference arena").into();
     };
     let mut scratch = Vec::new();
+    let maximum = rows
+        .iter()
+        .map(|row| row.attacker_len.max(row.defender_len))
+        .max()
+        .unwrap_or(0);
+    if engine::allocation::reserve_exact(&mut scratch, maximum).is_err() {
+        return unavailable("collector allocation failed").into();
+    }
     for row in rows {
         for (start, len) in [
             (row.attacker_start, row.attacker_len),
@@ -183,10 +196,12 @@ fn land_combats(
             province: row.province,
             duration: row.duration,
             day: row.day,
-            attackers: participants[row.attacker_start..row.attacker_start + row.attacker_len]
-                .to_vec(),
-            defenders: participants[row.defender_start..row.defender_start + row.defender_len]
-                .to_vec(),
+            attackers: engine::allocation::owned_vec(engine::allocation::copy_vec(
+                &participants[row.attacker_start..row.attacker_start + row.attacker_len],
+            )),
+            defenders: engine::allocation::owned_vec(engine::allocation::copy_vec(
+                &participants[row.defender_start..row.defender_start + row.defender_len],
+            )),
         },
     )
 }
@@ -380,8 +395,12 @@ fn army_orders(
             country: row.country,
             order_type: row.order_type,
             active: row.active,
-            path: geometry[row.path_start..row.path_start + row.path_len].to_vec(),
-            target_states: geometry[row.target_start..row.target_start + row.target_len].to_vec(),
+            path: engine::allocation::owned_vec(engine::allocation::copy_vec(
+                &geometry[row.path_start..row.path_start + row.path_len],
+            )),
+            target_states: engine::allocation::owned_vec(engine::allocation::copy_vec(
+                &geometry[row.target_start..row.target_start + row.target_len],
+            )),
             paradrop_target: row.paradrop_target,
         },
     )

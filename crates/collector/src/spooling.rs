@@ -9,6 +9,9 @@ use crate::extended::lexical::{LexicalConversion, LexicalConversionStats};
 use crate::history::PreparedCampaigns;
 use crate::projection::{Projection, ProjectionScratch, project_table, scalar_table};
 use crate::sampling::{Captured, LossBatch, LostObservation, qpc as current_qpc};
+use crate::status::{
+    Choice, DebugValue, LossyBytes, map as status_map, owned_sequence, sequence, status,
+};
 use engine::{
     cgame_state::Clock, memory::ReadCounts, save_allocation_counters::AllocationCounters,
     walk::Outcome,
@@ -16,7 +19,7 @@ use engine::{
 use replay::{
     BranchId,
     branches::{BranchStart, BranchTracker, Gap},
-    codec::invalid,
+    codec::invalid_static as invalid,
     frame::{BaselineToken, FrameEncoder, FrameInput, Metrics, TABLE_COUNT, TableInput, TableView},
     identity::{SessionStart, is_campaign_uuid},
     rows::{
@@ -26,14 +29,17 @@ use replay::{
     },
     spool::{ControlRecord, FileBackend, Record, SegmentBackend, SegmentedSpool},
 };
+use serde::Serialize;
+#[cfg(test)]
 use serde_json::{Value, json};
+#[cfg(test)]
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::{
     cell::{Cell, RefCell},
-    collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     io,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 /// Baseline and borrowed conversion caches for one spool frame.
@@ -44,6 +50,117 @@ pub(crate) struct SpoolConversion<'a, 'cache> {
     pub(crate) lexical: Option<&'a mut LexicalConversion<'cache>>,
     pub(crate) intel: Option<&'a mut IntelConversion<'cache>>,
     pub(crate) projection: Option<&'a mut Projection<'cache>>,
+}
+
+struct TableCache<T>([Option<T>; TABLE_COUNT]);
+impl<T> TableCache<T> {
+    fn new() -> Self {
+        Self(std::array::from_fn(|_| None))
+    }
+    fn get(&self, table: &TableId) -> Option<&T> {
+        self.0[table.index()].as_ref()
+    }
+    fn insert(&mut self, table: TableId, value: T) -> Option<T> {
+        self.0[table.index()].replace(value)
+    }
+    fn remove(&mut self, table: &TableId) -> Option<T> {
+        self.0[table.index()].take()
+    }
+    fn clear(&mut self) {
+        self.0.iter_mut().for_each(|slot| *slot = None);
+    }
+    #[cfg(test)]
+    fn contains_key(&self, table: &TableId) -> bool {
+        self.get(table).is_some()
+    }
+}
+
+/// Sorted owner reads per table. Updates reserve a whole batch, then merge linearly.
+struct ReadHours([Vec<(u32, i32)>; TABLE_COUNT]);
+impl ReadHours {
+    fn new() -> Self {
+        Self(std::array::from_fn(|_| Vec::new()))
+    }
+    fn clear(&mut self) {
+        self.0.iter_mut().for_each(Vec::clear);
+    }
+    fn get(&self, &(table, owner): &(u32, u32)) -> Option<&i32> {
+        let rows = self.0.get(table as usize)?;
+        rows.binary_search_by_key(&owner, |entry| entry.0)
+            .ok()
+            .map(|index| &rows[index].1)
+    }
+    #[cfg(test)]
+    fn keys(&self) -> impl Iterator<Item = (u32, u32)> {
+        self.0
+            .iter()
+            .enumerate()
+            .flat_map(|(table, rows)| rows.iter().map(move |&(owner, _)| (table as u32, owner)))
+    }
+}
+
+struct Campaigns(Vec<(String, Campaign)>);
+impl Campaigns {
+    fn new() -> Self {
+        Self(Vec::new())
+    }
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    fn position(&self, id: &str) -> Result<usize, usize> {
+        self.0.binary_search_by(|entry| entry.0.as_str().cmp(id))
+    }
+    fn contains_key(&self, id: &str) -> bool {
+        self.position(id).is_ok()
+    }
+    fn get_mut(&mut self, id: &str) -> Option<&mut Campaign> {
+        let index = self.position(id).ok()?;
+        Some(&mut self.0[index].1)
+    }
+    fn insert(&mut self, id: String, campaign: Campaign) -> io::Result<()> {
+        match self.position(&id) {
+            Ok(index) => self.0[index].1 = campaign,
+            Err(index) => {
+                engine::allocation::reserve(&mut self.0, 1)?;
+                self.0.insert(index, (id, campaign));
+            }
+        }
+        Ok(())
+    }
+    fn iter(&self) -> impl Clone + Iterator<Item = (&String, &Campaign)> {
+        self.0.iter().map(|(id, campaign)| (id, campaign))
+    }
+    fn values(&self) -> impl Clone + Iterator<Item = &Campaign> {
+        self.0.iter().map(|(_, campaign)| campaign)
+    }
+    fn keys(&self) -> impl DoubleEndedIterator<Item = &String> {
+        self.0.iter().map(|(id, _)| id)
+    }
+}
+impl<'a> IntoIterator for &'a mut Campaigns {
+    type Item = (&'a String, &'a mut Campaign);
+    type IntoIter = std::iter::Map<
+        std::slice::IterMut<'a, (String, Campaign)>,
+        fn(&mut (String, Campaign)) -> (&String, &mut Campaign),
+    >;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter_mut().map(|(id, campaign)| (&*id, campaign))
+    }
+}
+
+fn error_reason(error: &io::Error) -> &'static str {
+    match error.kind() {
+        io::ErrorKind::OutOfMemory => "collector allocation failed",
+        io::ErrorKind::InvalidData => "spool validation failed",
+        _ => "spool I/O failed",
+    }
+}
+
+fn committed_spool_record(segment: u32, bytes: u64, complete_hour: bool) {
+    if complete_hour {
+        crate::allocation::attempted_hour(None);
+    }
+    crate::allocation::committed(segment, bytes);
 }
 
 #[derive(Default)]
@@ -67,7 +184,9 @@ fn exact_percentiles(samples: &mut [u64]) -> Percentiles {
         return Percentiles::default();
     }
     let max_ns = samples.iter().copied().max().unwrap();
-    let ranks = [50, 95, 99].map(|percent| (samples.len() * percent).div_ceil(100) - 1);
+    let ranks = [50, 95, 99].map(|percent| {
+        samples.len() / 100 * percent + (samples.len() % 100 * percent).div_ceil(100) - 1
+    });
     let mut values = [0; 3];
     let mut remaining = samples;
     let mut offset = 0;
@@ -97,33 +216,64 @@ impl Distribution {
     }
 
     fn record_ns(&mut self, ns: u64) {
+        if engine::allocation::reserve(&mut self.samples_ns, 1).is_err() {
+            return;
+        }
         self.total_ns = self.total_ns.saturating_add(ns);
         self.samples_ns.push(ns);
         self.cached.set(None);
     }
 
-    fn percentiles(&self) -> Percentiles {
+    fn try_percentiles(&self) -> io::Result<Percentiles> {
         // Repeated status reads reuse exact results until another sample arrives.
         if let Some(cached) = self.cached.get() {
-            return cached;
+            return Ok(cached);
         }
         let mut scratch = self.scratch.borrow_mut();
-        scratch.clone_from(&self.samples_ns);
+        scratch.clear();
+        engine::allocation::reserve(&mut scratch, self.samples_ns.len())?;
+        scratch.extend_from_slice(&self.samples_ns);
         let result = exact_percentiles(&mut scratch);
         self.cached.set(Some(result));
-        result
+        Ok(result)
     }
 
-    pub fn json(&self) -> Value {
-        let percentiles = self.percentiles();
+    pub(crate) fn status(&self) -> io::Result<DistributionStatus> {
+        let percentiles = self.try_percentiles()?;
         let count = self.samples_ns.len();
-        json!({
-            "calls": count, "total_ns": self.total_ns,
-            "mean_ns": if count == 0 { 0.0 } else { self.total_ns as f64 / count as f64 },
-            "p50_ns": percentiles.p50_ns, "p95_ns": percentiles.p95_ns,
-            "p99_ns": percentiles.p99_ns, "max_ns": percentiles.max_ns,
+        Ok(DistributionStatus {
+            calls: count,
+            total_ns: self.total_ns,
+            mean_ns: if count == 0 {
+                0.0
+            } else {
+                self.total_ns as f64 / count as f64
+            },
+            p50_ns: percentiles.p50_ns,
+            p95_ns: percentiles.p95_ns,
+            p99_ns: percentiles.p99_ns,
+            max_ns: percentiles.max_ns,
         })
     }
+    #[cfg(test)]
+    fn percentiles(&self) -> Percentiles {
+        self.try_percentiles().unwrap()
+    }
+    #[cfg(test)]
+    pub(crate) fn json(&self) -> Value {
+        serde_json::to_value(self.status().unwrap()).unwrap()
+    }
+}
+
+#[derive(Clone, Copy, Default, Serialize)]
+pub(crate) struct DistributionStatus {
+    calls: usize,
+    total_ns: u64,
+    mean_ns: f64,
+    p50_ns: u64,
+    p95_ns: u64,
+    p99_ns: u64,
+    max_ns: u64,
 }
 
 struct PendingBranch {
@@ -145,29 +295,29 @@ enum CachedTable {
 }
 
 impl CachedTable {
-    fn input(&self) -> TableInput {
-        match self {
+    fn input(&self) -> io::Result<TableInput> {
+        Ok(match self {
             Self::Complete(rows) => TableInput::SharedComplete(Arc::clone(rows)),
             Self::Truncated { rows, missing } => TableInput::Sampled(TableView::Truncated {
-                rows: rows.clone(),
+                rows: rows.try_clone()?,
                 missing: *missing,
             }),
             Self::Unavailable { reason } => TableInput::Sampled(TableView::Unavailable {
-                reason: reason.clone(),
+                reason: engine::allocation::string(reason)?,
             }),
-        }
+        })
     }
 }
 
 fn lexical_conversion_status<'a>(
     statistics: impl IntoIterator<Item = &'a LexicalConversionStats>,
-) -> Value {
+) -> impl Serialize {
     let mut total = LexicalConversionStats::default();
     for current in statistics {
         total.hits = total.hits.saturating_add(current.hits);
         total.misses = total.misses.saturating_add(current.misses);
     }
-    json!({
+    status!({
         "hits": total.hits,
         "misses": total.misses,
         "counter_scope": "cumulative conversion decisions across retained campaigns, including later rejected or failed writes; genuine skipped inputs excluded",
@@ -178,7 +328,7 @@ fn lexical_conversion_status<'a>(
 }
 
 fn lexical_cache(
-    cache: &BTreeMap<replay::rows::TableId, CachedTable>,
+    cache: &TableCache<CachedTable>,
     cached_branch: Option<BranchId>,
     branch: BranchId,
 ) -> Option<&Arc<TableRows>> {
@@ -191,7 +341,7 @@ fn lexical_cache(
     }
 }
 
-fn intel_shadow_status<'a>(shadows: impl IntoIterator<Item = &'a IntelShadow>) -> Value {
+fn intel_shadow_status<'a>(shadows: impl IntoIterator<Item = &'a IntelShadow>) -> impl Serialize {
     let mut total = IntelShadowStats::default();
     let mut campaigns = 0usize;
     for shadow in shadows {
@@ -202,7 +352,7 @@ fn intel_shadow_status<'a>(shadows: impl IntoIterator<Item = &'a IntelShadow>) -
         total.row_capacity_bytes += current.row_capacity_bytes;
         total.replay_capacity_bytes += current.replay_capacity_bytes;
     }
-    json!({
+    status!({
         "campaigns": campaigns,
         "table": "ScriptFlags",
         "hits": total.hits,
@@ -215,7 +365,9 @@ fn intel_shadow_status<'a>(shadows: impl IntoIterator<Item = &'a IntelShadow>) -
     })
 }
 
-fn character_shadow_status<'a>(shadows: impl IntoIterator<Item = &'a CharacterShadow>) -> Value {
+fn character_shadow_status<'a>(
+    shadows: impl IntoIterator<Item = &'a CharacterShadow>,
+) -> impl Serialize {
     let mut totals = [CharacterShadowStats::default(); 4];
     let mut campaigns = 0usize;
     for shadow in shadows {
@@ -231,25 +383,26 @@ fn character_shadow_status<'a>(shadows: impl IntoIterator<Item = &'a CharacterSh
         .iter()
         .map(|table| table.row_capacity_bytes + table.arena_capacity_bytes)
         .sum();
-    let tables: Vec<_> = [
-        "Characters",
-        "CountryLeaderRoles",
-        "AdvisorRoles",
-        "UnitLeaderTraits",
-    ]
-    .into_iter()
-    .zip(totals)
-    .map(|(name, table)| {
-        json!({
-            "name": name,
-            "hits": table.hits,
-            "misses": table.misses,
-            "row_capacity_bytes": table.row_capacity_bytes,
-            "arena_capacity_bytes": table.arena_capacity_bytes,
-        })
-    })
-    .collect();
-    json!({
+    let tables = sequence(
+        [
+            "Characters",
+            "CountryLeaderRoles",
+            "AdvisorRoles",
+            "UnitLeaderTraits",
+        ]
+        .into_iter()
+        .zip(totals)
+        .map(|(name, table)| {
+            status!({
+                "name": name,
+                "hits": table.hits,
+                "misses": table.misses,
+                "row_capacity_bytes": table.row_capacity_bytes,
+                "arena_capacity_bytes": table.arena_capacity_bytes,
+            })
+        }),
+    );
+    status!({
         "allocation_scope": "current native row/text Vec capacities across retained campaigns; excludes shared replay rows, Arc control blocks and allocator overhead; separate from raw/pool accounting",
         "counter_scope": "cumulative conversion decisions across retained campaigns, including later rejected or failed writes; genuine skipped inputs excluded; non-skip fallback/fault inputs count as misses",
         "campaigns": campaigns,
@@ -259,7 +412,7 @@ fn character_shadow_status<'a>(shadows: impl IntoIterator<Item = &'a CharacterSh
 }
 
 fn character_cache(
-    cache: &BTreeMap<replay::rows::TableId, CachedTable>,
+    cache: &TableCache<CachedTable>,
     cached_branch: Option<BranchId>,
     branch: BranchId,
 ) -> [Option<&Arc<TableRows>>; 4] {
@@ -283,12 +436,12 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     disk_branch: Option<BranchId>,
     last_written: Option<i32>,
     pending: Vec<PendingBranch>,
-    staggered_cache: BTreeMap<replay::rows::TableId, CachedTable>,
+    staggered_cache: TableCache<CachedTable>,
     staggered_branch: Option<BranchId>,
     /// The latest complete rows of each sliced table on `sliced_branch`.
-    sliced_cache: BTreeMap<replay::rows::TableId, Arc<TableRows>>,
+    sliced_cache: TableCache<Arc<TableRows>>,
     /// The read hour of each (sliced table, owner) in `sliced_cache`.
-    sliced_reads: BTreeMap<(u32, u32), i32>,
+    sliced_reads: ReadHours,
     sliced_branch: Option<BranchId>,
     /// Each production line's output on the current branch.
     line_output: crate::extended::line_output::Totals,
@@ -313,29 +466,37 @@ impl Campaign {
         // An attach has its own root. Reusing an unfinalized root would conceal
         // history from the tracker and could assign existing branch ids again.
         if directory.exists()
-            && fs::read_dir(&directory)?.any(|entry| {
-                entry.is_ok_and(|entry| entry.file_name().to_string_lossy().starts_with("spool."))
-            })
+            && fs::read_dir(&directory)
+                .map_err(engine::allocation::allocation_error)?
+                .any(|entry| {
+                    entry.is_ok_and(|entry| {
+                        entry.file_name().to_string_lossy().starts_with("spool.")
+                    })
+                })
         {
             return Err(invalid(
                 "attach output already contains spool segments; use a fresh attach directory",
             ));
         }
-        let spool = SegmentedSpool::new(FileBackend::new(&directory)?);
+        let mut spool = SegmentedSpool::new(FileBackend::new(&directory)?);
+        if engine::allocation::capture_active() {
+            spool.set_commit_hook(committed_spool_record);
+            spool.set_write_start_hook(crate::allocation::record_start);
+        }
         let (tracker, history_file) = history.take(id, session)?;
         Ok(Self {
             directory,
-            session: session.clone(),
+            session: session.try_clone()?,
             tracker,
             encoder: FrameEncoder::new(),
             spool,
             disk_branch: None,
             last_written: None,
             pending: Vec::new(),
-            staggered_cache: BTreeMap::new(),
+            staggered_cache: TableCache::new(),
             staggered_branch: None,
-            sliced_cache: BTreeMap::new(),
-            sliced_reads: BTreeMap::new(),
+            sliced_cache: TableCache::new(),
+            sliced_reads: ReadHours::new(),
             sliced_branch: None,
             line_output: Default::default(),
             construction_ic: Default::default(),
@@ -350,7 +511,7 @@ impl Campaign {
 }
 
 impl<B: SegmentBackend> Campaign<B> {
-    fn pending_branch(&mut self, branch: BranchId) -> &mut PendingBranch {
+    fn pending_branch(&mut self, branch: BranchId) -> io::Result<&mut PendingBranch> {
         if self
             .pending
             .last()
@@ -361,22 +522,30 @@ impl<B: SegmentBackend> Campaign<B> {
                 .branch_start(branch)
                 .expect("observed branch exists")
                 .clone();
+            engine::allocation::reserve(&mut self.pending, 1)?;
             self.pending.push(PendingBranch {
                 start,
                 gaps: Vec::new(),
             });
         }
-        self.pending.last_mut().unwrap()
+        Ok(self.pending.last_mut().unwrap())
     }
 
-    fn gap(&mut self, branch: BranchId, first_hour: i32, last_hour: i32, reason: String) {
-        let gaps = &mut self.pending_branch(branch).gaps;
+    fn gap(
+        &mut self,
+        branch: BranchId,
+        first_hour: i32,
+        last_hour: i32,
+        reason: String,
+    ) -> io::Result<()> {
+        let gaps = &mut self.pending_branch(branch)?.gaps;
         if let Some(previous) = gaps.last_mut()
             && previous.reason == reason
             && previous.last_hour.checked_add(1) == Some(first_hour)
         {
             previous.last_hour = last_hour;
         } else {
+            engine::allocation::reserve(gaps, 1)?;
             gaps.push(Gap {
                 branch,
                 first_hour,
@@ -384,6 +553,7 @@ impl<B: SegmentBackend> Campaign<B> {
                 reason,
             });
         }
+        Ok(())
     }
 
     fn observe(
@@ -398,7 +568,7 @@ impl<B: SegmentBackend> Campaign<B> {
             .filter(|pending| Some(pending.start.id) == self.tracker.current_branch())
             .map_or(&[][..], |pending| pending.gaps.as_slice());
         let observation = self.tracker.observe(loaded, hour, signal, gaps)?;
-        self.pending_branch(observation.branch);
+        self.pending_branch(observation.branch)?;
         Ok(observation.branch)
     }
 
@@ -421,12 +591,12 @@ impl<B: SegmentBackend> Campaign<B> {
     /// unpublished read, so the family's earlier rows are dropped here too:
     /// until a full read replaces them, no hour merges rows from before the
     /// failure, and a full refresh is requested.
-    fn merge_sliced_inputs<'a>(
+    fn try_merge_sliced_inputs<'a>(
         &mut self,
         source: &mut FrameInput,
         selection: impl Fn(TableId) -> Option<&'a crate::slicing::SliceSelection>,
         walked: impl Fn(TableId) -> bool,
-    ) -> (bool, u32) {
+    ) -> io::Result<(bool, u32)> {
         if self.sliced_branch != Some(source.branch) {
             self.sliced_cache.clear();
             self.sliced_reads.clear();
@@ -434,9 +604,7 @@ impl<B: SegmentBackend> Campaign<B> {
         }
         let mut retry = false;
         let mut unpublished = 0_u32;
-        // This frame's read hours: the cached ones, replaced below for every
-        // owner a published read replaced.
-        let mut frame_reads = self.sliced_reads.clone();
+        let mut frame_reads: [Option<Vec<(u32, i32)>>; TABLE_COUNT] = std::array::from_fn(|_| None);
         let hour = source.hour;
         for table in TableId::ALL {
             if !replay::cadence::is_sliced(table) {
@@ -464,8 +632,12 @@ impl<B: SegmentBackend> Campaign<B> {
                     } else if let Some(previous) = self.sliced_cache.get(&table) {
                         match replay::sliced::merge_slice(previous, fresh, captured, live) {
                             Ok(merged) => merged,
-                            Err(error) => {
-                                *input = TableInput::Sampled(unavailable(&error.to_string()));
+                            Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
+                                return Err(error);
+                            }
+                            Err(_) => {
+                                *input =
+                                    TableInput::Sampled(unavailable("sliced table merge failed"));
                                 if let Some(family) = crate::slicing::family_of(table) {
                                     unpublished |= 1 << family;
                                 }
@@ -481,80 +653,86 @@ impl<B: SegmentBackend> Campaign<B> {
                         continue;
                     };
                     if !replay::sliced::is_keyed(table) {
-                        let id = table.index() as u32;
-                        let owners = replay::sliced::owners(&merged);
-                        frame_reads.retain(|&(read_table, _), _| read_table != id);
-                        for owner in owners {
+                        let owners = replay::sliced::try_owners(&merged)?;
+                        let previous = &self.sliced_reads.0[table.index()];
+                        let capacity = owners
+                            .len()
+                            .checked_add(selection.read_owners().count())
+                            .and_then(|count| count.checked_add(previous.len()))
+                            .ok_or_else(engine::allocation::oom)?;
+                        let mut reads = engine::allocation::vec(capacity)?;
+                        for &owner in &owners {
                             let read = if selection.force_full || captured(owner) {
                                 Some(hour)
                             } else {
-                                self.sliced_reads.get(&(id, owner)).copied()
+                                self.sliced_reads
+                                    .get(&(table.index() as u32, owner))
+                                    .copied()
                             };
-                            // A kept row always has a cached read hour; never
-                            // invent freshness for one that has none.
-                            debug_assert!(
-                                read.is_some(),
-                                "{table:?} owner {owner} has no read hour"
-                            );
                             if let Some(read) = read {
-                                frame_reads.insert((id, owner), read);
+                                reads.push((owner, read));
                             }
                         }
-                        // Owners without rows: those read now returned none;
-                        // an earlier such read stands while the owner lives.
                         for owner in selection.read_owners() {
-                            frame_reads.entry((id, owner)).or_insert(hour);
-                        }
-                        for (&(_, owner), &read) in
-                            self.sliced_reads.range((id, 0)..=(id, u32::MAX))
-                        {
-                            if !selection.force_full && !captured(owner) && live(owner) {
-                                frame_reads.entry((id, owner)).or_insert(read);
+                            if owners.binary_search(&owner).is_err() {
+                                reads.push((owner, hour));
                             }
                         }
-                        // The complete merge is the next hour's base.
-                        self.sliced_reads
-                            .retain(|&(read_table, _), _| read_table != id);
-                        self.sliced_reads.extend(
-                            frame_reads
-                                .range((id, 0)..=(id, u32::MAX))
-                                .map(|(&key, &read)| (key, read)),
-                        );
+                        for &(owner, read) in previous {
+                            if !selection.force_full
+                                && !captured(owner)
+                                && live(owner)
+                                && owners.binary_search(&owner).is_err()
+                            {
+                                reads.push((owner, read));
+                            }
+                        }
+                        reads.sort_unstable_by_key(|entry| entry.0);
+                        reads.dedup_by_key(|entry| entry.0);
+                        self.sliced_reads.0[table.index()] = reads;
                     }
                     let merged = Arc::new(merged);
                     self.sliced_cache.insert(table, Arc::clone(&merged));
                     *input = TableInput::SharedComplete(merged);
                 }
-                // A partial read replaces only the owners it returned rows for:
-                // selected owners it never reached keep their earlier rows (and
-                // read hours) in this truncated view. The view is not cached,
-                // so the next hour merges into the last complete rows; the
-                // collector reads the unpublished owners again at that hour.
                 TableInput::Sampled(TableView::Truncated { rows, missing }) => {
                     let missing = *missing;
                     let fresh = std::mem::replace(rows, TableRows::empty(table));
-                    let returned = replay::sliced::owners(&fresh);
+                    let returned = replay::sliced::try_owners(&fresh)?;
                     let replaced =
                         |owner: u32| captured(owner) && returned.binary_search(&owner).is_ok();
-                    // Only this truncated view reads the returned owners at
-                    // this hour; the cached hours stay the next hour's base.
                     if !replay::sliced::is_keyed(table) {
-                        let id = table.index() as u32;
-                        for &owner in &returned {
-                            if captured(owner) {
-                                frame_reads.insert((id, owner), hour);
+                        let previous = &self.sliced_reads.0[table.index()];
+                        let capacity = previous
+                            .len()
+                            .checked_add(returned.len())
+                            .ok_or_else(engine::allocation::oom)?;
+                        let mut reads = engine::allocation::vec(capacity)?;
+                        let mut old = previous.iter().peekable();
+                        for &owner in returned.iter().filter(|&&owner| captured(owner)) {
+                            while old.peek().is_some_and(|entry| entry.0 < owner) {
+                                reads.push(*old.next().unwrap());
                             }
+                            if old.peek().is_some_and(|entry| entry.0 == owner) {
+                                old.next();
+                            }
+                            reads.push((owner, hour));
                         }
+                        reads.extend(old.copied());
+                        frame_reads[table.index()] = Some(reads);
                     }
                     if let Some(previous) = self.sliced_cache.get(&table) {
                         *input = TableInput::Sampled(
                             match replay::sliced::merge_slice(previous, fresh, replaced, live) {
                                 Ok(rows) => TableView::Truncated { rows, missing },
-                                Err(error) => {
+                                Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
+                                    return Err(error);
+                                }
+                                Err(_) => {
                                     if let Some(family) = crate::slicing::family_of(table) {
                                         unpublished |= 1 << family;
                                     }
-                                    unavailable(&error.to_string())
+                                    unavailable("sliced table merge failed")
                                 }
                             },
                         );
@@ -573,26 +751,49 @@ impl<B: SegmentBackend> Campaign<B> {
                 if crate::slicing::family_of(table)
                     .is_some_and(|family| unpublished & (1 << family) != 0)
                 {
-                    let id = table.index() as u32;
                     self.sliced_cache.remove(&table);
-                    self.sliced_reads
-                        .retain(|&(read_table, _), _| read_table != id);
+                    let previous = std::mem::take(&mut self.sliced_reads.0[table.index()]);
+                    if frame_reads[table.index()].is_none() {
+                        frame_reads[table.index()] = Some(previous);
+                    }
                 }
             }
             retry = true;
         }
-        source.tables[TableId::SliceReads.index()] =
-            TableInput::SharedComplete(Arc::new(TableRows::SliceReads(
-                frame_reads
-                    .into_iter()
-                    .map(|((table, owner), sample_hour)| replay::rows::SliceReadRow {
-                        table,
+        let count = frame_reads
+            .iter()
+            .zip(&self.sliced_reads.0)
+            .try_fold(0_usize, |count, (view, base)| {
+                count.checked_add(view.as_ref().unwrap_or(base).len())
+            })
+            .ok_or_else(engine::allocation::oom)?;
+        let mut reads = engine::allocation::vec(count)?;
+        for (table, (view, base)) in frame_reads.iter().zip(&self.sliced_reads.0).enumerate() {
+            reads.extend(
+                view.as_ref()
+                    .unwrap_or(base)
+                    .iter()
+                    .map(|&(owner, sample_hour)| replay::rows::SliceReadRow {
+                        table: table as u32,
                         owner,
                         sample_hour,
-                    })
-                    .collect(),
-            )));
-        (retry, unpublished)
+                    }),
+            );
+        }
+        source.tables[TableId::SliceReads.index()] =
+            TableInput::SharedComplete(Arc::new(TableRows::SliceReads(reads)));
+        Ok((retry, unpublished))
+    }
+
+    #[cfg(test)]
+    fn merge_sliced_inputs<'a>(
+        &mut self,
+        source: &mut FrameInput,
+        selection: impl Fn(TableId) -> Option<&'a crate::slicing::SliceSelection>,
+        walked: impl Fn(TableId) -> bool,
+    ) -> (bool, u32) {
+        self.try_merge_sliced_inputs(source, selection, walked)
+            .unwrap()
     }
 
     /// Add this frame's production ticks to the branch's per-line totals and
@@ -620,7 +821,10 @@ impl<B: SegmentBackend> Campaign<B> {
     }
 
     // Spool-internal carry-forward keeps format-neutral byte-identical output.
-    fn apply_staggered_inputs(&mut self, source: &mut FrameInput) -> [bool; TABLE_COUNT] {
+    fn try_apply_staggered_inputs(
+        &mut self,
+        source: &mut FrameInput,
+    ) -> io::Result<[bool; TABLE_COUNT]> {
         if self.staggered_branch != Some(source.branch) {
             self.staggered_cache.clear();
             self.staggered_branch = Some(source.branch);
@@ -647,7 +851,7 @@ impl<B: SegmentBackend> Campaign<B> {
                     self.staggered_cache.insert(
                         table,
                         CachedTable::Unavailable {
-                            reason: "hourly table was not acquired".into(),
+                            reason: engine::allocation::string("hourly table was not acquired")?,
                         },
                     );
                     continue;
@@ -659,10 +863,12 @@ impl<B: SegmentBackend> Campaign<B> {
                     // Keep the small marker. The encoder already owns a
                     // validated complete baseline; no row clone or recheck.
                 } else if let Some(cached) = self.staggered_cache.get(&table) {
-                    *input = cached.input();
+                    *input = cached.input()?;
                 } else {
                     *input = TableInput::Sampled(TableView::Unavailable {
-                        reason: "staggered cache empty on new branch; full refresh required".into(),
+                        reason: engine::allocation::string(
+                            "staggered cache empty on new branch; full refresh required",
+                        )?,
                     });
                 }
             } else {
@@ -675,20 +881,21 @@ impl<B: SegmentBackend> Campaign<B> {
                     TableInput::SharedComplete(rows) => CachedTable::Complete(Arc::clone(rows)),
                     TableInput::Sampled(TableView::Truncated { rows, missing }) => {
                         CachedTable::Truncated {
-                            rows: rows.clone(),
+                            rows: rows.try_clone()?,
                             missing: *missing,
                         }
                     }
                     TableInput::Sampled(TableView::Unavailable { reason }) => {
                         CachedTable::Unavailable {
-                            reason: reason.clone(),
+                            reason: engine::allocation::string(reason)?,
                         }
                     }
                     // Only hourly tables are compared natively.
                     TableInput::ComparedEqual(_) | TableInput::ComparedChanges { .. } => {
                         CachedTable::Unavailable {
-                            reason: "a native comparison cannot supply a shared recovery snapshot"
-                                .into(),
+                            reason: engine::allocation::string(
+                                "a native comparison cannot supply a shared recovery snapshot",
+                            )?,
                         }
                     }
                 };
@@ -698,7 +905,12 @@ impl<B: SegmentBackend> Campaign<B> {
                 self.staggered_cache.insert(table, cached);
             }
         }
-        skipped
+        Ok(skipped)
+    }
+
+    #[cfg(test)]
+    fn apply_staggered_inputs(&mut self, source: &mut FrameInput) -> [bool; TABLE_COUNT] {
+        self.try_apply_staggered_inputs(source).unwrap()
     }
 
     #[cfg(test)]
@@ -726,37 +938,68 @@ impl<B: SegmentBackend> Campaign<B> {
         } else {
             loss.loaded_hour
         };
+        crate::allocation::set_context(crate::allocation::Context {
+            campaign_id: loss.campaign_id.as_bytes().try_into().ok(),
+            branch: None,
+            load_signal: loss.load_signal,
+            failed_hour: Some(loss.first_hour),
+        });
         let branch = self.observe(origin, loss.first_hour, loss.load_signal)?;
+        crate::allocation::set_context(crate::allocation::Context {
+            campaign_id: loss.campaign_id.as_bytes().try_into().ok(),
+            branch: Some(branch),
+            load_signal: loss.load_signal,
+            failed_hour: Some(loss.first_hour),
+        });
         if loss.first_hour != loss.last_hour {
             self.gap(
                 branch,
                 loss.first_hour,
                 loss.last_hour - 1,
-                "collector queue overflow".into(),
-            );
+                engine::allocation::string("collector queue overflow")?,
+            )?;
+            crate::allocation::set_context(crate::allocation::Context {
+                campaign_id: loss.campaign_id.as_bytes().try_into().ok(),
+                branch: None,
+                load_signal: loss.load_signal,
+                failed_hour: Some(loss.last_hour),
+            });
             self.observe(None, loss.last_hour, loss.load_signal)?;
+            crate::allocation::set_context(crate::allocation::Context {
+                campaign_id: loss.campaign_id.as_bytes().try_into().ok(),
+                branch: Some(branch),
+                load_signal: loss.load_signal,
+                failed_hour: Some(loss.last_hour),
+            });
             self.gap(
                 branch,
                 loss.last_hour,
                 loss.last_hour,
-                "collector queue overflow".into(),
-            );
+                engine::allocation::string("collector queue overflow")?,
+            )?;
         } else {
             self.gap(
                 branch,
                 loss.first_hour,
                 loss.last_hour,
-                "collector queue overflow".into(),
-            );
+                engine::allocation::string("collector queue overflow")?,
+            )?;
         }
         Ok(())
     }
 
-    fn context(&self, restarting: bool) -> Vec<Record> {
-        let mut records = Vec::new();
+    fn context(&self, restarting: bool, extra: usize) -> io::Result<Vec<Record>> {
+        let count = self
+            .pending
+            .iter()
+            .try_fold(usize::from(restarting) + extra, |count, pending| {
+                count.checked_add(1)?.checked_add(pending.gaps.len())
+            })
+            .ok_or_else(engine::allocation::oom)?;
+        let mut records = engine::allocation::vec(count)?;
         let mut active = self.disk_branch;
         if restarting {
-            records.push(Record::SessionStart(self.session.clone()));
+            records.push(Record::SessionStart(self.session.try_clone()?));
             active = None;
         }
         for pending in &self.pending {
@@ -764,9 +1007,11 @@ impl<B: SegmentBackend> Campaign<B> {
                 records.push(Record::BranchStart(pending.start.clone()));
                 active = Some(pending.start.id);
             }
-            records.extend(pending.gaps.iter().cloned().map(Record::Gap));
+            for gap in &pending.gaps {
+                records.push(Record::Gap(gap.try_clone()?));
+            }
         }
-        records
+        Ok(records)
     }
 
     fn write(
@@ -791,14 +1036,24 @@ impl<B: SegmentBackend> Campaign<B> {
             self.construction_ic.written(held_construction_ic);
         }
         if let Err(error) = &result {
+            if let Some((segment, bytes)) = self.spool.committed_watermark() {
+                crate::allocation::committed(segment, bytes);
+            }
             // Codec/validation errors are failures too. Closing also prevents a
             // partially published context from being reused after such an error.
             let close_started = current_qpc();
             let _ = self.spool.finish_segment();
             *work.record_writes.get_or_insert(0) += current_qpc() - close_started;
             self.disk_branch = None;
-            self.encoder = FrameEncoder::new();
-            self.gap(branch, hour, hour, format!("spool write failed: {error}"));
+            if error.kind() != io::ErrorKind::OutOfMemory && !crate::allocation::failed() {
+                self.encoder = FrameEncoder::new();
+                self.gap(
+                    branch,
+                    hour,
+                    hour,
+                    engine::allocation::string("spool write failed")?,
+                )?;
+            }
         }
         result
     }
@@ -817,18 +1072,22 @@ impl<B: SegmentBackend> Campaign<B> {
             self.encoder = FrameEncoder::new();
         }
         let encoding_started = current_qpc();
-        let frame = self.encoder.encode_bytes(source, restarting);
+        let frame = {
+            let _phase = crate::allocation::enter(crate::allocation::Phase::Encode);
+            self.encoder.prepare_bytes(source, restarting)
+        };
         work.frame_encoding = Some(current_qpc() - encoding_started);
-        let frame = frame?;
+        let mut prepared = frame?;
         let write_started = current_qpc();
         let result = (|| {
-            let mut context = self.context(restarting);
+            let mut context = self.context(restarting, 2)?;
             if unknown != 0 {
                 context.push(Record::Control(ControlRecord::GapSummary {
                     session: self.session.id,
                     dropped_frames: unknown,
-                    reason: "collector lost clock metadata; campaign and hour range are unknown"
-                        .into(),
+                    reason: engine::allocation::string(
+                        "collector lost clock metadata; campaign and hour range are unknown",
+                    )?,
                 }));
             }
             context.push(Record::Control(ControlRecord::ClockWitness {
@@ -837,22 +1096,41 @@ impl<B: SegmentBackend> Campaign<B> {
                 hour,
                 load_signal: signal,
             }));
+            #[cfg(test)]
+            crate::allocation_failure_tests::before_spool_publication();
+            if crate::allocation::failed() {
+                return Err(io::ErrorKind::OutOfMemory.into());
+            }
             if restarting {
-                self.spool.start_encoded_segment(&context, frame)
+                self.spool
+                    .start_encoded_segment(&context, prepared.take_frame())
             } else {
-                context
-                    .iter()
-                    .try_for_each(|record| self.spool.append(record))
-                    .and_then(|()| self.spool.append_encoded_frame(frame))
+                for record in &context {
+                    if crate::allocation::failed() {
+                        return Err(io::ErrorKind::OutOfMemory.into());
+                    }
+                    self.spool.append(record)?;
+                }
+                if crate::allocation::failed() {
+                    return Err(io::ErrorKind::OutOfMemory.into());
+                }
+                self.spool.append_encoded_frame(prepared.take_frame())
             }
         })();
         work.record_writes = Some(current_qpc() - write_started);
         match result {
             Ok(()) => {
-                self.tracker.record_hour(branch, hour)?;
+                if crate::allocation::failed() {
+                    return Err(io::ErrorKind::OutOfMemory.into());
+                }
+                self.encoder.commit(prepared)?;
                 self.disk_branch = Some(branch);
                 self.last_written = Some(hour);
                 self.pending.clear();
+                crate::allocation::attempted_hour(None);
+                self.tracker.record_hour(branch, hour)?;
+                #[cfg(feature = "alloc-fault-injection")]
+                crate::allocation::committed_hour();
                 Ok(())
             }
             Err(error) => Err(error),
@@ -868,7 +1146,7 @@ impl<B: SegmentBackend> Campaign<B> {
                 "spool unavailable at detach; pending gaps need another observed keyframe",
             ));
         }
-        for record in self.context(false) {
+        for record in self.context(false, 0)? {
             self.spool.append(&record)?;
         }
         if unknown != 0 {
@@ -876,8 +1154,9 @@ impl<B: SegmentBackend> Campaign<B> {
                 .append(&Record::Control(ControlRecord::GapSummary {
                     session: self.session.id,
                     dropped_frames: unknown,
-                    reason: "collector lost clock metadata; campaign and hour range are unknown"
-                        .into(),
+                    reason: engine::allocation::string(
+                        "collector lost clock metadata; campaign and hour range are unknown",
+                    )?,
                 }))?;
         }
         self.spool.append(&Record::Control(ControlRecord::Detach {
@@ -909,12 +1188,23 @@ struct BoundOrderCounterSample {
     source_capacity_bytes: usize,
     cache_status: engine::country_memory::SeedStatus,
     frame_write_succeeded: bool,
-    frame_write_error: Option<String>,
-    subsequent_io_error: Option<String>,
+    frame_write_error: Option<&'static str>,
+    subsequent_io_error: Option<&'static str>,
 }
 
 impl OrderCounterWitness {
     fn observe(&mut self, captured: &Captured, branch: Option<BranchId>, result: &io::Result<()>) {
+        if result
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.kind() == io::ErrorKind::OutOfMemory)
+        {
+            if let Some(sample) = &mut self.sample {
+                sample.frame_write_succeeded = false;
+                sample.frame_write_error = Some("collector allocation failed");
+            }
+            return;
+        }
         let source = &captured.order_counters;
         if !source.forced {
             // A failed later append can also fail while closing its segment.
@@ -930,7 +1220,12 @@ impl OrderCounterWitness {
         }
         let rows = source.read.and_then(|read| source.rows.get(..read.len));
         self.rows.clear();
-        self.rows.extend_from_slice(rows.unwrap_or_default());
+        let source_range_valid = rows.is_some();
+        let rows = rows.unwrap_or_default();
+        if engine::allocation::reserve(&mut self.rows, rows.len()).is_err() {
+            return;
+        }
+        self.rows.extend_from_slice(rows);
         self.sample = Some(BoundOrderCounterSample {
             seq: captured.capture_seq,
             branch,
@@ -941,11 +1236,11 @@ impl OrderCounterWitness {
             elapsed_ns: source.elapsed_ns,
             allocation_counters: captured.counters,
             read: source.read,
-            source_range_valid: rows.is_some(),
+            source_range_valid,
             source_capacity_bytes: source.allocated_bytes(),
             cache_status: captured.country_cache_status,
             frame_write_succeeded: result.is_ok(),
-            frame_write_error: result.as_ref().err().map(ToString::to_string),
+            frame_write_error: result.as_ref().err().map(error_reason),
             subsequent_io_error: None,
         });
     }
@@ -956,15 +1251,17 @@ impl OrderCounterWitness {
                 .clock
                 .is_some_and(|clock| clock.campaign_id.as_bytes() == campaign.as_bytes())
         {
-            sample.subsequent_io_error = Some(error.to_string());
+            sample.subsequent_io_error = Some(error_reason(error));
         }
     }
 
-    fn json(&self) -> Value {
+    fn status(&self) -> impl Serialize + '_ {
         let capacity =
             self.rows.capacity() * std::mem::size_of::<engine::ccountry::OrderInstanceCounter>();
         let Some(sample) = &self.sample else {
-            return json!({"sample": null, "retained_capacity_bytes": capacity});
+            return Choice::First(
+                status!({"sample": Option::<()>::None, "retained_capacity_bytes": capacity}),
+            );
         };
         let cache_valid = sample.cache_status == engine::country_memory::SeedStatus::Ready;
         let read_complete = sample.source_range_valid
@@ -979,19 +1276,17 @@ impl OrderCounterWitness {
             && sample.begin >= sample.callback_qpc
             && sample.begin > 0
             && sample.end >= sample.begin;
-        let clock = |clock: Option<Clock>| {
-            clock.map(|clock| {
-                json!({
-                    "campaign": String::from_utf8_lossy(clock.campaign_id.as_bytes()),
-                    "game_state": clock.game_state, "hour": clock.hour,
-                    "load_signal": clock.play_session_started_at,
-                    "play_time": clock.play_time, "tick_busy": clock.tick_busy,
-                })
+        let clock = sample.clock.as_ref().map(|clock| {
+            status!({
+                "campaign": LossyBytes(clock.campaign_id.as_bytes()),
+                "game_state": clock.game_state, "hour": clock.hour,
+                "load_signal": clock.play_session_started_at,
+                "play_time": clock.play_time, "tick_busy": clock.tick_busy,
             })
-        };
+        });
         let allocation_counters = |counters: Option<AllocationCounters>| {
             counters.map(|counters| {
-                json!({
+                status!({
                     "debug_current_ref_id": counters.debug_current_ref_id,
                     "unit": counters.unit,
                     "order_index": counters.order_index,
@@ -1008,19 +1303,19 @@ impl OrderCounterWitness {
                 })
             })
         };
-        json!({
+        Choice::Second(status!({
             "scope": "latest consumed force_full callback, bound to its sequence, entry clock, branch and frame-write result; not the latest status hour",
             "counter_epoch": "no universal no-reset, no-load or no-wrap proof",
             "allocation_counters_scope": "the recorded beginning-of-acquisition sample; missing counter values are null. Counter metadata does not change the order-counter sample validity checks.",
             "retained_capacity_bytes": capacity,
             "sample": {
                 "sequence": sample.seq, "branch": sample.branch,
-                "clock": clock(sample.clock),
+                "clock": clock,
                 "callback_qpc": sample.callback_qpc,
                 "read_begin_qpc": sample.begin, "read_end_qpc": sample.end,
                 "read_ns": sample.elapsed_ns,
                 "allocation_counters": allocation_counters(sample.allocation_counters),
-                "country_cache_status": format!("{:?}", sample.cache_status),
+                "country_cache_status": DebugValue(sample.cache_status),
                 "country_cache_valid": cache_valid,
                 "read_complete": read_complete,
                 "stored": self.rows.len(),
@@ -1035,12 +1330,16 @@ impl OrderCounterWitness {
                 "usable_with_recorded_frame": sample_valid && sample.branch.is_some()
                     && sample.frame_write_succeeded && sample.subsequent_io_error.is_none(),
                 "durability": "frame write result; not an independent replay-recovery verification",
-                "countries": self.rows.iter().map(|row| json!({
+                "countries": sequence(self.rows.iter().map(|row| status!({
                     "country": row.country, "canonical_slot": row.canonical_slot,
                     "pointer": row.pointer, "counter": row.value,
-                })).collect::<Vec<_>>(),
+                }))),
             },
-        })
+        }))
+    }
+    #[cfg(test)]
+    fn json(&self) -> Value {
+        serde_json::to_value(self.status()).unwrap()
     }
 }
 
@@ -1088,8 +1387,8 @@ impl WarSnapshotWork {
         self.last = Some((stats, capacity));
     }
 
-    fn json(&self) -> Value {
-        json!({
+    fn status(&self) -> impl Serialize + '_ {
+        status!({
             "scope": "processor-lifetime cumulative across campaigns: consumed optimized first-pass work, including failed/unwritten frames; not replay acceptance",
             "passes": self.passes,
             "queries": self.totals[0], "hits": self.totals[1],
@@ -1102,7 +1401,7 @@ impl WarSnapshotWork {
                 "count_cells": self.max_required[2],
             },
             "requirement_scope": "observed growth demand; may be a lower bound when root metadata is full",
-            "latest": self.last.map(|(stats, capacity)| json!({
+            "latest": self.last.map(|(stats, capacity)| status!({
                 "required_vectors": stats.required_vectors,
                 "required_words": stats.required_words,
                 "required_count_cells": stats.required_cells,
@@ -1121,10 +1420,14 @@ impl WarSnapshotWork {
             "accounted_in": "WarRelations callback cost",
         })
     }
+    #[cfg(test)]
+    fn json(&self) -> Value {
+        serde_json::to_value(self.status()).unwrap()
+    }
 }
 
-fn read_counts_json(counts: ReadCounts) -> Value {
-    json!({
+fn read_counts_status(counts: ReadCounts) -> impl Serialize {
+    status!({
         "copy_calls": counts.copy_calls,
         "scattered_calls": counts.scattered_calls,
         "record_calls": counts.record_calls,
@@ -1132,6 +1435,11 @@ fn read_counts_json(counts: ReadCounts) -> Value {
         "spans": counts.spans,
         "bytes": counts.bytes,
     })
+}
+
+#[cfg(test)]
+fn read_counts_json(counts: ReadCounts) -> Value {
+    serde_json::to_value(read_counts_status(counts)).unwrap()
 }
 
 /// One sliced family's reads and fingerprint scans, per recorded frame.
@@ -1161,14 +1469,14 @@ impl SliceWork {
         self.scan_ticks_max = self.scan_ticks_max.max(selection.scan_ticks);
     }
 
-    fn json(&self, frequency: u64) -> Value {
+    fn status(&self, frequency: u64) -> crate::status::Object<impl crate::status::Fields + '_> {
         let ns = |ticks: u64| {
             (u128::from(ticks) * 1_000_000_000)
                 .checked_div(u128::from(frequency))
                 .unwrap_or(0)
                 .min(u128::from(u64::MAX)) as u64
         };
-        json!({
+        status!({
             "frames": self.frames,
             "full_frames": self.full_frames,
             "owners_scanned": self.scanned,
@@ -1233,12 +1541,12 @@ struct Statistics {
     interval_hours: u64,
     interval_qpc: u64,
     errors: u64,
-    last_error: Option<String>,
+    last_error: Option<&'static str>,
     conversion: Distribution,
     conversion_packs: [Distribution; crate::extended::PACK_NAMES.len()],
     frame_encoding: Distribution,
     record_writes: Distribution,
-    slices: BTreeMap<&'static str, SliceWork>,
+    slices: [SliceWork; crate::slicing::FAMILIES.len()],
     /// Cumulative torn memo copies and refused raid rows.
     raid_torn_memo_reads: u64,
     raid_refused_leaders: u64,
@@ -1281,7 +1589,7 @@ impl Default for Statistics {
             conversion_packs: std::array::from_fn(|_| Distribution::default()),
             frame_encoding: Distribution::default(),
             record_writes: Distribution::default(),
-            slices: BTreeMap::new(),
+            slices: std::array::from_fn(|_| SliceWork::default()),
             raid_torn_memo_reads: 0,
             raid_refused_leaders: 0,
         }
@@ -1350,11 +1658,12 @@ struct CapturedStatistics {
 }
 
 impl CapturedStatistics {
-    fn capture(captured: &Captured) -> Self {
+    fn capture(captured: &Captured) -> io::Result<Self> {
         let sampled_buffer_bytes = captured.allocated_bytes();
-        let mut sampled_buffer_parts = captured.extended.allocated_by_pack();
+        let mut sampled_buffer_parts = captured.extended.allocated_by_pack()?;
         let extended_bytes = captured.extended.allocated_bytes();
         let map_bytes = captured.map.allocated_bytes();
+        engine::allocation::reserve(&mut sampled_buffer_parts, 2)?;
         sampled_buffer_parts.push(("map", map_bytes));
         sampled_buffer_parts.push(("core", sampled_buffer_bytes - extended_bytes - map_bytes));
         let raid_reads = captured.extended.raid_reads();
@@ -1375,7 +1684,7 @@ impl CapturedStatistics {
         .chain(crate::extended::TABLES.map(|table| extended_outcomes[table.index()]))
         .filter(|outcome| matches!(outcome, Outcome::Truncated { .. }))
         .count();
-        Self {
+        Ok(Self {
             total_ns: captured.total_ns,
             table_ns: captured.table_ns,
             table_reads: captured.table_reads,
@@ -1388,7 +1697,7 @@ impl CapturedStatistics {
             country_cache_entries: captured.country_cache_entries,
             country_cache_ns: captured.country_cache_ns,
             raid_reads,
-        }
+        })
     }
 
     fn record(self, stats: &mut Statistics) {
@@ -1442,7 +1751,7 @@ impl PreparedOrderWitness {
                 .as_mut()
                 .expect("forced witness owns its sample");
             sample.frame_write_succeeded = result.is_ok();
-            sample.frame_write_error = result.as_ref().err().map(ToString::to_string);
+            sample.frame_write_error = result.as_ref().err().map(error_reason);
             *target = witness;
         } else if let Err(error) = result
             && let Some(clock) = self.clock
@@ -1457,7 +1766,7 @@ pub struct Processor {
     root: PathBuf,
     history: PreparedCampaigns,
     session: SessionStart,
-    campaigns: BTreeMap<String, Campaign>,
+    campaigns: Campaigns,
     stats: Statistics,
     unknown_pending: u64,
     suppress_origin: bool,
@@ -1472,12 +1781,12 @@ pub struct Processor {
 impl Processor {
     pub fn new(root: &Path, history: PreparedCampaigns, session: SessionStart) -> io::Result<Self> {
         session.validate()?;
-        fs::create_dir_all(root)?;
+        fs::create_dir_all(root).map_err(engine::allocation::allocation_error)?;
         Ok(Self {
             root: root.into(),
             history,
             session,
-            campaigns: BTreeMap::new(),
+            campaigns: Campaigns::new(),
             stats: Statistics::default(),
             unknown_pending: 0,
             suppress_origin: false,
@@ -1495,26 +1804,48 @@ impl Processor {
     fn campaign(&mut self, id: &str) -> io::Result<&mut Campaign> {
         if !self.campaigns.contains_key(id) {
             let campaign = Campaign::open(&self.root, &mut self.history, id, &self.session)?;
-            self.campaigns.insert(id.into(), campaign);
+            self.campaigns
+                .insert(engine::allocation::string(id)?, campaign)?;
         }
         Ok(self.campaigns.get_mut(id).unwrap())
     }
 
     fn error(&mut self, error: &io::Error) {
         self.stats.errors += 1;
-        self.stats.last_error = Some(error.to_string());
+        self.stats.last_error = Some(error_reason(error));
     }
 
     /// The caller retains the buffer until this succeeds. Opening a campaign may
     /// do I/O, but this preflight never observes or acknowledges a callback.
     /// Once prepared, consume its loss witnesses and then call `frame` once.
     pub fn prepare(&mut self, captured: &Captured) -> io::Result<()> {
+        let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
+        if crate::allocation::failed() {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
+        crate::allocation::set_context(Default::default());
         let clock = captured.clock.as_ref();
         let ids = captured
             .dropped_before
             .iter()
-            .map(|loss| loss.campaign_id.as_bytes())
-            .chain(clock.into_iter().map(|clock| clock.campaign_id.as_bytes()));
+            .map(|loss| {
+                crate::allocation::set_context(crate::allocation::Context {
+                    campaign_id: loss.campaign_id.as_bytes().try_into().ok(),
+                    branch: None,
+                    load_signal: loss.load_signal,
+                    failed_hour: Some(loss.first_hour),
+                });
+                loss.campaign_id.as_bytes()
+            })
+            .chain(clock.into_iter().map(|clock| {
+                crate::allocation::set_context(crate::allocation::Context {
+                    campaign_id: clock.campaign_id.as_bytes().try_into().ok(),
+                    branch: None,
+                    load_signal: Some(clock.play_session_started_at),
+                    failed_hour: Some(clock.hour),
+                });
+                clock.campaign_id.as_bytes()
+            }));
         let result = prepare_campaigns(ids, |id| self.campaign(id).map(|_| ()));
         if let Err(error) = &result {
             self.error(error);
@@ -1524,8 +1855,21 @@ impl Processor {
 
     /// Quiescent detach uses the same preflight before consuming its final batch.
     pub fn prepare_losses(&mut self, losses: &LossBatch) -> io::Result<()> {
+        let _phase = crate::allocation::enter(crate::allocation::Phase::Teardown);
+        if crate::allocation::failed() {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
+        crate::allocation::set_context(Default::default());
         let result = prepare_campaigns(
-            losses.iter().map(|loss| loss.campaign_id.as_bytes()),
+            losses.iter().map(|loss| {
+                crate::allocation::set_context(crate::allocation::Context {
+                    campaign_id: loss.campaign_id.as_bytes().try_into().ok(),
+                    branch: None,
+                    load_signal: loss.load_signal,
+                    failed_hour: Some(loss.first_hour),
+                });
+                loss.campaign_id.as_bytes()
+            }),
             |id| self.campaign(id).map(|_| ()),
         );
         if let Err(error) = &result {
@@ -1535,6 +1879,15 @@ impl Processor {
     }
 
     pub fn lost(&mut self, loss: &LostObservation) -> io::Result<()> {
+        if crate::allocation::failed() {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
+        crate::allocation::set_context(crate::allocation::Context {
+            campaign_id: loss.campaign_id.as_bytes().try_into().ok(),
+            branch: None,
+            load_signal: loss.load_signal,
+            failed_hour: Some(loss.first_hour),
+        });
         let result = (|| {
             let id = match campaign_name(loss.campaign_id.as_bytes()) {
                 Ok(id) => id,
@@ -1564,22 +1917,32 @@ impl Processor {
     }
 
     pub(crate) fn prepare_frame(&mut self, captured: &Captured) -> io::Result<PreparedFrame> {
+        let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
+        if crate::allocation::failed() {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
+        if let Some(clock) = captured.clock {
+            crate::allocation::set_context(crate::allocation::Context {
+                campaign_id: clock.campaign_id.as_bytes().try_into().ok(),
+                load_signal: Some(clock.play_session_started_at),
+                failed_hour: Some(clock.hour),
+                ..Default::default()
+            });
+        } else {
+            crate::allocation::set_context(Default::default());
+        }
         if captured.clock.is_some() {
             self.stats
                 .naval_breakdowns
-                .observe(captured.extended.naval_breakdown_status());
+                .observe(captured.extended.naval_breakdown_status())?;
         }
         // A clockless frame read nothing; its selections belong to an older hour.
-        for (index, family) in crate::slicing::FAMILIES
+        for (index, _family) in crate::slicing::FAMILIES
             .iter()
             .enumerate()
             .filter(|_| captured.clock.is_some())
         {
-            self.stats
-                .slices
-                .entry(family.name)
-                .or_default()
-                .observe(captured.extended.family_selection(index));
+            self.stats.slices[index].observe(captured.extended.family_selection(index));
         }
         self.stats.war_snapshots.observe(
             captured.wars_snapshot_sampled,
@@ -1592,7 +1955,7 @@ impl Processor {
             self.stats.order_counters.observe(
                 captured,
                 branch,
-                &Err(io::Error::other(error.to_string())),
+                &Err(io::Error::from(error.kind())),
             );
             self.error(error);
         }
@@ -1620,12 +1983,24 @@ impl Processor {
         let suppress = self.suppress_origin;
         let unknown = self.unknown_pending;
         let campaign = self.campaign(&id)?;
+        crate::allocation::set_context(crate::allocation::Context {
+            campaign_id: clock.campaign_id.as_bytes().try_into().ok(),
+            branch: None,
+            load_signal: Some(clock.play_session_started_at),
+            failed_hour: Some(clock.hour),
+        });
         let origin = if suppress || campaign.tracker.current_branch().is_none() {
             None
         } else {
             Some(clock.hour)
         };
         let branch = campaign.observe(origin, clock.hour, Some(clock.play_session_started_at))?;
+        crate::allocation::set_context(crate::allocation::Context {
+            campaign_id: clock.campaign_id.as_bytes().try_into().ok(),
+            branch: Some(branch),
+            load_signal: Some(clock.play_session_started_at),
+            failed_hour: Some(clock.hour),
+        });
         *bound_branch = Some(branch);
         let conversion_started = current_qpc();
         let variables_baseline = campaign
@@ -1665,8 +2040,11 @@ impl Processor {
                 projection: Some(&mut projection),
             },
         );
+        if crate::allocation::failed() {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
         let outcomes = captured.extended.outcomes();
-        let (sliced_retry, unpublished_families) = campaign.merge_sliced_inputs(
+        let (sliced_retry, unpublished_families) = campaign.try_merge_sliced_inputs(
             &mut source,
             |table| captured.extended.slice_selection(table),
             |table| {
@@ -1675,18 +2053,23 @@ impl Processor {
                     Outcome::Rows { .. } | Outcome::Truncated { .. }
                 )
             },
-        );
+        )?;
         campaign.assemble_line_output(&mut source, captured);
         campaign.assemble_construction_ic(&mut source, captured);
         let retry_full = needs_retry(&source.tables) || sliced_retry;
-        let skipped = campaign.apply_staggered_inputs(&mut source);
+        let skipped = campaign.try_apply_staggered_inputs(&mut source)?;
         if let Some(layout) = &captured.fixed_layout {
-            crate::fixed_layout::apply(&mut source.tables, layout);
+            crate::fixed_layout::apply(&mut source.tables, layout)?;
         }
         let work = WorkSample {
             conversion: current_qpc() - conversion_started,
             ..WorkSample::default()
         };
+        let sampled = CapturedStatistics::capture(captured)?;
+        let witness = PreparedOrderWitness::capture(captured, Some(branch));
+        if crate::allocation::failed() {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
         Ok(PreparedFrame {
             source,
             id,
@@ -1698,12 +2081,16 @@ impl Processor {
             skipped,
             work,
             pack_ticks,
-            sampled: CapturedStatistics::capture(captured),
-            witness: PreparedOrderWitness::capture(captured, Some(branch)),
+            sampled,
+            witness,
         })
     }
 
     pub(crate) fn write_prepared(&mut self, prepared: PreparedFrame) -> io::Result<()> {
+        let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
+        if crate::allocation::failed() {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
         let PreparedFrame {
             source,
             id,
@@ -1720,6 +2107,12 @@ impl Processor {
         } = prepared;
         self.unpublished_families |= unpublished_families;
         let branch = source.branch;
+        crate::allocation::set_context(crate::allocation::Context {
+            campaign_id: clock.campaign_id.as_bytes().try_into().ok(),
+            branch: Some(branch),
+            load_signal: Some(clock.play_session_started_at),
+            failed_hour: Some(clock.hour),
+        });
         // Preparation already admitted this campaign. No other processor operation
         // may intervene between preparation and writing its baseline-bound input.
         let campaign = self
@@ -1768,7 +2161,7 @@ impl Processor {
         self.suppress_origin = false;
         let stats = &mut self.stats;
         stats.hours += 1;
-        stats.campaign = Some(id.clone());
+        stats.campaign = Some(engine::allocation::string(&id)?);
         stats.last_hour = Some(clock.hour);
         sampled.record(stats);
         if let Some((old_id, old_branch, hour, previous_qpc)) = &stats.previous
@@ -1781,12 +2174,26 @@ impl Processor {
             stats.interval_qpc += (qpc - previous_qpc) as u64;
         }
         stats.previous = Some((id, branch, clock.hour, qpc));
+        if crate::allocation::failed() {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
         Ok(())
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
+        let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
+        crate::allocation::attempted_hour(None);
+        if crate::allocation::failed() {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
         let mut first_error = None;
         for (id, campaign) in &mut self.campaigns {
+            crate::allocation::set_context(crate::allocation::Context {
+                campaign_id: id.as_bytes().try_into().ok(),
+                branch: campaign.tracker.current_branch(),
+                load_signal: None,
+                failed_hour: None,
+            });
             if let Err(error) = campaign.spool.sync_if_due() {
                 self.stats.order_counters.invalidate_write(id, &error);
                 campaign.disk_branch = None;
@@ -1803,14 +2210,32 @@ impl Processor {
     }
 
     pub fn detach(&mut self) -> io::Result<()> {
+        let _phase = crate::allocation::enter(crate::allocation::Phase::Teardown);
+        crate::allocation::attempted_hour(None);
+        if crate::allocation::failed() {
+            for (_, campaign) in &mut self.campaigns {
+                let _ = campaign.spool.finish_segment();
+            }
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
         let mut first_error = None;
         let summary_campaign = self
             .stats
             .campaign
-            .clone()
-            .or_else(|| self.campaigns.keys().next_back().cloned());
+            .as_deref()
+            .or_else(|| self.campaigns.keys().next_back().map(String::as_str))
+            .and_then(|id| <[u8; 36]>::try_from(id.as_bytes()).ok());
         for (id, campaign) in &mut self.campaigns {
-            let unknown = if Some(id) == summary_campaign.as_ref() {
+            crate::allocation::set_context(crate::allocation::Context {
+                campaign_id: id.as_bytes().try_into().ok(),
+                branch: campaign.tracker.current_branch(),
+                load_signal: None,
+                failed_hour: None,
+            });
+            let unknown = if summary_campaign
+                .as_ref()
+                .is_some_and(|summary| summary.as_slice() == id.as_bytes())
+            {
                 self.unknown_pending
             } else {
                 0
@@ -1848,18 +2273,61 @@ impl Processor {
 
     /// The campaign directories whose `spool.*` files `status.json` reports
     /// as `spool_bytes`. The status writer measures them off this thread.
-    pub fn spool_directories(&self) -> Vec<std::path::PathBuf> {
-        self.campaigns
-            .values()
-            .map(|campaign| campaign.directory.clone())
-            .collect()
+    pub fn spool_directories(&self) -> io::Result<Vec<std::path::PathBuf>> {
+        let mut directories = engine::allocation::vec(self.campaigns.0.len())?;
+        for campaign in self.campaigns.values() {
+            directories.push(campaign.directory.clone());
+        }
+        Ok(directories)
     }
 
     /// Status without file-system I/O; `spool_bytes` is added by the status
-    /// writer (`status_writer::StatusHandle::publish_measured`).
-    pub fn status(&self) -> Value {
+    /// writer (`status_writer::StatusHandle`).
+    #[cfg(test)]
+    pub fn status(&self) -> io::Result<impl Serialize + '_> {
+        self.status_with_work(status!({}))
+    }
+
+    pub(crate) fn recorded_hours(&self) -> u64 {
+        self.stats.hours
+    }
+
+    #[cfg(test)]
+    pub(crate) fn allocation_failure_publication_state(
+        &self,
+        last_hour: i32,
+    ) -> Option<(BaselineToken, (u32, u64))> {
+        let campaign = self.campaigns.values().next()?;
+        let branch = campaign.tracker.current_branch()?;
+        let (baseline, _) = campaign.encoder.comparison_baseline::<tables::Campaign>(
+            branch,
+            last_hour.checked_add(1)?,
+            false,
+        )?;
+        Some((baseline, campaign.spool.committed_watermark()?))
+    }
+
+    pub(crate) fn status_with_work<'a, T: crate::status::Fields + 'a>(
+        &'a self,
+        work: crate::status::Object<T>,
+    ) -> io::Result<impl Serialize + 'a> {
+        let _phase = crate::allocation::enter(crate::allocation::Phase::Status);
+        crate::allocation::attempted_hour(None);
+        if crate::allocation::failed() {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
         let stats = &self.stats;
-        let callback = stats.callback.percentiles();
+        let callback = stats.callback.try_percentiles()?;
+        let callback_work = stats.callback.status()?;
+        let country_cache_cost = stats.country_cache_cost.status()?;
+        let conversion = stats.conversion.status()?;
+        let frame_encoding = stats.frame_encoding.status()?;
+        let record_writes = stats.record_writes.status()?;
+        let mut conversion_packs =
+            [DistributionStatus::default(); crate::extended::PACK_NAMES.len()];
+        for (value, cost) in conversion_packs.iter_mut().zip(&stats.conversion_packs) {
+            *value = cost.status()?;
+        }
         // Per-family copy-only mirrors, built outside the status `json!` so
         // the macro stays under its recursion limit as families move over.
         let research_walk_ns = [
@@ -1975,30 +2443,55 @@ impl Processor {
             stats.table_ns[decode::SESSION[1].index()],
             stats.table_ns[decode::SESSION[2].index()],
         ];
-        let value = json!({
-            "order_instance_counters": self.stats.order_counters.json(),
-            "slices": crate::slicing::FAMILIES.iter().filter_map(|family| self.stats.slices.get(family.name).map(|work| {
-                let mut value = work.json(self.session.qpc_frequency);
-                value["owner"] = json!(format!("{:?}", family.owner));
-                (family.name.to_string(), value)
-            })).collect::<serde_json::Map<_, _>>(),
-            "campaign": stats.campaign, "hours": stats.hours, "last_hour": stats.last_hour,
+        let mut background_sync = engine::allocation::vec(self.campaigns.0.len())?;
+        for (id, campaign) in self.campaigns.iter() {
+            if let Some(work) = campaign.spool.background_sync_work() {
+                background_sync.push(status!({
+                    "campaign": id.as_str(), "requested": work.requested, "completed": work.completed,
+                    "pending": work.pending, "total_ns": work.total_ns, "max_ns": work.max_ns,
+                }));
+            }
+        }
+        let spool_work = status!({
+                "conversion": conversion,
+                "conversion_packs": sequence(crate::extended::PACK_NAMES.iter().zip(conversion_packs)
+                    .map(|(name, cost)| status!({"name": name, "cost": cost}))),
+                "conversion_packs_scope": "nested within conversion; excludes core and map tables",
+                "frame_encoding": frame_encoding,
+                "record_writes": record_writes,
+                "table_rows_storage_bytes": std::mem::size_of::<TableRows>(),
+                "background_sync": {
+                    "scope": "current open segments; periodic durability worker wall, overlapping normal spool work; completed includes failed requests; forced barriers remain in record_writes",
+                    "segments": owned_sequence(background_sync),
+                },
+                "native_projection": sequence(self.campaigns.values().map(|campaign| campaign.projection_scratch.status())),
+                "lexical_conversion": lexical_conversion_status(self.campaigns.values().map(|campaign| &campaign.lexical_conversion)),
+                "intel_shadow": intel_shadow_status(self.campaigns.values().map(|campaign| &campaign.intel_shadow)),
+                "character_shadow": character_shadow_status(self.campaigns.values().map(|campaign| &campaign.character_shadow)),
+
+        }).join(work);
+        let value = status!({
+            "order_instance_counters": self.stats.order_counters.status(),
+            "slices": status_map(crate::slicing::FAMILIES.iter().enumerate().filter(|(index, _)| stats.slices[*index].frames != 0).map(move |(index, family)| {
+                (family.name, stats.slices[index].status(self.session.qpc_frequency).join(status!({"owner": DebugValue(family.owner)})))
+            })),
+            "campaign": &stats.campaign, "hours": stats.hours, "last_hour": stats.last_hour,
             "total_ns": stats.total_ns, "p50_ns": callback.p50_ns, "p95_ns": callback.p95_ns,
-            "callback_work": stats.callback.json(),
+            "callback_work": callback_work,
             "callback_work_scope": "cumulative per-hour game-thread acquisition body wall inside the hook since attach (the block before the trampoline), excluding the original native tick; equals acquisition_work.collect_wait_ns per hour. Drops, failed frames and unattributed startup callbacks excluded; sampled asynchronously after decode, not a CPU counter or exact partition with native_tick_work",
             "max_ns": callback.max_ns, "table_ns": stats.table_ns.as_slice(),
             "table_total_ns": stats.table_total_ns.as_slice(),
             "table_total_ns_scope": "cumulative reported acquisition costs for successfully processed recorded frames; same cohort as callback_work; skipped tables contribute zero, shared reads retain existing anchor charges, worker costs overlap and are not additive callback wall time",
-            "table_reads": stats.table_reads.iter().copied().map(read_counts_json).collect::<Vec<_>>(),
-            "table_total_reads": stats.table_total_reads.iter().copied().map(read_counts_json).collect::<Vec<_>>(),
+            "table_reads": sequence(stats.table_reads.iter().copied().map(read_counts_status)),
+            "table_total_reads": sequence(stats.table_total_reads.iter().copied().map(read_counts_status)),
             "table_reads_recorded": stats.hours != 0,
             "table_reads_frames": stats.hours,
             "cadence_policy": "hourly map tables; daily slots; static once per branch",
-            "static_tables": TableId::ALL.into_iter().filter(|table| replay::cadence::cadence(*table) == replay::cadence::Cadence::Static).map(|table| format!("{table:?}")).collect::<Vec<_>>(),
-            "daily_slots": (0..24).map(|slot| json!({
+            "static_tables": sequence(TableId::ALL.into_iter().filter(|table| replay::cadence::cadence(*table) == replay::cadence::Cadence::Static).map(DebugValue)),
+            "daily_slots": sequence((0..24).map(|slot| status!({
                 "slot": slot,
-                "tables": TableId::ALL.into_iter().filter(|table| replay::cadence::refresh_slot(*table) == Some(slot)).map(|table| format!("{table:?}")).collect::<Vec<_>>()
-            })).collect::<Vec<_>>(),
+                "tables": sequence(TableId::ALL.into_iter().filter(move |table| replay::cadence::refresh_slot(*table) == Some(slot)).map(DebugValue))
+            }))),
             "table_reads_scope": "exact per-table native acquisition read work for the latest successfully processed frame; indexed by TableId like table_ns; no observation until table_reads_recorded is true; skipped tables contribute zero; shared native work is charged once to its capture anchor; table failures can still incur reads",
             "table_read_counts_semantics": "native API calls include empty and faulted calls; spans and bytes count nonempty requested source ranges for the executed prefix plus the first failed or rejected source span; empty spans and unexecuted suffixes excluded; invalid destination layouts and short plan buffers count the call only; a plan ControlChanged stop excludes the next unattempted span; bytes are requested lengths, not claimed successfully transferred partial-fault bytes",
             "table_total_reads_scope": "cumulative read counters over the same successfully processed frames as table_total_ns and callback_work, including failed table attempts and fallbacks within those frames; dropped, failed or unpublished frames and startup callbacks excluded; totals saturate at u64::MAX; requested spans and bytes are read work, not elapsed time or retained memory",
@@ -2014,103 +2507,61 @@ impl Processor {
                 "refused_leader_rows": stats.raid_refused_leaders,
                 "scope": "cumulative over processed frames: raid path memo copies rejected because a game writer held its lock or changed its header during the copy (each retried, the table unavailable after three), and raid, cooldown and raid-target rows refused because their leader arm resolved to an object whose captor is not proven",
             },
-            "shared_read_groups": crate::extended::read_groups().into_iter().map(|(name, anchor, members)| {
+            "shared_read_groups": sequence(crate::extended::read_groups().map(move |(name, anchor, members)| {
                 // Game-thread copy-only for moved families: `table_ns` for
                 // moved tables carries copy ns only, while `decode_ns`
                 // lives in the decode calibration (`runtime` status). Do not
                 // compare `shared_read_groups` totals across moved vs unmoved
                 // families (PLAN-appendix apples-to-oranges).
                 let total_ns: u64 = members.iter().map(|table| stats.table_ns[table.index()]).sum();
-                json!({"name": name, "anchor": format!("{anchor:?}"),
-                    "members": members.iter().map(|table| format!("{table:?}")).collect::<Vec<_>>(),
+                status!({"name": name, "anchor": DebugValue(anchor),
+                    "members": sequence(members.iter().copied().map(DebugValue)),
                     "last_ns": total_ns})
-            }).collect::<Vec<_>>(),
+            })),
             "country_authentication": {
                 "entries": stats.country_cache_entries,
-                "seed_status": format!("{:?}", stats.country_cache_status),
+                "seed_status": DebugValue(stats.country_cache_status),
                 "fallbacks": stats.country_cache_fallbacks,
-                "cost": stats.country_cache_cost.json(),
+                "cost": country_cache_cost,
                 "accounted_in": "Countries",
             },
-            "pool_bytes": stats.pool_bytes, "write_errors": stats.errors, "last_error": stats.last_error,
+            "pool_bytes": stats.pool_bytes, "write_errors": stats.errors, "last_error": &stats.last_error,
             "sampled_buffer_allocation": {
                 "scope": "last consumed native row buffer, before off-thread growth; not the whole pool",
                 "bytes": stats.sampled_buffer_bytes,
-                "parts": stats.sampled_buffer_parts.iter().map(|(name, bytes)| {
-                    json!({"name": name, "bytes": bytes})
-                }).collect::<Vec<_>>(),
+                "parts": sequence(stats.sampled_buffer_parts.iter().map(|(name, bytes)| {
+                    status!({"name": name, "bytes": bytes})
+                })),
             },
             "unknown_losses_pending": self.unknown_pending,
-            "spool_work": {
-                "conversion": stats.conversion.json(),
-                "conversion_packs": crate::extended::PACK_NAMES.iter().zip(&stats.conversion_packs)
-                    .map(|(name, cost)| json!({"name": name, "cost": cost.json()})).collect::<Vec<_>>(),
-                "conversion_packs_scope": "nested within conversion; excludes core and map tables",
-                "frame_encoding": stats.frame_encoding.json(),
-                "record_writes": stats.record_writes.json(),
-                "table_rows_storage_bytes": std::mem::size_of::<TableRows>(),
-            },
+            "spool_work": spool_work,
+            "war_owned_snapshots": stats.war_snapshots.status(),
+            "naval_modifier_breakdowns": stats.naval_breakdowns.status(),
+            "research_walk_ns": research_walk_ns,
+            "relations_copy_ns": relations_copy_ns,
+            "characters_copy_ns": characters_copy_ns,
+            "projects_copy_ns": projects_copy_ns,
+            "lexical_copy_ns": lexical_copy_ns,
+            "variants_walk_ns": variants_walk_ns,
+            "buildings_walk_ns": buildings_walk_ns,
+            "wars_walk_ns": wars_walk_ns,
+            "divisions_copy_ns": divisions_copy_ns,
+            "focus_copy_ns": focus_copy_ns,
+            "production_rest_copy_ns": production_rest_copy_ns,
+            "construction_rest_copy_ns": construction_rest_copy_ns,
+            "map_walk_ns": map_walk_ns,
+            "air_wing_copy_ns": air_wing_copy_ns,
+            "air_stats_copy_ns": air_stats_copy_ns,
+            "naval_copy_ns": naval_copy_ns,
+            "players_copy_ns": players_copy_ns,
+            "session_copy_ns": session_copy_ns,
         });
-        // Copy/decode splits: per-frame copy-only nanoseconds per moved
-        // family, mirroring the game-thread `table_ns` slots. Monotonic
-        // decode totals live in the runtime status instead. `table_ns` for
-        // moved families is game-thread copy-only (decode lives in the
-        // calibration); do not compare copy ns against decode ns across
-        // threads (PLAN-appendix apples-to-oranges). Inserted outside
-        // the status `json!` so the macro stays under its recursion limit as
-        // families move over.
-        let mut value = value;
-        value["spool_work"]["background_sync"] = json!({
-            "scope": "current open segments; periodic durability worker wall, overlapping normal spool work; completed includes failed requests; forced barriers remain in record_writes",
-            "segments": self.campaigns.iter().filter_map(|(id, campaign)| {
-                campaign.spool.background_sync_work().map(|work| json!({
-                    "campaign": id, "requested": work.requested, "completed": work.completed,
-                    "pending": work.pending, "total_ns": work.total_ns, "max_ns": work.max_ns,
-                }))
-            }).collect::<Vec<_>>()
-        });
-        value["spool_work"]["native_projection"] = json!(
-            self.campaigns
-                .values()
-                .map(|campaign| campaign.projection_scratch.json())
-                .collect::<Vec<_>>()
-        );
-        value["war_owned_snapshots"] = stats.war_snapshots.json();
-        value["naval_modifier_breakdowns"] = stats.naval_breakdowns.json();
-        value["spool_work"]["lexical_conversion"] = lexical_conversion_status(
-            self.campaigns
-                .values()
-                .map(|campaign| &campaign.lexical_conversion),
-        );
-        value["spool_work"]["intel_shadow"] = intel_shadow_status(
-            self.campaigns
-                .values()
-                .map(|campaign| &campaign.intel_shadow),
-        );
-        value["spool_work"]["character_shadow"] = character_shadow_status(
-            self.campaigns
-                .values()
-                .map(|campaign| &campaign.character_shadow),
-        );
-        value["research_walk_ns"] = json!(research_walk_ns.as_slice());
-        value["relations_copy_ns"] = json!(relations_copy_ns.as_slice());
-        value["characters_copy_ns"] = json!(characters_copy_ns.as_slice());
-        value["projects_copy_ns"] = json!(projects_copy_ns.as_slice());
-        value["lexical_copy_ns"] = json!(lexical_copy_ns.as_slice());
-        value["variants_walk_ns"] = json!(variants_walk_ns.as_slice());
-        value["buildings_walk_ns"] = json!(buildings_walk_ns.as_slice());
-        value["wars_walk_ns"] = json!(wars_walk_ns.as_slice());
-        value["divisions_copy_ns"] = json!(divisions_copy_ns.as_slice());
-        value["focus_copy_ns"] = json!(focus_copy_ns.as_slice());
-        value["production_rest_copy_ns"] = json!(production_rest_copy_ns.as_slice());
-        value["construction_rest_copy_ns"] = json!(construction_rest_copy_ns.as_slice());
-        value["map_walk_ns"] = json!(map_walk_ns.as_slice());
-        value["air_wing_copy_ns"] = json!(air_wing_copy_ns.as_slice());
-        value["air_stats_copy_ns"] = json!(air_stats_copy_ns.as_slice());
-        value["naval_copy_ns"] = json!(naval_copy_ns.as_slice());
-        value["players_copy_ns"] = json!(players_copy_ns.as_slice());
-        value["session_copy_ns"] = json!(session_copy_ns.as_slice());
-        value
+        Ok(value)
+    }
+
+    #[cfg(test)]
+    fn json(&self) -> Value {
+        serde_json::to_value(self.status().unwrap()).unwrap()
     }
 }
 
@@ -2118,14 +2569,19 @@ fn prepare_campaigns<'a>(
     ids: impl IntoIterator<Item = &'a [u8]>,
     mut open: impl FnMut(&str) -> io::Result<()>,
 ) -> io::Result<()> {
-    let mut seen = BTreeSet::new();
+    let mut seen = Vec::new();
     for bytes in ids {
         // Malformed identities cannot become valid through an I/O retry. Their
         // actual consumption emits an unattributed loss and a named error.
-        if let Ok(id) = campaign_name(bytes)
-            && seen.insert(id.clone())
-        {
+        let id = match campaign_name(bytes) {
+            Ok(id) => id,
+            Err(error) if error.kind() == io::ErrorKind::OutOfMemory => return Err(error),
+            Err(_) => continue,
+        };
+        if !seen.iter().any(|previous: &String| previous == &id) {
             open(&id)?;
+            engine::allocation::reserve(&mut seen, 1)?;
+            seen.push(id);
         }
     }
     Ok(())
@@ -2138,12 +2594,18 @@ pub(super) fn campaign_name(bytes: &[u8]) -> io::Result<String> {
         ));
     }
     // Preserve the engine's spelling, including case, in both the path and row.
-    Ok(String::from_utf8(bytes.to_vec()).expect("validated UUID is ASCII"))
+    engine::allocation::string(std::str::from_utf8(bytes).expect("validated UUID is ASCII"))
 }
 
 pub(crate) fn unavailable(reason: &str) -> TableView {
     TableView::Unavailable {
-        reason: reason.into(),
+        reason: if crate::allocation::failed() {
+            String::new()
+        } else {
+            // prepare_frame and write_prepared reject the latched terminal
+            // state before any unavailable fallback can be published.
+            engine::allocation::string(reason).unwrap_or_default()
+        },
     }
 }
 
@@ -2161,16 +2623,39 @@ pub(crate) fn table<S: TableSchema, T>(
 /// Convert borrowed rows without first materializing a parallel reference list.
 pub(crate) fn table_iter<S: TableSchema, T>(
     outcome: Outcome,
-    source: impl ExactSizeIterator<Item = T>,
+    source: impl Iterator<Item = T>,
     convert: impl Fn(T) -> S::Row,
 ) -> TableView {
+    if crate::allocation::failed() {
+        return TableView::Unavailable {
+            reason: String::new(),
+        };
+    }
     match outcome {
         Outcome::Unavailable { reason } => unavailable(reason),
         Outcome::Rows { len } | Outcome::Truncated { len, .. } => {
-            if source.len() != len {
+            let mut rows = match engine::allocation::vec(len) {
+                Ok(rows) => rows,
+                Err(_) => {
+                    return TableView::Unavailable {
+                        reason: String::new(),
+                    };
+                }
+            };
+            for row in source {
+                if rows.len() == len {
+                    return unavailable("walker row count exceeds allocated buffer");
+                }
+                rows.push(convert(row));
+                if crate::allocation::failed() {
+                    return TableView::Unavailable {
+                        reason: String::new(),
+                    };
+                }
+            }
+            if rows.len() != len {
                 return unavailable("walker row count exceeds allocated buffer");
             }
-            let mut rows: Vec<_> = source.map(convert).collect();
             rows.sort_unstable_by_key(RowCodec::key);
             if rows.windows(2).any(|rows| rows[0].key() == rows[1].key()) {
                 return unavailable("walker produced duplicate engine ids");
@@ -2227,8 +2712,12 @@ fn state_table(
             controller: state.controller,
             movement_infrastructure: state.movement_infrastructure,
             manpower_available: state.manpower_available,
-            custom_name: text(state.custom_name).unwrap_or_default().to_vec(),
-            owner_name: text(state.owner_name).unwrap_or_default().to_vec(),
+            custom_name: engine::allocation::owned_vec(engine::allocation::copy_vec(
+                text(state.custom_name).unwrap_or_default(),
+            )),
+            owner_name: engine::allocation::owned_vec(engine::allocation::copy_vec(
+                text(state.owner_name).unwrap_or_default(),
+            )),
         },
     )
 }
@@ -2249,8 +2738,9 @@ fn faction_table(captured: &Captured) -> TableView {
     table::<tables::Factions, _>(captured.factions_result, &captured.factions, |faction| {
         FactionRow {
             id: faction.id,
-            name: captured.faction_names[faction.name_start..faction.name_start + faction.name_len]
-                .to_vec(),
+            name: engine::allocation::owned_vec(engine::allocation::copy_vec(
+                &captured.faction_names[faction.name_start..faction.name_start + faction.name_len],
+            )),
             template_token: faction.template_token,
             color_red: faction.color[0],
             color_green: faction.color[1],
@@ -2334,32 +2824,42 @@ fn decoded_with_costs(
             orders,
         ] = crate::map_spool::table_inputs(&captured.map, conversion.projection.as_deref_mut());
         let core = [
-            TableView::Complete(TableRows::Clock(vec![ClockRow {
-                hour: clock.hour,
-                play_time: clock.play_time,
-                play_session_started_at: clock.play_session_started_at,
-                seed: clock.seed,
-                speed: clock.speed,
-                debug_current_ref_id: counters.and_then(|c| c.debug_current_ref_id),
-                unit: counters.and_then(|c| c.unit),
-                order_index: counters.and_then(|c| c.order_index),
-                front_index: counters.and_then(|c| c.front_index),
-                theatre_index: counters.and_then(|c| c.theatre_index),
-                theater_group_index: counters.and_then(|c| c.theater_group_index),
-                military_deployment_line_index: counters
-                    .and_then(|c| c.military_deployment_line_index),
-                military_deployment_conveyor_index: counters
-                    .and_then(|c| c.military_deployment_conveyor_index),
-                equipment_variant_index: counters.and_then(|c| c.equipment_variant_index),
-                country_leader_index: counters.and_then(|c| c.country_leader_index),
-                navy_id: counters.and_then(|c| c.navy_id),
-                land_combat_id: counters.and_then(|c| c.land_combat_id),
-                multiplayer_random_count: counters.and_then(|c| c.multiplayer_random_count),
-            }]))
+            table::<tables::Clock, _>(
+                Outcome::Rows { len: 1 },
+                std::slice::from_ref(&clock),
+                |clock| ClockRow {
+                    hour: clock.hour,
+                    play_time: clock.play_time,
+                    play_session_started_at: clock.play_session_started_at,
+                    seed: clock.seed,
+                    speed: clock.speed,
+                    debug_current_ref_id: counters.and_then(|c| c.debug_current_ref_id),
+                    unit: counters.and_then(|c| c.unit),
+                    order_index: counters.and_then(|c| c.order_index),
+                    front_index: counters.and_then(|c| c.front_index),
+                    theatre_index: counters.and_then(|c| c.theatre_index),
+                    theater_group_index: counters.and_then(|c| c.theater_group_index),
+                    military_deployment_line_index: counters
+                        .and_then(|c| c.military_deployment_line_index),
+                    military_deployment_conveyor_index: counters
+                        .and_then(|c| c.military_deployment_conveyor_index),
+                    equipment_variant_index: counters.and_then(|c| c.equipment_variant_index),
+                    country_leader_index: counters.and_then(|c| c.country_leader_index),
+                    navy_id: counters.and_then(|c| c.navy_id),
+                    land_combat_id: counters.and_then(|c| c.land_combat_id),
+                    multiplayer_random_count: counters.and_then(|c| c.multiplayer_random_count),
+                },
+            )
             .into(),
-            TableView::Complete(TableRows::Campaign(vec![CampaignRow {
-                id: clock.campaign_id.as_bytes().to_vec(),
-            }]))
+            table::<tables::Campaign, _>(
+                Outcome::Rows { len: 1 },
+                std::slice::from_ref(&clock),
+                |clock| CampaignRow {
+                    id: engine::allocation::owned_vec(engine::allocation::copy_vec(
+                        clock.campaign_id.as_bytes(),
+                    )),
+                },
+            )
             .into(),
             project_table::<tables::Countries, _>(
                 conversion.projection.as_deref_mut(),
@@ -2382,7 +2882,9 @@ fn decoded_with_costs(
                 |country| CountryRow {
                     id: country.id,
                     canonical_slot: country.canonical_slot,
-                    tag: country.tag.as_bytes().to_vec(),
+                    tag: engine::allocation::owned_vec(engine::allocation::copy_vec(
+                        country.tag.as_bytes(),
+                    )),
                     political_power_raw: country.political_power_raw,
                     command_power_raw: country.command_power_raw,
                     stability_raw: country.stability_raw,
@@ -2539,12 +3041,38 @@ fn border_conflicts_table(captured: &Captured) -> TableView {
     }
     table::<tables::BorderConflicts, _>(outcome, &province.conflicts, |r| BorderConflictRow {
         province: r.province,
-        groups: list(r).unwrap().to_vec(),
+        groups: engine::allocation::owned_vec(engine::allocation::copy_vec(list(r).unwrap())),
     })
 }
 
 fn unavailable_tables(reason: &'static str) -> [TableInput; TABLE_COUNT] {
     std::array::from_fn(|_| TableInput::Sampled(unavailable(reason)))
+}
+
+#[cfg(test)]
+pub(crate) fn spool_failure_fixture(root: &Path) -> io::Result<Processor> {
+    Processor::new(root, PreparedCampaigns::default(), tests::session())
+}
+
+#[cfg(test)]
+pub(crate) fn allocation_failure_frame(hour: i32) -> Captured {
+    let mut frame = tests::captured(hour);
+    let clock = frame.clock.as_mut().unwrap();
+    let uuid = b"01234567-89ab-cdef-0123-456789abcdef";
+    clock.campaign_id.len = uuid.len();
+    clock.campaign_id.bytes[..uuid.len()].copy_from_slice(uuid);
+    frame.map.land_combats.rows[0] = engine::cland_combat::Row {
+        id: 1,
+        attacker_start: 0,
+        attacker_len: 1,
+        defender_start: 1,
+        defender_len: 1,
+        ..Default::default()
+    };
+    frame.map.land_combats.outcome = Outcome::Rows { len: 1 };
+    frame.map.land_participants[..2].copy_from_slice(&[1, 2]);
+    frame.map.land_participants_len = 2;
+    frame
 }
 
 #[cfg(test)]
@@ -2671,7 +3199,7 @@ mod tests {
             root: PathBuf::new(),
             history: PreparedCampaigns::default(),
             session: session(),
-            campaigns: BTreeMap::new(),
+            campaigns: Campaigns::new(),
             stats: Statistics::default(),
             unknown_pending: 0,
             suppress_origin: false,
@@ -2687,7 +3215,7 @@ mod tests {
         // A rejected frame still contributes its capture refusal, before any
         // filesystem work. Reusing an older clockless frame counts nothing.
         assert!(processor.prepare_frame(&source).is_err());
-        let status = processor.status()["naval_modifier_breakdowns"].clone();
+        let status = processor.json()["naval_modifier_breakdowns"].clone();
         assert_eq!(status["refused_hours"], 1);
         assert_eq!(status["refusals"][REQUEST_CAPACITY], 1);
         for arena in ["requests", "roots", "nodes", "text_bytes", "depth"] {
@@ -2706,7 +3234,7 @@ mod tests {
         assert_eq!(status["latest_arenas"]["depth"]["required"], 4);
         source.clock = None;
         assert!(processor.prepare_frame(&source).is_err());
-        assert_eq!(processor.status()["naval_modifier_breakdowns"], status);
+        assert_eq!(processor.json()["naval_modifier_breakdowns"], status);
         source
             .extended
             .grow(&mut crate::extended::Capacities::default());
@@ -2717,7 +3245,7 @@ mod tests {
             ..clock(11)
         });
         assert!(processor.prepare_frame(&source).is_err());
-        let status = processor.status()["naval_modifier_breakdowns"].clone();
+        let status = processor.json()["naval_modifier_breakdowns"].clone();
         assert_eq!(status["hours"], 2);
         assert_eq!(status["available_hours"], 1);
         assert_eq!(status["refused_hours"], 1);
@@ -2730,7 +3258,7 @@ mod tests {
             root: PathBuf::new(),
             history: PreparedCampaigns::default(),
             session: session(),
-            campaigns: BTreeMap::new(),
+            campaigns: Campaigns::new(),
             stats: Statistics::default(),
             unknown_pending: 0,
             suppress_origin: false,
@@ -2753,10 +3281,10 @@ mod tests {
             processor.stats.table_total_reads,
             [ReadCounts::ZERO; TABLE_COUNT]
         );
-        assert_eq!(processor.status()["table_reads_recorded"], false);
+        assert_eq!(processor.json()["table_reads_recorded"], false);
         assert_eq!(processor.stats.errors, 1);
         assert!(processor.campaigns.is_empty());
-        let status = processor.status()["war_owned_snapshots"].clone();
+        let status = processor.json()["war_owned_snapshots"].clone();
         assert_eq!(status["passes"], 1);
         assert_eq!(
             status["latest"]["capacity"]["allocated_bytes"],
@@ -2764,7 +3292,7 @@ mod tests {
         );
         source.wars_snapshot_sampled = false;
         assert!(processor.frame(&source).is_err());
-        assert_eq!(processor.status()["war_owned_snapshots"], status);
+        assert_eq!(processor.json()["war_owned_snapshots"], status);
         assert_eq!(processor.stats.errors, 2);
     }
 
@@ -2901,7 +3429,7 @@ mod tests {
             root: PathBuf::new(),
             history: PreparedCampaigns::default(),
             session: session(),
-            campaigns: BTreeMap::new(),
+            campaigns: Campaigns::new(),
             stats: Statistics::default(),
             unknown_pending: 0,
             suppress_origin: false,
@@ -2913,25 +3441,25 @@ mod tests {
         }
         processor.stats.hours = 3;
         processor.stats.total_ns = 300;
-        let first = processor.status();
+        let first = processor.json();
         assert_eq!(first["p50_ns"], 200);
         assert_eq!(first["p95_ns"], 300);
         assert_eq!(first["max_ns"], 300);
         assert_eq!(first["total_ns"], 300);
         assert_eq!(first["callback_work"]["calls"], 3);
         assert_eq!(first["callback_work"]["total_ns"], 600);
-        assert_eq!(processor.status(), first);
+        assert_eq!(processor.json(), first);
 
         processor.error(&io::Error::other("new disk failure while paused"));
-        let failed = processor.status();
-        assert_eq!(failed["last_error"], "new disk failure while paused");
+        let failed = processor.json();
+        assert_eq!(failed["last_error"], "spool I/O failed");
         assert_eq!(failed["write_errors"], 1);
         assert_eq!(failed["p50_ns"], first["p50_ns"]);
 
         processor.stats.callback.record_ns(50);
         processor.stats.hours += 1;
         processor.stats.total_ns = 50;
-        let resumed = processor.status();
+        let resumed = processor.json();
         assert_eq!(resumed["hours"], 4);
         assert_eq!(resumed["total_ns"], 50);
         assert_eq!(resumed["callback_work"]["calls"], 4);
@@ -3025,14 +3553,14 @@ mod tests {
             root: PathBuf::new(),
             history: PreparedCampaigns::default(),
             session: session(),
-            campaigns: BTreeMap::new(),
+            campaigns: Campaigns::new(),
             stats: Statistics::default(),
             unknown_pending: 0,
             suppress_origin: false,
             retry_full: false,
             unpublished_families: 0,
         };
-        assert_eq!(processor.status()["table_reads_recorded"], false);
+        assert_eq!(processor.json()["table_reads_recorded"], false);
         let counts = ReadCounts {
             copy_calls: 1,
             scattered_calls: 2,
@@ -3048,7 +3576,7 @@ mod tests {
             .stats
             .observe_table_reads([ReadCounts::ZERO; TABLE_COUNT]);
         processor.stats.hours = 2;
-        let status = processor.status();
+        let status = processor.json();
         assert_eq!(status["table_reads_recorded"], true);
         assert_eq!(status["table_reads_frames"], 2);
         assert_eq!(status["table_reads"].as_array().unwrap().len(), TABLE_COUNT);
@@ -3076,7 +3604,7 @@ mod tests {
             root: PathBuf::new(),
             history: PreparedCampaigns::default(),
             session: session(),
-            campaigns: BTreeMap::new(),
+            campaigns: Campaigns::new(),
             stats: Statistics::default(),
             unknown_pending: 0,
             suppress_origin: false,
@@ -3094,7 +3622,7 @@ mod tests {
         processor.stats.table_ns[replay::rows::TableId::WarRelations.index()] = 601;
         processor.stats.table_ns[replay::rows::TableId::StateBuildings.index()] = 701;
         processor.stats.table_ns[replay::rows::TableId::RaidTargetStatuses.index()] = 703;
-        let status = processor.status();
+        let status = processor.json();
         assert_eq!(status["buildings_walk_ns"], json!([701, 0, 703]));
         assert_eq!(status["research_walk_ns"], json!([11, 22, 33]));
         assert_eq!(status["wars_walk_ns"], json!([601]));
@@ -3155,7 +3683,7 @@ mod tests {
         }
     }
 
-    fn captured(hour: i32) -> Captured {
+    pub(super) fn captured(hour: i32) -> Captured {
         let mut captured = Captured::new();
         // End-of-hour sampling reads the clock once before the original tick.
         captured.clock = Some(clock(hour));
@@ -3218,7 +3746,7 @@ mod tests {
             skipped: [false; TABLE_COUNT],
             work: WorkSample::default(),
             pack_ticks: [None; crate::extended::PACK_NAMES.len()],
-            sampled: CapturedStatistics::capture(captured),
+            sampled: CapturedStatistics::capture(captured).unwrap(),
             witness: PreparedOrderWitness::capture(captured, Some(branch)),
         }
     }
@@ -3314,7 +3842,7 @@ mod tests {
         ordinary.bind(&mut retained, &Err(io::Error::other("later failure")));
         assert_eq!(
             retained.json()["sample"]["subsequent_io_error"],
-            "later failure"
+            "spool I/O failed"
         );
     }
 
@@ -3378,10 +3906,7 @@ mod tests {
         assert_eq!(failed["sample"]["countries"][0]["counter"], 999);
         assert_eq!(failed["sample"]["sample_valid"], true);
         assert_eq!(failed["sample"]["frame_write_succeeded"], false);
-        assert_eq!(
-            failed["sample"]["frame_write_error"],
-            "injected frame failure"
-        );
+        assert_eq!(failed["sample"]["frame_write_error"], "spool I/O failed");
         assert_eq!(failed["sample"]["usable_with_recorded_frame"], false);
         source.order_counters.forced = false;
         witness.observe(&source, Some(3), &Ok(()));
@@ -3523,7 +4048,7 @@ mod tests {
         assert_eq!(witness.json()["sample"]["sequence"], 1);
         assert_eq!(
             witness.json()["sample"]["subsequent_io_error"],
-            "later frame failure"
+            "spool I/O failed"
         );
         assert_eq!(
             witness.json()["sample"]["usable_with_recorded_frame"],
@@ -3544,7 +4069,7 @@ mod tests {
         assert_eq!(witness.json()["sample"]["frame_write_succeeded"], true);
         assert_eq!(
             witness.json()["sample"]["subsequent_io_error"],
-            "later sync failure"
+            "spool I/O failed"
         );
         assert_eq!(
             witness.json()["sample"]["usable_with_recorded_frame"],
@@ -4115,7 +4640,7 @@ mod tests {
         }
     }
 
-    fn session() -> SessionStart {
+    pub(super) fn session() -> SessionStart {
         SessionStart {
             id: 1,
             process_id: 100,
@@ -4153,10 +4678,10 @@ mod tests {
                 disk_branch: None,
                 last_written: None,
                 pending: Vec::new(),
-                staggered_cache: BTreeMap::new(),
+                staggered_cache: TableCache::new(),
                 staggered_branch: None,
-                sliced_cache: BTreeMap::new(),
-                sliced_reads: BTreeMap::new(),
+                sliced_cache: TableCache::new(),
+                sliced_reads: ReadHours::new(),
                 sliced_branch: None,
                 line_output: Default::default(),
                 construction_ic: Default::default(),
@@ -4195,13 +4720,7 @@ mod tests {
         store.borrow_mut().fail_frame_flush = true;
         assert!(publish(&mut campaign, 11, 1).is_err());
         assert_eq!(
-            campaign
-                .tracker
-                .recorded_hours(first)
-                .unwrap()
-                .iter()
-                .copied()
-                .collect::<Vec<_>>(),
+            campaign.tracker.recorded_hours(first).unwrap().to_vec(),
             vec![10]
         );
         campaign
@@ -4394,7 +4913,7 @@ mod tests {
             root: PathBuf::new(),
             history: PreparedCampaigns::default(),
             session: session(),
-            campaigns: BTreeMap::new(),
+            campaigns: Campaigns::new(),
             stats: Statistics::default(),
             unknown_pending: 0,
             suppress_origin: false,
@@ -4427,7 +4946,7 @@ mod tests {
             processor.stats.table_total_reads,
             [ReadCounts::ZERO; TABLE_COUNT]
         );
-        assert_eq!(processor.status()["table_reads_frames"], 0);
+        assert_eq!(processor.json()["table_reads_frames"], 0);
     }
 
     fn research_rows(rows: &[(u32, u32, i64, i32)]) -> TableRows {
@@ -4580,6 +5099,7 @@ mod tests {
         let (_, unpublished) =
             campaign.merge_sliced_inputs(&mut failed, |_| Some(&selection), |_| true);
         assert_ne!(unpublished, 0);
+        assert_eq!(reads(&failed), [(1, 0), (2, 0)]);
         // Hour 2 was captured before the game thread forgot: its slice is not
         // merged onto hour 0's rows, and a full refresh is requested.
         let mut slice = sliced_input(1, 2, TableView::Complete(research_rows(&[(2, 0, 7, 2)])));
@@ -4592,6 +5112,7 @@ mod tests {
             merged(&slice),
             TableInput::Sampled(TableView::Unavailable { .. })
         ));
+        assert!(reads(&slice).is_empty());
         // The full read publishes again.
         let mut refreshed = full(3);
         assert!(!merge_with(
@@ -4700,7 +5221,7 @@ mod tests {
         assert!(matches!(
             &failed.tables[table.index()],
             TableInput::Sampled(TableView::Unavailable { reason })
-                if reason == "sliced read holds an unread owner's row or is not in key order"
+                if reason == "sliced table merge failed"
         ));
         for (mut input, selection) in in_flight {
             let (retry, _) = merge(&mut campaign, &mut input, &selection);
@@ -4731,7 +5252,7 @@ mod tests {
                 campaign
                     .sliced_reads
                     .keys()
-                    .any(|&(id, _)| id == candidate.index() as u32),
+                    .any(|(id, _)| id == candidate.index() as u32),
                 !affected && !replay::sliced::is_keyed(candidate),
                 "{candidate:?} read hours"
             );
@@ -5189,7 +5710,7 @@ mod tests {
             let mut source: FrameInput = staggered_frame(branch, hour, skip).into();
             let retry_before = needs_retry(&source.tables);
             campaign.apply_staggered_inputs(&mut source);
-            crate::fixed_layout::apply(&mut source.tables, &Ok(report));
+            crate::fixed_layout::apply(&mut source.tables, &Ok(report)).unwrap();
             // Permanent refusals run after the recovery decision; a successful
             // static/daily capture does not trigger repeated full acquisition.
             assert!(!retry_before);
@@ -5552,7 +6073,11 @@ mod tests {
             hits: 7,
             misses: 11,
         };
-        let status = lexical_conversion_status([&campaign.lexical_conversion, &other]);
+        let status = serde_json::to_value(lexical_conversion_status([
+            &campaign.lexical_conversion,
+            &other,
+        ]))
+        .unwrap();
         assert_eq!(status["hits"], before.hits + 7);
         assert_eq!(status["misses"], before.misses + 11);
         assert_eq!(status["additional_native_dictionary_capacity_bytes"], 0);
@@ -5600,7 +6125,11 @@ mod tests {
         let branch = second.observe(None, 0, Some(1)).unwrap();
         let _source = character_frame(&mut second, branch, 0, 10);
 
-        let status = character_shadow_status([&first.character_shadow, &second.character_shadow]);
+        let status = serde_json::to_value(character_shadow_status([
+            &first.character_shadow,
+            &second.character_shadow,
+        ]))
+        .unwrap();
         assert_eq!(status["campaigns"], 2);
         let mut bytes = 0usize;
         for (index, (first, second)) in first
@@ -5806,7 +6335,11 @@ mod tests {
         intel_frame(&mut first, 1, 0, 10);
         intel_frame(&mut first, 1, 1, 10);
         intel_frame(&mut second, 1, 0, 20);
-        let report = intel_shadow_status([&first.intel_shadow, &second.intel_shadow]);
+        let report = serde_json::to_value(intel_shadow_status([
+            &first.intel_shadow,
+            &second.intel_shadow,
+        ]))
+        .unwrap();
         assert_eq!(report["campaigns"], 2);
         let (a, b) = (
             first.intel_shadow.statistics(),
@@ -5924,12 +6457,14 @@ mod tests {
             if let Some(previous) = previous_hour
                 && hour > previous + 1
             {
-                campaign.gap(
-                    campaign.tracker.current_branch().unwrap(),
-                    previous + 1,
-                    hour - 1,
-                    "fixture queue gap".into(),
-                );
+                campaign
+                    .gap(
+                        campaign.tracker.current_branch().unwrap(),
+                        previous + 1,
+                        hour - 1,
+                        "fixture queue gap".into(),
+                    )
+                    .unwrap();
             }
             let branch = campaign.observe(None, hour, Some(1)).unwrap();
             previous_hour = Some(hour);

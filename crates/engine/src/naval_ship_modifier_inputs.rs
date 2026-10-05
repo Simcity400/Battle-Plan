@@ -182,6 +182,8 @@ impl<M: Memory> Capture<'_, '_, M> {
             row.accumulator = accumulator;
             row.terms = previous.terms;
             self.buffers.sources.truncate(source);
+            crate::allocation::reserve(self.buffers.sources, 1)
+                .map_err(|_| "collector allocation failed")?;
             self.buffers.sources.push(row);
             self.buffers.lengths[0] = source
                 .checked_add(1)
@@ -205,6 +207,11 @@ impl<M: Memory> Capture<'_, '_, M> {
         row.terms = [first, count];
         row.accumulator = accumulator.unwrap_or(0);
         self.buffers.terms.truncate(first);
+        crate::allocation::reserve_push_batch(self.buffers.terms, count)
+            .map_err(|_| "collector allocation failed")?;
+        self.buffers.sources.truncate(source);
+        crate::allocation::reserve(self.buffers.sources, 1)
+            .map_err(|_| "collector allocation failed")?;
         if let Some(entries) = data {
             use crate::modifier_definition as md;
             let table = md::table(self.memory, self.base)?;

@@ -51,16 +51,26 @@ pub fn recycle_relations_job(job: RelationsJob) {
 }
 
 pub(super) fn release_relations_job(mut job: RelationsJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     job.return_opinions();
     if !job.is_allocated() {
         return;
     }
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
+    }
+    if crate::allocation::failed() {
+        return;
     }
     job.clear();
     if let Ok(mut pool) = RELATIONS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -84,19 +94,33 @@ pub fn recycle_characters_job(job: CharactersJob) {
 }
 
 pub(super) fn release_characters_job(mut job: CharactersJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if !job.has_storage() {
         return;
     }
     job.note_growth();
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
     }
     job.prepare_read_plans();
+    if crate::allocation::failed() {
+        return;
+    }
+    if crate::allocation::failed() {
+        return;
+    }
     job.clear();
     if let Ok(mut pool) = CHARACTERS_JOB_POOL.lock()
         && pool[job.part].len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool[job.part], 1).is_ok()
     {
-        pool[job.part].push(job);
+        let part = job.part;
+        pool[part].push(job);
     }
 }
 
@@ -116,17 +140,27 @@ pub fn recycle_projects_job(job: ProjectsJob) {
 }
 
 pub(super) fn release_projects_job(mut job: ProjectsJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if job.log.spans.capacity() == 0 {
         return;
     }
     crate::raw::note_growth("Projects", &job.log);
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
     }
     job.presize_countries();
+    if crate::allocation::failed() {
+        return;
+    }
     job.clear();
     if let Ok(mut pool) = PROJECTS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -152,16 +186,26 @@ pub fn recycle_lexical_job(job: LexicalJob) {
 }
 
 pub(super) fn release_lexical_job(mut job: LexicalJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if !job.initialized() {
         return;
     }
     job.note_growth();
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
+    }
+    if crate::allocation::failed() {
+        return;
     }
     job.clear();
     if let Ok(mut pool) = LEXICAL_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -178,15 +222,25 @@ pub fn recycle_divisions_job(job: DivisionsJob) {
 }
 
 pub(super) fn release_divisions_job(mut job: DivisionsJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if !job.initialized() {
         return;
     }
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
+    }
+    if crate::allocation::failed() {
+        return;
     }
     job.clear();
     if let Ok(mut pool) = DIVISIONS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -203,15 +257,25 @@ pub fn recycle_focus_job(job: FocusJob) {
 }
 
 pub(super) fn release_focus_job(mut job: FocusJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if !job.is_provisioned() {
         return;
     }
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
+    }
+    if crate::allocation::failed() {
+        return;
     }
     job.clear();
     if let Ok(mut pool) = FOCUS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -228,15 +292,25 @@ pub fn recycle_air_wing_job(job: AirWingJob) {
 }
 
 pub(super) fn release_air_wing_job(mut job: AirWingJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if !job.has_storage() && !job.grow_for_next() {
         return;
     }
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
+    }
+    if crate::allocation::failed() {
+        return;
     }
     job.clear();
     if let Ok(mut pool) = AIR_WING_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -253,16 +327,26 @@ pub fn recycle_air_stats_job(job: AirStatsJob) {
 }
 
 pub(super) fn release_air_stats_job(mut job: AirStatsJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if job.log.spans.capacity() == 0 {
         return;
     }
     crate::raw::note_growth("AirStats", &job.log);
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
+    }
+    if crate::allocation::failed() {
+        return;
     }
     job.clear();
     if let Ok(mut pool) = AIR_STATS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -284,17 +368,27 @@ pub fn recycle_naval_job(job: NavalJob) {
 }
 
 pub(super) fn release_naval_job(mut job: NavalJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if job.log.spans.capacity() == 0 {
         return;
     }
     crate::raw::note_growth("Naval", &job.log);
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
     }
     job.presize_countries();
+    if crate::allocation::failed() {
+        return;
+    }
     job.clear();
     if let Ok(mut pool) = NAVAL_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -316,16 +410,26 @@ pub fn recycle_players_job(job: PlayersJob) {
 }
 
 pub(super) fn release_players_job(mut job: PlayersJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if job.log.spans.capacity() == 0 {
         return;
     }
     crate::raw::note_growth("Players", &job.log);
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
+    }
+    if crate::allocation::failed() {
+        return;
     }
     job.clear();
     if let Ok(mut pool) = PLAYERS_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -347,16 +451,26 @@ pub fn recycle_session_job(job: SessionJob) {
 }
 
 pub(super) fn release_session_job(mut job: SessionJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if job.log.spans.capacity() == 0 {
         return;
     }
     crate::raw::note_growth("Session", &job.log);
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
+    }
+    if crate::allocation::failed() {
+        return;
     }
     job.clear();
     if let Ok(mut pool) = SESSION_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -378,21 +492,34 @@ pub fn recycle_production_rest_job(job: ProductionRestJob) {
 }
 
 pub(super) fn release_production_rest_job(mut job: ProductionRestJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if job.log.spans.capacity() == 0 {
         return;
     }
     crate::raw::note_growth("ProductionRest", &job.log);
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
     }
     // Compile sealed source/control metadata at retirement, after any required
     // decode. Production decoding does not modify captured bytes. Reusing a
     // successful plan avoids recompiling it on every returned job.
     job.log.prepare_read_plan();
+    if crate::allocation::failed() {
+        return;
+    }
     job.presize_countries();
+    if crate::allocation::failed() {
+        return;
+    }
     job.clear();
     if let Ok(mut pool) = PRODUCTION_REST_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -414,17 +541,27 @@ pub fn recycle_construction_rest_job(job: ConstructionRestJob) {
 }
 
 pub(super) fn release_construction_rest_job(mut job: ConstructionRestJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if job.log.spans.capacity() == 0 {
         return;
     }
     crate::raw::note_growth("ConstructionRest", &job.log);
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
     }
     job.presize_countries();
+    if crate::allocation::failed() {
+        return;
+    }
     job.clear();
     if let Ok(mut pool) = CONSTRUCTION_REST_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -446,16 +583,26 @@ pub fn recycle_economy_rest_job(job: EconomyRestJob) {
 }
 
 pub(super) fn release_economy_rest_job(mut job: EconomyRestJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if job.log.spans.capacity() == 0 {
         return;
     }
     crate::raw::note_growth("EconomyRest", &job.log);
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
+    }
+    if crate::allocation::failed() {
+        return;
     }
     job.clear();
     if let Ok(mut pool) = ECONOMY_REST_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -477,17 +624,27 @@ pub fn recycle_air_bases_job(job: AirBasesJob) {
 }
 
 pub(super) fn release_air_bases_job(mut job: AirBasesJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if job.log.spans.capacity() == 0 {
         return;
     }
     crate::raw::note_growth("AirBases", &job.log);
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
     }
     job.presize_countries();
+    if crate::allocation::failed() {
+        return;
+    }
     job.clear();
     if let Ok(mut pool) = AIR_BASES_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -509,15 +666,25 @@ pub fn recycle_air_history_job(job: AirHistoryJob) {
 }
 
 pub(super) fn release_air_history_job(mut job: AirHistoryJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if !job.has_storage() && !job.grow_for_next() {
         return;
     }
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
+    }
+    if crate::allocation::failed() {
+        return;
     }
     job.clear();
     if let Ok(mut pool) = AIR_HISTORY_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -539,16 +706,26 @@ pub fn recycle_supremacy_job(job: SupremacyJob) {
 }
 
 pub(super) fn release_supremacy_job(mut job: SupremacyJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if job.log.spans.capacity() == 0 {
         return;
     }
     crate::raw::note_growth("Supremacy", &job.log);
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
+    }
+    if crate::allocation::failed() {
+        return;
     }
     job.clear();
     if let Ok(mut pool) = SUPREMACY_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -570,16 +747,26 @@ pub fn recycle_sunk_job(job: SunkJob) {
 }
 
 pub(super) fn release_sunk_job(mut job: SunkJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if job.log.spans.capacity() == 0 {
         return;
     }
     crate::raw::note_growth("Sunk", &job.log);
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
+    }
+    if crate::allocation::failed() {
+        return;
     }
     job.clear();
     if let Ok(mut pool) = SUNK_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -601,16 +788,26 @@ pub fn recycle_radar_job(job: RadarJob) {
 }
 
 pub(super) fn release_radar_job(mut job: RadarJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if job.allocated_bytes() == 0 {
         return;
     }
     job.note_growth();
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
+    }
+    if crate::allocation::failed() {
+        return;
     }
     job.clear();
     if let Ok(mut pool) = RADAR_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -632,16 +829,26 @@ pub fn recycle_intel_job(job: IntelJob) {
 }
 
 pub(super) fn release_intel_job(mut job: IntelJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if job.allocated_bytes() == 0 {
         return;
     }
     job.note_growth();
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
+    }
+    if crate::allocation::failed() {
+        return;
     }
     job.clear();
     if let Ok(mut pool) = INTEL_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -663,16 +870,26 @@ pub fn recycle_weather_job(job: WeatherJob) {
 }
 
 pub(super) fn release_weather_job(mut job: WeatherJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if job.log.spans.capacity() == 0 {
         return;
     }
     crate::raw::note_growth("Weather", &job.log);
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
+    }
+    if crate::allocation::failed() {
+        return;
     }
     job.clear();
     if let Ok(mut pool) = WEATHER_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }
@@ -694,16 +911,26 @@ pub fn recycle_capitulation_job(job: CapitulationJob) {
 }
 
 pub(super) fn release_capitulation_job(mut job: CapitulationJob) {
+    if crate::allocation::failed() {
+        return;
+    }
     if job.log.spans.capacity() == 0 {
         return;
     }
     crate::raw::note_growth("Capitulation", &job.log);
     if job.grow_for_next() {
         job.grow();
+        if crate::allocation::failed() {
+            return;
+        }
+    }
+    if crate::allocation::failed() {
+        return;
     }
     job.clear();
     if let Ok(mut pool) = CAPITULATION_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
+        && engine::allocation::reserve(&mut pool, 1).is_ok()
     {
         pool.push(job);
     }

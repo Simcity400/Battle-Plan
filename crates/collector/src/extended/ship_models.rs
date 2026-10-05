@@ -9,8 +9,9 @@
 use crate::{
     projection::{Projection, project_table},
     sampling::qpc,
-    table_capture::{CaptureRows, grow_capacity, grow_vec},
+    table_capture::{CaptureRows, grow_capacity},
 };
+use engine::allocation::{copy_vec, filled, owned_vec, reserve, resize_default};
 use engine::{
     Memory, cship,
     memory::{RecordField, RecordLayout, RecordSources},
@@ -410,12 +411,14 @@ impl Captured {
     fn part(capacity: &Capacities) -> Self {
         Self {
             copied: Cell::new((0, 0)),
-            modifiers: RefCell::new(SnapshotArena::new(bounded_snapshot_capacity(
-                capacity.modifiers,
-            ))),
+            modifiers: RefCell::new(
+                SnapshotArena::try_new(bounded_snapshot_capacity(capacity.modifiers))
+                    .map_err(crate::allocation::io)
+                    .unwrap_or_else(|_| SnapshotArena::vacant()),
+            ),
             required_modifiers: SnapshotCapacity::default(),
             rows: CaptureRows::new(capacity.rows),
-            seeds: vec![Seed::default(); capacity.rows],
+            seeds: owned_vec(filled(capacity.rows, Seed::default())),
             seed_len: 0,
             required_rows: 0,
             parent: super::MISSING,
@@ -465,9 +468,21 @@ impl Captured {
     pub fn grow(&mut self, capacity: &mut Capacities) {
         grow_capacity(&mut capacity.rows, self.required_rows);
         self.rows.grow(&mut capacity.rows);
-        grow_vec(&mut self.seeds, capacity.rows);
+        if self.seeds.len() < capacity.rows
+            && resize_default(&mut self.seeds, capacity.rows).is_err()
+        {
+            return;
+        }
         grow_snapshot_capacity(&mut capacity.modifiers, self.required_modifiers);
-        self.modifiers.get_mut().grow(capacity.modifiers);
+        if self
+            .modifiers
+            .get_mut()
+            .try_grow(capacity.modifiers)
+            .map_err(crate::allocation::io)
+            .is_err()
+        {
+            return;
+        }
         // Parts follow the family's rows and their own snapshot demand, so
         // every range of the next split fits (`part_rows`).
         let rows = part_rows(capacity.rows);
@@ -612,11 +627,13 @@ impl Captured {
                 arena: &this.modifiers,
             };
             let doctrine = &mut this.doctrine;
-            cship::read_model(&memory, base, pointer, source, &mut this.model).and_then(|mut row| {
-                row.maximum_organisation =
-                    cship::read_maximum_organisation_memo(&memory, base, pointer, doctrine)?;
-                Ok(row)
-            })
+            cship::read_model(&memory, base, pointer, source, &mut this.model).and_then(
+                |mut row| {
+                    row.maximum_organisation =
+                        cship::read_maximum_organisation_memo(&memory, base, pointer, doctrine)?;
+                    Ok(row)
+                },
+            )
         });
     }
     /// Record one detail read in census order; the first failure stops the range.
@@ -742,7 +759,10 @@ impl Captured {
         let joined;
         let rows = if self.split > 1 && self.terminal_failure.is_none() {
             let parts = &self.extra[..self.split - 1];
-            let mut rows = Vec::with_capacity(self.len);
+            let mut rows = Vec::new();
+            if reserve(&mut rows, self.len).is_err() {
+                return [crate::spooling::unavailable("collector allocation failed").into()];
+            }
             rows.extend_from_slice(&self.rows.rows[..self.part_len.min(self.rows.rows.len())]);
             for part in parts {
                 rows.extend_from_slice(&part.rows.rows[..part.part_len.min(part.rows.rows.len())]);
@@ -777,8 +797,8 @@ impl Captured {
             |r| ShipModelRow {
                 ship: r.ship,
                 variant: r.variant,
-                hull_sprite: r.hull_sprite.as_bytes().to_vec(),
-                fallback_sprite: r.fallback_sprite.as_bytes().to_vec(),
+                hull_sprite: owned_vec(copy_vec(r.hull_sprite.as_bytes())),
+                fallback_sprite: owned_vec(copy_vec(r.fallback_sprite.as_bytes())),
                 model_number: r.model_number,
                 formation_flags: r.formation_flags,
                 counter: Some(replay::rows::ShipCounterInputs {

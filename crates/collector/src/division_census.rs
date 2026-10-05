@@ -31,11 +31,13 @@ pub(crate) struct UnitInputs {
 impl UnitInputs {
     pub(crate) fn new(capacity: usize) -> Self {
         Self {
-            seeds: Vec::with_capacity(capacity),
+            seeds: engine::allocation::owned_vec(engine::allocation::vec(capacity)),
             outcome: Outcome::Unavailable {
                 reason: "division census not captured",
             },
-            roster_slots: Vec::with_capacity(capacity.saturating_mul(2)),
+            roster_slots: engine::allocation::owned_vec(engine::allocation::vec(
+                capacity.saturating_mul(2),
+            )),
             intel_outcome: Outcome::Unavailable {
                 reason: "division census not captured",
             },
@@ -124,11 +126,13 @@ impl Default for Census {
 impl Census {
     pub fn new() -> Self {
         Self {
-            counts: vec![None; crate::country_scale::census_rows(512)],
-            entries: Vec::with_capacity(8192),
+            counts: engine::allocation::owned_vec(engine::allocation::default_vec(
+                crate::country_scale::census_rows(512),
+            )),
+            entries: engine::allocation::owned_vec(engine::allocation::vec(8192)),
             unit_inputs: Some(Arc::new(UnitInputs::new(8192))),
-            rows: Vec::with_capacity(8192),
-            sources: Vec::with_capacity(8192),
+            rows: engine::allocation::owned_vec(engine::allocation::vec(8192)),
+            sources: engine::allocation::owned_vec(engine::allocation::vec(8192)),
             ..Self::default()
         }
     }
@@ -187,37 +191,46 @@ impl Census {
         self.unit_inputs.as_ref()
     }
     pub fn grow(&mut self) {
-        self.counts.resize(
-            self.required_counts
-                .max(crate::country_scale::census_rows(self.counts.len())),
-            None,
-        );
+        let counts = self
+            .required_counts
+            .max(crate::country_scale::census_rows(self.counts.len()));
+        if !crate::table_capture::grow_vec(&mut self.counts, counts) {
+            return;
+        }
         let target = self
             .required
             .max(self.entries.capacity().saturating_mul(2))
             .max(8192);
-        fn reserve<T>(v: &mut Vec<T>, target: usize) {
-            if v.capacity() < target {
-                v.reserve_exact(target.saturating_sub(v.len()));
-            }
+        let additional = target.saturating_sub(self.entries.len());
+        if engine::allocation::reserve_exact(&mut self.entries, additional).is_err() {
+            return;
         }
-        reserve(&mut self.entries, target);
         if let Some(shared) = &mut self.unit_inputs {
             let inputs =
                 Arc::get_mut(shared).expect("division input leases released before growth");
-            reserve(&mut inputs.seeds, target);
+            let additional = target.saturating_sub(inputs.seeds.len());
+            if engine::allocation::reserve_exact(&mut inputs.seeds, additional).is_err() {
+                return;
+            }
             // The overflowed census kept counting every remaining roster, so
             // one step reaches the observed requirement.
             let slots = self
                 .required_slots
                 .max(inputs.roster_slots.capacity().saturating_mul(2))
                 .max(16384);
-            reserve(&mut inputs.roster_slots, slots);
+            let additional = slots.saturating_sub(inputs.roster_slots.len());
+            if engine::allocation::reserve_exact(&mut inputs.roster_slots, additional).is_err() {
+                return;
+            }
         } else {
             self.unit_inputs = Some(Arc::new(UnitInputs::new(target)));
         }
-        reserve(&mut self.rows, target);
-        reserve(&mut self.sources, target);
+        let additional = target.saturating_sub(self.rows.len());
+        if engine::allocation::reserve_exact(&mut self.rows, additional).is_err() {
+            return;
+        }
+        let additional = target.saturating_sub(self.sources.len());
+        let _ = engine::allocation::reserve_exact(&mut self.sources, additional);
     }
     /// Grow retained storage only while the frame is off the callback.
     pub(crate) fn reserve_sources(&mut self, capacity: usize) {

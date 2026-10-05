@@ -52,12 +52,13 @@ fn l3b_bench_hourly_land_theatres_and_order_of_battle_ordinals() {
             let slice = world.slice();
             // The callback's country census of the hour, as the Naval job
             // sees it: every copy reads through its roster view.
-            let mut countries_cache = engine::country_memory::Cache::with_capacity(
+            let mut countries_cache = engine::country_memory::Cache::try_with_capacity(
                 engine::country_memory::Cache::cells_for_countries(
                     countries as usize + 1,
                     crate::country_scale::MIN_COUNTRY_CELLS,
                 ),
-            );
+            )
+            .unwrap();
             let _ = countries_cache.prepare(&slice, world.base, world.game_state);
             let live = world.live();
             let slice_roster = countries_cache.roster_view(&slice);

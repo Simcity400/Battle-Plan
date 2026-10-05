@@ -6,7 +6,8 @@
 //! that proof, an object lifetime, or a coherent game-state snapshot. In
 //! particular, controls at zero reads inspect the caller's initial destination.
 
-use crate::{Memory, memory::is_canonical_range};
+use crate::{Memory, allocation, memory::is_canonical_range};
+use std::io;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
@@ -71,36 +72,42 @@ pub(crate) struct NativePlan {
 }
 
 impl NativePlan {
-    fn new(reads: &[Read], controls: &[Control]) -> Option<Self> {
-        u32::try_from(reads.len()).ok()?;
-        let reads = reads
-            .iter()
-            .map(|read| {
-                Some(NativeRead {
-                    address: read.address,
-                    destination_offset: u32::try_from(read.destination_offset).ok()?,
-                    len: u32::try_from(read.len).ok()?,
-                })
+    fn try_new(reads: &[Read], controls: &[Control]) -> io::Result<Option<Self>> {
+        if u32::try_from(reads.len()).is_err()
+            || reads.iter().any(|read| {
+                u32::try_from(read.destination_offset).is_err() || u32::try_from(read.len).is_err()
             })
-            .collect::<Option<Vec<_>>>()?
-            .into_boxed_slice();
-        let controls = controls
-            .iter()
-            .map(|control| {
-                Some(NativeControl {
-                    after_reads: u32::try_from(control.after_reads).ok()?,
-                    offset: u32::try_from(control.offset).ok()?,
-                    len: u32::try_from(control.len).ok()?,
-                    expected_offset: u32::try_from(control.expected_offset).ok()?,
-                })
+            || controls.iter().any(|control| {
+                u32::try_from(control.after_reads).is_err()
+                    || u32::try_from(control.offset).is_err()
+                    || u32::try_from(control.len).is_err()
+                    || u32::try_from(control.expected_offset).is_err()
             })
-            .collect::<Option<Vec<_>>>()?
-            .into_boxed_slice();
-        Some(Self {
-            reads,
-            controls,
+        {
+            return Ok(None);
+        }
+        let mut packed_reads = allocation::vec(reads.len())?;
+        for read in reads {
+            packed_reads.push(NativeRead {
+                address: read.address,
+                destination_offset: read.destination_offset as u32,
+                len: read.len as u32,
+            });
+        }
+        let mut packed_controls = allocation::vec(controls.len())?;
+        for control in controls {
+            packed_controls.push(NativeControl {
+                after_reads: control.after_reads as u32,
+                offset: control.offset as u32,
+                len: control.len as u32,
+                expected_offset: control.expected_offset as u32,
+            });
+        }
+        Ok(Some(Self {
+            reads: allocation::boxed_slice(packed_reads)?,
+            controls: allocation::boxed_slice(packed_controls)?,
             hints: Box::new([]),
-        })
+        }))
     }
 
     fn capacity_bytes(&self) -> usize {
@@ -138,49 +145,65 @@ pub enum Outcome {
 }
 
 impl PreparedPlan {
+    pub fn try_new(
+        reads: Vec<Read>,
+        controls: Vec<Control>,
+        expected: Vec<u8>,
+        destination_len: usize,
+    ) -> io::Result<Option<Self>> {
+        let work = (|| {
+            let mut requested_spans = 0_u64;
+            let mut requested_bytes = 0_u64;
+            for read in &reads {
+                if read.destination_offset.checked_add(read.len)? > destination_len {
+                    return None;
+                }
+                if read.len != 0
+                    && (read.address == 0
+                        || read.address.checked_add(read.len).is_none()
+                        || !is_canonical_range(read.address, read.len))
+                {
+                    return None;
+                }
+                requested_spans = requested_spans.saturating_add(u64::from(read.len != 0));
+                requested_bytes = requested_bytes.saturating_add(read.len as u64);
+            }
+            let mut previous = 0;
+            for control in &controls {
+                if control.after_reads < previous
+                    || control.after_reads > reads.len()
+                    || control.offset.checked_add(control.len)? > destination_len
+                    || control.expected_offset.checked_add(control.len)? > expected.len()
+                {
+                    return None;
+                }
+                previous = control.after_reads;
+            }
+            Some((requested_spans, requested_bytes))
+        })();
+        let Some((requested_spans, requested_bytes)) = work else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            native: NativePlan::try_new(&reads, &controls)?,
+            reads: allocation::boxed_slice(reads)?,
+            controls: allocation::boxed_slice(controls)?,
+            hints: Box::new([]),
+            expected: allocation::boxed_slice(expected)?,
+            destination_len,
+            requested_spans,
+            requested_bytes,
+        }))
+    }
+
+    #[cfg(test)]
     pub fn new(
         reads: Vec<Read>,
         controls: Vec<Control>,
         expected: Vec<u8>,
         destination_len: usize,
     ) -> Option<Self> {
-        let mut requested_spans = 0_u64;
-        let mut requested_bytes = 0_u64;
-        for read in &reads {
-            if read.destination_offset.checked_add(read.len)? > destination_len {
-                return None;
-            }
-            if read.len != 0
-                && (read.address == 0
-                    || read.address.checked_add(read.len).is_none()
-                    || !is_canonical_range(read.address, read.len))
-            {
-                return None;
-            }
-            requested_spans = requested_spans.saturating_add(u64::from(read.len != 0));
-            requested_bytes = requested_bytes.saturating_add(read.len as u64);
-        }
-        let mut previous = 0;
-        for control in &controls {
-            if control.after_reads < previous
-                || control.after_reads > reads.len()
-                || control.offset.checked_add(control.len)? > destination_len
-                || control.expected_offset.checked_add(control.len)? > expected.len()
-            {
-                return None;
-            }
-            previous = control.after_reads;
-        }
-        Some(Self {
-            native: NativePlan::new(&reads, &controls),
-            reads: reads.into_boxed_slice(),
-            controls: controls.into_boxed_slice(),
-            hints: Box::new([]),
-            expected: expected.into_boxed_slice(),
-            destination_len,
-            requested_spans,
-            requested_bytes,
-        })
+        Self::try_new(reads, controls, expected, destination_len).unwrap()
     }
 
     pub fn reads(&self) -> &[Read] {
@@ -191,7 +214,7 @@ impl PreparedPlan {
         &self.controls
     }
 
-    pub fn with_hints(mut self, hints: Vec<Hint>) -> Option<Self> {
+    pub fn try_with_hints(mut self, hints: Vec<Hint>) -> io::Result<Option<Self>> {
         let mut previous = 0;
         for hint in &hints {
             if hint.after_reads < previous
@@ -199,30 +222,32 @@ impl PreparedPlan {
                 || (hint.len != 0
                     && (hint.address == 0 || !is_canonical_range(hint.address, hint.len)))
             {
-                return None;
+                return Ok(None);
             }
             previous = hint.after_reads;
         }
-        self.hints = hints.into_boxed_slice();
-        let packed = self
-            .hints
-            .iter()
-            .map(|hint| {
-                Some(NativeHint {
-                    address: hint.address,
-                    after_reads: u32::try_from(hint.after_reads).ok()?,
-                    len: u32::try_from(hint.len).ok()?,
-                })
-            })
-            .collect::<Option<Vec<_>>>();
-        if let Some(packed) = packed {
-            if let Some(native) = &mut self.native {
-                native.hints = packed.into_boxed_slice();
-            }
-        } else {
+        self.hints = allocation::boxed_slice(hints)?;
+        if self.hints.iter().any(|hint| {
+            u32::try_from(hint.after_reads).is_err() || u32::try_from(hint.len).is_err()
+        }) {
             self.native = None;
+        } else if let Some(native) = &mut self.native {
+            let mut packed = allocation::vec(self.hints.len())?;
+            for hint in &self.hints {
+                packed.push(NativeHint {
+                    address: hint.address,
+                    after_reads: hint.after_reads as u32,
+                    len: hint.len as u32,
+                });
+            }
+            native.hints = allocation::boxed_slice(packed)?;
         }
-        Some(self)
+        Ok(Some(self))
+    }
+
+    #[cfg(test)]
+    pub fn with_hints(self, hints: Vec<Hint>) -> Option<Self> {
+        self.try_with_hints(hints).unwrap()
     }
 
     pub fn hints(&self) -> &[Hint] {

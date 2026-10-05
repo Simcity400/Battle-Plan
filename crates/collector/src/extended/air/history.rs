@@ -1,4 +1,5 @@
 use super::*;
+use engine::allocation;
 
 /// Shared regional-history payload slots in report order: [history, damage].
 pub(crate) const AIR_HISTORY_N: usize = 2;
@@ -46,8 +47,8 @@ impl Default for AirHistoryJob {
 impl AirHistoryJob {
     pub fn new() -> Self {
         let mut job = Self {
-            history: vec![sair_wing_combat_data::Row::default(); 8192],
-            damage: vec![sdamage_entry::Row::default(); 16_384],
+            history: allocation::owned_vec(allocation::default_vec(8192)),
+            damage: allocation::owned_vec(allocation::default_vec(16_384)),
             ..Self::default()
         };
         job.update_capacity_charge();
@@ -87,14 +88,10 @@ impl AirHistoryJob {
                 current
             }
         }
-        self.history.resize(
-            target(self.history.len(), self.required_history),
-            Default::default(),
-        );
-        self.damage.resize(
-            target(self.damage.len(), self.required_damage),
-            Default::default(),
-        );
+        let history = target(self.history.len(), self.required_history);
+        let damage = target(self.damage.len(), self.required_damage);
+        crate::table_capture::grow_vec(&mut self.history, history);
+        crate::table_capture::grow_vec(&mut self.damage, damage);
         self.update_capacity_charge();
     }
 }

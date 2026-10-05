@@ -1,4 +1,5 @@
 use crate::{sampling::qpc, spooling::table, table_capture::CaptureRows};
+use engine::allocation::{copy_vec, owned_vec};
 use engine::{Memory, cunit_leader, walk::Outcome};
 use replay::{
     frame::TableView,
@@ -26,7 +27,8 @@ pub struct Captured {
 }
 impl Captured {
     pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
-        self.rows.fail(super::failed_capture(TABLES[0], hour, force_full, reason));
+        self.rows
+            .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
     }
 
     /// Allocation-free placeholder while a worker owns the capture buffers.
@@ -48,7 +50,7 @@ impl Captured {
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.rows.grow(&mut capacity.rows);
-        self.tag_memo.grow();
+        let _ = self.tag_memo.grow();
     }
     pub fn capture(
         &mut self,
@@ -86,7 +88,7 @@ impl Captured {
                 leader: r.leader,
                 country: r.country,
                 tag_reference: r.tag_reference,
-                tag: r.tag.as_bytes().to_vec(),
+                tag: owned_vec(copy_vec(r.tag.as_bytes())),
             },
         )]
     }

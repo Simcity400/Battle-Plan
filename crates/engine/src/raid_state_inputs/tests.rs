@@ -356,7 +356,7 @@ fn fixture() -> Mem {
 #[test]
 fn reads_every_stored_operand_and_the_state_container() {
     let m = fixture();
-    let mut buffers = Buffers::new(&Capacity::default());
+    let mut buffers = Buffers::new(&Capacity::default()).unwrap();
     let walk = walk(&m, 0, GS, &mut buffers, Selection::ALL);
     assert_eq!(
         walk.outcomes,
@@ -435,7 +435,7 @@ fn no_route_value_and_no_origin_leave_the_factors_unread() {
         0x4400_6000 + supply_node::STRIDE + supply_node::ROUTE_VALUE,
         0,
     );
-    let mut buffers = Buffers::new(&Capacity::default());
+    let mut buffers = Buffers::new(&Capacity::default()).unwrap();
     walk(&m, 0, GS, &mut buffers, Selection::ALL);
     assert_eq!(buffers.inputs[0].supply_route, 0);
     m.u64(0x4300_2000 + cresource_origin::STATE, STATE_B as u64);
@@ -457,7 +457,7 @@ fn short_buffers_truncate_and_report_live_sizes() {
         override_rows: 1,
         ..Capacity::default()
     };
-    let mut buffers = Buffers::new(&small);
+    let mut buffers = Buffers::new(&small).unwrap();
     let first = walk(&m, 0, GS, &mut buffers, Selection::ALL);
     let truncated = Outcome::Truncated {
         len: 0,
@@ -471,7 +471,7 @@ fn short_buffers_truncate_and_report_live_sizes() {
     );
     let mut grown = small;
     grown.raise(&first.required);
-    let mut buffers = Buffers::new(&grown);
+    let mut buffers = Buffers::new(&grown).unwrap();
     let second = walk(&m, 0, GS, &mut buffers, Selection::ALL);
     assert!(
         second
@@ -488,7 +488,7 @@ fn a_foreign_container_or_torn_pool_fails_the_whole_walk() {
         STATE_A + cstate::DYNAMIC_MODIFIERS + cdynamic_modifier_container::STATE,
         9,
     );
-    let mut buffers = Buffers::new(&Capacity::default());
+    let mut buffers = Buffers::new(&Capacity::default()).unwrap();
     assert!(
         walk(&m, 0, GS, &mut buffers, Selection::ALL)
             .outcomes
@@ -513,7 +513,7 @@ fn a_walk_reads_rows_only_for_selected_states_and_countries() {
         9,
     );
     m.0.remove(&0x4300_3000);
-    let mut buffers = Buffers::new(&Capacity::default());
+    let mut buffers = Buffers::new(&Capacity::default()).unwrap();
     let only_two = Selection {
         states: &|state| state == 2,
         countries: &|_| false,
@@ -554,7 +554,7 @@ fn a_walk_reads_rows_only_for_selected_states_and_countries() {
 #[test]
 fn the_batched_resource_database_keeps_each_failure_and_its_order() {
     let reason = |m: &Mem| {
-        let mut buffers = Buffers::new(&Capacity::default());
+        let mut buffers = Buffers::new(&Capacity::default()).unwrap();
         match walk(m, 0, GS, &mut buffers, Selection::ALL).outcomes[0] {
             Outcome::Unavailable { reason } => reason,
             other => panic!("{other:?}"),
@@ -893,7 +893,7 @@ fn raid_state_inputs_bench() {
         // SAFETY: immutable synthetic storage owned by this test.
         let memory = Counted::new(unsafe { crate::memory::LiveMemory::new() });
         let mut capacity = Capacity::default();
-        let mut buffers = Buffers::new(&capacity);
+        let mut buffers = Buffers::new(&capacity).unwrap();
         loop {
             let walk = walk(
                 &memory,
@@ -918,7 +918,7 @@ fn raid_state_inputs_bench() {
                 walk.outcomes
             );
             capacity.raise(&walk.required);
-            buffers = Buffers::new(&capacity);
+            buffers = Buffers::new(&capacity).unwrap();
         }
         let mut times = Vec::new();
         let mut last = None;
@@ -962,7 +962,7 @@ fn raid_state_inputs_bench() {
 fn grown_walk(memory: &impl Memory, arena: &Arena, game_state: usize) -> Buffers {
     let mut capacity = Capacity::default();
     loop {
-        let mut buffers = Buffers::new(&capacity);
+        let mut buffers = Buffers::new(&capacity).unwrap();
         let walk = walk(memory, arena.base, game_state, &mut buffers, Selection::ALL);
         if walk
             .outcomes
@@ -1052,4 +1052,24 @@ fn raid_state_hour_bench() {
             );
         }
     }
+}
+
+#[test]
+fn capacity_arithmetic_failure_is_allocation_failure() {
+    let capacity = Capacity {
+        resources: usize::MAX,
+        ..Capacity::zero()
+    };
+    assert_eq!(
+        Buffers::new(&capacity).err().unwrap().kind(),
+        std::io::ErrorKind::OutOfMemory
+    );
+    let capacity = Capacity {
+        definitions: usize::MAX,
+        ..Capacity::zero()
+    };
+    assert_eq!(
+        Buffers::new(&capacity).err().unwrap().kind(),
+        std::io::ErrorKind::OutOfMemory
+    );
 }

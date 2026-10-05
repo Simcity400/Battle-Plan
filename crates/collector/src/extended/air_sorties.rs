@@ -10,7 +10,7 @@
 //! other operand once per sorted key.
 
 use engine::{
-    Memory, cair_regional_mission::WingIdentity, ccountry, cpdx_array::Array,
+    Memory, allocation, cair_regional_mission::WingIdentity, ccountry, cpdx_array::Array,
     map_air_carrier_operands, map_air_country_region_modifier, map_air_rocket_slots,
     map_air_sortie_inputs as native, walk::Outcome,
 };
@@ -114,10 +114,10 @@ struct Rows<T> {
     required: usize,
 }
 
-impl<T: Default + Clone> Rows<T> {
+impl<T: Default> Rows<T> {
     fn new(capacity: usize) -> Self {
         Self {
-            rows: vec![T::default(); capacity],
+            rows: allocation::owned_vec(allocation::default_vec(capacity)),
             len: 0,
             required: 0,
         }
@@ -181,8 +181,8 @@ impl Sorties {
             special: Rows::new(capacity.rows),
             metadata: None,
             keys: Rows::new(capacity.keys),
-            order: vec![0; capacity.missions],
-            hosts: vec![0; capacity.hosts],
+            order: allocation::owned_vec(allocation::default_vec(capacity.missions)),
+            hosts: allocation::owned_vec(allocation::default_vec(capacity.hosts)),
             hosts_required: 0,
             hosts_short: 0,
         }
@@ -704,9 +704,10 @@ impl Sorties {
                     reassignment_penalty_raw: mission.operands.reassignment_penalty_raw,
                     last_target_province: mission.operands.last_target_province,
                     reached_count: mission.operands.reached.count as i32,
-                    reached_provinces: self.reached.rows
-                        [mission.reached_start..mission.reached_start + mission.reached_len]
-                        .to_vec(),
+                    reached_provinces: allocation::owned_vec(allocation::copy_vec(
+                        &self.reached.rows
+                            [mission.reached_start..mission.reached_start + mission.reached_len],
+                    )),
                     definition_map_flags: mission.definition_map_flags,
                 }
             }),

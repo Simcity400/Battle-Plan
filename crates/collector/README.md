@@ -4,6 +4,41 @@
 
 Native layouts, offsets and guarded readers belong in [`engine`](../engine/README.md). Replay schemas, cadence and encoding belong in [`replay`](../replay/README.md).
 
+Live-sized and potentially large rows, arenas, byte buffers, decode pools,
+staging, slicing, encoded records and status JSON use the shared checked-growth
+helpers in [engine](../engine/src/allocation.rs). Batch reserves cover subsequent
+appends. Terminal errors use static codes; borrowed status snapshots serialize
+once into recycled byte buffers without building JSON trees. Raw plans install
+only after complete construction, decoded frames publish only after the terminal
+gate, and encoder baselines advance only after a complete spool record.
+
+Accepted residuals are main's small fixed storage and attach-time machinery:
+standard Arc/Weak control blocks, path/OS-string and filesystem handle storage,
+thread names/handles and std spawn internals, fixed pack/verifier/fingerprint
+boxes and Part collections, standard hasher initialization, short ordinary diagnostics,
+JSON config parsing, module/event path buffers, retour hook installation and
+teardown, fixed ArrayQueue construction, worker lists, and attach-only replay
+history discovery/inflation. Large data owned by those objects remains checked.
+These residuals are outside the fault sweep's checked-growth scope.
+
+Recorded `pool_bytes` keeps the existing storage estimate. Its executor part
+uses the prior shared layout and standard thread-handle accounting, excluding
+the added failure context. Recovery therefore
+does not change healthy Metrics values.
+
+The first allocation failure stops admission and abandons incomplete work while
+the original game tick continues. Before hooks are installed, the recorder
+creates the [terminal witness](../replay/src/witness.rs) and the collector opens
+its handle. Failure writes a fixed, versioned, checksummed record without heap
+growth. That witness is authoritative over periodic status. After confirmed
+unload, the recorder keeps the CRC-valid prefix as a visibly partial replay and
+uses the witnessed attempted hour for an explicit gap; idle failures invent no
+hour. Missing or invalid evidence leaves the spool incomplete and retained.
+
+The optional `alloc-fault-injection` feature enables the recorder's
+`--alloc-fault` option. The default build refuses that option. Allocation phases
+and static failure codes are defined in [witness.rs](../replay/src/witness.rs).
+
 [equipment_destruction.rs](src/equipment_destruction.rs) observes land damage,
 attrition's actual subtraction call, aircraft destruction and garrison
 resistance for every native owner, without player or orders-group predicates.
@@ -164,6 +199,8 @@ RaidAirScores is hourly, but the game rewrites a strategic region's air scores o
 Off-slot hours record `SKIPPED_REASON`; replay carries the previous data forward. Truncated staggered tables and failed static tables set `Shared.force_next`, forcing a full capture next hour with buffers grown off-thread. The lexer's maximum token ID is checked hourly; a change triggers another token-dictionary capture. The modifier definition table's header (data pointer and row count) is checked the same way; a change, which only a database loader's registration causes, triggers another ModifierDefinitions capture on that hour's Slow job.
 
 Record `DivisionEtaInputs` and let replay derive ETA. **Five-hour ETA operand staleness (accepted limitation):** every moving division has an hourly witness of each order and path field the reader takes from the census: the exact ordinary route IDs (native writers refill it in place), target, source, location, owners, orders group, template, stat block, retreat, strategic redeployment and naval transfer, plus the combat vector header, so entering or leaving combat reads at once. A new division, changed witness, or its stagger slot (full handle modulo five) refreshes all operands; unchanged divisions carry their latest row and `sample_hour`. Organisation, fuel, combat progress and modifier changes wait for the slot. Attach, load, hour gaps, forced full refreshes and failed acquisitions re-read every moving division, so each partition's buffers grow to its whole moving census, not to one hour's selection. Stable handle partitions keep each division with the same worker when other divisions arrive, leave or reroute. Each worker retains its own store across frame-buffer reuse and publishes complete latest rows, so lost frames need no incremental merge. These jobs are worker-only; rejected jobs report unavailable without callback allocation or live retry.
+
+The ETA cadence contribution to recorded `Metrics.pool_bytes` retains its logical-entry estimate for recording compatibility. The formula stays beside [cadence.rs](src/extended/division_eta_inputs/cadence.rs), and checked batch reservations preserve the prior selected-row and carried-row capacity schedules. It is not an exact retained-heap measurement: checked entry slabs keep spare capacity after deletions, while deleted witnesses and row owners are released. The estimate can therefore undercount actual retained storage.
 
 The five-hour allowance follows the native counter cache TTL seed (`140be98e0`) and hourly expiry (`140bf0300`). **This does not reproduce the native cache history or its pathfinding estimate.** The viewer derives stored-route ETA from the latest operands and current movement/progress and shared hourly map data; rows are zero to four completed hours old between refreshes. Do not source these operands from daily tables. The fresh-save oracle checks every row's moving census, provenance and route-bounded spans, and counts carried rows separately; a carried row's route is witnessed, so a span failure there is a missed change.
 

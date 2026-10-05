@@ -3,6 +3,7 @@
 //! Nothing is read from the game for it. The spool assembles the table from
 //! each hour's sliced reads while it merges them (`Campaign::merge_sliced_inputs`),
 //! so this pack only reserves the table's place in the frame.
+use engine::allocation::string;
 use engine::walk::Outcome;
 use replay::{frame::TableView, rows::TableId};
 
@@ -33,7 +34,7 @@ impl Captured {
     }
     pub fn tables(&self) -> [TableView; N] {
         [TableView::Unavailable {
-            reason: ASSEMBLED_BY_SPOOL.into(),
+            reason: string(ASSEMBLED_BY_SPOOL).unwrap_or_default(),
         }]
     }
 }

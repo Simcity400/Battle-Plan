@@ -285,6 +285,8 @@ fn census(
 ) -> Result<Run, &'static str> {
     let entries = array(memory, accumulator, 0, 16)?;
     let start = arena.len();
+    crate::allocation::reserve_push_batch(arena, entries.count as usize)
+        .map_err(|_| "reinforcement modifier allocation failed")?;
     let read = (|| {
         let mut batch = [0_u8; 64 * 16];
         let mut previous = 0;
@@ -588,6 +590,8 @@ fn supply_entries(
         return Err("reinforcement supply term bound exceeded");
     }
     let start = arena.len();
+    crate::allocation::reserve_push_batch(arena, count)
+        .map_err(|_| "reinforcement supply allocation failed")?;
     let read = (0..count).try_for_each(|index| {
         let entry = element(entries, index as u32, 16)?;
         let unit = pointer(memory, entry, 0)?;
@@ -642,11 +646,14 @@ fn priority(
         let failure = if categories.count as usize > MODIFIER_LIMIT {
             None
         } else {
-            (0..categories.count)
-                .try_for_each(|index| {
-                    let category = pointer(memory, element(categories, index, 8)?, 0)?;
-                    arena.push(field::<u32>(memory, category, 0x60)?);
-                    Ok(())
+            crate::allocation::reserve_push_batch(arena, categories.count as usize)
+                .map_err(|_| "reinforcement category allocation failed")
+                .and_then(|()| {
+                    (0..categories.count).try_for_each(|index| {
+                        let category = pointer(memory, element(categories, index, 8)?, 0)?;
+                        arena.push(field::<u32>(memory, category, 0x60)?);
+                        Ok(())
+                    })
                 })
                 .err()
         };
@@ -904,6 +911,11 @@ fn transport_owner(
                 transport_intel_lane(memory, base, countries, enemy_intel, owner_intel, owner)
                     .map(|other| (own, other))
             });
+        // Native eligibility determines the actual count without a second walk.
+        if arena.len() == arena.capacity() {
+            crate::allocation::reserve(arena, 1)
+                .map_err(|_| "reinforcement enemy allocation failed")?;
+        }
         arena.push(TransportEnemy { raw, enemy, lanes });
         if lanes.is_err() {
             break;
@@ -1011,6 +1023,14 @@ fn transport_context(
                     &mut sources.transport_enemies,
                 )
             })?;
+            let required = start
+                .checked_add(row.transport_term_count)
+                .and_then(|len| len.checked_add(walked.enemies.len))
+                .ok_or("reinforcement transport term count overflow")?;
+            if required > terms.len() {
+                crate::allocation::reserve_push_batch(terms, required - terms.len())
+                    .map_err(|_| "reinforcement transport allocation failed")?;
+            }
             for index in walked.enemies.start..walked.enemies.start + walked.enemies.len {
                 let entry = sources.transport_enemies[index];
                 let regional_value = *share(
@@ -1027,13 +1047,12 @@ fn transport_context(
                     },
                 )?;
                 let (own_intel, enemy_intel) = entry.lanes?;
-                // Grow one slot per term whose reads all succeeded, never from
-                // the unverified header count; Vec growth is amortized.
                 let slot = start
                     .checked_add(row.transport_term_count)
                     .ok_or("reinforcement transport term index overflow")?;
                 if terms.len() <= slot {
-                    terms.resize(slot + 1, TransportTerm::default());
+                    // The acquired enemy run bounds this capacity-proven admission.
+                    terms.resize_with(slot + 1, TransportTerm::default);
                 }
                 terms[slot] = TransportTerm {
                     country: entry.raw,

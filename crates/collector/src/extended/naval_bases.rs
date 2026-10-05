@@ -3,6 +3,7 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
+use engine::allocation::{copy_vec, owned_vec};
 use engine::{Memory, cnaval_base, walk::Outcome};
 use replay::{
     frame::TableView,
@@ -98,16 +99,21 @@ impl Captured {
                 .checked_add(r.countries_len as usize)
                 .is_none_or(|end| end > countries.len())
         }) {
-            return [unavailable("naval base country list lies outside captured arena")];
+            return [unavailable(
+                "naval base country list lies outside captured arena",
+            )];
         }
-        [table::<tables::NavalBases, _>(outcome, rows, |r| NavalBaseRow {
-            province: r.province,
-            country: r.country,
-            level: r.level,
-            healthy_level: r.healthy_level,
-            countries: countries[r.countries_start..r.countries_start + r.countries_len as usize]
-                .to_vec(),
-            countries_unreadable: r.countries_unreadable,
+        [table::<tables::NavalBases, _>(outcome, rows, |r| {
+            NavalBaseRow {
+                province: r.province,
+                country: r.country,
+                level: r.level,
+                healthy_level: r.healthy_level,
+                countries: owned_vec(copy_vec(
+                    &countries[r.countries_start..r.countries_start + r.countries_len as usize],
+                )),
+                countries_unreadable: r.countries_unreadable,
+            }
         })]
     }
 }

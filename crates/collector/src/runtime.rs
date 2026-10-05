@@ -12,15 +12,18 @@ use engine::{
     memory::LiveMemory, read,
 };
 use replay::{codec::Decoder, identity::SessionStart};
+
 use serde::Deserialize;
+#[cfg(test)]
 use serde_json::{Value, json};
 use std::{
     ffi::{OsString, c_void},
-    fs::{self, File},
-    io,
+    fs::{self, File, OpenOptions},
+    io::{self, Read, Seek},
     os::windows::{
         ffi::{OsStrExt, OsStringExt},
         fs::OpenOptionsExt,
+        io::{AsRawHandle, FromRawHandle},
     },
     path::{Path, PathBuf},
     ptr,
@@ -31,11 +34,12 @@ use std::{
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, HANDLE, HMODULE, WAIT_OBJECT_0},
+    Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, HMODULE, WAIT_OBJECT_0},
     Storage::FileSystem::{
         CreateFileW, DELETE, FILE_ATTRIBUTE_NORMAL, FILE_RENAME_INFO, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, FileRenameInfoEx, MOVEFILE_REPLACE_EXISTING,
-        MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING, SetFileInformationByHandle,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, FileRenameInfoEx, GetFileSizeEx,
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING,
+        SetFileInformationByHandle,
     },
     System::{
         LibraryLoader::{FreeLibraryAndExitThread, GetModuleFileNameW, GetModuleHandleW},
@@ -61,18 +65,52 @@ struct Config {
     expected_mounts: Vec<String>,
     #[serde(default)]
     mod_descriptors: Vec<String>,
+    #[serde(default)]
+    alloc_fault: Option<AllocFault>,
 }
-
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AllocFault {
+    pub(crate) phase: String,
+    pub(crate) ordinal: u64,
+    #[serde(default)]
+    pub(crate) after_hours: u64,
+}
+fn error_reason(error: io::Error, reason: &'static str) -> &'static str {
+    crate::allocation::observe(&error);
+    reason
+}
+pub(crate) fn configure_alloc_fault(fault: Option<&AllocFault>) -> Result<(), &'static str> {
+    let Some(fault) = fault else {
+        return Ok(());
+    };
+    #[cfg(feature = "alloc-fault-injection")]
+    {
+        let phase = crate::allocation::Phase::parse(&fault.phase)
+            .ok_or("alloc_fault names an unsupported phase")?;
+        if fault.ordinal == 0 {
+            return Err("alloc_fault ordinal must be nonzero");
+        }
+        crate::allocation::inject_after(phase, fault.ordinal, fault.after_hours);
+        Ok(())
+    }
+    #[cfg(not(feature = "alloc-fault-injection"))]
+    {
+        let _ = (&fault.phase, fault.ordinal, fault.after_hours);
+        Err("alloc_fault requires collector feature alloc-fault-injection")
+    }
+}
 struct Event(HANDLE);
 impl Event {
-    fn create(name: &str) -> Result<Self, String> {
+    fn create(name: &str) -> Result<Self, &'static str> {
         if name.is_empty() || name.contains('\0') {
-            return Err("event name is empty or contains NUL".into());
+            return Err("event name is empty or contains NUL");
         }
-        let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
-        let handle = unsafe { CreateEventW(ptr::null(), 1, 0, name.as_ptr()) };
+        let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+        let handle = unsafe { CreateEventW(ptr::null(), 1, 0, wide.as_ptr()) };
         if handle.is_null() {
-            Err(io::Error::last_os_error().to_string())
+            crate::allocation::native_error(&io::Error::last_os_error());
+            Err("CreateEventW failed")
         } else {
             Ok(Self(handle))
         }
@@ -94,50 +132,164 @@ impl Drop for Event {
     }
 }
 
-fn module_path(module: HMODULE) -> Result<PathBuf, String> {
-    let mut buffer = vec![0; 32768];
+fn module_path(module: HMODULE) -> Result<PathBuf, &'static str> {
+    let mut buffer = vec![0u16; 32768];
     let len =
         unsafe { GetModuleFileNameW(module, buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
     if len == 0 || len == buffer.len() {
-        return Err("GetModuleFileNameW failed or truncated".into());
+        return Err("GetModuleFileNameW failed or truncated");
     }
     Ok(PathBuf::from(OsString::from_wide(&buffer[..len])))
 }
-
 pub unsafe extern "system" fn worker(module: *mut c_void) -> u32 {
-    let result = run(module);
+    let _bootstrap = crate::allocation::enter(crate::allocation::Phase::Bootstrap);
+    crate::allocation::install_hooks();
+    let witness = bootstrap_witness(module);
+    let result = match &witness {
+        Ok((file, session, process_start)) => {
+            crate::allocation::prepare(file, *session, *process_start);
+            run(module, *session, *process_start)
+        }
+        Err(error) => Err(*error),
+    };
+    if !SHARED.load(Ordering::Acquire).is_null() {
+        std::mem::forget(witness);
+        return 1;
+    }
     if let Err(error) = result
+        && !crate::allocation::failed()
         && let Ok(path) = module_path(module)
     {
         let _ = fs::write(path.with_file_name("collector.error.txt"), error);
     }
-    // Any retained shared pointer means code can still be executing through the hook.
-    if !SHARED.load(Ordering::Acquire).is_null() {
-        return 1;
-    }
+    crate::allocation::clear_handle();
+    engine::allocation::set_hooks(None, None);
+    engine::allocation::set_stop_hook(None);
+    drop(witness);
     unsafe {
         FreeLibraryAndExitThread(module, 0);
     }
 }
-
-fn write_status(path: &Path, status: &Value) -> io::Result<()> {
-    let temp = path.with_extension("json.tmp");
-    let bytes = serde_json::to_vec(status).map_err(|error| {
-        io::Error::other(format!(
-            "cannot serialize collector status for {}: {error}",
-            path.display()
-        ))
-    })?;
-    fs::write(&temp, bytes).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!(
-                "cannot write status temporary file {} for {}: {error}",
-                temp.display(),
-                path.display()
-            ),
+fn bootstrap_witness(module: HMODULE) -> Result<(File, u64, u64), &'static str> {
+    let mut path = [0u16; 32768];
+    let length =
+        unsafe { GetModuleFileNameW(module, path.as_mut_ptr(), path.len() as u32) } as usize;
+    if length == 0 || length == path.len() {
+        return Err("collector bootstrap module path unreadable");
+    }
+    bootstrap_witness_path(&mut path, length)
+}
+fn bootstrap_witness_path(
+    path: &mut [u16; 32768],
+    length: usize,
+) -> Result<(File, u64, u64), &'static str> {
+    let bin_separator = path[..length]
+        .iter()
+        .rposition(|unit| *unit == b'\\' as u16 || *unit == b'/' as u16)
+        .and_then(|last| {
+            path[..last]
+                .iter()
+                .rposition(|unit| *unit == b'\\' as u16 || *unit == b'/' as u16)
+        })
+        .ok_or("collector bootstrap has no session directory")?;
+    let filename = replay::witness::WITNESS_FILE_NAME.as_bytes();
+    let end = bin_separator + 1 + filename.len();
+    if end >= path.len() {
+        return Err("collector bootstrap witness path truncated");
+    }
+    for (output, byte) in path[bin_separator + 1..end].iter_mut().zip(filename) {
+        *output = u16::from(*byte);
+    }
+    path[end] = 0;
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            ptr::null_mut(),
         )
-    })?;
+    };
+    if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return Err("collector bootstrap witness open failed");
+    }
+    let mut file = unsafe { File::from_raw_handle(handle) };
+    let mut length = 0_i64;
+    if unsafe { GetFileSizeEx(file.as_raw_handle(), &mut length) } == 0 {
+        return Err("collector bootstrap witness size unreadable");
+    }
+    if length != replay::witness::WITNESS_BYTES as i64 {
+        return Err("collector bootstrap witness length invalid");
+    }
+    let mut bytes = [0u8; replay::witness::WITNESS_BYTES];
+    let mut read = 0;
+    while read < bytes.len() {
+        match file.read(&mut bytes[read..]) {
+            Ok(0) => return Err("collector bootstrap witness truncated"),
+            Ok(count) => read += count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => return Err("collector bootstrap witness read failed"),
+        }
+    }
+    file.seek(io::SeekFrom::Start(0))
+        .map_err(|_| "collector bootstrap witness seek failed")?;
+    let (session, process_start) = replay::witness::TerminalWitness::decode_prepared(&bytes)
+        .map_err(|_| "collector bootstrap witness identity invalid")?;
+    Ok((file, session, process_start))
+}
+
+#[cfg(test)]
+mod bootstrap_witness_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn read(module: &[u16]) -> Result<(File, u64, u64), &'static str> {
+        let mut path = [0_u16; 32768];
+        path[..module.len()].copy_from_slice(module);
+        bootstrap_witness_path(&mut path, module.len() - 1)
+    }
+
+    #[test]
+    fn bootstrap_refuses_prepared_witness_with_trailing_byte() {
+        let directory =
+            Path::new("captures/astra/lead-h-collector-oom/allocation-tests")
+                .join(format!("bootstrap-witness-length-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let witness = directory.join(replay::witness::WITNESS_FILE_NAME);
+        fs::write(
+            &witness,
+            replay::witness::TerminalWitness::prepared(1, 1000),
+        )
+        .unwrap();
+        let module: Vec<_> = directory
+            .join("bin/collector.dll")
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        let (file, session, start) = read(&module).unwrap();
+        assert_eq!((session, start), (1, 1000));
+        drop(file);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&witness)
+            .unwrap()
+            .write_all(&[0])
+            .unwrap();
+        assert_eq!(
+            read(&module).err(),
+            Some("collector bootstrap witness length invalid")
+        );
+    }
+}
+fn write_status(path: &Path, status: &impl serde::Serialize) -> io::Result<()> {
+    write_status_bytes(path, &crate::status::serialize(status)?)
+}
+pub(crate) fn write_status_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let temp = path.with_extension("json.tmp");
+    fs::write(&temp, bytes)?;
     replace_status(&temp, path)
 }
 
@@ -175,6 +327,7 @@ fn posix_replace(source: &[u16], target: &[u16]) -> io::Result<bool> {
     if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
         return Err(io::Error::last_os_error());
     }
+    let file = unsafe { File::from_raw_handle(handle) };
     // The name excludes its terminator; the struct keeps one u16 for it.
     let name = &target[..target.len() - 1];
     let header = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
@@ -190,9 +343,13 @@ fn posix_replace(source: &[u16], target: &[u16]) -> io::Result<bool> {
             std::ptr::addr_of_mut!((*info).FileName).cast::<u16>(),
             name.len(),
         );
-        let ok = SetFileInformationByHandle(handle, FileRenameInfoEx, info.cast(), size as u32);
+        let ok = SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileRenameInfoEx,
+            info.cast(),
+            size as u32,
+        );
         let error = io::Error::last_os_error();
-        CloseHandle(handle);
         if ok != 0 { Ok(true) } else { Err(error) }
     };
     match result {
@@ -241,34 +398,19 @@ fn replace_status(temp: &Path, path: &Path) -> io::Result<()> {
     let source = wide(temp);
     let target = wide(path);
     let started = Instant::now();
-    let mut attempts = 0;
-    // With POSIX rename a delete-sharing reader (the recorder, bench and smoke)
-    // never blocks replacement. A reader without delete sharing still does, as
-    // does any reader after the classic fallback, so keep the bounded retry.
-    // It runs off the game thread; OS I/O and scheduling are not time-bounded.
-    let error = loop {
-        attempts += 1;
+    loop {
         let error = match replace_once(&source, &target) {
             Ok(()) => return Ok(()),
             Err(error) => error,
         };
         let Some(delay) = status_rename_retry_delay(&error, started.elapsed()) else {
-            break error;
+            return Err(error);
         };
         std::thread::sleep(delay);
         if started.elapsed() >= STATUS_RENAME_RETRY_BUDGET {
-            break error;
+            return Err(error);
         }
-    };
-    Err(io::Error::new(
-        error.kind(),
-        format!(
-            "cannot atomically replace status {} from {} after {attempts} attempts ({:.3} ms elapsed): {error}",
-            path.display(),
-            temp.display(),
-            started.elapsed().as_secs_f64() * 1000.0
-        ),
-    ))
+    }
 }
 
 struct WorkerWork {
@@ -279,7 +421,35 @@ struct WorkerWork {
     status_update: Distribution,
     queue_peak_observed: usize,
     started_qpc: i64,
-    started_cpu_ns: Result<u64, String>,
+    started_cpu_ns: Result<u64, io::ErrorKind>,
+}
+
+struct CpuWorkStatus {
+    cpu_ns: Result<u64, io::ErrorKind>,
+    hours: u64,
+}
+
+impl crate::status::Fields for CpuWorkStatus {
+    fn len(&self) -> usize {
+        if self.cpu_ns.is_ok() { 2 } else { 1 }
+    }
+
+    fn serialize<M: serde::ser::SerializeMap>(&self, map: &mut M) -> Result<(), M::Error> {
+        match self.cpu_ns {
+            Ok(cpu_ns) => {
+                map.serialize_entry("cpu_total_ns", &cpu_ns)?;
+                map.serialize_entry(
+                    "cpu_ns_per_recorded_hour",
+                    &if self.hours == 0 {
+                        None
+                    } else {
+                        Some(cpu_ns as f64 / self.hours as f64)
+                    },
+                )
+            }
+            Err(_) => map.serialize_entry("cpu_error", "GetThreadTimes failed"),
+        }
+    }
 }
 
 impl WorkerWork {
@@ -292,46 +462,40 @@ impl WorkerWork {
             status_update: Distribution::default(),
             queue_peak_observed: 0,
             started_qpc: sampling::qpc(),
-            started_cpu_ns: thread_cpu_ns().map_err(|error| error.to_string()),
+            started_cpu_ns: thread_cpu_ns().map_err(|error| error.kind()),
         }
     }
 
     /// Once per status update. CPU time includes all work on the spool thread;
     /// buffer_service contains the conversion/encoding/write phases, not their sum.
-    fn add_status(&self, status: &mut Value, frequency: u64) {
-        let hours = status.get("hours").and_then(Value::as_u64).unwrap_or(0);
-        if !status["spool_work"].is_object() {
-            status["spool_work"] = json!({});
-        }
-        let fields = &mut status["spool_work"];
-        fields["buffer_service"] = self.buffer_service.json();
-        fields["idle_flush"] = json!({
-            "calls": self.idle_flush_calls,
-            "total_ns": self.idle_flush_ns,
-            "max_ns": self.idle_flush_max_ns,
-            "mean_ns": self.idle_flush_ns.checked_div(self.idle_flush_calls).unwrap_or(0),
-        });
-        fields["idle_flush_scope"] = json!(
-            "spool-thread wall in Processor::flush after draining ready buffers; includes periodic durable synchronization; separate from buffer_service and status_update"
-        );
-        fields["status_update"] = self.status_update.json();
-        fields["queue_peak_observed"] = json!(self.queue_peak_observed);
+    fn status(
+        &self,
+        hours: u64,
+        frequency: u64,
+    ) -> io::Result<crate::status::Object<impl crate::status::Fields>> {
+        let buffer_service = self.buffer_service.status()?;
+        let status_update = self.status_update.status()?;
         let elapsed_ns = ((sampling::qpc() - self.started_qpc).max(0) as u128 * 1_000_000_000
             / u128::from(frequency)) as u64;
-        fields["elapsed_ns"] = json!(elapsed_ns);
-        match (&self.started_cpu_ns, thread_cpu_ns()) {
-            (Ok(start), Ok(now)) => {
-                let cpu_ns = now.saturating_sub(*start);
-                fields["cpu_total_ns"] = json!(cpu_ns);
-                fields["cpu_ns_per_recorded_hour"] = json!(if hours == 0 {
-                    None
-                } else {
-                    Some(cpu_ns as f64 / hours as f64)
-                });
-            }
-            (Err(error), _) => fields["cpu_error"] = json!(error),
-            (_, Err(error)) => fields["cpu_error"] = json!(error.to_string()),
-        }
+        let cpu_ns = match self.started_cpu_ns {
+            Ok(start) => thread_cpu_ns()
+                .map(|now| now.saturating_sub(start))
+                .map_err(|error| error.kind()),
+            Err(error) => Err(error),
+        };
+        Ok(crate::status::status!({
+            "buffer_service": buffer_service,
+            "idle_flush": {
+                "calls": self.idle_flush_calls,
+                "total_ns": self.idle_flush_ns,
+                "max_ns": self.idle_flush_max_ns,
+                "mean_ns": self.idle_flush_ns.checked_div(self.idle_flush_calls).unwrap_or(0),
+            },
+            "idle_flush_scope": "spool-thread wall in Processor::flush after draining ready buffers; includes periodic durable synchronization; separate from buffer_service and status_update",
+            "status_update": status_update,
+            "queue_peak_observed": self.queue_peak_observed,
+            "elapsed_ns": elapsed_ns,
+        }).join(crate::status::Object(CpuWorkStatus { cpu_ns, hours })))
     }
 }
 
@@ -360,17 +524,28 @@ fn thread_cpu_ns() -> io::Result<u64> {
         .saturating_mul(100))
 }
 
-fn run(module: HMODULE) -> Result<(), String> {
+fn run(
+    module: HMODULE,
+    prepared_session: u64,
+    prepared_process_start: u64,
+) -> Result<(), &'static str> {
     let dll_path = module_path(module)?;
     let config: Config = serde_json::from_slice(
-        &fs::read(dll_path.with_file_name("collector.json")).map_err(|e| e.to_string())?,
+        &fs::read(dll_path.with_file_name("collector.json"))
+            .map_err(|e| error_reason(e, "collector config read failed"))?,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|_| "collector JSON config invalid")?;
     let mut input = Decoder::new(&config.session_start);
-    let session = SessionStart::decode(&mut input).map_err(|e| e.to_string())?;
-    input.finish().map_err(|e| e.to_string())?;
-    if session.id != config.session_id || session.process_id != unsafe { GetCurrentProcessId() } {
-        return Err("collector config names another session or process".into());
+    let session = SessionStart::decode(&mut input)
+        .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
+    input
+        .finish()
+        .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
+    if session.id != config.session_id
+        || session.id != prepared_session
+        || session.process_id != unsafe { GetCurrentProcessId() }
+    {
+        return Err("collector config names another session or process");
     }
     let mut creation = unsafe { std::mem::zeroed() };
     let mut exit = unsafe { std::mem::zeroed() };
@@ -386,87 +561,80 @@ fn run(module: HMODULE) -> Result<(), String> {
         )
     } == 0
     {
-        return Err(io::Error::last_os_error().to_string());
+        return Err("GetProcessTimes failed");
     }
     let process_start =
         (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
-    if session.process_start_time != process_start {
-        return Err("collector config process creation time differs".into());
+    configure_alloc_fault(config.alloc_fault.as_ref())?;
+
+    if session.process_start_time != process_start || prepared_process_start != process_start {
+        return Err("collector config process creation time differs");
     }
     let mut frequency = 0;
     if unsafe { QueryPerformanceFrequency(&mut frequency) } == 0
         || frequency <= 0
         || session.qpc_frequency != frequency as u64
     {
-        return Err("collector config QPC frequency differs".into());
+        return Err("collector config QPC frequency differs");
     }
     if session.sample_boundary != sampling::SAMPLE_BOUNDARY {
-        return Err(format!(
-            "collector samples at the {} boundary; the session declares {}",
-            sampling::SAMPLE_BOUNDARY,
-            session.sample_boundary
-        ));
+        return Err("collector sample boundary differs from session");
     }
-    let exe =
-        hash_executable(File::open(module_path(ptr::null_mut())?).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+    let exe = hash_executable(
+        File::open(module_path(ptr::null_mut())?)
+            .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?,
+    )
+    .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
     if !PINNED_BUILD.matches(&exe) {
-        return Err(format!(
-            "unsupported game build; wanted {} ({} bytes, {:02x?}), got {} bytes, {:02x?}",
-            PINNED_BUILD.version,
-            PINNED_BUILD.exe_size,
-            PINNED_BUILD.exe_sha256,
-            exe.size,
-            exe.sha256
-        ));
+        return Err("unsupported game build");
     }
     if session.identity.exe_hash != exe.sha256 || session.identity.exe_size != exe.size {
-        return Err("collector config executable identity differs from running build".into());
+        return Err("collector config executable identity differs from running build");
     }
-    let dll = hash_executable(File::open(&dll_path).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    let dll = hash_executable(
+        File::open(&dll_path).map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?,
+    )
+    .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
     if session.identity.collector_hash != dll.sha256 {
-        return Err("collector DLL hash differs from session identity".into());
+        return Err("collector DLL hash differs from session identity");
     }
-    fs::create_dir_all(&config.output_dir).map_err(|e| e.to_string())?;
+    // The recorder creates the session directory before attachment.
     let ready = Event::create(&config.ready_event)?;
     let detach = Event::create(&config.detach_event)?;
     let done = Event::create(&config.done_event)?;
     let status_path = config.output_dir.join("status.json");
     write_status(
         &status_path,
-        &json!({"state":"starting", "session":session.id, "hours":0}),
+        &crate::status::status!({"state":"starting", "session":session.id, "hours":0}),
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
     let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
     let memory = unsafe { LiveMemory::new() };
     let rva = cgame_state::HOURLY_UPDATE_RVA;
     let sentinel = cgame_state::HOURLY_UPDATE_SENTINEL;
     if read::<[u8; 16]>(&memory, base + rva) != Some(sentinel) {
-        return Err(format!("hourly boundary sentinel differs at RVA {rva:#x}"));
+        return Err("hourly boundary sentinel differs");
     }
     // The recorder uses this same exclusive handle before every finalization.
     // It protects both existing histories and campaigns with no replay yet.
     let _output_lock = reserve_output(&config, &detach)?;
     let history = PreparedCampaigns::load(&config.replay_dir, &session, |campaign| {
         if config.cancel_file.exists() || detach.signaled() {
-            return Err(io::Error::other(
-                "recording cancelled during history preparation",
-            ));
+            return Err(io::Error::from(io::ErrorKind::Interrupted));
         }
         write_status(
             &status_path,
-            &json!({
+            &crate::status::status!({
                 "state":"preparing campaign history", "session":session.id,
                 "campaign":campaign, "hours":0,
             }),
         )
     })
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| error_reason(error, "collector bootstrap preparation failed"))?;
     let processor = Processor::new(&config.output_dir, history, session.clone())
-        .map_err(|error| error.to_string())?;
-    let mut hook =
-        unsafe { Hook::new(base + rva, sampling::tick as *const () as usize, sentinel) }?;
+        .map_err(|error| error_reason(error, "collector bootstrap preparation failed"))?;
+    let mut hook = unsafe { Hook::new(base + rva, sampling::tick as *const () as usize, sentinel) }
+        .map_err(|_| "hourly hook construction failed")?;
     let mut portrait_hooks = unsafe { crate::portrait_changes::Hooks::new(&memory, base) }?;
     let mut advisor_hooks = unsafe { crate::advisor_changes::Hooks::new(&memory, base) }?;
     let mut relation_hooks = unsafe { crate::relation_changes::Hooks::new(&memory, base) }?;
@@ -505,12 +673,27 @@ fn run(module: HMODULE) -> Result<(), String> {
         sizing.extended.raise_for_politics(demand);
     }
     sizing.extended.line_output.entries = sizing.extended.line_output.entries.max(lines);
-    let shared = Arc::new(Shared::with_sizing(
-        base,
-        hook.trampoline(),
-        frequency as u64,
-        &sizing,
-    ));
+    let pe_offset = read::<u32>(&memory, module as usize + 0x3c).unwrap_or(0) as usize;
+    let image_size = read::<u32>(&memory, module as usize + pe_offset + 0x50).unwrap_or(0) as usize;
+    let [relay, trampoline] = hook.executable_ranges();
+    let mut ranges = vec![
+        module as usize..module as usize + image_size,
+        relay,
+        trampoline,
+    ];
+    ranges.extend(portrait_hooks.executable_ranges());
+    ranges.extend(advisor_hooks.executable_ranges());
+    ranges.extend(relation_hooks.executable_ranges());
+    ranges.extend(history_hooks.executable_ranges());
+    ranges.extend(opinion_hooks.executable_ranges());
+    ranges.extend(destruction_hooks.executable_ranges());
+    ranges.extend(line_hooks.executable_ranges());
+    ranges.extend(prune_hooks.executable_ranges());
+    ranges.extend(construction_hooks.executable_ranges());
+    let shared = Arc::new(
+        Shared::with_sizing(base, hook.trampoline(), frequency as u64, &sizing)
+            .map_err(|e| error_reason(e, "capture buffers allocation failed"))?,
+    );
     let acquisition = acquisition::Pool::start(
         crate::acquisition::recommended_worker_count(),
         acquisition::MAX_JOBS,
@@ -521,19 +704,24 @@ fn run(module: HMODULE) -> Result<(), String> {
     shared
         .acquisition
         .set(acquisition)
-        .map_err(|_| "acquisition pool already initialized".to_string())?;
+        .map_err(|_| "acquisition pool already initialized")?;
     let _payload_pools = decode::prepare_payload_pools();
-    let spool_id = Arc::new(AtomicU32::new(0));
     if config.cancel_file.exists() || detach.signaled() {
-        return Err("recording cancelled before hook installation".into());
+        return Err("recording cancelled before hook installation");
     }
-    let spool_shared = Arc::clone(&shared);
+    if crate::allocation::failed() {
+        return Err("collector allocation failed before hooks");
+    }
+    let acquisition = shared.acquisition.get().expect("initialized before hook");
+    let mut owned_workers = acquisition.thread_ids();
+    let spool_id = Arc::new(AtomicU32::new(0));
     let spool_thread_id = Arc::clone(&spool_id);
+    let spool_shared = Arc::clone(&shared);
     let spool_status = status_path.clone();
     // Owned here and finished only after the spool thread has returned and
     // callbacks are quiescent; the spool thread gets a hand-over handle.
-    let mut status_writer =
-        crate::status_writer::StatusWriter::start(write_status).map_err(|e| e.to_string())?;
+    let mut status_writer = crate::status_writer::StatusWriter::start(write_status_bytes)
+        .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
     let spool_writer = status_writer.handle();
     let session_id = session.id;
     let spool = std::thread::Builder::new()
@@ -550,11 +738,18 @@ fn run(module: HMODULE) -> Result<(), String> {
                 spool_writer,
             )
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
     let mut installation_error = decode::start_worker().err();
+    while spool_id.load(Ordering::Acquire) == 0 && !spool.is_finished() {
+        std::thread::yield_now();
+    }
+    owned_workers.extend([spool_id.load(Ordering::Acquire), decode::worker_id()]);
+    if crate::allocation::failed() {
+        installation_error = Some("collector allocation failed before hooks");
+    }
     SHARED.store(Arc::as_ptr(&shared).cast_mut(), Ordering::Release);
     let deadline = Instant::now() + Duration::from_secs(15);
-    while installation_error.is_none() {
+    while installation_error.is_none() && !crate::allocation::failed() {
         match advisor_hooks
             .set_enabled(true)
             .and_then(|ready| {
@@ -616,6 +811,7 @@ fn run(module: HMODULE) -> Result<(), String> {
             .and_then(|ready| {
                 if ready {
                     hook.set_enabled(true)
+                        .map_err(|_| "hourly hook installation failed")
                 } else {
                     Ok(false)
                 }
@@ -623,12 +819,13 @@ fn run(module: HMODULE) -> Result<(), String> {
             Ok(true) => break,
             Ok(false) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(1)),
             error => {
-                installation_error = Some(format!("hook installation failed: {error:?}"));
+                let _ = error;
+                installation_error = Some("hook installation failed");
                 break;
             }
         }
     }
-    if installation_error.is_none() {
+    if installation_error.is_none() && !crate::allocation::failed() {
         ready.set();
     }
     while installation_error.is_none()
@@ -636,12 +833,15 @@ fn run(module: HMODULE) -> Result<(), String> {
         && !spool.is_finished()
         && !decode::worker_finished()
         && !shared.acquisition_failed()
+        && !crate::allocation::failed()
     {
         std::thread::sleep(Duration::from_millis(20));
     }
     // A callback may be waiting for a reusable frame. Cancel that wait before
     // restoring the hook and waiting for ACTIVE to reach zero; recording stays
     // enabled until every callback already in the relay has returned.
+    let _teardown = crate::allocation::enter(crate::allocation::Phase::Teardown);
+    crate::allocation::attempted_hour(None);
     shared.cancel_buffer_wait.store(true, Ordering::Release);
     let decode_stopped_early = installation_error.is_none() && decode::worker_finished();
     // Never unwind through an enabled or partially published detour.
@@ -649,37 +849,11 @@ fn run(module: HMODULE) -> Result<(), String> {
         match hook.set_enabled(false) {
             Ok(true) => break,
             result => {
-                let _ = fs::write(
-                    dll_path.with_file_name("collector.error.txt"),
-                    format!("detach pending: {result:?}"),
-                );
+                let _ = result;
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
     }
-    let pe_offset = read::<u32>(&memory, module as usize + 0x3c).unwrap_or(0) as usize;
-    let image_size = read::<u32>(&memory, module as usize + pe_offset + 0x50).unwrap_or(0) as usize;
-    let [relay, trampoline] = hook.executable_ranges();
-    let mut ranges = vec![
-        module as usize..module as usize + image_size,
-        relay,
-        trampoline,
-    ];
-    ranges.extend(portrait_hooks.executable_ranges());
-    ranges.extend(advisor_hooks.executable_ranges());
-    ranges.extend(relation_hooks.executable_ranges());
-    ranges.extend(history_hooks.executable_ranges());
-    ranges.extend(opinion_hooks.executable_ranges());
-    ranges.extend(destruction_hooks.executable_ranges());
-    ranges.extend(line_hooks.executable_ranges());
-    ranges.extend(prune_hooks.executable_ranges());
-    ranges.extend(construction_hooks.executable_ranges());
-    while spool_id.load(Ordering::Acquire) == 0 {
-        std::thread::yield_now();
-    }
-    let acquisition = shared.acquisition.get().expect("initialized before hook");
-    let mut owned_workers = acquisition.thread_ids();
-    owned_workers.extend([spool_id.load(Ordering::Acquire), decode::worker_id()]);
     wait_quiet(&ranges, image_size, &owned_workers, &dll_path);
     // Keep mutation observation intact until the last acquisition has finished.
     // Then restore its hooks and drain callbacks that entered during restoration.
@@ -687,10 +861,7 @@ fn run(module: HMODULE) -> Result<(), String> {
         match destruction_hooks.set_enabled(false) {
             Ok(true) => break,
             result => {
-                let _ = fs::write(
-                    dll_path.with_file_name("collector.error.txt"),
-                    format!("destruction hook detach pending: {result:?}"),
-                );
+                let _ = result;
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
@@ -699,10 +870,7 @@ fn run(module: HMODULE) -> Result<(), String> {
         match portrait_hooks.set_enabled(false) {
             Ok(true) => break,
             result => {
-                let _ = fs::write(
-                    dll_path.with_file_name("collector.error.txt"),
-                    format!("portrait hook detach pending: {result:?}"),
-                );
+                let _ = result;
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
@@ -711,10 +879,7 @@ fn run(module: HMODULE) -> Result<(), String> {
         match opinion_hooks.set_enabled(false) {
             Ok(true) => break,
             result => {
-                let _ = fs::write(
-                    dll_path.with_file_name("collector.error.txt"),
-                    format!("opinion hook detach pending: {result:?}"),
-                );
+                let _ = result;
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
@@ -723,10 +888,7 @@ fn run(module: HMODULE) -> Result<(), String> {
         match construction_hooks.set_enabled(false) {
             Ok(true) => break,
             result => {
-                let _ = fs::write(
-                    dll_path.with_file_name("collector.error.txt"),
-                    format!("construction line hook detach pending: {result:?}"),
-                );
+                let _ = result;
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
@@ -735,10 +897,7 @@ fn run(module: HMODULE) -> Result<(), String> {
         match line_hooks.set_enabled(false) {
             Ok(true) => break,
             result => {
-                let _ = fs::write(
-                    dll_path.with_file_name("collector.error.txt"),
-                    format!("production line hook detach pending: {result:?}"),
-                );
+                let _ = result;
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
@@ -747,10 +906,7 @@ fn run(module: HMODULE) -> Result<(), String> {
         match prune_hooks.set_enabled(false) {
             Ok(true) => break,
             result => {
-                let _ = fs::write(
-                    dll_path.with_file_name("collector.error.txt"),
-                    format!("combat log prune hook detach pending: {result:?}"),
-                );
+                let _ = result;
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
@@ -759,10 +915,7 @@ fn run(module: HMODULE) -> Result<(), String> {
         match advisor_hooks.set_enabled(false) {
             Ok(true) => break,
             result => {
-                let _ = fs::write(
-                    dll_path.with_file_name("collector.error.txt"),
-                    format!("advisor hook detach pending: {result:?}"),
-                );
+                let _ = result;
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
@@ -771,10 +924,7 @@ fn run(module: HMODULE) -> Result<(), String> {
         match relation_hooks.set_enabled(false) {
             Ok(true) => break,
             result => {
-                let _ = fs::write(
-                    dll_path.with_file_name("collector.error.txt"),
-                    format!("relation hook detach pending: {result:?}"),
-                );
+                let _ = result;
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
@@ -783,10 +933,7 @@ fn run(module: HMODULE) -> Result<(), String> {
         match history_hooks.set_enabled(false) {
             Ok(true) => break,
             result => {
-                let _ = fs::write(
-                    dll_path.with_file_name("collector.error.txt"),
-                    format!("air history hook detach pending: {result:?}"),
-                );
+                let _ = result;
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
@@ -807,40 +954,26 @@ fn run(module: HMODULE) -> Result<(), String> {
     shared.stop_spool.store(true, Ordering::Release);
     let spool_outcome = spool
         .join()
-        .map_err(|_| "spool thread panicked".to_string())
+        .map_err(|_| "spool thread failed")
         .and_then(|result| result);
-    let mut spool_warning = spool_outcome.as_ref().ok().cloned().flatten();
-    // The spool thread has returned and every callback is quiescent: waiting
-    // on status I/O here blocks no game thread. The last spool status is on
-    // disk (or its failure is known) before it is read below.
     status_writer.finish();
-    if let Some(error) = status_writer.take_error() {
-        // The loader still publishes the authoritative detached status. Keep
-        // the diagnostic so successful terminal publication reports recovery.
-        let error = format!("cannot publish spool status: {error}");
-        spool_warning = Some(match spool_warning {
-            Some(warning) => format!("{warning}; {error}"),
-            None => error,
-        });
-    }
-    let mut spool_result = spool_outcome.map(|_| ());
+    let (mut spool_result, terminal_status) = match spool_outcome {
+        Ok(outcome) => (
+            outcome.result,
+            Some((outcome.terminal_status, outcome.directories)),
+        ),
+        Err(error) => (Err(error), None),
+    };
     if let Err(error) = acquisition_outcome {
         add_terminal_error(&mut spool_result, error);
     }
     if shared.acquisition_failed() {
-        add_terminal_error(
-            &mut spool_result,
-            "game-thread acquisition panicked; recording stopped after draining completed captures"
-                .into(),
-        );
+        add_terminal_error(&mut spool_result, "game-thread acquisition failed");
     }
     if let Err(error) = decode_outcome {
         add_terminal_error(&mut spool_result, error);
     } else if decode_stopped_early {
-        add_terminal_error(
-            &mut spool_result,
-            "decode worker stopped before detach".into(),
-        );
+        add_terminal_error(&mut spool_result, "decode worker stopped before detach");
     }
     wait_quiet(&ranges, image_size, &[], &dll_path);
     SHARED.store(ptr::null_mut(), Ordering::Release);
@@ -858,61 +991,38 @@ fn run(module: HMODULE) -> Result<(), String> {
     if let Some(error) = installation_error {
         add_terminal_error(&mut spool_result, error);
     }
-    let detach_warning = fs::read_to_string(dll_path.with_file_name("collector.error.txt"))
-        .ok()
-        .filter(|message| !message.trim().is_empty());
-    if spool_result.is_ok() {
-        // Restore retries may have left a transient diagnostic. After successful
-        // drain it must not masquerade as a fatal error after module absence.
-        match fs::remove_file(dll_path.with_file_name("collector.error.txt")) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => add_terminal_error(
-                &mut spool_result,
-                format!("cannot clear recovered detach diagnostic: {error}"),
-            ),
-        }
-    }
-    let mut final_status = fs::read(&status_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .unwrap_or_else(|| json!({}));
-    set_drain_status(&mut final_status, &spool_result);
-    if let Some(warning) = spool_warning {
-        final_status["warning"] = json!(warning);
-    }
-    if let Some(warning) = detach_warning {
-        let previous = final_status["warning"].as_str().unwrap_or_default();
-        final_status["warning"] = json!(if previous.is_empty() {
-            warning
+    if !crate::allocation::failed() {
+        let status = crate::status::status!({"state":"detached","session":session_id,
+            "drain_complete":spool_result.is_ok(),"error":spool_result.as_ref().err().copied(),
+            "original_bytes_verified":true,"active_callbacks":0});
+        let write = if spool_result.is_ok() {
+            if let Some((mut bytes, directories)) = terminal_status {
+                crate::status_writer::measure_bytes(&mut bytes, &directories)
+                    .and_then(|()| write_status_bytes(&status_path, &bytes))
+            } else {
+                write_status(&status_path, &status)
+            }
         } else {
-            format!("{previous}; {warning}")
-        });
-    }
-    final_status["state"] = json!("detached");
-    final_status["session"] = json!(session_id);
-    final_status["original_bytes_verified"] = json!(true);
-    final_status["active_callbacks"] = json!(0);
-    if let Err(error) = write_status(&status_path, &final_status) {
-        // The worker writes this terminal failure to collector.error.txt before
-        // unloading. The recorder reads it only after confirming module absence.
-        add_terminal_error(
-            &mut spool_result,
-            format!("cannot publish terminal collector status: {error}"),
-        );
+            write_status(&status_path, &status)
+        };
+        if let Err(error) = write {
+            crate::allocation::observe(&error);
+            add_terminal_error(&mut spool_result, "terminal status write failed");
+        }
     }
     done.set();
     spool_result
 }
 
-fn reserve_output(config: &Config, detach: &Event) -> Result<File, String> {
+fn reserve_output(config: &Config, detach: &Event) -> Result<File, &'static str> {
     let path = config.replay_dir.join("finalize.lock");
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         if config.cancel_file.exists() || detach.signaled() {
-            return Err("recording cancelled while waiting for campaign output".into());
+            return Err("recording cancelled while waiting for campaign output");
         }
-        match fs::OpenOptions::new()
+        match OpenOptions::new()
+            .read(true)
             .write(true)
             .create(true)
             .truncate(false)
@@ -921,38 +1031,30 @@ fn reserve_output(config: &Config, detach: &Event) -> Result<File, String> {
         {
             Ok(file) => return Ok(file),
             Err(error) if error.raw_os_error() == Some(32) && Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(100));
+                std::thread::sleep(Duration::from_millis(100))
             }
             Err(error) => {
-                return Err(format!(
-                    "campaign output is busy or unavailable: {}: {error}",
-                    path.display()
+                return Err(error_reason(
+                    error,
+                    "campaign output is busy or unavailable",
                 ));
             }
         }
     }
 }
-
-fn add_terminal_error(result: &mut Result<(), String>, error: String) {
-    match result {
-        Ok(()) => *result = Err(error),
-        Err(previous) => {
-            previous.push_str("; ");
-            previous.push_str(&error);
-        }
+fn add_terminal_error(result: &mut Result<(), &'static str>, error: &'static str) {
+    if result.is_ok() {
+        *result = Err(error);
     }
 }
-
-fn set_drain_status(status: &mut Value, result: &Result<(), String>) {
-    if !status.is_object() {
-        *status = json!({});
-    }
-    let previous_error = status.as_object_mut().unwrap().remove("error");
+#[cfg(test)]
+fn set_drain_status(status: &mut Value, result: &Result<(), &'static str>) {
+    let previous = status.as_object_mut().unwrap().remove("error");
     if result.is_ok()
         && status.get("warning").is_none()
-        && let Some(previous_error) = previous_error
+        && let Some(previous) = previous
     {
-        status["warning"] = previous_error;
+        status["warning"] = previous;
     }
     status["drain_complete"] = json!(result.is_ok());
     if let Err(error) = result {
@@ -967,66 +1069,93 @@ fn set_drain_status(status: &mut Value, result: &Result<(), String>) {
 /// apples-to-oranges).
 /// Per-frame read counters and processed-frame totals remain untouched here;
 /// asynchronously sampled live counters have a different observation cohort.
-fn add_decode_status(status: &mut Value) {
-    if !status.is_object() {
-        *status = json!({});
+struct DecodeStatus<T, U, V> {
+    base: crate::status::Object<T>,
+    shared: Option<crate::status::Object<U>>,
+    acquisition: Option<crate::status::Object<V>>,
+}
+
+impl<T: crate::status::Fields, U: crate::status::Fields, V: crate::status::Fields> serde::Serialize
+    for DecodeStatus<T, U, V>
+{
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let fields = self.base.0.len()
+            + self.shared.as_ref().map_or(0, |status| status.0.len())
+            + self.acquisition.as_ref().map_or(0, |status| status.0.len());
+        let mut map = serializer.serialize_map(Some(fields))?;
+        self.base.0.serialize(&mut map)?;
+        if let Some(status) = &self.shared {
+            status.0.serialize(&mut map)?;
+        }
+        if let Some(status) = &self.acquisition {
+            status.0.serialize(&mut map)?;
+        }
+        map.end()
     }
-    status["decode_work"] = decode::calibration_json();
-    status["portrait_changes"] = crate::portrait_changes::status();
-    status["advisor_changes"] = crate::advisor_changes::status();
-    status["relation_changes"] = crate::relation_changes::status();
-    status["history_changes"] = crate::history_changes::status();
-    status["opinion_changes"] = crate::opinion_changes::status();
-    status["equipment_destruction"] = crate::equipment_destruction::status();
-    status["line_output"] = crate::line_output::status();
-    status["combat_log_prune"] = crate::combat_log_prune::status();
-    status["construction_ic"] = crate::construction_ic::status();
-    #[cfg(feature = "callback_profile")]
-    {
-        status["callback_profile"] = crate::callback_profile::status();
-    }
-    #[cfg(feature = "advisor_profile")]
-    {
-        status["advisor_profile"] = crate::extended::characters::advisors::profile::status();
-    }
-    status["replay_format"] = json!(replay::FORMAT_VERSION);
-    status["sample_boundary"] = json!(sampling::SAMPLE_BOUNDARY.name());
+}
+
+fn decode_status() -> impl serde::Serialize {
     let shared_ptr = SHARED.load(Ordering::Acquire);
-    if !shared_ptr.is_null() {
+    let shared = if shared_ptr.is_null() {
+        None
+    } else {
         // Status is produced while runtime retains Shared and joins its spool.
-        let shared = unsafe { &*shared_ptr };
-        status["fixed_layout"] = crate::fixed_layout::status(shared.fixed_layout.get());
-        status["native_tick_work"] = json!({
-            "elapsed_ns": shared.native_tick_ns.load(Ordering::Relaxed),
-            "calls": shared.native_tick_calls.load(Ordering::Relaxed),
-            "scope": "asynchronously sampled cumulative original hourly-tick (trampoline) wall time since attach, including engine waits; excludes the entry read, the collect wait and all acquisition; not a recorder-free baseline or CPU time",
-        });
-        let models = shared
-            .template_models
-            .lock()
-            .map(|stats| *stats)
-            .unwrap_or_default();
-        status["template_models"] = json!({
-            "hours": models.hours,
-            "rows": models.rows,
-            "first_reason": models.first_reason,
-            "by_reason": models
-                .reasons
-                .iter()
-                .filter(|(_, rows)| *rows != 0)
-                .map(|(reason, rows)| (reason.to_string(), json!(rows)))
-                .collect::<serde_json::Map<_, _>>(),
-            "other_reasons": models.other,
-            "missed_hours": shared.template_models_missed.load(Ordering::Relaxed),
-            "scope": "cumulative DivisionTemplateIcons rows since attach whose 3D-model inputs could not be read: that row's model fields are empty and its counter fields stand; the viewer draws no model for its divisions. missed_hours counts hours not folded because this status write held the counters",
-        });
+        Some(unsafe { &*shared_ptr })
+    };
+    decode_status_from(shared)
+}
+
+fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
+    use crate::status::{DebugValue, map, sequence, status};
+    let base = status!({
+        "decode_work": decode::calibration_json(),
+        "portrait_changes": crate::portrait_changes::status(),
+        "advisor_changes": crate::advisor_changes::status(),
+        "relation_changes": crate::relation_changes::status(),
+        "history_changes": crate::history_changes::status(),
+        "opinion_changes": crate::opinion_changes::status(),
+        "equipment_destruction": crate::equipment_destruction::status(),
+        "line_output": crate::line_output::status(),
+        "combat_log_prune": crate::combat_log_prune::status(),
+        "construction_ic": crate::construction_ic::status(),
+        "replay_format": replay::FORMAT_VERSION,
+        "sample_boundary": sampling::SAMPLE_BOUNDARY.name(),
+    });
+    #[cfg(feature = "callback_profile")]
+    let base = base.join(status!({"callback_profile": crate::callback_profile::status()}));
+    #[cfg(feature = "advisor_profile")]
+    let base = base.join(
+        status!({"advisor_profile": crate::extended::characters::advisors::profile::status()}),
+    );
+    let shared_status = shared.map(|shared| {
+        let models = {
+            let guard = shared.template_models.lock();
+            guard.map(|stats| *stats).unwrap_or_default()
+        };
         let eta = &shared.eta_inputs;
         let load = |slot: &std::sync::atomic::AtomicU64| slot.load(Ordering::Relaxed);
         let eta_hours = load(&eta.hours);
         let eta_mean = |value: u64| value.checked_div(eta_hours).unwrap_or(0);
-        status["background_priority"] = background_priority_status();
-        status["refresh_requests_accepted"] = json!(REFRESH_ACCEPTED.load(Ordering::Relaxed));
-        status["eta_inputs"] = json!({
+        status!({
+            "fixed_layout": crate::fixed_layout::status(shared.fixed_layout.get()),
+            "native_tick_work": {
+                "elapsed_ns": shared.native_tick_ns.load(Ordering::Relaxed),
+                "calls": shared.native_tick_calls.load(Ordering::Relaxed),
+                "scope": "asynchronously sampled cumulative original hourly-tick (trampoline) wall time since attach, including engine waits; excludes the entry read, the collect wait and all acquisition; not a recorder-free baseline or CPU time",
+            },
+            "template_models": {
+                "hours": models.hours,
+                "rows": models.rows,
+                "first_reason": models.first_reason,
+                "by_reason": map(models.reasons.into_iter().filter(|(_, rows)| *rows != 0)),
+                "other_reasons": models.other,
+                "missed_hours": shared.template_models_missed.load(Ordering::Relaxed),
+                "scope": "cumulative DivisionTemplateIcons rows since attach whose 3D-model inputs could not be read: that row's model fields are empty and its counter fields stand; the viewer draws no model for its divisions. missed_hours counts hours not folded because this status write held the counters",
+            },
+            "background_priority": background_priority_status(),
+            "refresh_requests_accepted": REFRESH_ACCEPTED.load(Ordering::Relaxed),
+            "eta_inputs": {
             "hours": eta_hours,
             "walks": load(&eta.walks),
             "divisions": load(&eta.divisions),
@@ -1049,23 +1178,22 @@ fn add_decode_status(status: &mut Value) {
             "air_defense_requests": load(&eta.air_defense_requests),
             "air_defense_hits": load(&eta.air_defense_hits),
             "scope": "cumulative DivisionEtaInputs acquisition since attach, one observation per sampled hour. graph = the per-division composed speed graph, scan = the per-leg route scan, other = the route copy and the prepared speed tail; they sum to the acquisition wall inside its owning worker, not to game-thread block. geometry hits/misses count province/adjacency lookups answered from the pass memo versus read from memory; static hits/misses are the session map memo (distance, crossing, flags, terrain), and static_cleared counts hours that dropped it after a reload or a new census",
-        });
-        if let Some(acquisition) = shared.acquisition.get() {
+            },
+        })
+    });
+    let acquisition = shared.and_then(|shared| shared.acquisition.get().map(|acquisition| {
             let world = acquisition.world_calibration();
             let calibration = acquisition.calibration();
             let block_ns = shared.collect_wait_ns.load(Ordering::Relaxed);
             let block_calls = shared.native_tick_calls.load(Ordering::Relaxed);
             let phase_calls = shared.phase_calls.load(Ordering::Relaxed);
-            let phase_mean = |ns: u64| ns.checked_div(phase_calls).unwrap_or(0);
-            let join_wait_by_role = crate::acquisition_jobs::ROLES
-                .iter()
-                .zip(&shared.join_wait)
-                .filter_map(|(role, wait)| {
-                    let wait = wait.load(Ordering::Relaxed);
-                    (wait > 0).then(|| (format!("{role:?}"), json!(phase_mean(wait))))
-                })
-                .collect::<serde_json::Map<_, _>>();
-            status["acquisition_work"] = json!({
+            let phase_mean = move |ns: u64| ns.checked_div(phase_calls).unwrap_or(0);
+            let join_wait = shared.join_wait.each_ref().map(|wait| wait.load(Ordering::Relaxed));
+            let join_wait_by_role = map(crate::acquisition_jobs::ROLES.into_iter()
+                .zip(join_wait).filter(|(_, wait)| *wait > 0)
+                .map(move |(role, wait)| (DebugValue(role), phase_mean(wait))));
+            let segments = shared.phase_segments.each_ref().map(|segment| phase_mean(segment.load(Ordering::Relaxed)));
+            status!({ "acquisition_work": {
                 "collect_wait_ns": block_ns,
                 "calls": block_calls,
                 "mean_ns": block_ns.checked_div(block_calls).unwrap_or(0),
@@ -1080,7 +1208,7 @@ fn add_decode_status(status: &mut Value) {
                     "parallel_mean_ns": phase_mean(shared.phase_parallel_ns.load(Ordering::Relaxed)),
                     "parallel_inline_walk_mean_ns": phase_mean(shared.phase_inline_walk_ns.load(Ordering::Relaxed)),
                     "parallel_join_mean_ns": phase_mean(shared.phase_join_ns.load(Ordering::Relaxed)),
-                    "segments_mean_ns": shared.phase_segments.iter().map(|segment| phase_mean(segment.load(Ordering::Relaxed))).collect::<Vec<_>>(),
+                    "segments_mean_ns": sequence(segments.into_iter()),
                     "segments_scope": sampling::SEGMENTS_SCOPE,
                     "join_wait_by_role_mean_ns": join_wait_by_role,
                     "residual_mean_ns": phase_mean(shared.phase_residual_ns.load(Ordering::Relaxed)),
@@ -1097,9 +1225,88 @@ fn add_decode_status(status: &mut Value) {
                 "world_acquisition_ns": shared.ns(i64::try_from(world.acquisition_ticks).unwrap_or(i64::MAX)),
                 "world_last_error": world.last_error,
                 "world_cost_scope": "hourly owned World job on any acquisition participant; includes staging attempts; shared country preparation charged once to Countries; typed fallback table costs exclude discarded staging attempts; overlaps other jobs and acquisition work; panicked/stopped worker cost is unavailable",
-            });
+            } })
+        }));
+    DecodeStatus {
+        base,
+        shared: shared_status,
+        acquisition,
+    }
+}
+
+#[cfg(test)]
+fn add_decode_status(status: &mut serde_json::Value) {
+    if !status.is_object() {
+        *status = serde_json::json!({});
+    }
+    let additions = serde_json::to_value(decode_status()).unwrap();
+    status
+        .as_object_mut()
+        .unwrap()
+        .extend(additions.as_object().unwrap().clone());
+}
+
+#[cfg(test)]
+pub(crate) fn status_allocation_failure_exercise() -> io::Result<()> {
+    use crate::allocation_failure_tests::with_allocations_denied;
+    use std::io::Write;
+    struct Count(usize);
+    impl Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
         }
     }
+    let shared = Shared::new(0, 0, 1);
+    let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS)
+        .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
+    assert!(shared.acquisition.set(pool).is_ok());
+    shared.phase_calls.store(3, Ordering::Relaxed);
+    shared.join_wait[0].store(42, Ordering::Relaxed);
+    {
+        let mut models = shared.template_models.lock().unwrap();
+        models.reasons[0] = ("synthetic model reason", 2);
+    }
+    let work = with_allocations_denied(WorkerWork::new);
+    let decode = with_allocations_denied(|| decode_status_from(Some(&shared)));
+    let worker = with_allocations_denied(|| work.status(0, 1))?;
+    let value = crate::status::status!({"decode": decode, "worker": worker});
+    let mut count = Count(0);
+    with_allocations_denied(|| serde_json::to_writer(&mut count, &value))
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+    let mut bytes = Vec::new();
+    engine::allocation::reserve_exact(&mut bytes, count.0)?;
+    // Mutating the source between passes must not change the owned snapshot.
+    shared.phase_calls.store(30, Ordering::Relaxed);
+    shared.join_wait[0].store(420_000, Ordering::Relaxed);
+    shared.template_models.try_lock().unwrap().reasons[0].1 = 200_000;
+    with_allocations_denied(|| serde_json::to_writer(&mut bytes, &value))
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+    assert_eq!(bytes.len(), count.0);
+    let status: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        status["decode"]["acquisition_work"]["block_phases"]["calls"],
+        3
+    );
+    assert_eq!(
+        status["decode"]["template_models"]["by_reason"]["synthetic model reason"],
+        2
+    );
+    assert!(status["worker"]["cpu_ns_per_recorded_hour"].is_null());
+    drop(value);
+    let absent = with_allocations_denied(|| decode_status_from(None));
+    let absent = serde_json::to_value(absent).unwrap();
+    assert!(absent.get("fixed_layout").is_none());
+    assert!(absent.get("acquisition_work").is_none());
+    shared
+        .acquisition
+        .get()
+        .unwrap()
+        .shutdown()
+        .map_err(|_| io::Error::from(io::ErrorKind::Other))
 }
 
 // Both quiescence checks use the same predicate, including while the threads
@@ -1121,17 +1328,13 @@ fn wait_quiet(
     ranges: &[std::ops::Range<usize>],
     image_size: usize,
     excluded_threads: &[u32],
-    dll_path: &Path,
+    _dll_path: &Path,
 ) {
-    let mut report = Instant::now();
     loop {
-        let outcome = if image_size == 0 {
-            Err("collector image size unreadable".to_string())
-        } else if observers_active() {
-            Ok(false)
-        } else {
-            Threads::open_excluding(excluded_threads).and_then(|mut threads| {
-                let quiet = threads.suspend().and_then(|()| {
+        let quiet = image_size != 0
+            && !observers_active()
+            && Threads::open_excluding(excluded_threads).is_ok_and(|mut threads| {
+                let result = threads.suspend().and_then(|()| {
                     if observers_active() {
                         Ok(false)
                     } else {
@@ -1139,23 +1342,10 @@ fn wait_quiet(
                     }
                 });
                 let resumed = threads.resume();
-                drop(threads);
-                resumed.map_err(|code| format!("ResumeThread failed: {code}"))?;
-                quiet.map_err(|code| format!("thread context check failed: {code}"))
-            })
-        };
-        if outcome == Ok(true) {
+                resumed.is_ok() && result == Ok(true)
+            });
+        if quiet {
             break;
-        }
-        if report.elapsed() >= Duration::from_secs(1) {
-            let _ = fs::write(
-                dll_path.with_file_name("collector.error.txt"),
-                format!(
-                    "unload pending: {outcome:?}; active {}",
-                    ACTIVE.load(Ordering::SeqCst)
-                ),
-            );
-            report = Instant::now();
         }
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -1377,6 +1567,82 @@ fn grow_idle_frames(
     }
 }
 
+struct SpoolOutcome {
+    result: Result<(), &'static str>,
+    terminal_status: Vec<u8>,
+    directories: Vec<PathBuf>,
+}
+#[derive(serde::Serialize)]
+struct SpoolStatus<P, D, W> {
+    #[serde(flatten)]
+    processor: P,
+    #[serde(flatten)]
+    decode: D,
+    state: &'static str,
+    session: u64,
+    pool_bytes: u64,
+    pool_buffers: usize,
+    dropped_frames: u64,
+    startup_unattributed_callbacks: u64,
+    drain_complete: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    original_bytes_verified: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_callbacks: Option<u64>,
+    status_writer: W,
+}
+#[allow(clippy::too_many_arguments)]
+fn spool_status<'a>(
+    processor: &'a Processor,
+    shared: &'a Shared,
+    session: u64,
+    work: &'a WorkerWork,
+    writer: &'a crate::status_writer::StatusHandle,
+    state: &'static str,
+    startup_unknown: u64,
+    warning: Option<&'static str>,
+    error: Option<&'static str>,
+    drain_complete: bool,
+    terminal: bool,
+) -> io::Result<impl serde::Serialize + 'a> {
+    Ok(SpoolStatus {
+        processor: processor
+            .status_with_work(work.status(processor.recorded_hours(), shared.frequency)?)?,
+        decode: decode_status(),
+        state,
+        session,
+        pool_bytes: shared.pool_bytes.load(Ordering::Relaxed),
+        pool_buffers: sampling::BUFFERS,
+        dropped_frames: shared.dropped.load(Ordering::Relaxed),
+        startup_unattributed_callbacks: startup_unknown,
+        drain_complete,
+        warning,
+        error,
+        original_bytes_verified: terminal.then_some(true),
+        active_callbacks: terminal.then_some(0),
+        status_writer: writer.status(),
+    })
+}
+
+pub(crate) fn wait_completed_callback(
+    base: &std::sync::atomic::AtomicI64,
+    tail: &std::sync::atomic::AtomicI64,
+) -> Result<i64, &'static str> {
+    loop {
+        if crate::allocation::failed() {
+            return Err("collector allocation failed");
+        }
+        if let Some(ticks) = sampling::completed_callback_ticks(base, tail) {
+            return Ok(ticks);
+        }
+        std::thread::yield_now();
+    }
+}
+
 fn spool_loop(
     shared: &Shared,
     config: &Config,
@@ -1388,7 +1654,8 @@ fn spool_loop(
     // this thread only hands snapshots over and never waits on status I/O,
     // nor joins that thread (#94).
     writer: crate::status_writer::StatusHandle,
-) -> Result<Option<String>, String> {
+) -> Result<SpoolOutcome, &'static str> {
+    let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
     let mut capacities = sizing.core;
     let mut map_capacities = sizing.map;
     let mut extended_capacities = sizing.extended;
@@ -1402,24 +1669,29 @@ fn spool_loop(
     let mut priority = OwnPriority::new();
     let mut refresh_requests = RefreshRequests::default();
     loop {
+        if crate::allocation::failed() {
+            return Err("collector allocation failed");
+        }
         priority.follow(shared.buffers_backlogged());
         while let Some(index) = shared.ready.pop() {
+            if crate::allocation::failed() {
+                return Err("collector allocation failed");
+            }
             priority.follow(shared.buffers_backlogged());
             let service_started = sampling::qpc();
             work.queue_peak_observed = work.queue_peak_observed.max(shared.ready.len() + 1);
-            let mut elapsed = sampling::completed_callback_ticks(
-                &shared.completed[index],
-                &shared.callback_tail[index],
-            );
-            while elapsed.is_none() {
-                std::thread::yield_now();
-                elapsed = sampling::completed_callback_ticks(
-                    &shared.completed[index],
-                    &shared.callback_tail[index],
-                );
-            }
+            let elapsed =
+                wait_completed_callback(&shared.completed[index], &shared.callback_tail[index])?;
             let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-            frame.total_ns = shared.ns(elapsed.unwrap());
+            frame.total_ns = shared.ns(elapsed);
+            crate::allocation::set_context(crate::allocation::Context {
+                campaign_id: frame
+                    .clock
+                    .and_then(|clock| clock.campaign_id.as_bytes().try_into().ok()),
+                branch: None,
+                load_signal: frame.clock.map(|clock| clock.play_session_started_at),
+                failed_hour: frame.clock.map(|clock| clock.hour),
+            });
             // The shared CountryIntel buffer grows through whichever frame
             // returns it, so its bytes are part of every growth delta.
             let before_bytes = frame.allocated_bytes() + shared.country_intel.allocated_bytes();
@@ -1449,51 +1721,57 @@ fn spool_loop(
                     .pool_bytes
                     .fetch_sub(roster.allocated_bytes() as u64, Ordering::Relaxed);
                 // Verification errors are recorded as Unverified, allowing an honest capture.
-                let _ = roster.verify(
-                    &mut session.identity,
-                    &config.expected_mounts,
-                    &config.mod_descriptors,
-                    config.content_order_note.as_deref(),
-                );
+                roster
+                    .verify(
+                        &mut session.identity,
+                        &config.expected_mounts,
+                        &config.mod_descriptors,
+                        config.content_order_note.as_deref(),
+                    )
+                    .map_err(|e| error_reason(e, "content verification failed"))?;
                 let diagnostic =
                     roster.diagnostics(&config.expected_mounts, &session.identity.verification);
-                writer.publish(&config.output_dir.join("content.json"), diagnostic);
-                processor.set_verified_session(session.clone());
+                writer
+                    .publish(&config.output_dir.join("content.json"), diagnostic)
+                    .map_err(|e| error_reason(e, "content status allocation failed"))?;
+                processor.set_verified_session(
+                    session
+                        .try_clone()
+                        .map_err(|e| error_reason(e, "session allocation failed"))?,
+                );
             }
             // Campaign directories can still fail to open. Keep the buffer and
             // preceding witnesses until those operations succeed. History is ready.
             while let Err(error) = processor.prepare(frame) {
+                crate::allocation::observe(&error);
+                if crate::allocation::failed() {
+                    return Err("collector allocation failed");
+                }
                 if error.kind() == io::ErrorKind::InvalidData {
                     // An immutable history or identity refusal cannot recover by
                     // retaining this buffer. Ending the worker requests restore
                     // through the loader's JoinHandle check and preserves the
                     // precise error in its terminal status.
-                    let drain = processor.detach().err();
-                    return Err(format!(
-                        "campaign recording refused: {error}; current and {} queued observations remain unwritten{}",
-                        shared.ready.len(),
-                        drain.map_or_else(String::new, |error| format!(
-                            "; prior spool detach: {error}"
-                        )),
-                    ));
+                    let _ = processor.detach();
+                    return Err("campaign recording refused; observations remain unwritten");
                 }
-                last_warning = Some(error.to_string());
-                writer.publish(
-                    status_path,
-                    json!({
-                        "state":"campaign spool unavailable", "session":session.id,
-                        "warning":last_warning, "drain_complete":false,
-                        "dropped_frames":shared.dropped.load(Ordering::Relaxed),
-                    }),
-                );
+                last_warning = Some(error_reason(error, "collector spool I/O failed"));
+                writer
+                    .publish(
+                        status_path,
+                        crate::status::status!({
+                            "state":"campaign spool unavailable", "session":session.id,
+                            "warning":last_warning, "drain_complete":false,
+                            "dropped_frames":shared.dropped.load(Ordering::Relaxed),
+                        }),
+                    )
+                    .map_err(|e| error_reason(e, "spool status allocation failed"))?;
                 if shared.stop_spool.load(Ordering::Acquire) || shared.free.is_empty() {
                     // A persistent open failure cannot release a frame. Once
                     // all frames are occupied, end the worker so the loader
                     // cancels the callback wait and restores the hook.
                     let _ = processor.detach();
-                    return Err(format!(
-                        "cannot open campaign spool at detach or exhausted frame pool; retained observations remain unwritten: {error}"
-                    ));
+                    return Err("cannot open campaign spool; observations remain unwritten");
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -1505,7 +1783,7 @@ fn spool_loop(
             }
             for loss in frame.dropped_before.iter() {
                 if let Err(error) = processor.lost(loss) {
-                    last_warning = Some(error.to_string());
+                    last_warning = Some(error_reason(error, "collector spool I/O failed"));
                 }
             }
             // Conversion owns every value needed by encoding and diagnostics.
@@ -1516,16 +1794,19 @@ fn spool_loop(
                 Ok(prepared) => {
                     if let Err(error) = processor.write_prepared(prepared) {
                         crate::equipment_destruction::lost_drain();
-                        last_warning = Some(error.to_string());
+                        last_warning = Some(error_reason(error, "collector spool I/O failed"));
                     }
                     None
                 }
                 Err(error) => {
                     crate::equipment_destruction::lost_drain();
-                    last_warning = Some(error.to_string());
+                    last_warning = Some(error_reason(error, "collector spool I/O failed"));
                     None
                 }
             };
+            if crate::allocation::failed() {
+                return Err("collector allocation failed");
+            }
             if processor.take_retry_full() {
                 shared.force_next.store(true, Ordering::Release);
             }
@@ -1536,6 +1817,9 @@ fn spool_loop(
                     .fetch_or(unpublished, Ordering::Release);
             }
             let previous_capacities = capacities;
+            if pending_write.is_none() {
+                crate::allocation::attempted_hour(None);
+            }
             let previous_map_capacities = map_capacities;
             let previous_extended_capacities = extended_capacities;
             frame.grow(&mut capacities);
@@ -1577,8 +1861,12 @@ fn spool_loop(
                 && let Err(error) = processor.write_prepared(prepared)
             {
                 crate::equipment_destruction::lost_drain();
-                last_warning = Some(error.to_string());
+                last_warning = Some(error_reason(error, "collector spool I/O failed"));
             }
+        }
+        crate::allocation::attempted_hour(None);
+        if crate::allocation::failed() {
+            return Err("collector allocation failed");
         }
         crate::relation_changes::collect();
         crate::history_changes::collect();
@@ -1698,10 +1986,13 @@ fn spool_loop(
                 );
             }
         }
+        if crate::allocation::failed() {
+            return Err("collector allocation failed");
+        }
         let flush_started = sampling::qpc();
         if let Err(error) = processor.flush() {
             crate::equipment_destruction::lost_drain();
-            last_warning = Some(error.to_string());
+            last_warning = Some(error_reason(error, "collector spool I/O failed"));
         }
         let flush_ns = shared.ns(sampling::qpc() - flush_started);
         work.idle_flush_calls += 1;
@@ -1709,51 +2000,62 @@ fn spool_loop(
         work.idle_flush_max_ns = work.idle_flush_max_ns.max(flush_ns);
         if reported.elapsed() >= Duration::from_secs(1) || shared.stop_spool.load(Ordering::Acquire)
         {
-            refresh_requests.poll(&config.output_dir, shared);
+            crate::allocation::attempted_hour(None);
+            let _status_phase = crate::allocation::enter(crate::allocation::Phase::Status);
+            if let Err(error) = refresh_requests.poll(&config.output_dir, shared) {
+                crate::allocation::observe(&error);
+                last_warning = Some("refresh request failed");
+            }
             let status_started = sampling::qpc();
             if let Some(error) = writer.take_error() {
                 last_warning = Some(error);
             }
-            let mut status = processor.status();
-            status["state"] = json!(if shared.recording.load(Ordering::Acquire) {
-                "recording"
-            } else {
-                "detaching"
-            });
-            status["session"] = json!(session.id);
-            status["pool_bytes"] = json!(shared.pool_bytes.load(Ordering::Relaxed));
-            status["pool_buffers"] = json!(sampling::BUFFERS);
-            status["dropped_frames"] = json!(shared.dropped.load(Ordering::Relaxed));
-            status["startup_unattributed_callbacks"] = json!(startup_unknown);
-            status["drain_complete"] = json!(false);
-            if let Some(error) = &last_warning {
-                status["warning"] = json!(error);
-            }
-            add_decode_status(&mut status);
-            work.add_status(&mut status, shared.frequency);
-            status["status_writer"] = writer.json();
-            writer.publish_measured(status_path, status, processor.spool_directories());
+            let status = spool_status(
+                &processor,
+                shared,
+                session.id,
+                &work,
+                &writer,
+                if shared.recording.load(Ordering::Acquire) {
+                    "recording"
+                } else {
+                    "detaching"
+                },
+                startup_unknown,
+                last_warning,
+                None,
+                false,
+                false,
+            )
+            .map_err(|e| error_reason(e, "status allocation failed"))?;
+            writer
+                .publish_measured(
+                    status_path,
+                    status,
+                    processor
+                        .spool_directories()
+                        .map_err(|e| error_reason(e, "status directories allocation failed"))?,
+                )
+                .map_err(|e| error_reason(e, "status hand-over allocation failed"))?;
             work.status_update
                 .record_ticks(sampling::qpc() - status_started, shared.frequency);
             reported = Instant::now();
         }
         if shared.stop_spool.load(Ordering::Acquire) {
-            // The last callback may have published after this iteration's initial
-            // empty pop but before the loader published quiescence. Drain it first.
             if !shared.ready.is_empty() {
                 continue;
             }
-            // The loader worker has restored the hook and proved every callback quiescent.
+            let _teardown = crate::allocation::enter(crate::allocation::Phase::Teardown);
+            crate::allocation::attempted_hour(None);
             let pending = unsafe { std::mem::take(&mut *shared.pending.get()) };
             match processor.prepare_losses(&pending) {
-                Err(error) => {
-                    add_terminal_error(
-                        &mut drain_result,
-                        format!(
-                            "cannot open campaign spool for retained loss witnesses at detach: {error}"
-                        ),
-                    );
-                }
+                Err(error) => add_terminal_error(
+                    &mut drain_result,
+                    error_reason(
+                        error,
+                        "cannot open campaign spool for retained loss witnesses at detach",
+                    ),
+                ),
                 Ok(()) => {
                     if pending.unknown_count != 0 {
                         processor.unknown_loss(pending.unknown_count);
@@ -1762,53 +2064,54 @@ fn spool_loop(
                         if let Err(error) = processor.lost(loss) {
                             add_terminal_error(
                                 &mut drain_result,
-                                format!("cannot drain retained loss witness: {error}"),
+                                error_reason(error, "cannot drain retained loss witness"),
                             );
                         }
                     }
                 }
             }
+            if crate::allocation::failed() {
+                return Err("collector allocation failed");
+            }
             if let Err(error) = processor.detach() {
                 add_terminal_error(
                     &mut drain_result,
-                    format!("cannot finish spool detach: {error}"),
+                    error_reason(error, "cannot finish spool detach"),
                 );
             }
-            let status_started = sampling::qpc();
-            let mut status = processor.status();
-            status["state"] = json!("detaching");
-            status["session"] = json!(session.id);
-            status["pool_bytes"] = json!(shared.pool_bytes.load(Ordering::Relaxed));
-            status["pool_buffers"] = json!(sampling::BUFFERS);
-            status["dropped_frames"] = json!(shared.dropped.load(Ordering::Relaxed));
-            status["drain_complete"] = json!(false);
-            if let Some(error) = &last_warning {
-                status["warning"] = json!(error);
+            if startup_unknown != 0 {
+                add_terminal_error(&mut drain_result, "startup callbacks had no readable clock");
             }
-            if let Err(error) = &drain_result {
-                status["error"] = json!(error);
+            if crate::allocation::failed() {
+                return Err("collector allocation failed");
             }
-            add_decode_status(&mut status);
-            work.add_status(&mut status, shared.frequency);
-            status["status_writer"] = writer.json();
-            writer.publish_measured(status_path, status, processor.spool_directories());
-            work.status_update
-                .record_ticks(sampling::qpc() - status_started, shared.frequency);
-            // The loader finishes the writer after joining this thread and
-            // reads this status then; a failed write becomes its warning.
-            break;
+            let terminal_status = crate::status::serialize(
+                &spool_status(
+                    &processor,
+                    shared,
+                    session.id,
+                    &work,
+                    &writer,
+                    "detached",
+                    startup_unknown,
+                    last_warning,
+                    drain_result.as_ref().err().copied(),
+                    drain_result.is_ok(),
+                    true,
+                )
+                .map_err(|e| error_reason(e, "terminal status allocation failed"))?,
+            )
+            .map_err(|e| error_reason(e, "terminal status allocation failed"))?;
+            return Ok(SpoolOutcome {
+                result: drain_result,
+                terminal_status,
+                directories: processor
+                    .spool_directories()
+                    .map_err(|e| error_reason(e, "terminal directory allocation failed"))?,
+            });
         }
         std::thread::sleep(Duration::from_millis(2));
     }
-    if startup_unknown != 0 {
-        add_terminal_error(
-            &mut drain_result,
-            format!(
-                "{startup_unknown} startup callbacks had no readable clock; no content roster could be sampled"
-            ),
-        );
-    }
-    drain_result.map(|()| last_warning)
 }
 
 /// `recorder refresh` asks for one full-refresh hour: every scheduled table,
@@ -1827,25 +2130,27 @@ pub(crate) const REFRESH_REQUEST: &str = "refresh.request";
 pub(crate) const REFRESH_ACK: &str = "refresh.ack";
 
 impl RefreshRequests {
-    fn poll(&mut self, session: &Path, shared: &Shared) {
+    fn poll(&mut self, session: &Path, shared: &Shared) -> io::Result<()> {
         let request = session.join(REFRESH_REQUEST);
-        let Ok(token) = fs::read_to_string(&request) else {
-            return;
+        let bytes = match fs::read(&request) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
         };
-        // The requester writes a temporary file and renames it, so a token is
-        // whole when present; an empty one is not a request.
-        let token = token.trim();
+        let token = std::str::from_utf8(&bytes)
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?
+            .trim();
         if token.is_empty() || self.last.as_deref() == Some(token) {
-            return;
+            return Ok(());
         }
+        let owned = token.to_owned();
         shared.force_next.store(true, Ordering::Release);
         REFRESH_ACCEPTED.fetch_add(1, Ordering::Relaxed);
-        self.last = Some(token.to_owned());
-        // Acknowledge before removing the request: the requester waits for
-        // its token here.
-        if fs::write(session.join(REFRESH_ACK), token).is_ok() {
-            let _ = fs::remove_file(&request);
+        self.last = Some(owned);
+        if fs::write(session.join(REFRESH_ACK), token.as_bytes()).is_ok() {
+            fs::remove_file(&request)?;
         }
+        Ok(())
     }
 }
 
@@ -1900,8 +2205,8 @@ impl OwnPriority {
     }
 }
 
-fn background_priority_status() -> serde_json::Value {
-    json!({
+fn background_priority_status() -> impl serde::Serialize {
+    crate::status::status!({
         "lowered": PRIORITY_LOWERED.load(Ordering::Relaxed),
         "raised_for_backlog": PRIORITY_RAISED.load(Ordering::Relaxed),
         "failures": PRIORITY_FAILURES.load(Ordering::Relaxed),
@@ -1914,6 +2219,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn allocation_fault_config_keeps_healthy_json_unchanged_and_refuses_invalid_faults() {
+        let value = json!({
+            "session_id": 1,
+            "output_dir": "synthetic/session",
+            "replay_dir": "synthetic/replays",
+            "session_start": [],
+            "ready_event": "synthetic-ready",
+            "detach_event": "synthetic-detach",
+            "done_event": "synthetic-done",
+            "cancel_file": "synthetic/cancel",
+        });
+        let healthy: Config = serde_json::from_value(value.clone()).unwrap();
+        assert!(healthy.alloc_fault.is_none());
+        assert_eq!(configure_alloc_fault(None), Ok(()));
+        let mut requested = value;
+        requested["alloc_fault"] = json!({"phase": "spool", "ordinal": 0});
+        let config: Config = serde_json::from_value(requested).unwrap();
+        assert_eq!(config.alloc_fault.as_ref().unwrap().after_hours, 0);
+        let refused = configure_alloc_fault(config.alloc_fault.as_ref());
+        #[cfg(feature = "alloc-fault-injection")]
+        assert_eq!(refused, Err("alloc_fault ordinal must be nonzero"));
+        #[cfg(not(feature = "alloc-fault-injection"))]
+        assert_eq!(
+            refused,
+            Err("alloc_fault requires collector feature alloc-fault-injection")
+        );
+        let fault: AllocFault = serde_json::from_value(json!({
+            "phase": "encode", "ordinal": 1, "after_hours": 3,
+        }))
+        .unwrap();
+        assert_eq!((fault.ordinal, fault.after_hours), (1, 3));
+    }
+
+    #[test]
     fn a_refresh_request_sets_force_next_once_and_is_acknowledged() {
         let session = std::env::temp_dir().join(format!("hoi4-refresh-{}", std::process::id()));
         let _ = fs::remove_dir_all(&session);
@@ -1921,10 +2260,10 @@ mod tests {
         let shared = sampling::Shared::new(0, 0, 1);
         let mut requests = RefreshRequests::default();
         // No request: nothing forced.
-        requests.poll(&session, &shared);
+        requests.poll(&session, &shared).unwrap();
         assert!(!shared.force_next.load(Ordering::Acquire));
         fs::write(session.join(REFRESH_REQUEST), "token-7\n").unwrap();
-        requests.poll(&session, &shared);
+        requests.poll(&session, &shared).unwrap();
         assert!(shared.force_next.swap(false, Ordering::AcqRel));
         assert_eq!(
             fs::read_to_string(session.join(REFRESH_ACK)).unwrap(),
@@ -1932,18 +2271,18 @@ mod tests {
         );
         assert!(!session.join(REFRESH_REQUEST).exists());
         // Consumed: a later poll forces nothing more.
-        requests.poll(&session, &shared);
+        requests.poll(&session, &shared).unwrap();
         assert!(!shared.force_next.load(Ordering::Acquire));
         // A request that could not be removed is accepted once, not every hour.
         fs::write(session.join(REFRESH_REQUEST), "token-7").unwrap();
-        requests.poll(&session, &shared);
+        requests.poll(&session, &shared).unwrap();
         assert!(!shared.force_next.load(Ordering::Acquire));
         // An empty token is not a request; a new token is.
         fs::write(session.join(REFRESH_REQUEST), " \n").unwrap();
-        requests.poll(&session, &shared);
+        requests.poll(&session, &shared).unwrap();
         assert!(!shared.force_next.load(Ordering::Acquire));
         fs::write(session.join(REFRESH_REQUEST), "token-8").unwrap();
-        requests.poll(&session, &shared);
+        requests.poll(&session, &shared).unwrap();
         assert!(shared.force_next.swap(false, Ordering::AcqRel));
         assert_eq!(requests.last.as_deref(), Some("token-8"));
         let _ = fs::remove_dir_all(&session);
@@ -2049,11 +2388,7 @@ mod tests {
             .open(&path)
             .unwrap();
         let error = write_status(&path, &json!({"hours": 3})).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("cannot atomically replace status")
-        );
+        assert!(matches!(error.raw_os_error(), Some(5 | 32)));
         drop(exclusive);
         write_status(&path, &json!({"hours": 4})).unwrap();
         // This local NTFS directory supports POSIX rename.
@@ -2109,15 +2444,12 @@ mod tests {
     #[test]
     fn terminal_failures_remain_explicit_even_with_recovered_history() {
         let mut result = Ok(());
-        add_terminal_error(&mut result, "final sync failed".into());
-        add_terminal_error(&mut result, "terminal status unavailable".into());
+        add_terminal_error(&mut result, "final sync failed");
+        add_terminal_error(&mut result, "terminal status unavailable");
         let mut status = json!({"warning":"earlier failure recovered"});
         set_drain_status(&mut status, &result);
         assert_eq!(status["drain_complete"], false);
-        assert_eq!(
-            status["error"],
-            "final sync failed; terminal status unavailable"
-        );
+        assert_eq!(status["error"], "final sync failed");
         assert_eq!(status["warning"], "earlier failure recovered");
     }
 

@@ -45,8 +45,7 @@ fn reserve_rows<T>(census: &mut Vec<T>, target: usize) -> bool {
     if census.capacity() >= target {
         return false;
     }
-    census.reserve_exact(target - census.len());
-    true
+    engine::allocation::reserve_exact(census, target - census.len()).is_ok()
 }
 
 /// The engine's own ceiling on canonical country slots. `CSupplySystem` stores
@@ -949,7 +948,8 @@ mod tests {
         // Core tables: the link census fits on the first hour; the old fixed
         // capacity truncated it.
         let mut frame =
-            sampling::Captured::with_capacities(&sizing.core, &sizing.map, &sizing.extended);
+            sampling::Captured::with_capacities(&sizing.core, &sizing.map, &sizing.extended)
+                .unwrap();
         assert!(frame.countries.len() >= COUNTRIES);
         assert_eq!(
             ccountry::walk_links(&memory, BASE, STATE, &mut frame.links),
@@ -989,7 +989,8 @@ mod tests {
         assert!(matches!(small.outcomes()[0], Outcome::Truncated { .. }));
 
         // The country authentication cache holds the whole census.
-        let mut cache = std::sync::Arc::new(Cache::with_capacity(sizing.country_cells));
+        let mut cache =
+            std::sync::Arc::new(Cache::try_with_capacity(sizing.country_cells).unwrap());
         let snapshot = Cache::prepare_shared(&mut cache, &memory, BASE, STATE).unwrap();
         assert_eq!(
             snapshot.view(&memory).seed_status(),
@@ -1467,10 +1468,10 @@ mod tests {
         threads: bool,
     ) -> HistoriesHour {
         // The parts read through the callback's roster, as in production.
-        let mut cache = std::sync::Arc::new(Cache::with_capacity(Cache::cells_for_countries(
-            world.slots,
-            MIN_COUNTRY_CELLS,
-        )));
+        let mut cache = std::sync::Arc::new(
+            Cache::try_with_capacity(Cache::cells_for_countries(world.slots, MIN_COUNTRY_CELLS))
+                .unwrap(),
+        );
         let snapshot = Cache::prepare_shared(&mut cache, world, BASE, STATE).unwrap();
         let counting = Counting(world, Default::default());
         let memory = snapshot.roster_view(&counting);
@@ -1591,7 +1592,8 @@ mod tests {
                 Outcome::Rows { len } => len.to_string(),
                 other => format!("{other:?}"),
             };
-            let refused = watches.status()["refused_registrations"].clone();
+            let refused =
+                serde_json::to_value(watches.status()).unwrap()["refused_registrations"].clone();
             eprintln!(
                 "naval patrol, {countries} countries, {patrolled} regions, 1/{every} with history, {label}: {} guarded calls; parts wall {:?} on {PARTS} threads ({spawn:?} of it spawning); serial {:?}, pool of 3 {:?}, pool of 8 {:?}; decode {:?}; {emitted} of {} rows emitted; {} read, {} advanced, {} refreshed; {refused} refused watches",
                 result.calls,
@@ -1613,8 +1615,14 @@ mod tests {
         // No hour, not even one wanting a new region, installed a larger
         // table and so started an epoch that copies everything again.
         for watches in [&watches, &serial_watches] {
-            assert_eq!(watches.status()["installs"], 1);
-            assert_eq!(watches.status()["refused_registrations"], 0);
+            assert_eq!(
+                serde_json::to_value(watches.status()).unwrap()["installs"],
+                1
+            );
+            assert_eq!(
+                serde_json::to_value(watches.status()).unwrap()["refused_registrations"],
+                0
+            );
         }
         let mut fresh = Hour::new();
         let unobserved = crate::history_changes::Unobserved;
@@ -1884,6 +1892,7 @@ mod tests {
         let bytes = |slots| {
             let sizing = Sizing::for_slots(slots);
             sampling::Captured::with_capacities(&sizing.core, &sizing.map, &sizing.extended)
+                .unwrap()
                 .allocated_bytes()
         };
         let vanilla = bytes(0);
@@ -1912,7 +1921,8 @@ mod tests {
         let menu = Sizing::for_slots(0);
         let mut loaded = menu;
         loaded.raise_for_slots(COUNTRIES + 1);
-        let mut frame = sampling::Captured::with_capacities(&menu.core, &menu.map, &menu.extended);
+        let mut frame =
+            sampling::Captured::with_capacities(&menu.core, &menu.map, &menu.extended).unwrap();
         let (mut core, mut map, mut extended) = (loaded.core, loaded.map, loaded.extended);
         frame.grow(&mut core);
         frame.map.grow(&mut map);
@@ -1923,14 +1933,16 @@ mod tests {
         assert_eq!(core, loaded.core);
         assert!(map == loaded.map);
         let built =
-            sampling::Captured::with_capacities(&loaded.core, &loaded.map, &loaded.extended);
+            sampling::Captured::with_capacities(&loaded.core, &loaded.map, &loaded.extended)
+                .unwrap();
         assert!(frame.countries.len() >= built.countries.len());
         assert!(frame.links.len() >= built.links.len());
         for ((name, grown), (_, expected)) in frame
             .extended
             .allocated_by_pack()
+            .unwrap()
             .into_iter()
-            .zip(built.extended.allocated_by_pack())
+            .zip(built.extended.allocated_by_pack().unwrap())
         {
             assert!(
                 grown >= expected,

@@ -1366,7 +1366,7 @@ fn eta_inputs_compose_the_speed_graph_and_one_entry_per_route_leg() {
     });
     geometry.begin(&memory, 0, GS).unwrap();
     let mut statics = cprovince::StaticGeometry::default();
-    let mut packet = super::EtaInputPacket::new(4, 16, 16);
+    let mut packet = super::EtaInputPacket::new(4, 16, 16).unwrap();
     let walk = super::capture_eta_inputs(
         &memory,
         0,
@@ -1469,7 +1469,7 @@ fn eta_inputs_compose_the_speed_graph_and_one_entry_per_route_leg() {
         neighbour_entries: 8,
     });
     geometry.begin(&memory, 0, GS).unwrap();
-    let mut packet = super::EtaInputPacket::new(4, 16, 16);
+    let mut packet = super::EtaInputPacket::new(4, 16, 16).unwrap();
     let walk = super::capture_eta_inputs(
         &memory,
         0,
@@ -1538,7 +1538,7 @@ fn eta_inputs_read_each_division_graph_once() {
     });
     geometry.begin(&memory, 0, GS).unwrap();
     let mut statics = cprovince::StaticGeometry::default();
-    let mut packet = super::EtaInputPacket::new(4, 16, 16);
+    let mut packet = super::EtaInputPacket::new(4, 16, 16).unwrap();
     memory.reads.borrow_mut().clear();
     let walk = super::capture_eta_inputs(
         &memory,
@@ -1605,7 +1605,7 @@ fn eta_state_query_memo_preserves_raw_owners_failures_collisions_and_new_capture
         p64(&mut source.bytes, 0x2a008 + index * 16, value as u64);
     }
     let observed = ScalarBatchMemory::new(&source);
-    let mut memo = super::MovementStateModifiers::new(4);
+    let mut memo = super::MovementStateModifiers::new(4).unwrap();
     for (owner, key, expected) in [
         (3, 0x2b, i64::MIN),
         (1, 0x2b, i64::MIN),
@@ -1645,7 +1645,7 @@ fn eta_state_query_memo_preserves_raw_owners_failures_collisions_and_new_capture
     }
     // One cell forces replacement: every changed raw owner, key, state,
     // module, and game root must miss, even for aliased native countries.
-    let mut one = super::MovementStateModifiers::new(1);
+    let mut one = super::MovementStateModifiers::new(1).unwrap();
     for (base, game, object, owner, key) in [
         (0, GS, state, 3, 0x2b),
         (0, GS, state, 1, 0x2b),
@@ -1667,11 +1667,11 @@ fn eta_state_query_memo_preserves_raw_owners_failures_collisions_and_new_capture
     p64(&mut source.bytes, 0x2a008, (-73_i64) as u64);
     one.clear();
     assert_eq!(one.get(&source, 0, GS, state, 3, 0x2b), Ok(-73));
-    let mut vacant = super::MovementStateModifiers::new(0);
+    let mut vacant = super::MovementStateModifiers::new(0).unwrap();
     assert_eq!(vacant.allocated_bytes(), 0);
     assert_eq!(vacant.get(&source, 0, GS, state, 3, 0x2b), Ok(-73));
     assert_eq!(vacant.allocated_bytes(), 0);
-    vacant.reserve(3);
+    vacant.reserve(3).unwrap();
     assert!(vacant.allocated_bytes() >= 3 * size_of::<Option<super::MovementStateModifier>>());
     assert_eq!(vacant.get(&source, 0, GS, state, 3, 0x2b), Ok(-73));
     assert_eq!(vacant.hits, 0);
@@ -1720,7 +1720,7 @@ fn the_static_map_memo_reuses_primary_inputs_until_the_session_changes() {
             packet,
         )
     };
-    let mut cold = super::EtaInputPacket::new(4, 16, 16);
+    let mut cold = super::EtaInputPacket::new(4, 16, 16).unwrap();
     assert_eq!(
         walk(&memory, &mut statics, &mut cold).outcome,
         Outcome::Rows { len: 1 }
@@ -1731,7 +1731,7 @@ fn the_static_map_memo_reuses_primary_inputs_until_the_session_changes() {
     assert!(cold.counters().static_misses > 0);
     // The next hour reuses immutable provinces while the route's live
     // acquisition still produces the same number of admitted legs.
-    let mut warm = super::EtaInputPacket::new(4, 16, 16);
+    let mut warm = super::EtaInputPacket::new(4, 16, 16).unwrap();
     walk(&memory, &mut statics, &mut warm);
     assert_eq!(cold.outcome(), warm.outcome());
     assert_eq!(cold.rows(), warm.rows());
@@ -1744,7 +1744,7 @@ fn the_static_map_memo_reuses_primary_inputs_until_the_session_changes() {
         crate::cgame_state::PLAY_SESSION_STARTED_AT_RVA,
         8_i64.to_le_bytes().to_vec(),
     );
-    let mut reloaded = super::EtaInputPacket::new(4, 16, 16);
+    let mut reloaded = super::EtaInputPacket::new(4, 16, 16).unwrap();
     walk(&memory, &mut statics, &mut reloaded);
     assert_eq!(reloaded.counters().static_cleared, 1);
     assert_eq!(reloaded.leg_count(), warm.leg_count());
@@ -1857,7 +1857,7 @@ fn contiguous_ranges_concatenate_into_the_unsplit_rows() {
                     });
                 geometry.begin(&memory, 0, GS).unwrap();
                 let mut statics = cprovince::StaticGeometry::default();
-                let mut packet = super::EtaInputPacket::new(64, 128, 256);
+                let mut packet = super::EtaInputPacket::new(64, 128, 256).unwrap();
                 let walk = super::capture_eta_inputs(
                     &memory,
                     0,
@@ -1913,7 +1913,7 @@ fn contiguous_ranges_concatenate_into_the_unsplit_rows() {
                 });
             geometry.begin(&memory, 0, GS).unwrap();
             let mut statics = cprovince::StaticGeometry::default();
-            let mut packet = super::EtaInputPacket::new(64, 128, 256);
+            let mut packet = super::EtaInputPacket::new(64, 128, 256).unwrap();
             super::capture_eta_inputs(
                 &memory,
                 0,
@@ -1965,7 +1965,7 @@ fn the_route_scan_stops_where_the_native_walk_stops() {
     // fails. The native walk reaches it, so the table is denied.
     let mut memory = normal_route_fixture();
     p32(&mut memory.bytes, 0x17400 + 0x88, 0);
-    let mut packet = super::EtaInputPacket::new(4, 16, 16);
+    let mut packet = super::EtaInputPacket::new(4, 16, 16).unwrap();
     assert!(matches!(
         capture(&memory, &mut packet).outcome,
         Outcome::Unavailable { .. }
@@ -2078,7 +2078,7 @@ fn eta_normal_wrapping_zero_skips_first_and_later_unreadable_tails() {
             });
         geometry.begin(&memory, 0, GS).unwrap();
         let mut statics = cprovince::StaticGeometry::default();
-        let mut packet = super::EtaInputPacket::new(4, 16, 16);
+        let mut packet = super::EtaInputPacket::new(4, 16, 16).unwrap();
         let walk = super::capture_eta_inputs(
             &memory,
             0,
@@ -2156,7 +2156,7 @@ fn eta_transport_does_not_require_unconsumed_land_or_rail_inputs() {
             });
         geometry.begin(&memory, 0, GS).unwrap();
         let mut statics = cprovince::StaticGeometry::default();
-        let mut packet = super::EtaInputPacket::new(4, 16, 16);
+        let mut packet = super::EtaInputPacket::new(4, 16, 16).unwrap();
         let walk = super::capture_eta_inputs(
             &memory,
             0,
@@ -2214,7 +2214,7 @@ fn eta_rail_graph_and_scan_share_directed_queries_and_refresh_each_capture() {
     super::capture_division_seeds(&source, &mut seeds);
     let mut expected_outputs = [None, None];
     for (capacity, query_count) in [(16, 2), (1, 5), (0, 10)] {
-        let mut packet = super::EtaInputPacket::new(4, 16, 16);
+        let mut packet = super::EtaInputPacket::new(4, 16, 16).unwrap();
         packet.rail = crate::crailway_manager::MovementSpeeds::new(capacity);
         let mut geometry =
             cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
@@ -2954,7 +2954,7 @@ fn category_contribution_keeps_cold_order_duplicates_failures_and_capture_bounds
     p64(&mut source.bytes, CATEGORIES + 8, CATEGORY as u64);
     p32(&mut source.bytes, CATEGORY + 0x60, 0x2b);
     let accumulator = C1 + ccountry::MODIFIER_ACCUMULATOR;
-    let mut packet = super::EtaInputPacket::new(1, 0, 0);
+    let mut packet = super::EtaInputPacket::new(1, 0, 0).unwrap();
     {
         let observed = ScalarBatchMemory::new(&source);
         fn read(
@@ -3036,9 +3036,9 @@ fn category_contribution_keeps_cold_order_duplicates_failures_and_capture_bounds
             }
         }
         observed.fault.set(None);
-        let mut bounded = super::EtaInputPacket::new(0, 0, 0);
+        let mut bounded = super::EtaInputPacket::new(0, 0, 0).unwrap();
         for (rows, slots) in [(0, 0), (1, 1), (3, 4), (5, 8), (8, 8)] {
-            bounded.reserve(rows, 0, 0);
+            bounded.reserve(rows, 0, 0).unwrap();
             bounded.clear();
             assert_eq!(bounded.category_contributions.borrow().entries.len(), slots);
             let allocated = bounded.allocated_bytes();
@@ -3150,7 +3150,7 @@ fn category_direct_map_collisions_keep_full_keys_successes_and_faults() {
         };
     assert_eq!(read(original, None), Ok(10_001));
     let original_reads = observed.reads.borrow().clone();
-    let mut packet = super::EtaInputPacket::new(1, 0, 0);
+    let mut packet = super::EtaInputPacket::new(1, 0, 0).unwrap();
     // One slot forces collisions independently of the index mixer.
     assert_eq!(packet.category_contributions.borrow().entries.len(), 1);
     let allocated = packet.allocated_bytes();
@@ -3208,7 +3208,7 @@ fn category_direct_map_collisions_keep_full_keys_successes_and_faults() {
         assert_eq!(packet.allocated_bytes(), allocated);
     }
     // Changing the slot mask must invalidate entries made under the old mask.
-    packet.reserve(3, 0, 0);
+    packet.reserve(3, 0, 0).unwrap();
     assert_eq!(packet.category_contributions.borrow().entries.len(), 4);
     {
         let memo = packet.category_contributions.borrow();
@@ -3247,7 +3247,7 @@ fn category_generations_reacquire_after_clear_wrap_and_growth() {
         leader_accumulator: accumulator,
         leader: 1,
     };
-    let mut packet = super::EtaInputPacket::new(2, 0, 0);
+    let mut packet = super::EtaInputPacket::new(2, 0, 0).unwrap();
     let read = |source: &PresentationMemory, packet: &super::EtaInputPacket, expected| {
         let observed = ScalarBatchMemory::new(source);
         let acquire = || {
@@ -3303,7 +3303,7 @@ fn category_generations_reacquire_after_clear_wrap_and_growth() {
             }
         }
         if grow {
-            packet.reserve(3, 0, 0);
+            packet.reserve(3, 0, 0).unwrap();
         } else {
             packet.clear();
         }
@@ -3490,7 +3490,7 @@ fn air_prefix_cold_queries_preserve_exact_reads_and_every_failed_prefix() {
         );
         assert_eq!(*observed.reads.borrow(), trace);
         for capacity in [0, 1, 4] {
-            let memo = std::cell::RefCell::new(super::MovementAirMemo::new(capacity));
+            let memo = std::cell::RefCell::new(super::MovementAirMemo::new(capacity).unwrap());
             let allocated = memo.borrow().allocated_bytes();
             for attempt in 0..2 {
                 observed.reads.borrow_mut().clear();
@@ -3574,7 +3574,7 @@ fn air_prefix_direct_map_collisions_keep_every_identity_and_prior_success() {
                 .map(|_| (original, Some(AIR_TEST_OTHER_REGION))),
         ) {
             let observed = ScalarBatchMemory::new(&source);
-            let memo = std::cell::RefCell::new(super::MovementAirMemo::new(1));
+            let memo = std::cell::RefCell::new(super::MovementAirMemo::new(1).unwrap());
             let allocated = memo.borrow().allocated_bytes();
             let original_value = air_prefix_test_read(&observed, original, region, None);
             let original_trace = observed.reads.take();
@@ -3631,10 +3631,10 @@ fn air_prefix_direct_map_collisions_keep_every_identity_and_prior_success() {
 #[test]
 fn air_prefix_clear_and_growth_reacquire_changed_inputs_without_query_allocation() {
     let mut source = air_prefix_fixture();
-    let memo = std::cell::RefCell::new(super::MovementAirMemo::new(0));
+    let memo = std::cell::RefCell::new(super::MovementAirMemo::new(0).unwrap());
     assert_eq!(memo.borrow().allocated_bytes(), 0);
     for rows in [0, 1, 3, 5] {
-        memo.borrow_mut().reserve(rows);
+        memo.borrow_mut().reserve(rows).unwrap();
         for (active, hostile) in [(false, 0_u64), (true, 300_000)] {
             memo.borrow_mut().clear();
             p32(
@@ -3663,7 +3663,7 @@ fn air_prefix_clear_and_growth_reacquire_changed_inputs_without_query_allocation
     // Growing storage is itself an invalidation boundary, independent of
     // clear; the new hash mask must never turn an old tag into a hit.
     p64(&mut source.bytes, AIR_TEST_ENTRIES + 8, 900_000);
-    memo.borrow_mut().reserve(17);
+    memo.borrow_mut().reserve(17).unwrap();
     let observed = ScalarBatchMemory::new(&source);
     assert_eq!(
         air_prefix_test_read(
@@ -3715,7 +3715,7 @@ fn air_prefix_full_read(
 #[test]
 fn air_prefix_warm_hits_keep_owner_region_and_division_defense_reads_fresh() {
     let source = air_prefix_fixture();
-    let memo = std::cell::RefCell::new(super::MovementAirMemo::new(4));
+    let memo = std::cell::RefCell::new(super::MovementAirMemo::new(4).unwrap());
     let (direct, direct_trace) = air_prefix_full_read(&source, None, None, AIR_TEST_STATS);
     assert!(direct.is_ok(), "{direct:?}");
     let mut expected_warm = direct_trace.clone();
@@ -3795,7 +3795,7 @@ fn air_prefix_default_branches_keep_location_reads_and_skip_defense() {
             1 => p64(&mut source.bytes, P1 + cprovince::STRATEGIC_REGION, 0),
             _ => p64(&mut source.bytes, AIR_TEST_ENTRIES + 8, 0),
         }
-        let memo = std::cell::RefCell::new(super::MovementAirMemo::new(4));
+        let memo = std::cell::RefCell::new(super::MovementAirMemo::new(4).unwrap());
         for _ in 0..2 {
             let (actual, trace) =
                 air_prefix_full_read(&source, Some(AIR_TEST_STATS), Some(&memo), AIR_TEST_STATS);
@@ -3850,7 +3850,7 @@ fn category_hits_keep_prior_authentication_and_later_air_supply_failures() {
         .globals
         .insert(0x0331_9394, 2_i32.to_le_bytes().to_vec());
     let seed = speed_seed(&source);
-    let packet = super::EtaInputPacket::new(1, 0, 0);
+    let packet = super::EtaInputPacket::new(1, 0, 0).unwrap();
     let run = |fault: Option<usize>, cached: bool| {
         let observed = ScalarBatchMemory::new(&source);
         observed.fault.set(fault);
@@ -3948,7 +3948,7 @@ fn supply_template_reuse_keeps_ordered_aliases_faults_wrapping_and_capacity() {
         (UNITS + 40, 4),
         (0x1a000 + 0x5b7, 1),
     ];
-    let mut packet = super::EtaInputPacket::new(2, 0, 0);
+    let mut packet = super::EtaInputPacket::new(2, 0, 0).unwrap();
     let allocated = packet.allocated_bytes();
     for (counts, expected) in [
         ([10_i32, 30, 10], 40_000),
@@ -4010,7 +4010,7 @@ fn supply_template_reuse_keeps_ordered_aliases_faults_wrapping_and_capacity() {
     }
     observed.fault.set(None);
     for rows in [0, 1] {
-        let mut packet = super::EtaInputPacket::new(rows, 0, 0);
+        let mut packet = super::EtaInputPacket::new(rows, 0, 0).unwrap();
         let templates = packet.supply_templates.get_mut();
         for key in 1..=templates.capacity() {
             templates.insert(key, 0);
@@ -4029,9 +4029,9 @@ fn supply_template_reuse_keeps_ordered_aliases_faults_wrapping_and_capacity() {
         assert_eq!(packet.allocated_bytes(), allocated);
         assert!(!packet.supply_templates.borrow().contains_key(&TEMPLATE));
     }
-    let mut vacant = super::EtaInputPacket::new(0, 0, 0);
+    let mut vacant = super::EtaInputPacket::new(0, 0, 0).unwrap();
     assert_eq!(vacant.supply_templates.borrow().capacity(), 0);
-    vacant.reserve(4, 0, 0);
+    vacant.reserve(4, 0, 0).unwrap();
     assert!(vacant.supply_templates.borrow().capacity() >= 4);
     let allocated = vacant.allocated_bytes();
     assert_eq!(
@@ -4055,7 +4055,7 @@ fn supply_template_hits_keep_division_gates_and_later_modifier_faults_fresh() {
     let seed = speed_seed(&source);
     let observed = ScalarBatchMemory::new(&source);
     let mut geometry = SeededSpeedGeometry::new(&source);
-    let packet = super::EtaInputPacket::new(1, 0, 0);
+    let packet = super::EtaInputPacket::new(1, 0, 0).unwrap();
     let mut shared = super::MovementSharedInputs {
         seed: &seed,
         route_ids: &[],
@@ -4162,7 +4162,7 @@ fn shared_presentation_inputs_keep_exact_keys_fallback_faults_and_allocation() {
         reads: Default::default(),
         fault: Some(0xdead),
     };
-    let mut cache = super::PresentationInputs::new(1);
+    let mut cache = super::PresentationInputs::new(1).unwrap();
     let allocated = cache.allocated_bytes();
     for _ in 0..4 {
         assert_eq!(cache.read::<u64>(&memory, P1), crate::read(&source, P1));
@@ -4203,7 +4203,7 @@ fn shared_presentation_inputs_keep_exact_keys_fallback_faults_and_allocation() {
             .count(),
         2
     );
-    let mut empty = super::PresentationInputs::new(0);
+    let mut empty = super::PresentationInputs::new(0).unwrap();
     assert_eq!(empty.read::<u64>(&memory, P1), crate::read(&source, P1));
     empty.clear();
 }
@@ -5019,7 +5019,7 @@ fn division_status_keeps_the_model_number_and_acclimatization_and_fails_only_tha
             packet,
         )
     };
-    let mut packet = super::StatusPacket::new(1);
+    let mut packet = super::StatusPacket::new(1).unwrap();
     let mut rows = [super::StatusRow::default(); 1];
     assert_eq!(
         capture(&memory, &mut packet, &mut rows),
@@ -5067,7 +5067,7 @@ fn division_status_keeps_the_model_number_and_acclimatization_and_fails_only_tha
             (2, 2),
         ),
     ] {
-        let mut small = super::StatusPacket::with_capacities(capacities);
+        let mut small = super::StatusPacket::with_capacities(capacities).unwrap();
         assert_eq!(
             capture(&memory, &mut small, &mut rows),
             Outcome::Rows { len: 1 }
@@ -5206,7 +5206,7 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
         seeds
     };
     let read = |memory: &PresentationMemory, seeds: &[super::DivisionSeed], owner: Owner<'_>| {
-        let mut packet = super::StatusPacket::new(1);
+        let mut packet = super::StatusPacket::new(1).unwrap();
         let mut rows = [super::RetreatBanRow::default(); 1];
         let outcome =
             packet.retreat_bans(memory, 0, seeds, Outcome::Rows { len: 1 }, owner, &mut rows);
@@ -5501,10 +5501,12 @@ fn status_vacancy_has_no_retained_allocations_and_rejects_unprepared_inputs() {
     assert_eq!(packet.allocated_bytes(), 0);
     assert_eq!(packet.project(&mut []), Outcome::Rows { len: 0 });
     packet.clear();
-    packet.grow(
-        0,
-        crate::corders_group_member::MembershipCapacity::default(),
-    );
+    packet
+        .grow(
+            0,
+            crate::corders_group_member::MembershipCapacity::default(),
+        )
+        .unwrap();
     assert_eq!(packet.allocated_bytes(), 0);
     let unavailable = Outcome::Unavailable {
         reason: "source gap",
@@ -5562,7 +5564,7 @@ fn status_retains_first_pass_membership_growth_through_projection_and_recycling(
     super::capture_division_seeds(&memory, &mut seeds);
     let mut capacities = super::StatusCapacities::new(1);
     capacities.membership.chunks = 2;
-    let mut packet = super::StatusPacket::with_capacities(capacities);
+    let mut packet = super::StatusPacket::with_capacities(capacities).unwrap();
     let allocated = packet.allocated_bytes();
     assert_eq!(
         packet.capture(&memory, 0, GS, &seeds, Outcome::Rows { len: 1 }, 1),
@@ -5587,10 +5589,12 @@ fn status_retains_first_pass_membership_growth_through_projection_and_recycling(
     assert_eq!(rows, expected);
     assert_eq!(rows[0].has_order, 1);
     let allocated = packet.allocated_bytes();
-    packet.grow(
-        1,
-        crate::corders_group_member::MembershipCapacity::default(),
-    );
+    packet
+        .grow(
+            1,
+            crate::corders_group_member::MembershipCapacity::default(),
+        )
+        .unwrap();
     capacities.membership.chunks = 4;
     assert_eq!(packet.capacities, capacities);
     assert_eq!(packet.allocated_bytes(), allocated);
@@ -5611,7 +5615,7 @@ fn status_packet_preserves_raw_maxima_and_its_independent_source_prefix() {
         ..super::DivisionSeed::default()
     }; 2];
     super::capture_division_seeds(&memory, &mut seeds);
-    let mut first = super::StatusPacket::new(2);
+    let mut first = super::StatusPacket::new(2).unwrap();
     assert_eq!(
         first.capture(&memory, 0, GS, &seeds, Outcome::Rows { len: 2 }, 1),
         Outcome::Truncated {
@@ -5627,7 +5631,7 @@ fn status_packet_preserves_raw_maxima_and_its_independent_source_prefix() {
         0x11000 + crate::csub_unit_definition::MAXIMUM_STRENGTH,
         50,
     );
-    let mut second = super::StatusPacket::new(2);
+    let mut second = super::StatusPacket::new(2).unwrap();
     assert_eq!(
         second.capture(&memory, 0, GS, &seeds, Outcome::Rows { len: 2 }, 1),
         first.outcome()
@@ -5885,4 +5889,93 @@ fn division_seed_descriptors_match_original_layout() {
             (EXILED, 287, 1),
         ]
     );
+}
+
+#[test]
+fn packet_capacity_failure_preserves_existing_storage() {
+    assert_eq!(
+        super::StatusPacket::new(usize::MAX).err().unwrap().kind(),
+        std::io::ErrorKind::OutOfMemory,
+    );
+    let mut packet = super::EtaInputPacket::new(1, 2, 3).unwrap();
+    let capacity = packet.allocated_bytes();
+    assert_eq!(
+        packet.reserve(usize::MAX, 2, 3).unwrap_err().kind(),
+        std::io::ErrorKind::OutOfMemory,
+    );
+    assert_eq!(packet.allocated_bytes(), capacity);
+    assert!(packet.rows().is_empty());
+    assert_eq!(super::EtaInputPacket::vacant().allocated_bytes(), 0);
+    assert_eq!(super::StatusPacket::vacant().allocated_bytes(), 0);
+}
+
+#[test]
+fn eta_route_staging_preserves_the_previous_capacity_trace() {
+    let mut previous = Vec::<u32>::with_capacity(3);
+    let mut packet = super::EtaInputPacket::new(1, 1, 3).unwrap();
+    assert_eq!(packet.route.capacity(), previous.capacity());
+    previous.push(1);
+    packet.route.push(1);
+    for legs in [1, 7, 5, 19] {
+        if previous.capacity() < legs {
+            previous.reserve_exact(legs - previous.len());
+        }
+        packet.reserve(1, 1, legs).unwrap();
+        assert_eq!(packet.route.capacity(), previous.capacity());
+    }
+}
+
+#[test]
+fn eta_route_staging_uses_the_admitted_arena_capacity() {
+    let memory = normal_route_fixture();
+    let seed = speed_seed(&memory);
+    let mut geometry = cprovince::GeometryPacket::with_capacities(cprovince::GeometryCapacities {
+        provinces: 8,
+        neighbour_entries: 8,
+    });
+    geometry.begin(&memory, 0, GS).unwrap();
+    let mut statics = cprovince::StaticGeometry::default();
+    let mut packet = super::EtaInputPacket::new(1, 16, 2).unwrap();
+    let route_pointer = packet.route.as_ptr();
+    let route_capacity = packet.route.capacity();
+    let walk = super::capture_eta_inputs(
+        &memory,
+        0,
+        GS,
+        &[seed],
+        0..1,
+        Outcome::Rows { len: 1 },
+        1,
+        16,
+        2,
+        &mut geometry,
+        &mut statics,
+        &mut packet,
+    );
+    assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(packet.route.as_ptr(), route_pointer);
+    assert_eq!(packet.route.capacity(), route_capacity);
+    let walk = super::capture_eta_inputs(
+        &memory,
+        0,
+        GS,
+        &[seed],
+        0..1,
+        Outcome::Rows { len: 1 },
+        1,
+        16,
+        1,
+        &mut geometry,
+        &mut statics,
+        &mut packet,
+    );
+    assert_eq!(
+        walk.outcome,
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: 1
+        }
+    );
+    assert_eq!(packet.route.as_ptr(), route_pointer);
+    assert_eq!(packet.route.capacity(), route_capacity);
 }

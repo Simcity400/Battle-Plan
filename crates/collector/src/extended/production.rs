@@ -10,13 +10,17 @@ use crate::{
     table_capture::{Arena, CaptureRows},
 };
 use engine::{
-    Memory, army_upgrade_request_row, carmy_manpower_values, carmy_upgrades_requests,
+    Memory,
+    allocation::{copy_vec, owned_vec, vec},
+    army_upgrade_request_row, carmy_manpower_values, carmy_upgrades_requests,
     carmy_upgrades_status, ccountry, cdeployment_status, cequipment_production_license,
     cequipment_production_line, cequipment_upgrades_instance, cequipment_variant,
     cequipment_variant_pool, cgame_state, cmilitary_deployment, cmilitary_deployment_conveyor,
-    cmilitary_deployment_line, cname_group_member, cpdx_array::Array, cproduction_line,
-    cproduction_status, cupgrade_delivery, equipment_entry, equipment_module_container,
-    manpower_value_entry, msvc_string, walk::Outcome,
+    cmilitary_deployment_line, cname_group_member,
+    cpdx_array::Array,
+    cproduction_line, cproduction_status, cupgrade_delivery, equipment_entry,
+    equipment_module_container, manpower_value_entry, msvc_string,
+    walk::Outcome,
 };
 use replay::{
     frame::{TableInput, TableView},
@@ -798,9 +802,9 @@ fn license_records(
             start_date: r.start_date,
             parent: r.parent,
             operand_raw: r.operand_raw,
-            equipment: span(handles, r.equipment_start, r.equipment_len)
-                .unwrap()
-                .to_vec(),
+            equipment: owned_vec(copy_vec(
+                span(handles, r.equipment_start, r.equipment_len).unwrap(),
+            )),
         }
     })
 }
@@ -838,7 +842,7 @@ fn conveyors(rows: &CaptureRows<cdeployment_status::ConveyorRow>, arena: &Arena<
         priority: r.priority,
         role_token: r.role_token,
         closed: r.closed,
-        name: name(bytes, r.name_start, r.name_len).unwrap().to_vec(),
+        name: owned_vec(copy_vec(name(bytes, r.name_start, r.name_len).unwrap())),
         exile_country: r.exile_country,
     })
 }
@@ -880,9 +884,9 @@ fn deployment_lines(
         distributable_priority: r.distributable_priority,
         halting_reason_present: r.halting_reason_present,
         halting_reason: r.halting_reason,
-        custom_name: name(bytes, r.custom_name_start, r.custom_name_len)
-            .unwrap()
-            .to_vec(),
+        custom_name: owned_vec(copy_vec(
+            name(bytes, r.custom_name_start, r.custom_name_len).unwrap(),
+        )),
         custom_flag_a: r.custom_flag_a,
         custom_flag_b: r.custom_flag_b,
     })
@@ -994,12 +998,12 @@ fn definitions(
             obsolete: r.identity.obsolete,
             classifier_flags: r.identity.classifier_flags,
             mission_mask: r.identity.mission_mask,
-            display_name: text(bytes, r.display_name).unwrap().to_vec(),
-            variant_name: text(bytes, r.variant_name).unwrap().to_vec(),
-            explicit_entity: text(bytes, r.explicit_entity).unwrap().to_vec(),
+            display_name: owned_vec(copy_vec(text(bytes, r.display_name).unwrap())),
+            variant_name: owned_vec(copy_vec(text(bytes, r.variant_name).unwrap())),
+            explicit_entity: owned_vec(copy_vec(text(bytes, r.explicit_entity).unwrap())),
             icon_active: r.icon_active,
             icon_kind: r.icon_kind,
-            icon: text(bytes, r.icon).unwrap().to_vec(),
+            icon: owned_vec(copy_vec(text(bytes, r.icon).unwrap())),
         }
     })
 }

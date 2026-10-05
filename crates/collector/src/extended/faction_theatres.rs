@@ -7,6 +7,7 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows, grow_capacity},
 };
+use engine::allocation::{copy_vec, owned_vec};
 use engine::{Memory, cfaction, cfaction_theater_manager as native, walk::Outcome};
 use replay::{
     cadence::{SKIPPED_REASON, should_walk},
@@ -199,7 +200,7 @@ impl Captured {
         table::<tables::FactionAdvisors, _>(self.advisors.outcome, rows, |row| FactionAdvisorRow {
             faction: row.faction,
             ordinal: row.ordinal,
-            token: token(row).unwrap().to_vec(),
+            token: owned_vec(copy_vec(token(row).unwrap())),
         })
     }
     fn theatre_table(&self) -> TableView {
@@ -231,10 +232,10 @@ impl Captured {
             FactionTheatreRow {
                 faction: row.faction,
                 ordinal: row.ordinal,
-                icon: icon.to_vec(),
-                regions: regions.to_vec(),
+                icon: owned_vec(copy_vec(icon)),
+                regions: owned_vec(copy_vec(regions)),
                 country_count: row.country_count,
-                hidden_for: hidden.to_vec(),
+                hidden_for: owned_vec(copy_vec(hidden)),
             }
         })
     }
