@@ -124,7 +124,10 @@ fn push(
     )
 }
 
-#[allow(clippy::too_many_arguments)] // One request: its combat, side, slot, scope, key and accumulator.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep native identity and source coordinates explicit when recording a request"
+)]
 fn push_side(
     buffers: &mut Buffers<'_>,
     combat: u64,
@@ -334,7 +337,10 @@ fn keys(member: &cfex_member::DetailsRow, duration: i32, initial: i32) -> &'stat
 /// carrier hovers. The combat walk groups members by combat, so each combat
 /// uses its own indexed slice. Requests are sorted in place by accumulator;
 /// each distinct accumulator is walked once, regardless of side/key/ship use.
-#[allow(clippy::too_many_arguments)] // The hour's naval walk rows and the caller's arenas.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Capture consumes separately owned native input slices and caller-owned buffers"
+)]
 pub fn capture(
     memory: &impl Memory,
     base: usize,

@@ -21,7 +21,10 @@ use std::io;
 /// with no surviving source key (1405FFDE0), so another display language
 /// cannot reconstruct them. 1415B4BB0 and 140C230A0 pass depth -1, so
 /// 14054C770 prints every nonzero leaf regardless of hierarchy depth.
-#[allow(clippy::too_many_arguments)] // The recorded tree, its formatting and text resources.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Render recorded modifier trees with explicit scaling, label policy and text resources"
+)]
 pub(super) fn ship_modifier_breakdown(
     nodes: &[replay::rows::ModifierBreakdownNode],
     definition: &replay::rows::ModifierDefinitionRow,
@@ -418,7 +421,10 @@ fn positioning_description(
     Ok(text)
 }
 
-#[allow(clippy::too_many_arguments)] // The side's recorded trees and text resources.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Select captured sources by combat and side while keeping text resources explicit"
+)]
 fn positioning_sources(
     id: u64,
     side: u8,
