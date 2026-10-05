@@ -1,6 +1,12 @@
 use super::*;
 use std::cell::{Cell, RefCell};
 
+/// Route staging reserved as `MovementPacket` reserves it: four bytes for
+/// every path slot the capture may fill.
+fn staging(paths: usize) -> Vec<u8> {
+    Vec::with_capacity(paths * 4)
+}
+
 struct Observed<'a> {
     source: &'a PresentationMemory,
     reads: RefCell<Vec<(usize, usize)>>,
@@ -101,7 +107,7 @@ fn prefixes_preserve_empty_spans_order_duplicates_and_partial_failures() {
                     &actual,
                     routes[0],
                     routes[1],
-                    &mut Vec::new(),
+                    &mut staging(lengths[0] + lengths[1]),
                     &mut a[..lengths[0]],
                     &mut b[..lengths[1]],
                 );
@@ -139,7 +145,7 @@ fn native_pairs_keep_ordered_failure_prefixes() {
                 &memory,
                 first,
                 second,
-                &mut Vec::new(),
+                &mut staging(path.len() + alternate.len()),
                 &mut path,
                 &mut alternate
             ),
@@ -149,8 +155,15 @@ fn native_pairs_keep_ordered_failure_prefixes() {
         assert_eq!(alternate, [0xdead_beef]);
     }
     let mut path = [0; 3];
-    carmy::movement_route_prefixes(&memory, bad, route, &mut Vec::new(), &mut [], &mut path)
-        .unwrap();
+    carmy::movement_route_prefixes(
+        &memory,
+        bad,
+        route,
+        &mut staging(path.len()),
+        &mut [],
+        &mut path,
+    )
+    .unwrap();
     assert_eq!(path, values);
 }
 

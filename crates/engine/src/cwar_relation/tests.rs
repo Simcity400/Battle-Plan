@@ -801,12 +801,15 @@ fn owned_snapshot_resets_and_growth_keep_root_pressure_and_unreused_storage_hone
     assert_eq!(scratch.stats.installed, 0);
     assert!(scratch.words.is_empty());
     // Demand only controls off-thread storage. It cannot impose a source
-    // cap, and a demand no allocation can satisfy keeps the existing
-    // (still correct) storage instead of aborting.
+    // cap, and a demand no allocation can satisfy is refused as out of
+    // memory while the existing (still correct) storage is kept.
     let before = scratch.capacity();
     scratch.stats.required_words = usize::MAX;
     scratch.stats.required_cells = usize::MAX;
-    scratch.grow(2).unwrap();
+    assert_eq!(
+        scratch.grow(2).unwrap_err().kind(),
+        std::io::ErrorKind::OutOfMemory
+    );
     assert_eq!(scratch.capacity(), before);
     // Observed demand beyond any former fixed budget is honoured exactly.
     scratch.stats.required_words = 70_000;

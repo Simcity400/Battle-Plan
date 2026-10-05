@@ -338,7 +338,9 @@ impl Builder {
                         return false;
                     }
                     let previous = operation.runs.last().expect("open operation");
-                    !(previous.terminal && !run.terminal)
+                    // A run continues unless a finished run would reopen or
+                    // both carry different known start hours.
+                    (!previous.terminal || run.terminal)
                         && !(previous.start_hour.is_some()
                             && run.start_hour.is_some()
                             && previous.start_hour != run.start_hour)

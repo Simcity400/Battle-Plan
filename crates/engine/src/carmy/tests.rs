@@ -4256,7 +4256,11 @@ fn owned_movement_fixture_run(
         })
         .collect();
     super::capture_division_seeds(memory, &mut seeds);
-    let mut geometry = crate::cprovince::GeometryPacket::default();
+    // Sized as the collector builds it (`try_with_capacities`), not the
+    // zero-capacity placeholder.
+    let mut geometry = crate::cprovince::GeometryPacket::with_capacities(
+        crate::cprovince::GeometryCapacities::default(),
+    );
     geometry.begin(memory, 0, GS).unwrap();
     let mut packet = super::MovementPacket::new(sources.len(), paths.len());
     let allocated = packet.allocated_bytes();
