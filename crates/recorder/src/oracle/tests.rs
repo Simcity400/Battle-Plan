@@ -10,7 +10,7 @@ use replay::{
 fn compare(
     frame: &DecodedFrame,
     save: &Save,
-    membership: &save::MapMembership,
+    membership: &save::PartialMapMembership,
     equipment: &installed_content::equipment::Database,
 ) -> io::Result<Report> {
     compare_at(
@@ -25,7 +25,7 @@ fn compare(
 fn compare_at(
     frame: &DecodedFrame,
     save: &Save,
-    membership: &save::MapMembership,
+    membership: &save::PartialMapMembership,
     equipment: &installed_content::equipment::Database,
     boundary: SampleBoundary,
 ) -> io::Result<Report> {
@@ -56,7 +56,7 @@ fn comparison_error(result: io::Result<Report>) -> String {
 pub(super) fn fixture() -> (
     DecodedFrame,
     Save,
-    save::MapMembership,
+    save::PartialMapMembership,
     installed_content::equipment::Database,
 ) {
     let save = save::parse(br#"HOI4txt
@@ -164,7 +164,8 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
     };
     let membership = save::MapMembership {
         provinces: BTreeMap::from([(0, None), (1, Some(1)), (2, None)]),
-    };
+    }
+    .into();
     (
         frame,
         save,
@@ -435,7 +436,7 @@ fn add_country(frame: &mut DecodedFrame, save: &mut Save, id: u32, slot: u32, ta
 fn division_fixture() -> (
     DecodedFrame,
     Save,
-    save::MapMembership,
+    save::PartialMapMembership,
     installed_content::equipment::Database,
 ) {
     let (mut frame, mut save, membership, equipment) = fixture();
@@ -957,7 +958,7 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
 fn relations_fixture() -> (
     DecodedFrame,
     Save,
-    save::MapMembership,
+    save::PartialMapMembership,
     installed_content::equipment::Database,
 ) {
     let (mut frame, mut save, membership, equipment) = fixture();
@@ -1300,7 +1301,7 @@ fn unavailable_sources_and_failed_groups_do_not_hide_later_independent_mismatche
         &saved,
         ExtendedContent {
             membership: Ok(&membership),
-            base_resources: Ok(&save::construction::BaseResources::default()),
+            base_resources: Ok(&save::construction::PartialBaseResources::default()),
             railway_adjacency: Err("railway content is outside this fixture".into()),
             buildings: Ok(&installed_content::buildings::Buildings::default()),
             raid_graph: Err("map/adjacencies.csv: unused".into()),
@@ -1336,7 +1337,7 @@ fn unavailable_sources_and_failed_groups_do_not_hide_later_independent_mismatche
         &saved,
         ExtendedContent {
             membership: Ok(&membership),
-            base_resources: Ok(&save::construction::BaseResources::default()),
+            base_resources: Ok(&save::construction::PartialBaseResources::default()),
             railway_adjacency: Err("railway content is outside this fixture".into()),
             buildings: Ok(&installed_content::buildings::Buildings::default()),
             raid_graph: Err("map/adjacencies.csv: unused".into()),
@@ -2924,7 +2925,7 @@ fn air_and_naval_oracle_compares_native_values_and_slot_identity() {
 fn naval_fixture() -> (
     DecodedFrame,
     Save,
-    save::MapMembership,
+    save::PartialMapMembership,
     installed_content::equipment::Database,
 ) {
     let (mut frame, mut saved, membership, equipment) = fixture();
@@ -3104,7 +3105,7 @@ fn naval_oracle_distinguishes_null_locations_and_expeditionary_omission_predicat
 fn relation_fixture() -> (
     DecodedFrame,
     Save,
-    save::MapMembership,
+    save::PartialMapMembership,
     installed_content::equipment::Database,
 ) {
     let (mut frame, mut save, membership, equipment) = fixture();

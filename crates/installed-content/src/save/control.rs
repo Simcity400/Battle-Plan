@@ -1,6 +1,6 @@
-use std::io;
+use std::{collections::BTreeSet, io};
 
-use super::{MapMembership, Save, invalid};
+use super::{PartialMapMembership, ProvinceMembership, Save, invalid};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProvinceControl {
@@ -25,21 +25,29 @@ impl Save {
     /// raw id or canonical link slot; post-load 1409cdf80 restores owner.
     /// The writer emits zero controllers, unlike CProvince. A missing owner
     /// is refused because that path omits both fields, losing controller data.
-    pub fn state_control(&self, membership: &MapMembership) -> io::Result<Vec<StateControl>> {
-        let state_ids = membership
-            .provinces
-            .values()
-            .flatten()
-            .copied()
-            .collect::<std::collections::BTreeSet<_>>();
+    /// Membership supplies only the kept state-ID inventory; control comes
+    /// entirely from the save, including for states with excluded membership.
+    pub fn known_state_control(
+        &self,
+        membership: &PartialMapMembership,
+    ) -> io::Result<Vec<StateControl>> {
+        self.state_control_for(&state_inventory(membership))
+    }
+
+    fn validate_state_inventory(&self, state_ids: &BTreeSet<u32>) -> io::Result<()> {
         if let Some(id) = self.states.keys().find(|id| !state_ids.contains(id)) {
             return Err(invalid(format!(
                 "save state {id} has no membership in the verified content"
             )));
         }
+        Ok(())
+    }
+
+    fn state_control_for(&self, state_ids: &BTreeSet<u32>) -> io::Result<Vec<StateControl>> {
+        self.validate_state_inventory(state_ids)?;
         state_ids
-            .into_iter()
-            .map(|id| {
+            .iter()
+            .map(|&id| {
                 let state = self
                     .states
                     .get(&id)
@@ -70,29 +78,36 @@ impl Save {
     /// CProvince writer 140e6ca90 omits a controller equivalent to its state's
     /// owner; post-load 1409cdf80 fills omitted/nonpositive controls from that
     /// owner. A missing state or state-owner field cannot be filled this way.
-    pub fn province_control(&self, membership: &MapMembership) -> io::Result<Vec<ProvinceControl>> {
-        let state_ids = membership
-            .provinces
-            .values()
-            .flatten()
-            .copied()
-            .collect::<std::collections::BTreeSet<_>>();
-        if let Some(id) = self.states.keys().find(|id| !state_ids.contains(id)) {
-            return Err(invalid(format!(
-                "save state {id} has no membership in the verified content"
-            )));
-        }
+    /// Unknown provinces have no inferred owner/controller row. Other rows use
+    /// the native save omissions and the full kept state-ID inventory.
+    pub fn known_province_control(
+        &self,
+        membership: &PartialMapMembership,
+    ) -> io::Result<Vec<ProvinceControl>> {
+        self.validate_state_inventory(&state_inventory(membership))?;
         if let Some(id) = self
             .provinces
             .keys()
-            .find(|id| !membership.provinces.contains_key(id) || **id == 0)
+            .find(|id| !membership.contains_province(**id) || **id == 0)
         {
             return Err(invalid(format!(
                 "save province {id} is absent from the verified map or is its sentinel"
             )));
         }
-        let mut rows = Vec::with_capacity(membership.provinces.len());
-        for (&id, &state_id) in &membership.provinces {
+        self.province_control_for(membership.provinces.iter().filter_map(|(&id, assignment)| {
+            match assignment {
+                ProvinceMembership::Known(state) => Some((id, *state)),
+                ProvinceMembership::Unknown(_) => None,
+            }
+        }))
+    }
+
+    fn province_control_for(
+        &self,
+        assignments: impl Iterator<Item = (u32, Option<u32>)>,
+    ) -> io::Result<Vec<ProvinceControl>> {
+        let mut rows = Vec::new();
+        for (id, state_id) in assignments {
             if id == 0 {
                 continue;
             }
@@ -126,4 +141,13 @@ impl Save {
         }
         Ok(rows)
     }
+}
+
+fn state_inventory(membership: &PartialMapMembership) -> BTreeSet<u32> {
+    membership
+        .known_states
+        .iter()
+        .chain(membership.excluded_states.keys())
+        .copied()
+        .collect()
 }

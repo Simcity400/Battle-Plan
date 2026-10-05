@@ -1,5 +1,29 @@
 use super::*;
 
+#[test]
+fn membership_exclusions_are_counted_separately_from_failed_groups() {
+    let membership = state_history_tests::membership(
+        "state={id=1 provinces={1} history={free_operative={operative=a}}}",
+        1,
+    );
+    let mut report = Report::default();
+    report.membership_skip("Provinces", 1, &membership, &BTreeSet::from([1]));
+    for summary in [
+        report.coverage_line(),
+        report.outcome().unwrap_err().to_string(),
+    ] {
+        assert!(
+            summary.contains("0 failed or skipped comparison groups"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("1 groups with membership exclusions"),
+            "{summary}"
+        );
+        assert!(summary.contains("incomplete"), "{summary}");
+    }
+}
+
 /// At a non-full hour, a daily group not read at that hour is carried,
 /// not compared: its comparison does not run, it is listed with its last
 /// read hour, and the oracle can pass. Groups read at the hour, hourly

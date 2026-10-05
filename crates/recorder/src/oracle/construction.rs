@@ -311,6 +311,41 @@ pub(super) fn base_resources(
     Ok(())
 }
 
+pub(super) fn partial_base_resources(
+    rows: &[replay::rows::StateBaseResourceRow],
+    content: &saved::PartialBaseResources,
+    membership: &installed_content::save::PartialMapMembership,
+    names: &BTreeMap<u32, &[u8]>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut affected = BTreeSet::new();
+    let mut keys = BTreeSet::new();
+    for row in rows {
+        if !keys.insert((row.state, row.resource)) {
+            return Err(invalid("duplicate native state/base resource"));
+        }
+    }
+    let comparable: Vec<_> = rows
+        .iter()
+        .filter(|row| {
+            if membership.state_is_excluded(row.state) {
+                affected.insert(row.state);
+                false
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect();
+    report.membership_skip(
+        "StateBaseResources",
+        rows.len() - comparable.len(),
+        membership,
+        &affected,
+    );
+    base_resources(&comparable, &content.known, names, report)
+}
+
 pub(super) fn building_construction(
     rows: &[replay::rows::BuildingConstructionRow],
     saved: &saved::Pack,

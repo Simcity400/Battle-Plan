@@ -18,6 +18,129 @@ fn state_reading_note_keeps_misread_kind() {
     );
 }
 
+fn attributed(input: &[u8]) -> ParsedStates {
+    parse_states_attributed(
+        input,
+        &Context {
+            resource: &|_| Resource::Null,
+            max_building_levels: 15,
+            province_count: 100,
+            names: &KeyNames::default(),
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn states_diagnostics_inside_one_template_affect_only_that_state() {
+    let parsed = attributed(b"state = { id = 1 provinces = { 1 } state_startup_effect = { free_operative = { operative = authored } } } state = { id = 2 provinces = { 2 } }");
+    assert_eq!(parsed.states.len(), 2);
+    assert_eq!(parsed.states[0].0.provinces, [1]);
+    assert!(
+        parsed.states[0].1.iter().any(|note| {
+            note.contains("Deferred effect `free_operative`") && note.contains("count: 1")
+        }),
+        "{:?}",
+        parsed.states[0].1
+    );
+    assert!(parsed.states[1].1.is_empty(), "{:?}", parsed.states[1].1);
+    let parsed = attributed(b"state = { id = 1 impassable = maybe } state = { id = 2 }");
+    assert!(parsed.states[0].1[0].contains("not yes or no"));
+    assert!(parsed.states[1].1.is_empty());
+}
+
+#[test]
+fn states_repeated_deferred_diagnostics_keep_each_templates_count() {
+    let parsed = attributed(b"state = { id = 1 state_startup_effect = { free_operative = { operative = first } free_operative = { operative = second } } } state = { id = 2 history = { free_operative = { operative = third } } } state = { id = 3 }");
+    assert_eq!(parsed.states[0].1.len(), 1, "{:?}", parsed.states[0].1);
+    assert!(parsed.states[0].1[0].contains("count: 2"));
+    assert_eq!(parsed.states[1].1.len(), 1, "{:?}", parsed.states[1].1);
+    assert!(parsed.states[1].1[0].contains("count: 1"));
+    assert!(parsed.states[2].1.is_empty());
+    assert_eq!(parsed.diagnostics.len(), 1, "{:?}", parsed.diagnostics);
+    assert!(parsed.diagnostics[0].1.contains("count: 3"));
+}
+
+#[test]
+fn states_unattributable_diagnostics_affect_every_template_in_the_file() {
+    let parsed = attributed(b"state = { id = 1 } orphan tail state = { id = 2 }");
+    assert_eq!(parsed.states.len(), 2);
+    for (_, notes) in parsed.states {
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].contains("key `orphan` has no operator"),
+            "{notes:?}"
+        );
+    }
+}
+
+#[test]
+fn states_variable_definition_diagnostics_affect_every_template() {
+    for input in [
+        b"@a bad state = { id = 1 } state = { id = 2 }".as_slice(),
+        b"@a = 1 @a = 2 state = { id = 1 } state = { id = 2 }".as_slice(),
+    ] {
+        let parsed = attributed(input);
+        assert_eq!(parsed.states.len(), 2);
+        for (_, notes) in parsed.states {
+            assert!(
+                notes.iter().any(|note| {
+                    note.contains("definition `@a` has no `=`")
+                        || note.contains("variable `@a` is already taken")
+                }),
+                "{notes:?}"
+            );
+        }
+    }
+    let parsed =
+        attributed(b"state = { id = 1 @a = 1 @a = 2 provinces = { 1 } } state = { id = 2 }");
+    assert_eq!(parsed.states.len(), 2);
+    assert!(
+        parsed.states[0]
+            .1
+            .iter()
+            .any(|note| { note.contains("variable `@a` is already taken") })
+    );
+    assert!(
+        parsed.states[1]
+            .1
+            .iter()
+            .any(|note| { note.contains("variable `@a` is already taken") })
+    );
+    // Failed definitions in discarded templates still affect the same
+    // reader's later templates; a previous template is conservatively covered
+    // by the file-scoped diagnostic too.
+    let parsed = attributed(
+        b"state = { id = 3 } state = { id = 0 @a bad provinces = { 1 } } state = { id = 4 name = @a }",
+    );
+    assert_eq!(parsed.states.len(), 2);
+    for (_, notes) in parsed.states {
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains("definition `@a` has no `=`")),
+            "{notes:?}"
+        );
+    }
+}
+
+#[test]
+fn states_file_diagnostics_without_kept_templates_remain_notes() {
+    // A valid non-state item follows the failed definition, so recovery
+    // consumes that item without reusing the key slot at end of text.
+    let parsed = attributed(b"@a bad orphan = yes");
+    assert!(parsed.states.is_empty());
+    assert_eq!(parsed.diagnostics.len(), 1);
+    assert!(
+        parsed.diagnostics[0]
+            .1
+            .contains("definition `@a` has no `=`")
+    );
+    let parsed = attributed(b"@a bad state = { id = 0 }");
+    assert!(parsed.states.is_empty());
+    assert_eq!(parsed.diagnostics.len(), 2);
+}
+
 const RESOURCES: [&str; 2] = ["chromium", "steel"];
 
 /// CStrategicResource::vf4 (140BBD150) through load_file (140AB2ED0):
@@ -620,6 +743,14 @@ fn the_loader_reads_resources_and_the_building_cap_from_content() {
     let map = crate::map::load(&layers).unwrap();
     let (states, notes) = read(&layers, &defines, &map.definitions).unwrap();
     let state = states.get(1).unwrap();
+    assert_eq!(states.source(1), Some("history/states/1-a.txt"));
+    assert_eq!(states.diagnostics(1).len(), 2);
+    assert!(
+        states
+            .diagnostics(1)
+            .iter()
+            .all(|state_note| { notes.iter().any(|(_, note)| note.contains(state_note)) })
+    );
     assert_eq!(state.resources, Ok(vec![("TUNGSTEN".to_owned(), 4)]));
     assert_eq!(state.buildings["infrastructure"].level, 10);
     assert_eq!(state.provinces, [2, 1]);
@@ -633,6 +764,59 @@ fn the_loader_reads_resources_and_the_building_cap_from_content() {
             "history/states/1-a.txt state 1: `oil` is no strategic resource; the game reports it and keeps no amount; the state follows the game's reading",
         ]
     );
+    for (path, text) in [
+        ("2-kept.txt", "state = { id = 2 provinces = { 1 } }"),
+        (
+            "3-discarded.txt",
+            "state = { id = 2 provinces = { 2 } state_startup_effect = { free_operative = { operative = authored } } }",
+        ),
+        ("4-after.txt", "state = { id = 3 provinces = { 2 } }"),
+    ] {
+        fs::write(root.join("history/states").join(path), text).unwrap();
+    }
+    let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let (states, notes) = read(&layers, &defines, &map.definitions).unwrap();
+    assert_eq!(states.get(2).unwrap().provinces, [1]);
+    assert_eq!(states.source(2), Some("history/states/2-kept.txt"));
+    assert!(states.diagnostics(2).is_empty());
+    assert!(states.diagnostics(3).is_empty());
+    assert!(
+        notes
+            .iter()
+            .any(|(_, note)| note.contains("defined by both"))
+    );
+    assert!(notes.iter().any(|(_, note)| {
+        note.contains("history/states/3-discarded.txt")
+            && note.contains("Deferred effect `free_operative`")
+    }));
+    assert_eq!(notes.len(), 4);
+    for (path, text) in [
+        ("5-no-state.txt", "@a bad orphan = yes"),
+        (
+            "6-discarded-file.txt",
+            "@a bad state = { id = 2 provinces = { 2 } }",
+        ),
+    ] {
+        fs::write(root.join("history/states").join(path), text).unwrap();
+    }
+    let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let (states, notes) = read(&layers, &defines, &map.definitions).unwrap();
+    assert_eq!(states.get(2).unwrap().provinces, [1]);
+    assert!(states.diagnostics(2).is_empty());
+    assert!(states.diagnostics(3).is_empty());
+    for path in ["5-no-state.txt", "6-discarded-file.txt"] {
+        assert!(notes.iter().any(|(_, note)| {
+            note.contains(path) && note.contains("definition `@a` has no `=`")
+        }));
+    }
+    assert_eq!(
+        notes
+            .iter()
+            .filter(|(_, note)| note.contains("defined by both"))
+            .count(),
+        2
+    );
+    assert_eq!(notes.len(), 7);
     // An unread suffix may own state 2 before a later file does. The
     // loader must refuse the inventory, not install the later candidate.
     fs::write(

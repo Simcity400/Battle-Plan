@@ -35,6 +35,130 @@ fn counted_reports_keep_their_source_kind() {
     );
 }
 
+#[test]
+fn states_file_diagnostics_keep_ownership_of_repeated_reports_on_one_line() {
+    let read = read(
+        b"state = { deferred = yes deferred = yes } state = { deferred = yes } state = { }",
+        Mode::KeepMark,
+        Top::File(false),
+        None,
+        &mut |nested, _| {
+            if nested {
+                Shape::Reported {
+                    kind: crate::DiagnosticKind::Unsupported,
+                    report: "synthetic deferred reader".into(),
+                    read: Box::new(Shape::One),
+                }
+            } else {
+                Shape::Object(true)
+            }
+        },
+    );
+    assert_eq!(read.items.len(), 3);
+    assert_eq!(read.misreads.len(), 1);
+    assert_eq!(read.misreads[0].count, Some(3));
+    assert_eq!(read.item_misreads.len(), 3);
+    assert_eq!(read.item_misreads[0][0].count, Some(2));
+    assert_eq!(read.item_misreads[1][0].count, Some(1));
+    assert!(read.item_misreads[2].is_empty());
+    assert!(read.unattributed_misreads.is_empty());
+}
+
+#[test]
+fn states_file_diagnostics_from_discarded_items_remain_unattributed() {
+    let read = read(
+        b"discard tail state = { }",
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), field| {
+            if field.keyword_is("discard") {
+                Shape::Discard
+            } else {
+                Shape::Object(())
+            }
+        },
+    );
+    assert_eq!(read.items.len(), 1);
+    assert_eq!(read.item_misreads, [Vec::<Misread>::new()]);
+    assert_eq!(read.unattributed_misreads.len(), 1);
+    assert!(
+        read.unattributed_misreads[0]
+            .what
+            .contains("has no operator")
+    );
+}
+
+#[test]
+fn states_direct_persistent_diagnostics_keep_item_alignment() {
+    let read = read(
+        b"bad tail clean = yes nested = { clean = yes bad tail } } after = no",
+        Mode::KeepMark,
+        Top::Persistent(false),
+        None,
+        &mut |nested, field| {
+            if !nested && field.keyword_is("nested") {
+                Shape::Object(true)
+            } else {
+                Shape::One
+            }
+        },
+    );
+    assert_eq!(read.items.len(), 3);
+    assert_eq!(read.item_misreads.len(), read.items.len());
+    assert!(read.item_misreads.iter().all(Vec::is_empty));
+    assert_eq!(read.unattributed_misreads.len(), 2);
+    assert!(
+        read.items
+            .iter()
+            .zip(&read.item_misreads)
+            .any(|(item, _)| item.keyword_is("nested"))
+    );
+    assert_eq!(
+        read.items[2].value.items().unwrap().len(),
+        2,
+        "nested objects must not create extra top-level diagnostic entries"
+    );
+}
+
+#[test]
+fn states_nested_variable_diagnostics_are_file_scoped() {
+    let read = read(
+        b"state = { @a = 1 @a = 2 name = @a } state = { name = @a }",
+        Mode::KeepMark,
+        Top::File(false),
+        None,
+        &mut |nested, _| {
+            if nested {
+                Shape::One
+            } else {
+                Shape::Object(true)
+            }
+        },
+    );
+    assert_eq!(read.items.len(), 2);
+    assert!(read.item_misreads[1].is_empty());
+    assert_eq!(read.unattributed_misreads.len(), 1);
+    assert!(
+        read.unattributed_misreads[0]
+            .what
+            .contains("variable `@a` is already taken")
+    );
+    for item in read.items {
+        assert_eq!(
+            item.value
+                .items()
+                .unwrap()
+                .iter()
+                .find(|field| field.keyword_is("name"))
+                .unwrap()
+                .value
+                .scalar(),
+            Some(b"1".as_slice())
+        );
+    }
+}
+
 fn texts(tokens: &[Token]) -> Vec<(Kind, String)> {
     tokens
         .iter()

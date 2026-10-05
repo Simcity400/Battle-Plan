@@ -405,14 +405,15 @@ provinces={3={controller=D01}}
     let map = MapMembership {
         provinces: BTreeMap::from([(0, None), (1, Some(1)), (2, Some(2)), (3, Some(2))]),
     };
-    let states = save.state_control(&map).unwrap();
+    let map = PartialMapMembership::from(map);
+    let states = save.known_state_control(&map).unwrap();
     assert_eq!(states.len(), 2);
     assert_eq!(states[0].owner, b"GER");
     assert_eq!(states[0].controller, b"D01");
     assert!(states[0].controller_explicit);
     assert_eq!(states[1].controller, b"GER");
     assert!(!states[1].controller_explicit);
-    let provinces = save.province_control(&map).unwrap();
+    let provinces = save.known_province_control(&map).unwrap();
     // A state's explicit controller does not replace province ownership
     // or its independent sparse controller fields, and vice versa.
     assert_eq!(provinces[0].controller.as_deref(), Some(b"GER".as_slice()));
@@ -431,11 +432,12 @@ countries={ GER={} } states={1={owner=GER}} provinces={}
     let map = MapMembership {
         provinces: BTreeMap::from([(1, Some(1))]),
     };
+    let map = PartialMapMembership::from(map);
     let mut missing = save.clone();
     missing.states.clear();
     assert!(
         missing
-            .state_control(&map)
+            .known_state_control(&map)
             .unwrap_err()
             .to_string()
             .contains("lacks state 1")
@@ -444,7 +446,7 @@ countries={ GER={} } states={1={owner=GER}} provinces={}
     missing.states.get_mut(&1).unwrap().owner = None;
     assert!(
         missing
-            .state_control(&map)
+            .known_state_control(&map)
             .unwrap_err()
             .to_string()
             .contains("lacks its owner")
@@ -459,7 +461,7 @@ countries={ GER={} } states={1={owner=GER}} provinces={}
         }
         assert!(
             unknown
-                .state_control(&map)
+                .known_state_control(&map)
                 .unwrap_err()
                 .to_string()
                 .contains("unknown saved country")
@@ -479,7 +481,7 @@ countries={ GER={} } states={1={owner=GER}} provinces={}
     );
     assert!(
         unexpected
-            .state_control(&map)
+            .known_state_control(&map)
             .unwrap_err()
             .to_string()
             .contains("no membership")

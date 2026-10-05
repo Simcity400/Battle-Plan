@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, io};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
 
 use installed_content::save::Decimal;
 use replay::{
@@ -175,6 +178,8 @@ pub(super) struct Report {
     /// `differences`, so every group can print all of its own rows.
     pub(super) difference_owners: Vec<String>,
     pub(super) limitations: BTreeMap<String, Vec<String>>,
+    pub(super) excluded_states: BTreeSet<u32>,
+    pub(super) membership_skips: BTreeMap<String, usize>,
     pub(super) compared_tables: BTreeMap<String, usize>,
     pub(super) recorded_tables: BTreeMap<TableId, Result<usize, String>>,
     pub(super) failed_comparisons: BTreeMap<String, String>,
@@ -287,15 +292,23 @@ impl Report {
 
     pub(super) fn outcome(&self) -> io::Result<()> {
         let unavailable = self.unavailable_tables();
-        if self.differences.is_empty() && unavailable == 0 && self.failed_comparisons.is_empty() {
+        if self.differences.is_empty()
+            && unavailable == 0
+            && self.failed_comparisons.is_empty()
+            && self.excluded_states.is_empty()
+        {
             Ok(())
         } else {
             Err(invalid(format!(
-                "oracle: {} differences; {} unavailable, truncated or invalid tables; {} failed or skipped comparison groups; comparison {}",
+                "oracle: {} differences; {} unavailable, truncated or invalid tables; {} failed or skipped comparison groups; {} groups with membership exclusions; comparison {}",
                 self.differences.len(),
                 unavailable,
                 self.failed_comparisons.len(),
-                if unavailable == 0 && self.failed_comparisons.is_empty() {
+                self.membership_skips.len(),
+                if unavailable == 0
+                    && self.failed_comparisons.is_empty()
+                    && self.excluded_states.is_empty()
+                {
                     "completed"
                 } else {
                     "incomplete"
@@ -421,6 +434,67 @@ impl Report {
             .push(subject.into());
     }
 
+    pub(super) fn membership_skip(
+        &mut self,
+        group: &str,
+        skipped: usize,
+        membership: &installed_content::save::PartialMapMembership,
+        affected: &BTreeSet<u32>,
+    ) {
+        self.excluded_states
+            .extend(membership.excluded_states.keys());
+        if skipped == 0 {
+            return;
+        }
+        self.membership_skips.insert(group.into(), skipped);
+        self.limitation(
+            &format!("excluded state history leaves membership unknown for {group}; dependent comparisons are skipped"),
+            format!(
+                "{group}: {skipped} rows with membership-dependent comparisons skipped; {}",
+                Self::state_exclusions(membership, affected)
+            ),
+        );
+    }
+
+    fn state_exclusions(
+        membership: &installed_content::save::PartialMapMembership,
+        affected: &BTreeSet<u32>,
+    ) -> String {
+        affected
+            .iter()
+            .map(|id| {
+                let excluded = &membership.excluded_states[id];
+                format!(
+                    "state {id} ({}: {})",
+                    excluded.file,
+                    excluded.reasons.join("; ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    pub(super) fn membership_content(
+        &mut self,
+        membership: &installed_content::save::PartialMapMembership,
+    ) {
+        self.excluded_states
+            .extend(membership.excluded_states.keys());
+        if !self.excluded_states.is_empty() {
+            self.limitation(
+                "content state-history exclusions make membership coverage incomplete",
+                format!(
+                    "{} excluded states: {}",
+                    membership.excluded_states.len(),
+                    Self::state_exclusions(membership, &self.excluded_states)
+                ),
+            );
+        }
+        for note in &membership.notes {
+            self.limitation("state-history reader notes", note.clone());
+        }
+    }
+
     pub(super) fn scalar(
         &mut self,
         tag: &str,
@@ -451,15 +525,26 @@ impl Report {
     /// read at that hour are compared, and the rest are listed after this line.
     pub(super) fn coverage_line(&self) -> String {
         let mut line = format!(
-            "Comparison status for recorded-format coverage: {}; {} table availability issues; {} failed or skipped comparison groups",
-            if self.unavailable_tables() == 0 && self.failed_comparisons.is_empty() {
+            "Comparison status for recorded-format coverage: {}; {} table availability issues; {} failed or skipped comparison groups; {} groups with membership exclusions",
+            if self.unavailable_tables() == 0
+                && self.failed_comparisons.is_empty()
+                && self.excluded_states.is_empty()
+            {
                 "complete"
             } else {
                 "incomplete"
             },
             self.unavailable_tables(),
             self.failed_comparisons.len(),
+            self.membership_skips.len(),
         );
+        if !self.excluded_states.is_empty() {
+            line.push_str(&format!(
+                "; {} excluded states; {} rows with membership-dependent comparisons skipped",
+                self.excluded_states.len(),
+                self.membership_skips.values().sum::<usize>()
+            ));
+        }
         if !self.carried.is_empty() {
             line.push_str(&format!(
                 "; {} comparison groups or sliced scopes carried, not compared (not read at hour {})",
