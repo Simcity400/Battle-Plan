@@ -4,7 +4,7 @@
  * and measures them (running total, the week or the month before); see
  * `crates/dashboard/src/products/equipment_produced.rs`. An unknown value stays
  * unknown here: it is never drawn, ranked or summed as zero. */
-import type { RaceItem } from '../../charts/race/race';
+import type { CountryRaceEntry } from '../../charts/race/countryRace';
 import type { Run, Span } from '../../charts/series';
 import { shownRuns } from '../../charts/race/lines.ts';
 import { runIndexAt, stretchStarts } from '../../charts/series.ts';
@@ -267,27 +267,22 @@ export const bandLabel = (model: ProducedModel, band: KeyBand, hour: number) => 
 
 export const formatUnits = (value: number) => formatAmount(BigInt(Math.round(value)), 0);
 
-/** How a race draws each country: `bands` gives a country's bands (the reply's, or its
- * own when folding per country), `unknown` the colour of a split that is not known. */
-export interface RaceLook { split: boolean; country: (tag: string) => string; bands: (tag: string) => readonly KeyBand[]; unknown: string }
-
-/** Race entries for ranked countries: one bar in the country's colour, or one segment
- * per band in its colour, the segments always summing to the total the label shows. A
+/** Ranked production and its optional groups for the shared view. A
  * band whose value is not known then (a type an unresolved variant could belong to)
- * has no segment of its own: what the known bands leave of the exact total is one
- * hatched segment. A bar glides only within the unbroken stretch its value was read in. */
-export function raceEntries(model: ProducedModel, ranked: readonly { tag: string; at: ProducedAt & { total: number } }[], look: RaceLook): RaceItem[] {
+ * has no part of its own: what the known bands leave of the exact total is hatched. */
+export function raceEntries(model: ProducedModel, ranked: readonly { tag: string; at: ProducedAt & { total: number } }[],
+  look: { split: boolean; bands: (tag: string) => readonly KeyBand[]; unknown: string }): CountryRaceEntry[] {
   return ranked.map(({ tag, at }) => {
     const series = model.series.get(tag)!;
-    const segments = () => {
+    const parts = () => {
       const parts = look.bands(tag).map(band => ({ id: band.id, color: band.color, value: bandValue(series, band, at.index) }));
       const shown = parts.filter(part => !Number.isNaN(part.value));
       const rest = at.total - shown.reduce((sum, part) => sum + part.value, 0);
       return shown.length === parts.length ? shown : [...shown, { id: 'unknown', color: look.unknown, value: 0, hatched: rest }];
     };
     return {
-      key: tag, value: at.total, label: formatUnits(at.total), stretch: at.stretch,
-      segments: look.split ? segments() : [{ id: 'total', color: look.country(tag), value: at.total }],
+      tag, value: at.total, label: formatUnits(at.total), stretch: at.stretch,
+      ...(look.split ? { parts: parts() } : {}),
     };
   });
 }
@@ -323,9 +318,6 @@ export function mixBands(model: ProducedModel, tag: string, bands: readonly KeyB
   if (!series) return bands.map(() => []);
   return bands.map(band => shownRuns(valueRuns(series, index => bandValue(series, band, index)), membership, range));
 }
-
-/** Every hour a shown value may change, for the keyboard's stops. */
-export const changeHours = (runs: readonly Run[]) => runs.map(run => run.firstHour);
 
 /** Where the running totals began counting at an hour: the latest observation then. */
 export function countedSince(reply: EquipmentProducedReply, hour: number): number | null {

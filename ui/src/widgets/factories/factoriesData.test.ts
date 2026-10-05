@@ -6,12 +6,10 @@ import type { CountryFactoriesReply, FactoryField, FactoryGroupKey, FactoryPart 
 import { lookPlan } from '../../dashboard/countryLooks.ts';
 import { lineLabelHours } from '../../charts/series.ts';
 import { DATE_OVERLAY_OPTION, mixCountry } from '../../charts/race/options.ts';
-import { linesAt, linesTooltip } from '../../charts/race/lines.ts';
-import { barExtent, stepRace } from '../../charts/race/race.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import '../definitions.ts';
 import { OPTIONS } from './definition.ts';
-import { chosenGroups, countRuns, factoriesAt, factoriesRequest, factoryModel, factorySegmentAt, factoryTooltips, formatCount, groupCount, groupName, lineRuns, mixBands, raceEntries, rankFactories, typeChoices, typeColours, validateFactoriesReply, withheld } from './factoriesData.ts';
+import { chosenGroups, countRuns, factoriesAt, factoriesRequest, factoryModel, factorySegmentAt, factoryTooltips, formatCount, groupCount, groupName, lineRuns, mixBands, raceEntries, rankFactories, typeChoices, validateFactoriesReply, withheld } from './factoriesData.ts';
 import type { CountMode } from './factoriesData';
 
 const GROUP_PARTS: FactoryPart[] = ['total', 'controlled', 'owned', 'damaged', 'fromSubjects', 'toOverlord', 'fromOthers', 'toOthers'];
@@ -111,7 +109,7 @@ test('types come from the content: named by their buildings, chosen by group, al
   assert.deepEqual(chosenGroups(model, ['not_a_group']), GROUPS);
 });
 
-test('a modded content stack: its own factory types appear, removed ones vanish, colours go by order and tags stay opaque', () => {
+test('a modded content stack: its own factory types appear, removed ones vanish and tags stay opaque', () => {
   // A mod renamed the military factory, added a type of its own, left one unnamed and
   // removed the dockyard.
   const modded = structuredClone(REPLY);
@@ -126,11 +124,6 @@ test('a modded content stack: its own factory types appear, removed ones vanish,
     { value: 'civilian', label: 'Civilian Factory · workshop' },
   ]);
   assert.deepEqual(typeChoices(undefined), []);
-  // Colours follow the groups' order, whatever content names them.
-  const palette = ['#1', '#2', '#3'];
-  assert.deepEqual([...typeColours(modded.groups, palette)], [['military', '#1'], ['naval', '#2'], ['civilian', '#3']]);
-  assert.deepEqual([...typeColours(REPLY.groups, palette)], [...typeColours(modded.groups, palette)]);
-  assert.deepEqual([...typeColours(modded.groups, ['#1'])].map(([, colour]) => colour), ['#1', '#1', '#1']);
   // Dynamic, spaced and odd tags are opaque: asked for and ranked as they are.
   const odd = structuredClone(REPLY);
   odd.series[0].tag = 'MY TAG';
@@ -189,41 +182,31 @@ test('top N ranks by the count shown, ties by tag, and leaves out a country not 
   assert.deepEqual([first(1), first(2)], ['AAA', 'AAA']);
 });
 
-test('a bar is exactly its count: damaged are hatched inside a built bar, and the other counts, which leave them out, have no hatched part', () => {
+test('race entries preserve the count, damage, selected types and unbroken stretch', () => {
   const model = factoryModel(REPLY);
-  const look = (mode: CountMode, split = false) => ({ mode, split, country: () => '#c0ffee', type: (key: FactoryGroupKey) => `#${key}` });
+  const look = (mode: CountMode, split = false) => ({ mode, split });
   const entry = (mode: CountMode, split?: boolean) => raceEntries(rankFactories(model, ['GER'], 100, GROUPS, mode, 1), look(mode, split))[0];
-  const length = (item: ReturnType<typeof entry>) => item.segments.reduce((sum, segment) => sum + segment.value + (segment.hatched ?? 0), 0);
-  // Built 78 with 8 damaged: 70 solid, then 8 hatched, labelled 78.
-  assert.deepEqual(entry('built').segments, [{ id: 'total', color: '#c0ffee', value: 70, hatched: 8 }]);
-  assert.equal(entry('built').label, '78');
-  // Free (53) and top bar (35 + 24 + 7 = 66) have taken the damaged out already: no hatched tail.
-  assert.deepEqual(entry('free').segments, [{ id: 'total', color: '#c0ffee', value: 53, hatched: 0 }]);
-  assert.deepEqual(entry('topBar').segments, [{ id: 'total', color: '#c0ffee', value: 66, hatched: 0 }]);
-  for (const mode of ['free', 'built', 'topBar'] as const) assert.equal(length(entry(mode)), entry(mode).value, mode);
-  // One segment per type, in the type's colour.
-  assert.deepEqual(entry('built', true).segments, [
-    { id: 'military', color: '#military', value: 26, hatched: 4 },
-    { id: 'naval', color: '#naval', value: 7, hatched: 1 },
-    { id: 'civilian', color: '#civilian', value: 37, hatched: 3 },
+  assert.deepEqual(entry('built'), { tag: 'GER', value: 78, label: '78', stretch: 100, hatched: 8 });
+  assert.deepEqual(entry('free'), { tag: 'GER', value: 53, label: '53', stretch: 100, hatched: 0 });
+  assert.deepEqual(entry('topBar'), { tag: 'GER', value: 66, label: '66', stretch: 100, hatched: 0 });
+  assert.deepEqual(entry('built', true).parts, [
+    { id: 'military', value: 30, hatched: 4, hatchInside: true },
+    { id: 'naval', value: 8, hatched: 1, hatchInside: true },
+    { id: 'civilian', value: 40, hatched: 3, hatchInside: true },
   ]);
-  assert.equal(entry('built').value, 78);
-  // A negative count keeps its value: drawn below zero, labelled as recorded.
   const negative = structuredClone(REPLY);
   negative.series[0].runs[0].values = values({ 'military:total': 1, 'military:damaged': 2, 'military:toOthers': 1, 'civilian:total': 10 });
   const at = (groups: FactoryGroupKey[], split: boolean) =>
     raceEntries(rankFactories(factoryModel(negative), ['GER'], 100, groups, 'free', 1), look('free', split))[0];
-  const below = at(['military'], false);
-  assert.deepEqual([below.value, below.label, length(below)], [-2, '−2', -2]);
-  // Military −2 and civilian 10: the total is 8, split or not; split, military lies
-  // left of the baseline and civilian right of it, never military dropped to 0.
-  const whole = at(['military', 'civilian'], false);
+  assert.deepEqual(at(['military'], false), { tag: 'GER', value: -2, label: '−2', stretch: 100, hatched: 0 });
   const parts = at(['military', 'civilian'], true);
-  assert.deepEqual([whole.label, length(whole), length(parts)], ['8', 8, 8]);
-  assert.deepEqual(parts.segments.map(segment => [segment.id, segment.value]), [['military', -2], ['civilian', 10]]);
-  const widths = parts.segments.map(segment => ({ solid: segment.value, hatched: segment.hatched ?? 0 }));
-  assert.deepEqual(barExtent(widths), { low: -2, high: 10 });
-  assert.deepEqual(barExtent(whole.segments.map(segment => ({ solid: segment.value, hatched: 0 }))), { low: 0, high: 8 });
+  assert.deepEqual([parts.value, parts.label], [8, '8']);
+  assert.deepEqual(parts.parts, [
+    { id: 'military', value: -2, hatched: 0, hatchInside: true },
+    { id: 'civilian', value: 10, hatched: 0, hatchInside: true },
+  ]);
+  assert.deepEqual([101, 102, 105, 107].map(hour =>
+    raceEntries(rankFactories(model, ['GER'], hour, ['civilian'], 'free', 1), look('free'))[0].stretch), [100, 100, 105, 107]);
 });
 
 test('the request names only what is drawn: the top N of the chosen types, or the chosen countries', () => {
@@ -286,47 +269,6 @@ test('lines and mix bands keep to the date range shown, however far an axis is d
   assert.deepEqual(lineRuns(model, 'GER', ['civilian'], 'built', [{ firstHour: 128, lastHour: 500 }], range), [{ firstHour: 128, lastHour: 130, value: 12 }]);
 });
 
-test('the lines’ tooltip names each country as recorded at the hour hovered', () => {
-  const lines = [
-    { tag: 'GER', runs: [{ firstHour: 100, lastHour: 200, value: 30 }] },
-    { tag: 'ITA', runs: [{ firstHour: 100, lastHour: 150, value: 30 }] },
-  ];
-  const asked: number[] = [];
-  // Germany was the German Reich until 140; its flag is known only then.
-  const labelAt = (hour: number) => {
-    asked.push(hour);
-    return (tag: string) => tag === 'GER'
-      ? (hour < 140 ? { name: 'German Reich', flag: 'data:reich' } : { name: 'Germany' })
-      : { name: 'Italy' };
-  };
-  const early = linesTooltip(120, lines, labelAt, () => '#123456', '1 Jan', 'Built', formatCount);
-  assert.deepEqual(early.rows.map(row => [row.label, row.value, row.icon]), [['German Reich', '30', 'data:reich'], ['Italy', '30', undefined]]);
-  const late = linesTooltip(180, lines, labelAt, () => '#123456', '1 Mar', 'Built', formatCount);
-  assert.deepEqual(late.rows.map(row => row.label), ['Germany']);
-  assert.deepEqual(asked, [120, 180]);
-  assert.deepEqual(linesAt(180, lines), ['GER']);
-  assert.deepEqual(linesTooltip(300, lines, labelAt, () => '', 'x', 'Built', formatCount).rows.map(row => row.label), ['Not recorded']);
-});
-
-test('a race bar glides within an unbroken stretch and jumps across a gap or a change of country', () => {
-  const model = factoryModel(REPLY);
-  const look = { mode: 'free' as const, split: false, country: () => '#000000', type: () => '#000000' };
-  const at = (hour: number) => raceEntries(rankFactories(model, ['GER'], hour, ['civilian'], 'free', 1), look);
-  const width = (state: ReturnType<typeof stepRace>) => state.rows[0].widths.get('total')!.solid;
-  let state = stepRace(null, at(101), 0, 16, 100);
-  // 101 → 102: one stretch, the bar glides from 22 toward 41.
-  state = stepRace(state, at(102), 16, 16, 100);
-  assert.ok(width(state) > 22 && width(state) < 41, `${width(state)}`);
-  // 103 → 105: a missing hour between, it jumps.
-  state = stepRace(state, at(105), 32, 16, 100);
-  assert.equal(width(state), 41);
-  // 106 → 107: another country under the tag (same value), no glide either.
-  state = stepRace(state, at(106), 48, 16, 100);
-  const before = state.rows[0].item.stretch;
-  state = stepRace(state, at(107), 64, 16, 100);
-  assert.notEqual(state.rows[0].item.stretch, before);
-});
-
 test('the corner date is a race setting, off by default', () => {
   const field = OPTIONS.find(item => item.key === 'dateOverlay')!;
   assert.equal(field, DATE_OVERLAY_OPTION);
@@ -371,16 +313,4 @@ test('lines outside the top N at branch end still request looks within their unf
     (tag, hour) => factorySegmentAt(model, tag, hour), hours);
   // The line's own label precedes the takeover; top membership does not move its sample to 150.
   assert.deepEqual(plan.samples, [{ tag: 'opaque,"tag', hour: 100, stretch: 100 }]);
-});
-
-test('each line uses its own end label hour, clamped to the live playhead and visible range', () => {
-  const lines = [
-    { tag: 'early', runs: [{ firstHour: 100, lastHour: 199, value: 2 }] },
-    { tag: 'late', runs: [{ firstHour: 100, lastHour: 300, value: 3 }] },
-    { tag: 'future', runs: [{ firstHour: 250, lastHour: 300, value: 4 }] },
-  ];
-  assert.deepEqual([...lineLabelHours(lines, 100, 1000, null)], [['early', 199], ['late', 300], ['future', 300]]);
-  assert.deepEqual([...lineLabelHours(lines, 100, 1000, 205)], [['early', 199], ['late', 205]]);
-  assert.deepEqual([...lineLabelHours(lines, 100, 1000, 206)], [['early', 199], ['late', 206]]);
-  assert.deepEqual([...lineLabelHours(lines, 200, 240, 205)], [['late', 205]]);
 });

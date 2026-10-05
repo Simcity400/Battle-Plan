@@ -3,7 +3,6 @@ import { readAt, readNote } from '../../dashboard/reads.ts';
 import { clipToSpans, runAt } from '../../charts/series.ts';
 import type { Run } from '../../charts/series';
 import type { StripBar } from '../../charts/strip';
-import { fitTooltip } from '../../charts/tooltip.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatAmount, formatSigned, rescale } from '../../charts/valueAxis.ts';
 
@@ -88,13 +87,11 @@ export function percentFull(read: Pick<FuelRead, 'fuelRaw' | 'capacityRaw'>): bi
   return capacity > 0n ? rescale(BigInt(read.fuelRaw) * 100n, capacity, 0) : null;
 }
 
-/** The tooltip at `hour` (mock-up economy-1): the fuel, capacity and how full, then
- * gained, burned and the net for the day before the read, fitted to a window
- * `height` pixels tall. `reads` are the reads shown and `readHours` every read's hour. */
-export function fuelTooltip(reply: FuelReply, reads: readonly FuelRead[], readHours: readonly number[], hour: number, title: string,
-  colors: { fuel: string; capacity: string; gained: string; burned: string }, height: number): TooltipContent {
+/** Full and compact tooltip forms: the tank, then the day before its read. */
+export function fuelTooltips(reply: FuelReply, reads: readonly FuelRead[], readHours: readonly number[], hour: number, title: string,
+  colors: { fuel: string; capacity: string; gained: string; burned: string }): TooltipContent[] {
   const read = runAt(reads, hour);
-  if (!read) return { title, rows: [{ label: 'Not recorded at this time', tone: 'muted' }] };
+  if (!read) return [{ title, rows: [{ label: 'Not recorded at this time', tone: 'muted' }] }];
   const full = percentFull(read);
   const tank: TooltipRow[] = [
     { label: 'Fuel', value: formatFuel(read.fuelRaw, reply.quantityScale), swatch: colors.fuel },
@@ -125,5 +122,5 @@ export function fuelTooltip(reply: FuelReply, reads: readonly FuelRead[], readHo
   }
   const note = notes.filter(Boolean).join(' ');
   // In a short window the day's total stays, with the tank's level above it.
-  return fitTooltip([{ title, rows, note }, { title, rows: [tank[0], rows.at(-1)!], note }], height, { keep: 1 });
+  return [{ title, rows, note }, { title, rows: [tank[0], rows.at(-1)!], note }];
 }

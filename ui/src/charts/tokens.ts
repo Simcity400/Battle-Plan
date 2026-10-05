@@ -4,6 +4,9 @@ import type { MotionFeel } from './easing.ts';
 
 export { APPEARANCE_EVENT };
 
+/** Shared chart layout tokens, in layout pixels, including the established economy views. */
+export const CHART_LAYOUT = { right: 14, countryEndLabels: 150, measureEndLabels: 128, stripMin: 40, stripInset: 50 } as const;
+
 /** The theme values a canvas chart draws with. Charts never hard-code a colour,
  * font size or line width: they read these, so a theme or token change reaches
  * every chart at once. */

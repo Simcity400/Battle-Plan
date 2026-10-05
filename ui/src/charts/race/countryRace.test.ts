@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { countryRaceItems, heldStackSegment, partColours } from './countryRace.ts';
-import { stepRace } from './race.ts';
+import { countryRaceEnds, countryRaceHours, countryRaceItems, countryRaceSegments, heldStackSegment, partColours } from './countryRace.ts';
+import { barExtent, stepRace } from './race.ts';
+import { linesAt, linesTooltip } from './lines.ts';
+import { buildStack, stackedSegments } from '../stack.ts';
+import { lineLabelHours } from '../series.ts';
+import { fitTooltip } from '../tooltip.ts';
 
 test('country races keep amounts exact while rows move and type colours follow content order', () => {
   const colours = partColours([{ id: 'mod_type', label: 'Mod stockpile' }], ['palette']);
@@ -16,4 +20,108 @@ test('country races keep amounts exact while rows move and type colours follow c
 test('country mix expands shared stack samples without inventing intermediate values', () => {
   assert.deepEqual(heldStackSegment({ hours: [1, 3], bands: [{ low: [0, 0], high: [2, 8] }] }),
     { hours: [1, 3, 3], bands: [{ low: [0, 0, 0], high: [2, 2, 8] }] });
+});
+
+test('type colours keep full content order when chosen parts are renamed or folded', () => {
+  const parts = [{ id: 'first', label: 'Mod type' }, { id: 'second', label: 'Another type' }, { id: 'last', label: 'Renamed type' }];
+  assert.deepEqual([...partColours(parts, ['one', 'two'])], [['first', 'one'], ['second', 'two'], ['last', 'one']]);
+  assert.deepEqual([...partColours(parts.map(part => ({ ...part, label: 'Other name' })), ['one', 'two'])], [...partColours(parts, ['one', 'two'])]);
+  assert.equal(partColours([{ id: 'other', label: 'Other', color: 'muted' }], ['one']).get('other'), 'muted');
+  assert.equal(partColours([parts[1]], ['one', 'two'], partColours(parts, ['one', 'two'])).get('second'), 'two');
+});
+
+test('inside hatching is bounded by positive counts, while residual hatching adds to solid parts', () => {
+  const [total, split, negative, residual] = countryRaceItems([
+    { tag: 'total', value: 10, label: '10', stretch: 1, hatched: 12 },
+    { tag: 'split', value: 8, label: '8', stretch: 1, parts: [
+      { id: 'negative', value: -2, hatched: 3, hatchInside: true },
+      { id: 'positive', value: 10, hatched: 4, hatchInside: true },
+    ] },
+    { tag: 'negative', value: -2, label: '−2', stretch: 1, hatched: 3 },
+    { tag: 'residual', value: 10, label: '10', stretch: 1, parts: [{ id: 'unknown', value: 2, hatched: 8 }] },
+  ], new Map([['positive', 'type']]), () => 'country', 'missing');
+  assert.deepEqual(total.segments, [{ id: 'total', value: 0, hatched: 10, color: 'country' }]);
+  assert.deepEqual(split.segments, [{ id: 'negative', value: -2, hatched: 0, color: 'missing' }, { id: 'positive', value: 6, hatched: 4, color: 'type' }]);
+  assert.deepEqual(barExtent(split.segments.map(part => ({ solid: part.value, hatched: part.hatched ?? 0 }))), { low: -2, high: 10 });
+  assert.deepEqual(negative.segments, [{ id: 'total', value: -2, hatched: 0, color: 'country' }]);
+  assert.equal(residual.segments[0].hatched, 8);
+  assert.deepEqual(barExtent(residual.segments.map(part => ({ solid: part.value, hatched: part.hatched ?? 0 }))), { low: 0, high: 10 });
+});
+
+test('country-specific colours override the catalogue and unsplit totals keep country colours', () => {
+  const entries = countryRaceItems([
+    { tag: 'a', value: 4, label: '4', stretch: 1, parts: [{ id: 'same', value: 4, color: 'a-type' }] },
+    { tag: 'b', value: 4, label: '4', stretch: 1, parts: [{ id: 'same', value: 4, color: 'b-type' }] },
+    { tag: 'c', value: 4, label: '4', stretch: 1 },
+  ], new Map([['same', 'catalogue']]), tag => tag, 'missing', false);
+  assert.deepEqual(entries.map(entry => entry.segments[0].color), ['a-type', 'b-type', 'c']);
+  assert.deepEqual(entries.map(entry => entry.stretch), [1, 1, 1]);
+});
+
+test('optional amount easing stays within one recorded stretch and labels remain exact', () => {
+  const entries = (value: number, stretch: number) => countryRaceItems([{ tag: 'a', value, label: String(value), stretch }], new Map(), () => 'country', 'missing', false);
+  let state = stepRace(null, entries(2, 1), 0, 16, 100);
+  state = stepRace(state, entries(8, 1), 16, 16, 100);
+  assert.ok(state.rows[0].widths.get('total')!.solid > 2 && state.rows[0].widths.get('total')!.solid < 8);
+  assert.equal(state.rows[0].item.label, '8');
+  state = stepRace(state, entries(12, 3), 32, 16, 100);
+  assert.equal(state.rows[0].widths.get('total')!.solid, 12);
+});
+
+test('legacy mixes use the same half-pixel thinning and preserve signed peaks and gaps', () => {
+  const stack = buildStack([[{ firstHour: 0, lastHour: 1, value: 2 }, { firstHour: 2, lastHour: 2, value: 12 },
+    { firstHour: 3, lastHour: 4, value: -8 }, { firstHour: 8, lastHour: 10, value: 3, breakBefore: true }]]);
+  const legacy = countryRaceSegments(stack, 1, 10, 8, .5, false);
+  assert.deepEqual(legacy, stackedSegments(stack, 1, 10, 4));
+  assert.ok(legacy.some(segment => segment.bands[0].high.includes(12)));
+  assert.ok(legacy.some(segment => segment.bands[0].low.includes(-8)));
+  assert.equal(legacy.length, 2);
+  assert.deepEqual(countryRaceSegments(stack, 1, 10, 8), legacy.map(heldStackSegment));
+  assert.deepEqual(countryRaceSegments(stack, 5, 7, 8), []);
+});
+
+test('keyboard stops are sorted change hours, without synthetic stack end boundaries', () => {
+  assert.deepEqual(countryRaceHours([{ tag: 'a', runs: [{ firstHour: 2, lastHour: 4, value: 2 }, { firstHour: 8, lastHour: 10, value: 3 }] },
+    { tag: 'b', runs: [{ firstHour: 1, lastHour: 6, value: 3 }, { firstHour: 8, lastHour: 10, value: 4 }] }]), [1, 2, 8]);
+});
+
+test('end labels stop at drawn reads, optionally use moment looks, and retain exact raw text', () => {
+  const lines = [{ tag: 'a', runs: [{ firstHour: 1, lastHour: 4, value: 2 }, { firstHour: 8, lastHour: 10, value: 3 }] }];
+  const name = (_tag: string, hour?: number) => hour === undefined ? 'Moment' : `At ${hour}`;
+  const color = (_tag: string, hour?: number) => hour === undefined ? 'moment-colour' : `colour-${hour}`;
+  assert.deepEqual(countryRaceEnds(lines, 1, 7, null, name, color, String), [{ id: 'a', color: 'colour-4', value: 2, text: 'At 4 2' }]);
+  assert.equal(countryRaceEnds(lines, 1, 10, 9, name, color, String)[0].text, 'At 9 3');
+  assert.equal(countryRaceEnds(lines, 1, 10, 9, name, color, String, false)[0].text, 'Moment 3');
+  assert.deepEqual(countryRaceEnds(lines, 5, 7, null, name, color, String), []);
+  assert.deepEqual(countryRaceEnds([{ ...lines[0], color: 'capacity', muted: true, endLabel: hour => `Exact ${hour}: 9,007,199,254,740,993` }],
+    1, 7, null, name, color, String), [{ id: 'a', color: 'capacity', value: 2, muted: true, text: 'Exact 4: 9,007,199,254,740,993' }]);
+});
+
+test('each line has its own end hour, capped at the playhead and visible range', () => {
+  const lines = [{ tag: 'early', runs: [{ firstHour: 100, lastHour: 199, value: 2 }] },
+    { tag: 'late', runs: [{ firstHour: 100, lastHour: 300, value: 3 }] }, { tag: 'future', runs: [{ firstHour: 250, lastHour: 300, value: 4 }] }];
+  assert.deepEqual([...lineLabelHours(lines, 100, 1000, null)], [['early', 199], ['late', 300], ['future', 300]]);
+  assert.deepEqual([...lineLabelHours(lines, 100, 1000, 205)], [['early', 199], ['late', 205]]);
+  assert.deepEqual([...lineLabelHours(lines, 200, 240, 205)], [['late', 205]]);
+});
+
+test('line tooltips use the hovered hour for country names and flags, omitting missing countries', () => {
+  const lines = [{ tag: 'a', runs: [{ firstHour: 1, lastHour: 10, value: 2 }] }, { tag: 'b', runs: [{ firstHour: 1, lastHour: 4, value: 3 }] }];
+  const labelAt = (hour: number) => (tag: string) => ({ name: `${tag} at ${hour}`, ...(hour < 5 ? { flag: 'early-flag' } : {}) });
+  assert.deepEqual(linesTooltip(4, lines, labelAt, () => 'country', 'Day', 'Count', String).rows.map(row => [row.label, row.icon]),
+    [['b at 4', 'early-flag'], ['a at 4', 'early-flag']]);
+  assert.deepEqual(linesAt(8, lines), ['a']);
+  assert.deepEqual(linesTooltip(8, lines, labelAt, () => 'country', 'Day', 'Count', String).rows.map(row => row.label), ['a at 8']);
+  assert.deepEqual(linesTooltip(12, lines, labelAt, () => 'country', 'Day', 'Count', String).rows.map(row => row.label), ['Not recorded']);
+});
+
+test('shared fitting keeps supplied totals and reads the full compacted tooltip aloud', () => {
+  const full = { title: 'Country', rows: [{ label: 'Level', value: '10' }, { label: 'Ceiling', value: '20' },
+    ...Array.from({ length: 10 }, (_, index) => ({ label: `Part ${index}`, value: '1' })), { label: 'Net', value: '2' }] };
+  const compact = { ...full, rows: [full.rows[0], full.rows.at(-1)!] };
+  const fitted = fitTooltip([full, compact], 120, { keep: 1 });
+  assert.deepEqual(fitted.rows.map(row => row.label), ['Level', 'Net']);
+  assert.match(fitted.spoken!, /Ceiling 20; Part 0 1/);
+  const noTotal = fitTooltip([full], 90, { keep: 0 });
+  assert.ok(!noTotal.rows.some(row => row.label === 'Net'));
 });

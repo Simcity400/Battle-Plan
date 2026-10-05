@@ -64,8 +64,30 @@ New country race widgets compose [CountryRaceView](race/CountryRaceView.tsx) and
 lines through `drawLine({ held: true })`, half-pixel-thinned one-country stacks,
 hour-specific looks/hover labels, shared colours, end labels, Jump to and standard
 empty states. Inactive views clear hover country requests. Widget folders supply
-their values and wording. Factories, Equipment produced and Fuel keep their
-existing views; adoption of this shared view is a follow-up for their owners.
+their values and wording. Factories and Equipment produced use the same view with
+their established curves and shape easing; Fuel supplies fixed level/ceiling lines
+and keeps its gain/burn strip and read semantics.
+
+### CountryRaceView options
+
+Defaults preserve the existing Nuclear arsenal and Raid tally presentation.
+These are component inputs, not additional widget settings.
+
+| Input | Behaviour |
+|---|---|
+| `parts`, `raceLegendParts`, `partsLabel`, `mix.parts` | The complete content-order palette catalogue, the subset shown in the race legend, its heading, and optional mix-specific labels/colours/current values. A chosen subset inherits catalogue colours. Explicit part colours preserve per-country variant folding. |
+| Entry `hatched`, part `hatchInside` | Damage included in a total or type count is clamped inside its positive count and subtracted from its solid length. Ordinary part `hatched` remains additional to its solid `value`, for unknown attribution. Count formulas stay in the widget. |
+| Line `name`, `color`, `area`, `dash`, `endDot`, `muted`, `endLabel` | Fixed measure looks, optional area and secondary ceiling styling, and exact recorded end-label text independent of plotting numbers. Without these, lines use country looks and `formatValue`. |
+| `presentation.exact`, `held`, `mixSamplePixels` | Exact bar widths and held line/band geometry by default. `exact: false` permits shape easing only within an unchanged stretch; `held: false` retains the economy widgets' curves/band vertices. Mix thinning defaults to half a pixel (`hoursPerPixel / 2`), retaining extremes and gaps. Labels and tooltips always use recorded values. |
+| `presentation.lineLooks`, `lineColourHours`, `countryLooks`, `countryTags` | Looks at visible line ends by default; moment looks preserve Equipment produced. Drawing colours can follow drawn ends (default), label ends (Factories) or the moment. Fixed measures can disable country requests. `countryTags` preserves the complete colour-adjustment set, including chosen tags with no drawable line. |
+| `presentation.raceTooltip`, `tooltipKeep`, `tooltipResetKey` | Race tooltips use hovered-hour country labels by default; sampled names preserve the economy races. `tooltipKeep` controls retained rows for country/mix/measure tooltips (default one); country-line summaries retain their existing fitting. Inactive views clear requests; a supplied reset key clears them when it changes. |
+| `presentation.linePadding`, `strongMixName`, `mixKeyHours`, `resetTimeView` | Optional shared layout-token label room, bold mix-country name, change-only keyboard stops instead of all stack boundaries, and chart remount on view changes. Factories and Equipment produced retain their previous lines/mix zoom reset. Default users keep their current sizing, stops and zoom lifetime. |
+| `labels`, `resetKey`, `lineEmpty`, `mixEmpty`, `presentation.raceEmptyState` | Widget-specific accessible labels/menu wording, race reset scope and empty messages. The default empty race is a standard state; `raceEmptyState: false` keeps the race canvas and its legend/note through empty hours. |
+| `state`, `beforeChart`, `keyHours`, `strip`, `timeTooltip` | A product loading/error/empty state without unmounting country-look hooks, content wording before the chart, explicit read stops, a supplied strip and tooltip forms for fixed measures. Fuel owns its strip and tooltip rows; the shared view fits them, places end labels and handles Jump to. |
+
+[countryRace.ts](race/countryRace.ts) supplies the matching pure helpers and tests:
+bar items/hatching, content colours, change hours, end labels and thinned stack
+segments. Layout room comes from `CHART_LAYOUT` in [tokens.ts](tokens.ts).
 
 - **Shapes ease; numbers stay exact.** Labels and tooltips show the recorded value at the resolved hour; only positions glide. Nothing eases across a gap, and a gap is never drawn as zero.
 - **No fixed dates.** Axes, ticks and ranges come from the recording's start and end; settings store offsets from the branch start.

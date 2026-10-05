@@ -13,7 +13,7 @@ import type { Padding, PlotFrame } from './frame';
 import { scheduler } from './scheduler';
 import type { FrameInfo, FrameTask } from './scheduler';
 import { backingSize, toLocal } from './surface';
-import { readTokens, subscribeTokens } from './tokens';
+import { CHART_LAYOUT, readTokens, subscribeTokens } from './tokens';
 import type { ChartTokens } from './tokens';
 import { hideTooltip, showTooltip, tooltipText } from './tooltip';
 import type { TooltipContent } from './tooltip';
@@ -86,7 +86,7 @@ export interface TimeChartProps {
   revision: unknown;
 }
 
-const DEFAULT_PADDING: Padding = { left: 44, right: 14, top: 12, bottom: 24 };
+const DEFAULT_PADDING: Padding = { left: 44, right: CHART_LAYOUT.right, top: 12, bottom: 24 };
 /** Room kept between the canvas edge and the widest value label. */
 const LABEL_MARGIN = 4;
 /** The narrowest time span a zoom may reach: two weeks. */

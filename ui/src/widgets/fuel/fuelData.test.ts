@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { FuelRead, FuelReply } from '../../generated/dashboard';
-import { dayAmounts, formatFuel, fuelRuns, fuelTooltip, fuelView, percentFull, validateFuelReply } from './fuelData.ts';
+import { dayAmounts, formatFuel, fuelRuns, fuelTooltips, fuelView, percentFull, validateFuelReply } from './fuelData.ts';
 
 const Q = 32_768;
 const read = (firstHour: number, lastHour: number, fuel: number, capacity: number, day: [number, number] | 'overlaps' | 'notUpdated' | 'ownershipNotRecorded', startsSegment = false): FuelRead => ({
@@ -22,11 +22,11 @@ const REPLY: FuelReply = {
   ],
 };
 const COLORS = { fuel: 'blue', capacity: 'grey', gained: 'azure', burned: 'orange' };
-const TALL = 2000;
-const tip = (hour: number, height = TALL) => {
+const forms = (hour: number) => {
   const view = fuelView(REPLY, 0, 5000);
-  return fuelTooltip(REPLY, view.reads, view.readHours, hour, `Hour ${hour}`, COLORS, height);
+  return fuelTooltips(REPLY, view.reads, view.readHours, hour, `Hour ${hour}`, COLORS);
 };
+const tip = (hour: number) => forms(hour)[0];
 
 test('the reply must have its reads in order, each with its day or the reason it is left out', () => {
   assert.equal(validateFuelReply(REPLY), REPLY);
@@ -97,8 +97,6 @@ test('the tooltip lists the tank, then the day before its read, and dates a carr
   assert.deepEqual(tip(1050).rows, [{ label: 'Not recorded at this time', tone: 'muted' }]);
 });
 
-test('in a short window the tooltip keeps the level and the net, and reads the rest out', () => {
-  const short = tip(1018, 200);
-  assert.deepEqual(short.rows.map(row => row.label), ['Fuel', 'Net']);
-  assert.match(short.spoken!, /Capacity 20; Full 50%; Gained \(own production\) \+3\.5; Burned −1\.25; Net \+2\.25/);
+test('the compact tooltip form keeps the tank level and the net', () => {
+  assert.deepEqual(forms(1018)[1].rows.map(row => row.label), ['Fuel', 'Net']);
 });

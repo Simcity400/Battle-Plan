@@ -1,3 +1,4 @@
 .country-race { display: flex; flex-direction: column; gap: var(--space-2); height: 100%; min-height: 0; padding: var(--space-2) 0; }
 .country-race-chart { flex: 1; min-height: 0; }
 .country-race-country { margin: 0 var(--space-3); }
+.country-race-country.is-strong { font-weight: 600; }

@@ -90,19 +90,6 @@ test('the top N rank a country only once it has produced something, and say why 
   assert.equal(emptyRace(top, 4), 'unknown');
 });
 
-test('race bars are one total or one segment per group, summing to the label', () => {
-  const model = producedModel(REPLY);
-  const bands = keyBands(model, ['#a', '#b', '#c'], '#muted');
-  const ranked = rankProduced(model, ['GER', 'ITA'], 40, 10);
-  const look = { country: () => '#country', bands: () => bands, unknown: '#u' };
-  const [germany] = raceEntries(model, ranked, { ...look, split: true });
-  assert.equal(germany.label, '13');
-  assert.deepEqual(germany.segments.map(segment => [segment.id, segment.value, segment.color]), [['0', 10, '#a'], ['1', 3, '#b']]);
-  assert.equal(germany.segments.reduce((sum, segment) => sum + segment.value, 0), germany.value);
-  const [whole] = raceEntries(model, ranked, { ...look, split: false });
-  assert.deepEqual(whole.segments, [{ id: 'total', color: '#country', value: 13 }]);
-});
-
 test('empty top-N weeks and months distinguish complete zero windows from unknown ones', () => {
   const start = 8;
   for (const measure of ['week', 'month'] as const) {
@@ -159,8 +146,10 @@ test('a type an unresolved variant could belong to is unknown; the bar keeps the
   const bands = keyBands(model, ['#a', '#b'], '#muted');
   const ranked = rankProduced(model, ['GER'], 40, 10);
   assert.equal(ranked[0].at.total, 12);
-  const [bar] = raceEntries(model, ranked, { split: true, country: () => '#country', bands: () => bands, unknown: '#u' });
-  assert.deepEqual(bar.segments, [{ id: '1', color: '#b', value: 2 }, { id: 'unknown', color: '#u', value: 0, hatched: 10 }]);
+  const [bar] = raceEntries(model, ranked, { split: true, bands: () => bands, unknown: '#u' });
+  assert.equal(bar.value, 12);
+  assert.equal(bar.label, '12');
+  assert.deepEqual(bar.parts, [{ id: '1', color: '#b', value: 2 }, { id: 'unknown', color: '#u', value: 0, hatched: 10 }]);
   const [tooltip] = [...producedTooltips(model, 'GER', 'Germany', producedAt(model, 'GER', 40)!, 40, '2 Jan', bands)];
   assert.deepEqual(tooltip.rows.map(row => [row.label, row.value]), [['mod_gun', '2'], ['Infantry Equipment', 'Not known'], ['Total', '12']]);
 });

@@ -2,7 +2,7 @@
  * country's factories at an hour as the chosen count reads them. Every value is a
  * whole number of factories as the game shows it (the product truncates the
  * engine's fixed5 totals as the game does); the counts are the formulas below. */
-import type { RaceItem, RaceSegment } from '../../charts/race/race';
+import type { CountryRaceEntry } from '../../charts/race/countryRace';
 import type { Run } from '../../charts/series';
 import { runAt, runIndexAt, stretchStarts } from '../../charts/series.ts';
 import { shownRuns } from '../../charts/race/lines.ts';
@@ -139,27 +139,14 @@ export function rankFactories(model: FactoryModel, candidates: readonly string[]
     .slice(0, Math.max(0, count));
 }
 
-/** How a race draws each country's factories. */
-export interface RaceLook { mode: CountMode; split: boolean; country: (tag: string) => string; type: (group: FactoryGroupKey) => string }
-
-/** Race entries for ranked countries: one bar in the country's colour, or one
- * segment per type in the type's colour, each exactly its count and signed, so a
- * negative count lies left of the baseline (the kit stacks segments as the time
- * charts stack types) and the parts always sum to the total the label shows.
- * Built counts damaged factories, so they are the hatched end of its bar; the other
- * counts have already taken them out, so their bars have no hatched part and the
- * tooltip names the damaged. A bar glides only within the unbroken stretch its
- * value was read in. */
-export function raceEntries(ranked: readonly { tag: string; at: FactoriesAt }[], look: RaceLook): RaceItem[] {
-  const segment = (id: string, count: number, damaged: number, color: string): RaceSegment => {
-    // Damaged inside a built bar; never more than the bar, which never grows past its count.
-    const hatched = look.mode === 'built' && count > 0 ? Math.min(Math.max(0, damaged), count) : 0;
-    return { id, color, value: count - hatched, hatched };
-  };
+/** Recorded counts and damage for the shared race. Built includes its damaged
+ * factories; the shared view hatches that amount inside each count. */
+export function raceEntries(ranked: readonly { tag: string; at: FactoriesAt }[], look: { mode: CountMode; split: boolean }): CountryRaceEntry[] {
   return ranked.map(({ tag, at }) => ({
-    key: tag, value: at.total, label: formatCount(at.total), stretch: at.stretch,
-    segments: look.split ? at.groups.map(group => segment(group.key, group.count, group.damaged, look.type(group.key)))
-      : [segment('total', at.total, at.groups.reduce((sum, group) => sum + group.damaged, 0), look.country(tag))],
+    tag, value: at.total, label: formatCount(at.total), stretch: at.stretch,
+    ...(look.split ? { parts: at.groups.map(group => ({ id: group.key, value: group.count,
+      hatched: look.mode === 'built' ? group.damaged : 0, hatchInside: true })) }
+      : { hatched: look.mode === 'built' ? at.groups.reduce((sum, group) => sum + group.damaged, 0) : 0 }),
   }));
 }
 
@@ -186,22 +173,11 @@ export function mixBands(model: FactoryModel, tag: string, groups: readonly Fact
   return groups.map(group => shownRuns(countRuns(model, tag, groups, mode, group), membership, range));
 }
 
-/** Every hour a country's shown count may change, for the keyboard's stops. */
-export function changeHours(runs: readonly Run[]): number[] {
-  return runs.map(run => run.firstHour);
-}
-
 /** A group's name: the game's names of the content buildings its flag counts,
  * else their content names, else the flag itself. */
 export function groupName(group: FactoryGroupInfo): string {
   if (!group.buildings.length) return group.flag;
   return group.buildings.map(building => building.name ?? building.token).join(' · ');
-}
-
-/** Each group's colour: the palette in the reply's group order, never keyed on a
- * name, so a mod's renamed or added factory types never change the colours. */
-export function typeColours(groups: readonly FactoryGroupInfo[], palette: readonly string[]): Map<FactoryGroupKey, string> {
-  return new Map(groups.map((group, index) => [group.key, palette[index % Math.max(1, palette.length)]]));
 }
 
 /** The types the settings offer: every group the reply names, as its content names it. */
@@ -260,7 +236,7 @@ export function groupRows(model: FactoryModel, values: readonly number[], group:
 /** The tooltip for a country at a read, fullest first: every line of every group,
  * then only the lines that are not zero, then the groups' counts alone. */
 export function* factoryTooltips(model: FactoryModel, name: string, at: FactoriesAt, date: string, mode: CountMode,
-  colors: ReadonlyMap<FactoryGroupKey, string>): Generator<TooltipContent> {
+  colors: ReadonlyMap<string, string>): Generator<TooltipContent> {
   const groups = at.groups.map(item => model.reply.groups.find(group => group.key === item.key)!).filter(Boolean);
   const label = COUNT_MODES.find(item => item.value === mode)!.label;
   const total: TooltipRow = { label, value: formatCount(at.total), strong: true, divider: true };
