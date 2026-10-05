@@ -618,6 +618,7 @@ fn escape_description(
 }
 
 /// 14195C7D0's complete appended state-8 section, in source occurrence order.
+#[allow(clippy::too_many_arguments)] // The ship's recorded operands and text resources.
 fn escape_text(
     row: &NavalCombatShipRow,
     parts: super::naval_escape::Parts,

@@ -124,6 +124,7 @@ fn push(
     )
 }
 
+#[allow(clippy::too_many_arguments)] // One request: its combat, side, slot, scope, key and accumulator.
 fn push_side(
     buffers: &mut Buffers<'_>,
     combat: u64,
@@ -333,6 +334,7 @@ fn keys(member: &cfex_member::DetailsRow, duration: i32, initial: i32) -> &'stat
 /// carrier hovers. The combat walk groups members by combat, so each combat
 /// uses its own indexed slice. Requests are sorted in place by accumulator;
 /// each distinct accumulator is walked once, regardless of side/key/ship use.
+#[allow(clippy::too_many_arguments)] // The hour's naval walk rows and the caller's arenas.
 pub fn capture(
     memory: &impl Memory,
     base: usize,
@@ -776,12 +778,12 @@ mod tests {
             formation_flags: 1 << 7,
             ..Default::default()
         };
-        assert!(eligible_submarine(&[member.clone()], 1));
-        assert!(!eligible_submarine(&[member.clone()], 0));
+        assert!(eligible_submarine(std::slice::from_ref(&member), 1));
+        assert!(!eligible_submarine(std::slice::from_ref(&member), 0));
         assert!(!eligible_submarine(
             &[cfex_member::DetailsRow {
                 member_source: 1,
-                ..member.clone()
+                ..member
             }],
             1
         ));
