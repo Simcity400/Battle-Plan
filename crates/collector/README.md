@@ -50,6 +50,20 @@ modifier child-tree capture is deferred until exact native writer notifications
 can make unchanged sources free; viewer omissions are counted as pending
 capture-on-change. Row contracts live in the [replay guide](../replay/README.md).
 
+Ship modifier inputs still read afresh at combat cadence. Their selected sources
+include independently mutable medals, doctrine, fuel, HQ membership and leader
+adjusters ([native writer evidence](../engine/src/naval_ship_modifier_inputs.rs));
+the country/ship/leader modifier rebuilds alone cannot certify those inputs.
+Future reuse needs complete writer and receiver-lifetime coverage before hooks
+can certify it, followed by fresh-read verify mode and coordinated burn-in under
+the watched-writer rules below. A limited trace with no mismatch does not prove
+unexercised writer paths.
+
+The ignored `naval_window_operand_scale_bench` release test runs the real naval
+details capture and measures owned projection separately. Its quiet, typical
+and all-changed fixtures keep the same population and mutate values outside
+the timers. They measure synthetic callback cost, not live gameplay slowdown.
+
 ## How an hour is captured
 
 [hook.rs](src/hook.rs) detours `CGameState::HourlyUpdate` at its entry. The game mutates state immediately after that entry: **there is no free, stable interval after the trampoline**. `sampling.rs` resets the frame, takes the country snapshot, dispatches and joins acquisition jobs, then returns into the game's hourly update. Required native reads must finish before that return, including reads performed by workers.

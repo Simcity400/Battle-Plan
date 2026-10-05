@@ -38,6 +38,22 @@ const WING_HANDLE: u64 = (1_u64 << 32) | 52;
 // 1415938B0 reads its custom-modifier vector.
 const TEMPLATE_VTABLE_RVA: usize = 0x029c_5260;
 
+#[derive(Clone, Copy)]
+enum Hour {
+    Quiet,
+    Typical,
+    AllChanged,
+}
+impl Hour {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Quiet => "quiet",
+            Self::Typical => "typical",
+            Self::AllChanged => "all_changed",
+        }
+    }
+}
+
 struct Fixture(Vec<u8>);
 impl Fixture {
     fn new(combats: usize) -> Self {
@@ -355,6 +371,65 @@ impl Fixture {
         );
         this
     }
+    /// Mutations are outside the measured callback. These write values in
+    /// place: neither counts nor pointers certify that the inputs are quiet.
+    fn advance(&mut self, combats: usize, hour: Hour, pass: u64) {
+        let countries = match hour {
+            Hour::Quiet => return,
+            Hour::Typical => 2,
+            Hour::AllChanged => COUNTRY_COUNT,
+        };
+        if combats == 0 {
+            return;
+        }
+        for slot in 0..countries {
+            let root =
+                COUNTRY_BASE + slot * COUNTRY_STRIDE + engine::ccountry::MODIFIER_ACCUMULATOR;
+            let data = self.pointer(root);
+            let entries = if matches!(hour, Hour::AllChanged) {
+                ROOT_ENTRIES
+            } else {
+                1
+            };
+            for entry in 0..entries {
+                self.u64(data + entry * 16 + 8, 1000 + pass);
+            }
+            if matches!(hour, Hour::AllChanged) {
+                let children = self.pointer(root + 0x18);
+                for child in 0..TREE_CHILDREN {
+                    let accumulator = self.pointer(children + child * 8) + 0x10;
+                    let entries = self.pointer(accumulator);
+                    for entry in 0..CHILD_ENTRIES {
+                        self.u64(entries + entry * 16 + 8, 1000 + pass);
+                    }
+                }
+                let task = TASK_BASE + slot * TASK_STRIDE;
+                self.u64(task + 0x4f8, 1000 + pass);
+                self.u64(task + 0x500, 2000 + pass);
+            }
+        }
+        for index in 0..combats {
+            let body = BODIES + index * STRIDE;
+            for offset in [0x200, 0x600] {
+                self.u64(body + offset + 0x168, 500 + pass);
+            }
+            if matches!(hour, Hour::AllChanged) {
+                for ordinal in 0..SHIPS_PER_COMBAT {
+                    let ship = body + 0xc000 + ordinal * 0xa00;
+                    for offset in [0x1b8, 0x1e0, 0x1e8, 0x1f8, 0x208, 0x210, 0x270, 0x318] {
+                        self.u64(ship + offset, 1000 + pass);
+                    }
+                    self.u64(ship + 0x228, 24_000 + pass);
+                }
+                for plane in 0..4 {
+                    self.u32(body + 0xa000 + plane * 0x300 + 0x5c, 100 + pass as u32);
+                }
+            }
+        }
+    }
+    fn pointer(&self, at: usize) -> usize {
+        u64::from_le_bytes(self.0[at - STATE..at - STATE + 8].try_into().unwrap()) as usize
+    }
     fn bucket(handle: u64) -> usize {
         let hash = handle
             .rotate_left(32)
@@ -452,16 +527,69 @@ fn percentiles(mut values: Vec<Duration>) -> (Duration, Duration, Duration) {
     (p50, p95, *values.last().unwrap())
 }
 
+#[test]
+fn naval_bench_in_place_changes_keep_headers_and_reach_capture() {
+    let mut memory = Fixture::new(1);
+    let root = COUNTRY_BASE + engine::ccountry::MODIFIER_ACCUMULATOR;
+    let root_header = memory.0[root - STATE..root - STATE + 16].to_vec();
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    captured.capture(&memory, IMAGE, STATE);
+    let terms = captured.weapon_terms.first[..captured.weapon_terms.len].to_vec();
+    let speed: Vec<_> = captured.ships.rows[..SHIPS_PER_COMBAT]
+        .iter()
+        .filter(|row| row.member.state == 8)
+        .map(|row| row.escape_speed_base)
+        .collect();
+    assert_eq!(speed.len(), 5);
+    memory.advance(1, Hour::Quiet, 7);
+    captured.reset();
+    captured.capture(&memory, IMAGE, STATE);
+    assert_eq!(
+        &captured.weapon_terms.first[..captured.weapon_terms.len],
+        terms
+    );
+    memory.advance(1, Hour::AllChanged, 7);
+    assert_eq!(&memory.0[root - STATE..root - STATE + 16], root_header);
+    captured.reset();
+    captured.capture(&memory, IMAGE, STATE);
+    assert_eq!(captured.details.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(
+        captured.ships.outcome,
+        Outcome::Rows {
+            len: SHIPS_PER_COMBAT
+        }
+    );
+    assert_ne!(
+        &captured.weapon_terms.first[..captured.weapon_terms.len],
+        terms
+    );
+    for (row, before) in captured.ships.rows[..SHIPS_PER_COMBAT]
+        .iter()
+        .filter(|row| row.member.state == 8)
+        .zip(speed)
+    {
+        assert_eq!(row.escape_speed_base, before + 7);
+    }
+    assert!(
+        captured.planes.first[..4]
+            .iter()
+            .all(|plane| plane.current_planes == 107)
+    );
+}
+
 /// Pack reset and real collector capture callback, then separate spool projection.
 /// Synthetic population: ten countries with 200 children each, eight sorted
 /// entries per child and 300 root entries; 30 live ships per combat, including
 /// four carrier-linked wing planes and five state-8 ships. Each side has one
 /// damage-map node. These are fixture dimensions, not a measured live census.
+/// Quiet changes nothing; typical changes two roots and one damage cell per
+/// side; all-changed also changes every country child value, task-force fuel,
+/// ship stat and plane count. All three run the same production capture path.
 #[test]
 #[ignore]
 fn naval_window_operand_scale_bench() {
     for combats in [0, 20, 40] {
-        for typical in [false, true] {
+        for hour in [Hour::Quiet, Hour::Typical, Hour::AllChanged] {
             let mut memory = Fixture::new(combats);
             let mut captured = if combats == 0 {
                 Captured::vacant()
@@ -479,25 +607,7 @@ fn naval_window_operand_scale_bench() {
             let mut block = Vec::with_capacity(256);
             let mut projection = Vec::with_capacity(256);
             for pass in 0..320 {
-                // Mutations and fixture setup stay outside both timed regions.
-                // A typical hour changes two country roots and one stored
-                // damage cell per side; geometry and population stay identical.
-                if typical && combats != 0 {
-                    for slot in 0..2 {
-                        let root = COUNTRY_BASE
-                            + slot * COUNTRY_STRIDE
-                            + engine::ccountry::MODIFIER_ACCUMULATOR;
-                        let data = u64::from_le_bytes(
-                            memory.0[root - STATE..root - STATE + 8].try_into().unwrap(),
-                        ) as usize;
-                        memory.u64(data + 8, 1000 + pass);
-                    }
-                    for index in 0..combats {
-                        for offset in [0x200, 0x600] {
-                            memory.u64(BODIES + index * STRIDE + offset + 0x168, 500 + pass);
-                        }
-                    }
-                }
+                memory.advance(combats, hour, pass);
                 let began = Instant::now();
                 captured.reset();
                 black_box(captured.capture(&memory, IMAGE, STATE));
@@ -526,7 +636,7 @@ fn naval_window_operand_scale_bench() {
             let ms = |d: Duration| d.as_secs_f64() * 1000.0;
             eprintln!(
                 "NAVAL_BENCH combats={combats} hour={} block={:.6}/{:.6}/{:.6} projection={:.6}/{:.6}/{:.6} arena_mib={:.3}",
-                if typical { "typical" } else { "quiet" },
+                hour.name(),
                 ms(b50),
                 ms(b95),
                 ms(bmax),

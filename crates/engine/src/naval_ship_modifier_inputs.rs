@@ -1,6 +1,14 @@
 //! Ordered raw source operands of ship modifier getter140C29020 and weapon
 //! getter140C25310. No modifier total, doctrine weight, fuel fraction or weapon
 //! damage is evaluated. Source indices preserve native list order.
+//!
+//! These inputs still require fresh reads. Ship experience rebuild140C2D710
+//! does not cover effective-stat copies140C2D950/140C2E030, medal rebuild141439F00,
+//! task-force doctrine140D51B60, fuel delivery140D4FF10 or HQ membership
+//!140D604F0/140D602A0/140D60200. Leader adjusters140C11D20 and the skill-pointer
+//! setters140C15310/140C16150/140C15E50/140C16CA0 are separate writers too.
+//! Complete source-selection and receiver-lifetime coverage is not certified;
+//! equal source pointers/counts cannot certify unchanged values.
 use crate::{Memory, cnaval_combatant::field, cpdx_array::Array, msvc_string::Text};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -24,8 +32,8 @@ pub struct ContextRow {
     pub sources: [usize; 2],
 }
 
-/// Scopes0 country,1 pride,2 ship,3 experience,4 doctrine,5 terrain,
-///6 region weather,7 province weather,8 task force,9 commander,
+/// Scopes0 country,1 pride,2 ship experience,3 medals,4 doctrine,5 terrain,
+///6 region weather,7 province night,8 task force,9 commander,
 ///10 commander class,11 critical,12..15 support influence definitions.
 /// Scopes20 terrain weapon adjuster,21 commander terrain adjuster,
 ///22 commander class adjuster,23 commander night adjuster,24 fuel defines.
@@ -561,8 +569,10 @@ pub(crate) fn read(
         cap.modifier(1, ptr(memory, root, 0xb0)?)?;
     }
     cap.modifier(2, add(ship, 0x740)?)?;
-    let experience = ptr(memory, ship, 0x8f8)?;
-    cap.modifier(3, add(experience, 0x1a0)?)?;
+    // 140C29020 unwraps the medal store; 141439F00 rebuilds its +0x1B0
+    // accumulator and copied label independently of ship experience.
+    let medals = ptr(memory, ship, 0x8f8)?;
+    cap.modifier(3, add(medals, 0x1a0)?)?;
     cap.doctrine(task)?;
     let location = ptr(memory, task, cunit::LOCATION)?;
     if location != 0 {
