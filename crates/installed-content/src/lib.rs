@@ -12,6 +12,7 @@ pub mod collections;
 pub mod combat_tactics;
 pub mod content;
 pub mod country_names;
+pub mod country_scorers;
 pub mod country_tags;
 pub mod coverage;
 pub mod crt;

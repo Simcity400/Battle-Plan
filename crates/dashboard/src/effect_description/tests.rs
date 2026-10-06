@@ -130,7 +130,7 @@ pub(super) struct Fixture {
     _folder: Folder,
     dlcs: BTreeSet<String>,
     triggers: installed_content::trigger_keys::TriggerNames,
-    aliases: Arc<installed_content::tag_aliases::TagAliases>,
+    pub(super) aliases: Arc<installed_content::tag_aliases::TagAliases>,
     pub neighbors: Option<BTreeMap<u32, Vec<u32>>>,
 }
 
@@ -169,6 +169,7 @@ impl Fixture {
                     " FOLDER:0 \"Land\"\n EFFECT_COUNTRY_EVENT:0 \"Event $EVENT$\"\n REFERENCE:0 \"[From.GetTag]\"\n",
                     " EFFECT_DELETE_UNIT_TEMPLATE_AND_UNITS:0 \"Delete $NAME$\"\n EFFECT_DISBAND_UNIT_TEMPLATE_AND_UNITS:0 \"Disband $NAME$\"\n",
                     " TIP:0 \"tip\"\n TINY:0 \"x\"\n EFFECT_ADD_TIMED_IDEA:0 \"Timed $IDEA$ for $TIME_DESC$ ($DESC$).\\n\"\n",
+                    " VARIABLE_TIP:0 \"[This.GetTag]:$LEFT|0$/$RIGHT|0$\"\n",
                     " EFFECT_TIMED_IDEA_TIME_VALUE:0 \"$VALUE|0$\"\n FREQUENCY_YEAR:0 \"years\"\n FREQUENCY_MONTH:0 \"months\"\n FREQUENCY_DAY:0 \"days\"\n",
                     " SYN_IDEA:0 \"Spirit\"\n ATTACK:0 \" Attack\"\n DEFENSE:0 \" Defense\"\n",
                     " EFFECT_REMOVE_TARGETED_DECISION:0 \"Remove $NAME$\"\n SYN_DECISION:0 \"Conflict in [From.From.GetName]\"\n AAA_SYN_DECISION:0 \"Conflict in [From.From.GetName]\"\n"

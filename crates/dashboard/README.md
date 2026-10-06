@@ -233,6 +233,25 @@ constants through content, use the first successful representative with fresh
 native scope seeds, and expand their header in the caller's environment.
 Zero-reach classes remain named, counted refusals.
 
+Variable descriptions share the trigger evaluator's operand parser, arithmetic
+and description session. Persistent scalar effects evaluate RIGHT then LEFT
+only for an authored tooltip; temporary scalar effects execute before that
+description. Temporary clamp and modulo execute and emit no text. Array,
+round/randomize and persistent builder descriptions remain native empty setters.
+Effect division reads `if_zero` from TLS even for a nonzero divisor; unlike
+trigger division, a zero divisor stores that fallback rather than preserving
+the destination (1403554E0 / 1405389B0).
+Global description targets use the separate tooltip registry and existing
+completion cleanup; a combined scope saves its state before its country.
+Temporary country scorers load through the recorded content stack, reuse shared
+CScriptTargets/MTTH evaluation and retain native highest/sorted tie order.
+Array target filters run before the next indexed value is evaluated. Temporary
+random ranges refuse the unrecorded stored-variable seed except for native
+reversed-range no-ops. Temporary supply truck/train totals remain named,
+counted recording gaps; unknown supply types store native zero. Scorer dynamic
+tails and state-target modes are named refusals with no reached temporary
+scorer form in the audited corpus.
+
 Hidden effects build and discard text while retaining failures.
 
 The D2 empty family dispatches all assigned native classes to empty own text

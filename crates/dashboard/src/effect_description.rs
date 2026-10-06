@@ -31,6 +31,16 @@
 //!   child array, shared by builders and probes (140534280/1405345D0).
 //! - `Renderer::fresh_country_state_scope(country, state)` creates a localisation
 //!   environment without caller ROOT/FROM/PREV (1404A5070/1404A5160).
+//! - Variable descriptions use `Evaluator::description_variable` for shared
+//!   operands/arithmetic (14039A7D0/140379020); builder writes use
+//!   `description_temp_destination_fields` and `store_description_temp`
+//!   for repeated fields/defaults and index overrides (140535A10/14047AD60);
+//!   `encode_description_scope` retains shared object encoding (140537310).
+//!   `refuse_description_writer` invalidates unknown TLS mutations.
+//! - `Evaluator::{script_target_candidates, fresh_country_scope}` share native
+//!   CScriptTargets selection and fresh FROM-linked scorer scopes
+//!   (140C1C820/14047BB20); saved global tooltip targets use
+//!   `save_global_tooltip_target` (14038D6B0/1401ED290).
 use std::{
     cell::{OnceCell, RefCell},
     collections::BTreeMap,
@@ -178,6 +188,7 @@ pub struct Content<'a> {
     pub scripted_effects: Option<&'a installed_content::scripted_effects::ScriptedEffects>,
     pub industrial_organisations: Option<&'a installed_content::industrial_organisations::Database>,
     pub collections: Option<&'a installed_content::collections::Database>,
+    pub country_scorers: Option<&'a installed_content::country_scorers::Database>,
     pub buildings: Option<&'a installed_content::buildings::Buildings>,
     pub resources: Option<&'a [installed_content::resources::Resource]>,
     pub max_railway_level: Option<i32>,
@@ -198,6 +209,7 @@ pub struct CachedContent {
     scripted_effects: Option<installed_content::scripted_effects::ScriptedEffects>,
     industrial_organisations: Option<installed_content::industrial_organisations::Database>,
     collections: Option<installed_content::collections::Database>,
+    country_scorers: Option<installed_content::country_scorers::Database>,
     buildings: Option<installed_content::buildings::Buildings>,
     resources: Option<Vec<installed_content::resources::Resource>>,
     max_railway_level: Option<i32>,
@@ -282,6 +294,12 @@ impl CachedContent {
         if let Some(database) = &collections {
             notes.extend(database.notes.clone());
         }
+        let country_scorers = key_names.as_ref().and_then(|names| {
+            keep(installed_content::country_scorers::read(layers, names), "country scorers", &mut gaps)
+        });
+        if let Some(database) = &country_scorers {
+            notes.extend(database.notes.clone());
+        }
         let buildings = keep(installed_content::buildings::read(layers), "buildings", &mut gaps);
         let resources = keep(installed_content::resources::read(layers), "resources", &mut gaps).and_then(
             |(resources, warnings)| {
@@ -328,6 +346,7 @@ impl CachedContent {
             scripted_effects,
             industrial_organisations,
             collections,
+            country_scorers,
             buildings,
             resources,
             max_railway_level,
@@ -346,6 +365,7 @@ impl CachedContent {
             scripted_effects: self.scripted_effects.as_ref(),
             industrial_organisations: self.industrial_organisations.as_ref(),
             collections: self.collections.as_ref(),
+            country_scorers: self.country_scorers.as_ref(),
             buildings: self.buildings.as_ref(),
             resources: self.resources.as_deref(),
             max_railway_level: self.max_railway_level,
@@ -1007,11 +1027,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     }
 
     fn empty_build_override(&self, item: &Item) -> bool {
-        // These four override vf8 with 1402E9B40, discarding all children.
+        // These classes override vf8 with 1402E9B40, discarding all children.
         self.effect_class(item).is_some_and(|class| {
             matches!(
                 class.name,
                 "CForEachEffect" | "CForEffect" | "CWhileEffect" | "CSetPoliticalPartyEffect"
+                    | "CFindHighestLowestInArrayEffect<>"
             )
         })
     }

@@ -8,6 +8,14 @@ enum Right<'v> {
     Expression(&'v ParsedValue),
 }
 
+struct Operands<'v> {
+    var: ScopedVariable,
+    right: Right<'v>,
+    min: ScopedVariable,
+    max: ScopedVariable,
+    if_zero: ScopedVariable,
+}
+
 // AssignScopedVariableFromTokenText@140539370 parses into the existing
 // operand. Empty text changes nothing; a repeated nonliteral can keep fields.
 fn assign(evaluator: &Evaluator, operand: &mut ScopedVariable, text: &[u8]) -> Result<(), String> {
@@ -15,7 +23,13 @@ fn assign(evaluator: &Evaluator, operand: &mut ScopedVariable, text: &[u8]) -> R
         return Ok(());
     }
     let next = evaluator.operand(text)?;
-    if operand.parsed && next.literal.is_none() {
+    if operand.parsed {
+        if next.literal.is_some() {
+            // Numeric/constant paths@14053A999/14053A7A3 change +9/+0x40,
+            // keeping the name/default/indices read by explicit TLS@1405389B0.
+            operand.literal = next.literal;
+            return Ok(());
+        }
         return Err(super::super::refused(format!(
             "repeated variable operand {} keeps fields from its earlier read (140539B50), which is not reproduced",
             String::from_utf8_lossy(text)
@@ -62,7 +76,8 @@ impl Evaluator<'_, '_> {
             // These setters return true even when their execution is optional.
             return Some(Ok(()));
         }
-        let result = self.set_temp(name, item, scopes);
+        let result = self.variable_operands(name, item, false)
+            .and_then(|operands| self.set_temp(name, &operands, scopes, false));
         // A failed key read may name any destination. Do not retain old temps.
         if let Err(why) = &result {
             self.taint_temps(format!("trigger {name}: {why}"));
@@ -70,11 +85,17 @@ impl Evaluator<'_, '_> {
         Some(result)
     }
 
-    fn set_temp(&self, name: &str, item: &Item, scopes: Scopes) -> Result<(), String> {
+    fn variable_operands<'v>(
+        &self,
+        name: &str,
+        item: &'v Item,
+        effect: bool,
+    ) -> Result<Operands<'v>, String> {
         let mut var = zero();
         let mut right = Right::Scalar(Box::new(zero()));
         let mut min = zero();
         let mut max = zero();
+        let mut if_zero = zero();
         if name == "round_temp_variable" {
             // The scalar reader@141385570 already consumed this value.
             assign(self, &mut var, item.value.scalar().unwrap_or_default())?;
@@ -85,6 +106,11 @@ impl Evaluator<'_, '_> {
             for field in item.value.items().unwrap_or_default() {
                 let key = field.keyword().map(|key| key.folded());
                 let scalar = field.value.scalar().unwrap_or_default();
+                if effect && name == "divide_temp_variable" && key.as_deref() == Some(b"if_zero") {
+                    // CDivideTempVariableEffect reader@1403B2580 owns +0x220.
+                    assign(self, &mut if_zero, scalar)?;
+                    continue;
+                }
                 if name == "clamp_temp_variable" {
                     // CClampVariableTrigger::load_key@140437640.
                     match key.as_deref() {
@@ -119,6 +145,15 @@ impl Evaluator<'_, '_> {
                 }
             }
         }
+        Ok(Operands { var, right, min, max, if_zero })
+    }
+
+    fn mutable_temp(
+        &self,
+        var: &ScopedVariable,
+        scopes: Scopes,
+        index: Option<&ScopedVariable>,
+    ) -> Result<Vec<u8>, String> {
         // GetMutableValue@140535A10 receives TLS explicitly: scope prefixes
         // never select a persistent destination. It inserts BEFORE the RHS.
         if var.literal.is_some() || var.token.is_some() || var.random || var.ai_random {
@@ -126,7 +161,7 @@ impl Evaluator<'_, '_> {
                 "temp destination is read-only; GetMutableValue asserts (140535A10)".into(),
             ));
         }
-        let key = self.key(&var, scopes, None)?;
+        let key = self.key(var, scopes, index)?;
         // Even an existing key evaluates its initial/default operand first.
         let initial = match var.default.as_deref() {
             Some(default) => self
@@ -141,18 +176,30 @@ impl Evaluator<'_, '_> {
         self.local_temps
             .borrow_mut()
             .insert(key.clone(), current.map(Value::Raw));
+        Ok(key)
+    }
+
+    fn set_temp(
+        &self,
+        name: &str,
+        operands: &Operands<'_>,
+        scopes: Scopes,
+        effect: bool,
+    ) -> Result<(), String> {
+        let Operands { var, right, min, max, if_zero } = operands;
+        let key = self.mutable_temp(var, scopes, None)?;
         // RHS evaluation can itself reach temp-writing alias conditions.
         let current = || {
             self.temp(&key, scopes)
-                .and_then(|value| self.raw(value.unwrap_or(Value::Raw(initial))))
+                .and_then(|value| self.raw(value.unwrap_or(Value::Raw(0))))
         };
         let value = match name {
             "round_temp_variable" => rounded(current()?), // 1403DC6A0 -> 1424D87B0
             "clamp_temp_variable" => {
-                // 1403CF5F0 reads min then max before clamping max then min.
+                // Trigger/effect@1403CF5F0/14034EDD0: min then max; clamp max then min.
                 let lower = if min.parsed {
                     Some(
-                        self.evaluate_operand(&min, scopes, None)
+                        self.evaluate_operand(min, scopes, None)
                             .and_then(|v| self.raw(v))?,
                     )
                 } else {
@@ -160,7 +207,7 @@ impl Evaluator<'_, '_> {
                 };
                 let upper = if max.parsed {
                     Some(
-                        self.evaluate_operand(&max, scopes, None)
+                        self.evaluate_operand(max, scopes, None)
                             .and_then(|v| self.raw(v))?,
                     )
                 } else {
@@ -181,7 +228,7 @@ impl Evaluator<'_, '_> {
                     unreachable!()
                 };
                 let divisor = if operand.parsed {
-                    self.evaluate_operand(&operand, scopes, None)
+                    self.evaluate_operand(operand, scopes, None)
                         .and_then(|v| self.raw(v))?
                 } else {
                     0
@@ -194,24 +241,24 @@ impl Evaluator<'_, '_> {
                 i64::from(numerator % divisor) * ONE
             }
             _ => {
-                let rhs = match right {
-                    // The constructor's unparsed operand is literal zero.
-                    Right::Scalar(operand) if !operand.parsed => 0,
-                    Right::Scalar(operand) => self
-                        .evaluate_operand(&operand, scopes, None)
-                        .and_then(|v| self.raw(v))?,
-                    Right::Expression(value) => self.temp_expression(value, scopes)?,
-                };
+                let rhs = self.variable_right(right, scopes)?;
                 match name {
-                    "set_temp_variable" => rhs,                             // 1403DC700
-                    "add_to_temp_variable" => current()?.wrapping_add(rhs), // 1403CE2A0
-                    "subtract_from_temp_variable" => current()?.wrapping_sub(rhs), // 1403DCD50
-                    "multiply_temp_variable" => current()?.wrapping_mul(rhs) / ONE, // 1403DB1C0
+                    "set_temp_variable" => rhs, // Trigger/effect@1403DC700/140364070.
+                    "add_to_temp_variable" => current()?.wrapping_add(rhs), // 1403CE2A0/14034C050.
+                    "subtract_from_temp_variable" => current()?.wrapping_sub(rhs), // 1403DCD50/140366420.
+                    "multiply_temp_variable" => current()?.wrapping_mul(rhs) / ONE, // 1403DB1C0/14035B2B0.
                     "divide_temp_variable" => {
+                        // Effect@1403554E0 reads if_zero through explicit TLS
+                        // (1405389B0), even when the divisor is nonzero.
+                        let fallback = if effect {
+                            Some(self.temp_fallback(if_zero, scopes)?)
+                        } else {
+                            None
+                        };
                         let value = current()?;
                         // 1403D0360 logs zero and leaves the inserted value.
                         if rhs == 0 {
-                            value
+                            fallback.unwrap_or(value)
                         } else {
                             quotient(value, rhs)?
                         }
@@ -224,6 +271,135 @@ impl Evaluator<'_, '_> {
             .borrow_mut()
             .insert(key, Ok(Value::Raw(value)));
         Ok(())
+    }
+
+    fn variable_right(&self, right: &Right<'_>, scopes: Scopes) -> Result<i64, String> {
+        match right {
+            Right::Scalar(operand) if !operand.parsed => Ok(0),
+            Right::Scalar(operand) => self.evaluate_operand(operand, scopes, None)
+                .and_then(|v| self.raw(v)),
+            Right::Expression(value) => self.temp_expression(value, scopes),
+        }
+    }
+
+    fn temp_fallback(&self, operand: &ScopedVariable, scopes: Scopes) -> Result<i64, String> {
+        // 1405389B0 builds the key and evaluates the default, then looks up
+        // only the supplied TLS store. It does not Evaluate a scalar literal.
+        let key = self.key(operand, scopes, None)?;
+        let default = operand.default.as_deref().map(|default| {
+            self.evaluate_operand(default, scopes, None).and_then(|v| self.raw(v))
+        }).transpose()?.unwrap_or(0);
+        self.temp(&key, scopes).and_then(|v| self.raw(v.unwrap_or(Value::Raw(default))))
+    }
+
+    /// 140379020 executes temporary scalars before 14039A7D0 evaluates
+    /// RIGHT then LEFT. Persistent scalars describe without executing.
+    pub(crate) fn description_variable(
+        &self,
+        name: &str,
+        item: &Item,
+        scopes: Scopes,
+        temporary: bool,
+        tooltip: bool,
+    ) -> Result<Option<(i64, i64)>, String> {
+        let operands = self.variable_operands(name, item, true).map_err(|why| {
+            if temporary { self.taint_temps(format!("effect {name}: {why}")); }
+            why
+        })?;
+        if temporary && let Err(why) = self.set_temp(name, &operands, scopes, true) {
+            self.taint_temps(format!("effect {name}: {why}"));
+            return Err(why);
+        }
+        if !tooltip {
+            return Ok(None);
+        }
+        let right = self.variable_right(&operands.right, scopes)?;
+        let left = self.evaluate_operand(&operands.var, scopes, None)
+            .and_then(|v| self.raw(v))?;
+        Ok(Some((left, right)))
+    }
+
+    /// Scorer configuration readers@14047C500/14047C6C0 retain parsed
+    /// operands across repeated fields and assign a default only if unparsed.
+    /// GetMutableValue@140535A10 inserts TLS; the separate index overrides
+    /// authored indices, including `num` for sorted lengths (14047AD60).
+    pub(crate) fn description_temp_destination_fields(
+        &self,
+        fields: &[Item],
+        name: &str,
+        default: &[u8],
+        scopes: Scopes,
+        index: Option<&ScopedVariable>,
+    ) -> Result<Vec<u8>, String> {
+        let mut operand = zero();
+        for field in fields.iter().filter(|field| field.keyword_is(name)) {
+            assign(self, &mut operand, field.value.scalar().unwrap_or_default())?;
+        }
+        if !operand.parsed {
+            assign(self, &mut operand, default)?;
+        }
+        self.mutable_temp(&operand, scopes, index)
+    }
+
+    pub(crate) fn store_description_temp(&self, key: Vec<u8>, value: i64) {
+        self.local_temps.borrow_mut().insert(key, Ok(Value::Raw(value)));
+    }
+
+    pub(crate) fn encode_description_scope(&self, scope: Scope) -> Result<i64, String> {
+        self.encode(scope)
+    }
+
+    /// A failed mutating description must not fabricate later temp values.
+    pub(crate) fn refuse_description_writer(&self, reason: String) {
+        self.taint_temps(reason);
+    }
+
+    /// 14047BF80 -> 14047B530 evaluates min then max and returns before
+    /// destination/RNG for a reversed range. Constructor@140479C50: 0..1.
+    pub(crate) fn description_random_temp(&self, item: &Item, scopes: Scopes) -> Result<(), String> {
+        let mut min = ScopedVariable::literal(0);
+        let mut max = ScopedVariable::literal(ONE);
+        // Defaults are literal but unparsed, so the first authored read replaces them.
+        min.parsed = false;
+        max.parsed = false;
+        for field in item.value.items().unwrap_or_default() {
+            if field.keyword_is("min") {
+                assign(self, &mut min, field.value.scalar().unwrap_or_default())?;
+            } else if field.keyword_is("max") {
+                assign(self, &mut max, field.value.scalar().unwrap_or_default())?;
+            }
+        }
+        let min = self.evaluate_operand(&min, scopes, None).and_then(|v| self.raw(v))?;
+        let max = self.evaluate_operand(&max, scopes, None).and_then(|v| self.raw(v))?;
+        if max < min {
+            return Ok(());
+        }
+        Err("set_temp_variable_to_random needs unrecorded CVariables+8 u32 scoped-variable seed (1405354A0/140537810)".into())
+    }
+
+    /// 14047BEE0 -> 14047B0B0; reader@140480FD0. Only recognized bare
+    /// truck/train tokens read a total; all other types store zero.
+    pub(crate) fn description_supply_temp(&self, item: &Item, scopes: Scopes) -> Result<(), String> {
+        let mut var = zero();
+        let mut kind = None;
+        for field in item.value.items().unwrap_or_default() {
+            if field.keyword_is("var") {
+                assign(self, &mut var, field.value.scalar().unwrap_or_default())?;
+            } else if field.keyword_is("type") {
+                kind = field.value_keyword();
+            }
+        }
+        let destination = self.mutable_temp(&var, scopes, None)?;
+        self.store_description_temp(destination, 0);
+        let need = installed_content::parser::read_bool_field(item.value.items().unwrap_or_default(), "need", false);
+        let offset = match (kind.as_deref(), need) {
+            (Some("truck"), false) => "CCountrySupplySystem+0x138 i32 actual trucks",
+            (Some("train"), false) => "CCountrySupplySystem+0x110 i32 actual trains",
+            (Some("truck"), true) => "CSupplyCalculationData+0x130 i64 required trucks",
+            (Some("train"), true) => "CSupplyCalculationData+0x140 i32 required trains",
+            _ => return Ok(()),
+        };
+        Err(format!("get_supply_vehicles_temp {offset} is unrecorded (14047B0B0)"))
     }
 
     /// Core CExpression instructions@1414052C0, from the shared math reader.

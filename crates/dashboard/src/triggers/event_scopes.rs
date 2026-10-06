@@ -207,6 +207,28 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(())
     }
 
+    /// 14038D6B0 -> 1401ED290 writes the description registry (+0x6D8),
+    /// not saved globals (+0x6C0). State precedes country in a combined scope.
+    pub(crate) fn save_global_tooltip_target(&self, name: &[u8], scopes: Scopes) -> Result<(), String> {
+        let at = scopes.cursor.ok_or("global description target needs caller scope graph")?;
+        let binding = self.event_graph.borrow();
+        let mut graph = binding.as_ref()
+            .ok_or("global description target needs caller scope graph")?.borrow_mut();
+        let target = match graph.scopes.get(at).ok_or("global target scope is absent")?.this {
+            EventObject::CountryState { state, .. } if state != super::NULL_STATE => EventObject::State(state),
+            EventObject::CountryState { country, .. } => EventObject::Country(country),
+            EventObject::State(super::NULL_STATE) | EventObject::IndustrialOrganisation(_) => return Ok(()),
+            EventObject::Province(_) => return Err("global target's province scope is not a native CEventScope (1401ED290)".into()),
+            target => target,
+        };
+        let rows = &mut graph.global_tooltip_targets;
+        match rows.iter_mut().find(|(key, _)| key == name) {
+            Some((_, value)) => *value = target,
+            None => rows.push((name.to_vec(), target)),
+        }
+        Ok(())
+    }
+
     pub(super) fn graph_saved(
         &self,
         name: &[u8],
@@ -400,6 +422,50 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             graph.saved_targets.insert(index, targets);
         }
         Ok(index)
+    }
+
+    /// Fresh scorer scope with FROM copied independently (14047BB20/140C1D5B0).
+    pub(crate) fn fresh_country_scope(
+        &self,
+        country: Option<u32>,
+        from: Option<Scopes>,
+    ) -> Result<Scopes, String> {
+        let binding = self.event_graph.borrow();
+        // Default construction keeps country zero (140528800).
+        let this = EventObject::Country(country.unwrap_or(0));
+        let Some(graph) = binding.as_ref() else {
+            let this = object(this);
+            let mut fresh = Scopes::of(this);
+            fresh.from = Some(from.map_or(this, |scope| scope.this));
+            fresh.prev = Some(this);
+            return Ok(fresh);
+        };
+        let index = {
+            let mut graph = graph.borrow_mut();
+            let from = match from {
+                Some(from) => {
+                    let source = from.cursor.ok_or("scorer FROM copy needs its graph cursor")?;
+                    let mut copied = *graph.scopes.get(source).ok_or("scorer FROM scope is absent")?;
+                    let absolute = |link| if link == Link::Itself { Link::Scope(source) } else { link };
+                    copied.root = absolute(copied.root);
+                    copied.from = absolute(copied.from);
+                    copied.prev = absolute(copied.prev);
+                    let at = graph.scopes.len();
+                    graph.scopes.push(copied);
+                    if let Some(targets) = graph.tooltip_targets.get(&source).cloned() { graph.tooltip_targets.insert(at, targets); }
+                    if let Some(targets) = graph.saved_targets.get(&source).cloned() { graph.saved_targets.insert(at, targets); }
+                    Link::Scope(at)
+                }
+                None => Link::Itself,
+            };
+            let mut fresh = EventScope::of(this);
+            fresh.from = from;
+            let at = graph.scopes.len();
+            graph.scopes.push(fresh);
+            at
+        };
+        drop(binding);
+        self.event_scopes(index)
     }
 
     /// Set each target on the same copied scope (14036AA80/1402F4BA0).

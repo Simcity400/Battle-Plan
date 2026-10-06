@@ -93,8 +93,45 @@ impl Renderer<'_, '_, '_> {
             0x14272F590 /* NIndustrialOrganisation::CRandomIndustrialOrgEffect */ => lists::own(), // Build 1402F4BA0.
 
             // variables — I
-            0x14275F568 /* CClearVariableEffect */ => variables::clear_variable(),
+            // Empty vf7 never executes persistent or temporary setters.
+            0x14275F568 /* CClearVariableEffect */
+            | 0x142767D30 /* CAddToArrayEffectImp<false> */
+            | 0x142767E00 /* CAddToArrayEffectImp<true> */
+            | 0x14275ECF0 /* CClampVariableEffect */
+            | 0x142768070 /* CClearArrayEffectImp<false> */
+            | 0x142768140 /* CClearArrayEffectImp<true> */
+            | 0x1427683B0 /* CFindHighestLowestInArrayEffect<true> */
+            | 0x142768480 /* CFindHighestLowestInArrayEffect<false> */
+            | 0x14275F2F8 /* CRandomizeVariableEffect<true> */
+            | 0x14275F3C8 /* CRandomizeVariableEffect<false> */
+            | 0x142767ED0 /* CRemoveFromArrayEffectImp<false> */
+            | 0x142767FA0 /* CRemoveFromArrayEffectImp<true> */
+            | 0x142768210 /* CResizeArrayEffectImp<false> */
+            | 0x1427682E0 /* CResizeArrayEffectImp<true> */
+            | 0x14275F0A8 /* CRoundTempVariableEffect */
+            | 0x14275EF90 /* CRoundVariableEffect */
+            | 0x1427A21D8 /* CVariableEffectBuilder<GetSortedScoredCountries> */
+            | 0x1427A2390 /* CVariableEffectBuilder<GetHighestScoredCountry> */
+            | 0x1427A2530 /* CVariableEffectBuilder<Modulo> */
+            | 0x1427A26D0 /* CVariableEffectBuilder<SetVariableToRandomRange> */ => variables::empty(), // 140176EE0/1402E9B40.
+            0x14275F498 /* CSetVariableEffect */ => self.variable_effect(item, scopes, "set_variable", false),
+            0x14275F638 /* CAddToVariableEffect */ => self.variable_effect(item, scopes, "add_to_variable", false),
+            0x14275F708 /* CSubtractFromVariableEffect */ => self.variable_effect(item, scopes, "subtract_from_variable", false),
+            0x14275F7D8 /* CMultiplyVariableEffect */ => self.variable_effect(item, scopes, "multiply_variable", false),
+            0x14275F8A8 /* CDivideVariableEffect */ => self.variable_effect(item, scopes, "divide_variable", false), // 14039A7D0.
+            0x14275F978 /* CSetTempVariableEffect */ => self.variable_effect(item, scopes, "set_temp_variable", true),
+            0x14275FA48 /* CAddToTempVariableEffect */ => self.variable_effect(item, scopes, "add_to_temp_variable", true),
+            0x14275FB18 /* CSubtractFromTempVariableEffect */ => self.variable_effect(item, scopes, "subtract_from_temp_variable", true),
+            0x14275FBE8 /* CMultiplyTempVariableEffect */ => self.variable_effect(item, scopes, "multiply_temp_variable", true),
+            0x14275FCB8 /* CDivideTempVariableEffect */ => self.variable_effect(item, scopes, "divide_temp_variable", true), // 140379020.
+            0x14275F178 /* CClampTempVariableEffect */ => self.temp_variable_builder(item, scopes, "clamp_temp_variable"), // 14037B520.
+            0x1427A2600 /* CVariableEffectBuilder<ModuloTemp> */ => self.temp_variable_builder(item, scopes, "modulo_temp_variable"), // 14047BF30.
+            0x1427A27A0 /* CVariableEffectBuilder<SetTempVariableToRandomRange> */ => self.temp_variable_builder(item, scopes, "set_temp_variable_to_random"), // 14047BF80.
+            0x1427A2940 /* CVariableEffectBuilder<GetSupplyVehiclesTemp> */ => self.temp_variable_builder(item, scopes, "get_supply_vehicles_temp"), // 14047BEE0.
+            0x1427A2460 /* CVariableEffectBuilder<GetHighestScoredCountryTemp> */ => self.scored_countries(item, scopes, false), // 14047BE40.
+            0x1427A22A8 /* CVariableEffectBuilder<GetSortedScoredCountriesTemp> */ => self.scored_countries(item, scopes, true), // 14047BE90.
             0x14275A188 /* CSaveEventTargetAsEffect */ => self.save_event_target(item, scopes),
+            0x14275A258 /* CSaveGlobalEventTargetAsEffect */ => self.save_global_event_target(item, scopes), // 14038D6B0.
 
             // lists — I
             0x1427BE590 /* CIfEffect */ | 0x14299FCB8 /* CHiddenEffect */ | 0x14299FD88 /* CEffectTooltipEffect */ => lists::own(),
