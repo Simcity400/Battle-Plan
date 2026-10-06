@@ -606,11 +606,21 @@ fn add_map_rows(index: usize, tables: &mut [TableView]) {
 
 /// Independent direct reads: no previous rows, field masks, or format reader participate.
 fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFrame {
+    source_with_faults(index, branch, hour, signal, true)
+}
+
+fn source_with_faults(
+    index: usize,
+    branch: BranchId,
+    hour: Hour,
+    signal: i64,
+    faults: bool,
+) -> DecodedFrame {
     let optional_scalar = |offset: usize| {
         OPTIONAL_SCALAR_CASES[OPTIONAL_SCALAR_ORDER[(index + offset) % OPTIONAL_SCALAR_ORDER.len()]]
     };
     let country = |id, canonical_slot| CountryRow {
-        border_land_doctrine_level: None,
+        border_land_doctrine_level: crate::rows::Recorded::Value(None),
         id,
         canonical_slot,
         tag: if id == 7 {
@@ -844,35 +854,37 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
         tables[table.index()] =
             TableView::Complete(crate::rows::sample_extended_table(table, index).unwrap());
     }
-    for table in TableId::ALL.into_iter().skip(2) {
-        let draw = random(index, 91 + table.index() as u64);
-        let force_partial = matches!(index, 0 | 38 | 758 | 830)
-            && (table.index() >= TableId::Players.index()
-                || matches!(
-                    table,
-                    TableId::Countries
-                        | TableId::States
-                        | TableId::Divisions
-                        | TableId::WarRelations
-                        | TableId::Factions
-                        | TableId::FactionMembers
-                ));
-        if draw.is_multiple_of(47) || (index == 780 && table == TableId::Provinces) {
-            tables[table.index()] = TableView::Unavailable {
-                reason: format!("synthetic pointer unavailable for {table:?} at {hour}"),
-            };
-        } else if draw.is_multiple_of(43) || force_partial {
-            let TableView::Complete(rows) = &tables[table.index()] else {
-                unreachable!()
-            };
-            tables[table.index()] = TableView::Truncated {
-                rows: {
-                    let mut partial = rows.clone();
-                    partial.truncate(if table.key_bits() == 0 { 0 } else { 1 });
-                    partial
-                },
-                missing: (rows.len() - if table.key_bits() == 0 { 0 } else { 1 }) as u32,
-            };
+    if faults {
+        for table in TableId::ALL.into_iter().skip(2) {
+            let draw = random(index, 91 + table.index() as u64);
+            let force_partial = matches!(index, 0 | 38 | 758 | 830)
+                && (table.index() >= TableId::Players.index()
+                    || matches!(
+                        table,
+                        TableId::Countries
+                            | TableId::States
+                            | TableId::Divisions
+                            | TableId::WarRelations
+                            | TableId::Factions
+                            | TableId::FactionMembers
+                    ));
+            if draw.is_multiple_of(47) || (index == 780 && table == TableId::Provinces) {
+                tables[table.index()] = TableView::Unavailable {
+                    reason: format!("synthetic pointer unavailable for {table:?} at {hour}"),
+                };
+            } else if draw.is_multiple_of(43) || force_partial {
+                let TableView::Complete(rows) = &tables[table.index()] else {
+                    unreachable!()
+                };
+                tables[table.index()] = TableView::Truncated {
+                    rows: {
+                        let mut partial = rows.clone();
+                        partial.truncate(if table.key_bits() == 0 { 0 } else { 1 });
+                        partial
+                    },
+                    missing: (rows.len() - if table.key_bits() == 0 { 0 } else { 1 }) as u32,
+                };
+            }
         }
     }
     DecodedFrame {
@@ -1738,26 +1750,114 @@ fn strategic_action_acceptance_refreshes_operand_only_changes_and_rejects_missin
                 friendly_state_modifier: Some(value),
                 ..Default::default()
             });
-        let frame = make(hour as i32, inputs);
+        let frame = make(hour as i32, crate::rows::Recorded::Value(inputs));
         let encoded = encoder.encode(frame, hour == 0).unwrap();
         let decoded = decoder.apply(&encoded).unwrap();
         assert_eq!(
             decoded.complete::<tables::DivisionMovement>().unwrap()[0].strategic_action,
-            inputs
+            crate::rows::Recorded::Value(inputs)
         );
     }
     let withheld = crate::rows::StrategicAction::Withheld(
         crate::rows::StrategicActionFailure::CountryModifier,
     );
-    let encoded = encoder.encode(make(4, withheld), false).unwrap();
+    let encoded = encoder
+        .encode(make(4, crate::rows::Recorded::Value(withheld)), false)
+        .unwrap();
     let decoded = decoder.apply(&encoded).unwrap();
     assert_eq!(
         decoded.complete::<tables::DivisionMovement>().unwrap()[0].strategic_action,
-        withheld
+        crate::rows::Recorded::Value(withheld)
     );
     assert!(
         encoder
-            .encode(make(5, crate::rows::StrategicAction::Unreached), false)
+            .encode(
+                make(
+                    5,
+                    crate::rows::Recorded::Value(crate::rows::StrategicAction::Unreached)
+                ),
+                false
+            )
             .is_err()
     );
+}
+
+#[test]
+fn table_encoded_sizes_match_all_tables_and_update_forms() {
+    use crate::{codec::Decoder, frame::Frame};
+
+    let check = |frame: &Frame, form: &str, tick| {
+        let measured = frame.encode_with_sizes(&mut Vec::new()).unwrap();
+        let estimated = frame.table_encoded_sizes().unwrap();
+        for table in TableId::ALL {
+            assert_eq!(
+                estimated[table.index()],
+                measured[table.index()],
+                "{table:?} {form} tick {tick}"
+            );
+        }
+    };
+    for tick in 0..4 {
+        let source = source_with_faults(tick, 1, 1000, 0, false);
+        let snapshot = FrameEncoder::new().encode(source, true).unwrap();
+        for table in TableId::ALL {
+            assert!(
+                matches!(&snapshot.tables[table.index()], TableUpdate::Snapshot(rows) if !rows.is_empty()),
+                "{table:?}"
+            );
+        }
+        check(&snapshot, "snapshot", tick);
+        for delete in [false, true] {
+            let mut delta = snapshot.clone();
+            delta.keyframe = false;
+            for table in TableId::ALL {
+                let TableUpdate::Snapshot(mut rows) = snapshot.tables[table.index()].clone() else {
+                    unreachable!()
+                };
+                let deleted = if delete {
+                    let key = rows.iter().last().unwrap().key();
+                    rows.truncate(rows.len() - 1);
+                    vec![key]
+                } else {
+                    Vec::new()
+                };
+                let mut bytes = Vec::new();
+                rows.encode_changes(&TableRows::empty(table), &mut bytes, &mut Vec::new())
+                    .unwrap();
+                let mut input = Decoder::new(&bytes);
+                let count = input.u32().unwrap();
+                let mut previous_key = 0;
+                let changed = (0..count)
+                    .map(|_| {
+                        let row = crate::rows::decode_delta(table, previous_key, &mut input).unwrap();
+                        previous_key = row.key;
+                        row
+                    })
+                    .collect();
+                assert_eq!(input.u32().unwrap(), 0); // Empty baseline has no deletions.
+                input.finish().unwrap();
+                delta.tables[table.index()] = TableUpdate::Delta {
+                    baseline: 999,
+                    changed,
+                    deleted,
+                };
+            }
+            check(
+                &delta,
+                if delete { "delta with deletion" } else { "delta" },
+                tick,
+            );
+        }
+        let mut truncated = snapshot;
+        truncated.keyframe = false;
+        for update in &mut truncated.tables {
+            let TableUpdate::Snapshot(rows) = update else {
+                unreachable!()
+            };
+            let mut rows = rows.clone();
+            rows.truncate(rows.len() - 1);
+            *update = TableUpdate::Truncated { rows, missing: 1 };
+        }
+        check(&truncated, "truncated", tick);
+    }
 }

@@ -141,7 +141,7 @@ struct File {
     program: Program,
 }
 
-/// Effect sources under `gfx/FX` are covered and verified; any other source is not, and is named
+/// Effect sources covered by the recorded policy are verified; any other source is named
 /// in `Program::warnings`, which diagnostics must retain as for other uncovered visual assets.
 /// `effect` is the sprite's name as its bytes, and every path is opened by its bytes
 /// ([`ResolvedLayers::read_uncovered_path`]), as `PHYSFS_openRead@1424DFAC0` is given them.
@@ -165,7 +165,7 @@ pub fn read(layers: &ResolvedLayers, effect: &[u8]) -> Result<Program, String> {
     let uncovered: Vec<_> = program
         .dependencies
         .iter()
-        .filter(|path| !crate::content::covered_path(path))
+        .filter(|path| !layers.covered_path(path))
         .map(|path| lossy(path))
         .collect();
     if !uncovered.is_empty() {
@@ -771,6 +771,26 @@ mod tests {
         let uncovered = read(&layers, b"gfx/models/rail.lua").unwrap();
         assert_eq!(uncovered.warnings.len(), 1, "{:?}", uncovered.warnings);
         assert!(uncovered.warnings[0].ends_with("not hash-verified: gfx/models/rail.shader"));
+        for policy in [2, 3] {
+            let layers =
+                ResolvedLayers::from_folders_with_coverage_policy(&[(&root, &[])], policy).unwrap();
+            let old = read(&layers, b"gfx/FX/map.lua").unwrap();
+            assert_eq!(
+                old.identity, covered.identity,
+                "same reader, same source bytes"
+            );
+            assert_eq!(old.warnings.len(), 1, "{:?}", old.warnings);
+            assert!(old.warnings[0].contains(
+                "outside the content coverage policy; these bytes are not hash-verified"
+            ));
+            for path in [
+                "gfx/FX/map.shader",
+                "gfx/FX/common.fxh",
+                "gfx/FX/defines_hlsl_dx11.fxh",
+            ] {
+                assert!(old.warnings[0].contains(path), "{}", old.warnings[0]);
+            }
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 }

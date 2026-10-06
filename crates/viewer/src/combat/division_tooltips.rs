@@ -1202,10 +1202,10 @@ pub(super) fn bind(
     let template_inputs = super::template_icons::Inputs::read(frame)?;
     // Recorded daily with the template dictionary, so a rename shows from the
     // table's next daily capture.
-    let template_names: BTreeMap<u64, &[u8]> = rows::<tables::DivisionTemplates>(frame)?
+    let template_names: BTreeMap<_, _> = rows::<tables::DivisionTemplates>(frame)?
         .rows()
         .iter()
-        .map(|row| (row.template, row.name.as_slice()))
+        .map(|row| (row.template, row))
         .collect();
     // The landing's first-edge progress, rebuilt from the recorded route and
     // content as the hour's other movement consumers rebuild it.
@@ -1399,25 +1399,50 @@ pub(super) fn bind(
                 }
             };
             set_hover(values, "org_bar", organisation, None);
-            // GetDisplayName localises the template's name key for its
-            // country when the explicit name is empty; that key is not
-            // recorded, so such a template's summary is refused.
-            let name = match template_names.get(&row.context.template) {
-                None => Err(format!(
-                    "its template {} has no DivisionTemplates row",
-                    row.context.template
-                )),
-                Some([]) => Err(format!(
-                    "its template {}'s recorded name is empty, and the name key GetDisplayName would localise instead is not recorded",
-                    row.context.template
-                )),
-                Some(name) => std::str::from_utf8(name).map_err(|_| {
+            // GetDisplayName@140B91170: explicit name, otherwise LocalizeForCountry.
+            let name = (|| {
+                let template = template_names.get(&row.context.template).ok_or_else(|| {
                     format!(
-                        "its template {}'s recorded name is not UTF-8",
+                        "template {} has no DivisionTemplates row",
                         row.context.template
                     )
-                }),
-            };
+                })?;
+                if !template.name.is_empty() {
+                    return std::str::from_utf8(&template.name)
+                        .map(str::to_owned)
+                        .map_err(|_| "template name is not UTF-8".to_owned());
+                }
+                let key = template.name_key.require("DivisionTemplates.name_key")?;
+                if key.is_empty() {
+                    return Ok(String::new());
+                }
+                let key = std::str::from_utf8(key).map_err(|_| "template name_key is not UTF-8")?;
+                let template_icons =
+                    rows::<tables::DivisionTemplateIcons>(frame).map_err(|e| e.to_string())?;
+                let icon = template_icons
+                    .rows()
+                    .iter()
+                    .find(|icon| icon.template == template.template)
+                    .ok_or("template localisation country unavailable")?;
+                if icon.country <= 0 {
+                    return super::text::localise(loc, key, &[]);
+                }
+                let links = rows::<tables::CountryLinks>(frame).map_err(|e| e.to_string())?;
+                let slot = links
+                    .rows()
+                    .iter()
+                    .find(|link| link.id == icon.country as u32)
+                    .ok_or("template country link unavailable")?
+                    .canonical_slot;
+                let tag = countries
+                    .rows()
+                    .iter()
+                    .find(|country| country.canonical_slot == slot)
+                    .ok_or("template country unavailable")?;
+                let tag = std::str::from_utf8(&tag.tag)
+                    .map_err(|_| "template country tag is not UTF-8")?;
+                super::text::country_localised(loc, Ok(tag), key)
+            })();
             let invasion =
                 naval_invasion(*unit, &movements, &all_divisions, &provinces, &kinds, &wars);
             let summary = match invasion {
@@ -1431,16 +1456,16 @@ pub(super) fn bind(
                     "whether it invades from the sea is unknown: {reason}"
                 )),
             }
-            .and_then(|progress| division_summary(icons, loc, name.clone()?, row, progress, defines));
+            .and_then(|progress| division_summary(icons, loc, &name?, row, progress, defines));
             let summary = match summary {
                 Ok(text) => {
                     unpierced += usize::from(defines.is_none());
                     hover_text(&text)
                 }
                 Err(reason) => {
-                    out.warnings.push(format!(
-                        "Land combat {id} division {unit}: the default hover is omitted: {reason}."
-                    ));
+                    *refused
+                        .entry(format!("default division hover: {reason}"))
+                        .or_default() += 1;
                     None
                 }
             };

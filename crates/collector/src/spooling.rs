@@ -2891,7 +2891,8 @@ fn decoded_with_costs(
                         && country.war_support_raw == previous.war_support_raw
                         && country.convoys_raw == previous.convoys_raw
                         && country.manpower_residual == previous.manpower_residual
-                        && country.border_land_doctrine_level == previous.border_land_doctrine_level
+                        && replay::rows::Recorded::Value(country.border_land_doctrine_level)
+                            == previous.border_land_doctrine_level
                         && country.peace_conference_participant
                             == previous.peace_conference_participant
                 },
@@ -2908,7 +2909,9 @@ fn decoded_with_costs(
                     convoys_raw: country.convoys_raw,
                     peace_conference_participant: country.peace_conference_participant,
                     manpower_residual: country.manpower_residual,
-                    border_land_doctrine_level: country.border_land_doctrine_level,
+                    border_land_doctrine_level: replay::rows::Recorded::Value(
+                        country.border_land_doctrine_level,
+                    ),
                 },
             ),
             scalar_table::<tables::CountryLinks, _>(
@@ -4165,7 +4168,7 @@ mod tests {
         assert_eq!(
             frame.tables[2],
             TableView::Complete(TableRows::Countries(vec![CountryRow {
-                border_land_doctrine_level: None,
+                border_land_doctrine_level: replay::rows::Recorded::Value(None),
                 id: 7,
                 canonical_slot: 1,
                 tag: b"GER".to_vec(),

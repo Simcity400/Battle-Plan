@@ -43,6 +43,8 @@ pub fn put_varint(out: &mut Vec<u8>, mut value: u128) {
 
 pub struct Decoder<'a> {
     bytes: &'a [u8],
+    pub(crate) format: u16,
+    pub(crate) recorded_fields: usize,
 }
 
 macro_rules! number {
@@ -57,7 +59,11 @@ macro_rules! number {
 
 impl<'a> Decoder<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes }
+        Self {
+            bytes,
+            format: crate::FORMAT_VERSION,
+            recorded_fields: usize::MAX,
+        }
     }
     pub fn remaining(&self) -> usize {
         self.bytes.len()

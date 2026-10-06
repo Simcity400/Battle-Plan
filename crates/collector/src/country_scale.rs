@@ -996,7 +996,10 @@ mod tests {
             panic!("presized subject capture must be complete");
         };
         assert_eq!(rows.len(), COUNTRIES);
-        assert!(rows.iter().all(|row| row.subjects == [17]));
+        assert!(
+            rows.iter()
+                .all(|row| *row.subjects.require("subjects").unwrap() == [17])
+        );
         let mut counters =
             country_counters::Captured::with_capacities(&sizing.extended.country_counters);
         counters.capture(&memory, BASE, STATE);

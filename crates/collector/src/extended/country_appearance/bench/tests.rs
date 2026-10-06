@@ -211,11 +211,11 @@ fn border_effect_subject_capture_uses_real_census_and_encodes_only_roster_change
         assert_eq!(before.len(), world.countries);
         assert_eq!(
             before[0].subjects,
-            if matches!(hour, Hour::Empty) {
+            replay::rows::Recorded::Value(if matches!(hour, Hour::Empty) {
                 vec![]
             } else {
                 vec![1, -1, 1]
-            }
+            })
         );
         let changed = world.advance(hour, 2);
         let after = world.read(&mut captured);

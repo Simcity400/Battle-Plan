@@ -256,11 +256,12 @@ fn zero_active_border_events_do_not_read_decision_random_inputs() {
     assert_eq!(observation.outcomes[8], Outcome::Rows { len: 2 });
     assert_eq!(observation.outcomes[9], Outcome::Rows { len: 4 });
     assert_eq!(memory.0.hits.get(), 0);
-    assert!(
-        portable(&mut captured, &observation)
-            .iter()
-            .all(|row| row.description_seed.is_none())
-    );
+    assert!(portable(&mut captured, &observation).iter().all(|row| {
+        row.description_seed
+            .require("description_seed")
+            .unwrap()
+            .is_none()
+    }));
 }
 
 #[test]
@@ -279,7 +280,7 @@ fn reachable_border_event_selects_only_matching_targeted_decisions() {
     let rows = portable(&mut captured, &observation);
     assert_eq!(
         rows.iter()
-            .map(|row| row.description_seed)
+            .map(|row| *row.description_seed.require("description_seed").unwrap())
             .collect::<Vec<_>>(),
         [Some(Some(-17)), None, Some(Some(-17)), None]
     );

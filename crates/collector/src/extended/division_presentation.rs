@@ -480,7 +480,7 @@ impl Captured {
                     }),
                 )),
                 move_flags: r.move_flags,
-                border_combat_stats: r.border_combat_stats,
+                border_combat_stats: replay::rows::Recorded::Value(r.border_combat_stats),
             },
         );
         let Some(paths) = self.paths.first.get(..self.paths.len) else {
@@ -513,7 +513,8 @@ impl Captured {
                         && r.numerator == previous.numerator
                         && r.retreat == previous.retreat
                         && r.strategic_redeployment == previous.strategic_redeployment
-                        && r.strategic_action == previous.strategic_action
+                        && replay::rows::Recorded::Value(r.strategic_action)
+                            == previous.strategic_action
                         && r.naval_transfer == previous.naval_transfer
                         && r.combat_count == previous.combat_count
                         && r.path_total == previous.path_total
@@ -532,7 +533,7 @@ impl Captured {
                     numerator: r.numerator,
                     retreat: r.retreat,
                     strategic_redeployment: r.strategic_redeployment,
-                    strategic_action: r.strategic_action,
+                    strategic_action: replay::rows::Recorded::Value(r.strategic_action),
                     naval_transfer: r.naval_transfer,
                     combat_count: r.combat_count,
                     path_total: r.path_total,
@@ -856,10 +857,12 @@ mod tests {
         ));
         assert_eq!(
             m[0].strategic_action,
-            carmy::StrategicAction::Available(carmy::StrategicRedeploymentInputs {
-                country_modifier: i64::MIN,
-                ..Default::default()
-            })
+            replay::rows::Recorded::Value(carmy::StrategicAction::Available(
+                carmy::StrategicRedeploymentInputs {
+                    country_modifier: i64::MIN,
+                    ..Default::default()
+                }
+            ))
         );
         capture.movement.rows[0].strategic_action =
             carmy::StrategicAction::Available(carmy::StrategicRedeploymentInputs {

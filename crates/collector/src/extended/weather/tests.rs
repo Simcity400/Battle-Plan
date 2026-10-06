@@ -125,8 +125,8 @@ fn acquisition_keeps_native_snow_display_bytes_and_raw_flags() {
             permanent_snow: 40_000,
             display_snow: 200,
             display_mud: 255,
-            temperature: -9_007_199_254_740_993,
-            raw_mud: 7,
+            temperature: replay::rows::Recorded::Value(-9_007_199_254_740_993),
+            raw_mud: replay::rows::Recorded::Value(7),
         }]
     );
 }

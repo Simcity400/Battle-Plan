@@ -87,6 +87,7 @@ impl Renderer<'_, '_, '_> {
             .ok_or("CountryAppearance lacks ordered target subjects")?;
         let subjects = appearance
             .subjects
+            .require("CountryAppearance.subjects")?
             .iter()
             .map(|raw| {
                 world

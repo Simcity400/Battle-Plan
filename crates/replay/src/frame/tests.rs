@@ -896,7 +896,7 @@ fn source(branch: BranchId, hour: Hour) -> DecodedFrame {
                     id: b"campaign".to_vec(),
                 }])),
                 TableView::Complete(TableRows::Countries(vec![CountryRow {
-                    border_land_doctrine_level: None,
+                    border_land_doctrine_level: crate::rows::Recorded::Value(None),
                     id: 7,
                     canonical_slot: 1,
                     tag: b"GER".to_vec(),
@@ -2055,6 +2055,7 @@ fn invalid_delta_operations_do_not_damage_other_tables_or_retain_partial_rows() 
         (vec![], vec![1, 999], "absent key"),
         (
             vec![DeltaRow {
+                recorded_fields: TableId::Provinces.field_count(),
                 key: 3,
                 mask: 4,
                 values: vec![198, 1], // Zigzag(+99).
@@ -2211,6 +2212,7 @@ fn singleton_invariants_apply_after_deltas_and_unchanged_updates() {
             TableUpdate::Delta {
                 baseline: 0,
                 changed: vec![DeltaRow {
+                    recorded_fields: TableId::Clock.field_count(),
                     key: 0,
                     mask: 1,
                     values: vec![198, 1], // Zigzag(+99) from the hour-zero baseline.

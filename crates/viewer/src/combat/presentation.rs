@@ -266,7 +266,10 @@ pub(super) fn bind(
             .iter()
             .find(|row| (u64::from(row.id) << 32 | u64::from(row.reference_type)) == commander)
             .ok_or_else(|| format!("UnitLeaders lacks commander {commander}"))?;
-        country_flag(flags, row.exile_country as u32)
+        country_flag(
+            flags,
+            *row.exile_country.require("UnitLeaders.exile_country")? as u32,
+        )
     };
     match selection {
         Selection::Land(id) => {

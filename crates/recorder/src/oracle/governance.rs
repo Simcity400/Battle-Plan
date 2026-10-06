@@ -663,7 +663,11 @@ fn compare_decisions(
                 u8::from(saved.ignore.unwrap()),
             );
         }
-        if let Some(seed) = row.description_seed {
+        if let Some(&Some(seed)) = report.recorded(
+            &row.description_seed,
+            "Decisions.description_seed",
+            format!("{subject}.description_seed"),
+        ) {
             if row.container < 3 {
                 return Err(invalid("untargeted decision has a description seed"));
             }

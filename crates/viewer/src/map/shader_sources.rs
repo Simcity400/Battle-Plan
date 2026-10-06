@@ -131,6 +131,7 @@ pub struct Audit {
 /// Compares actual bytes, so an identical replacement is not a false refusal.
 /// Both graphs matter: a replacement can remove an include as well as add one.
 fn audit_paths(
+    layers: &ResolvedLayers,
     passes: &[(&str, &str, &str)],
     vanilla: &dyn Fn(&str) -> io::Result<Vec<u8>>,
     content: &dyn Fn(&str) -> io::Result<Vec<u8>>,
@@ -170,7 +171,7 @@ fn audit_paths(
     let uncovered: BTreeSet<_> = graphs
         .values()
         .flat_map(|(base, resolved)| base.sources.iter().chain(&resolved.sources))
-        .filter(|(path, bytes)| bytes.is_some() && !installed_content::content::covered(path))
+        .filter(|(path, bytes)| bytes.is_some() && !layers.covered(path))
         .map(|(path, _)| path.as_str())
         .collect();
     out.lines.insert(0, format!(
@@ -235,14 +236,7 @@ fn passes_with(read: &dyn Fn(&str) -> io::Result<Vec<u8>>) -> io::Result<Vec<(St
 }
 
 pub fn check(layers: &ResolvedLayers, warnings: &mut Vec<String>) -> io::Result<()> {
-    let mut vanilla = ResolvedLayers::default();
-    vanilla.layers.push(
-        layers
-            .layers
-            .first()
-            .ok_or_else(|| invalid("Map shader source audit: no recorded base game layer"))?
-            .clone(),
-    );
+    let vanilla = layers.base_only()?;
     // This isolated reader deliberately has no cosmetic overlays and retains the base layer's
     // folder/archive lookup semantics, verifying the covered sources.
     let base_passes = passes(&vanilla)?;
@@ -252,9 +246,12 @@ pub fn check(layers: &ResolvedLayers, warnings: &mut Vec<String>) -> io::Result<
         .zip(&content_passes)
         .map(|((name, base), (_, path))| (name.as_str(), base.as_str(), path.as_str()))
         .collect();
-    let audit = audit_paths(&passes, &|path| vanilla.read_uncovered(path), &|path| {
-        layers.read_uncovered(path)
-    });
+    let audit = audit_paths(
+        layers,
+        &passes,
+        &|path| vanilla.read_uncovered(path),
+        &|path| layers.read_uncovered(path),
+    );
     warnings.extend(audit.lines.iter().cloned());
     Ok(())
 }
@@ -318,6 +315,7 @@ mod tests {
         content: &dyn Fn(&str) -> io::Result<Vec<u8>>,
     ) -> Audit {
         audit_paths(
+            &ResolvedLayers::default(),
             &passes
                 .iter()
                 .map(|&(name, path)| (name, path, path))
@@ -336,6 +334,39 @@ mod tests {
             .find(|(name, _)| *name == path)
             .map(|(_, text)| text.as_bytes().to_vec())
             .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+    }
+
+    #[test]
+    fn compatibility_policy3_shader_sources_keep_the_uncovered_read_note() {
+        let layers = ResolvedLayers::from_folders_with_coverage_policy(&[], 3).unwrap();
+        let files = [
+            (
+                "gfx/FX/synthetic.shader",
+                "Includes = { \"synthetic.fxh\" }",
+            ),
+            ("gfx/FX/synthetic.fxh", ""),
+        ];
+        let passes = [(
+            "synthetic",
+            "gfx/FX/synthetic.shader",
+            "gfx/FX/synthetic.shader",
+        )];
+        let read = |path: &str| source(&files, path);
+        let audit = audit_paths(&layers, &passes, &read, &read);
+        assert_eq!(audit.affected_passes, 0);
+        assert!(audit.lines[0].contains("3 source/include file(s) are outside recorded content hash coverage and are not hash-verified"));
+        for path in [
+            "gfx/FX/synthetic.shader",
+            "gfx/FX/synthetic.fxh",
+            "gfx/FX/defines_hlsl_dx11.fxh",
+        ] {
+            assert!(audit.lines[0].contains(path));
+        }
+        let audit = audit_paths(&ResolvedLayers::default(), &passes, &read, &read);
+        assert!(
+            audit.lines[0]
+                .contains("0 source/include file(s) are outside recorded content hash coverage")
+        );
     }
 
     #[test]
@@ -437,6 +468,7 @@ mod tests {
             ("order labels".into(), "gfx/FX/custom_text.shader".into())
         );
         let audit = audit_paths(
+            &ResolvedLayers::default(),
             &[("map arrows", "old.shader", "custom.shader")],
             &|p| source(&[("old.shader", "")], p),
             &|p| source(&[("custom.shader", "")], p),

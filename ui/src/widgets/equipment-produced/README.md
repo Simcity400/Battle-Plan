@@ -36,5 +36,5 @@ The reply is compact: each country's samples (the hours each value holds) and, p
 
 ## Not yet
 
-- **Verified on a real recording** only over a short branch: a historical recording of 24–29 Oct 1943 (5.5 days, fresh-save oracle clean) matches an independent sum of its `ProductionLineOutput` rows for every country shown; per week and per month need a longer recording. The save keeps no per-line count, so the totals cannot be checked against the save itself. Recordings from an older format are refused by the reader before any product runs.
+- **Verified on a real recording** only over a short branch: a historical recording of 24–29 Oct 1943 (5.5 days, fresh-save oracle clean) matches an independent sum of its `ProductionLineOutput` rows for every country shown; per week and per month need a longer recording. The save keeps no per-line count, so the totals cannot be checked against the save itself. Older recordings open under the [per-table compatibility rule](../../../../crates/replay/README.md#compatibility-and-recovery); incompatible production tables become named gaps.
 - **Equipment art** is not shown: a type's row in the game is drawn with the country's best variant (not recorded), and a variant's own icon needs the production-lines icon resolver (`equipment_icon`, on the Production lines branch).

@@ -15,7 +15,6 @@ pub struct ReserveModifierBreakdownRow {
 }
 typed_codec!(ReserveModifierBreakdownRow, 72, |row| (row.kind as u128) << 64 | row.owner as u128,
 |key| Self { kind: (key >> 64) as u8, owner: key as u64, ..Default::default() },
-|key, input| Ok(Self { kind: (key >> 64) as u8, owner: key as u64, nodes: read_value(Kind::Opaque, input)? }),
 { 0 => (nodes): Opaque }, |row| {
    if row.kind > 2 || (row.kind == 0 && row.owner > u32::MAX as u64) {
        return Err(invalid("invalid reserve modifier source identity"));
@@ -33,7 +32,6 @@ pub struct PowerBalanceModifierBreakdownRow {
 }
 typed_codec!(PowerBalanceModifierBreakdownRow, 32, |row| row.record as u128,
 |key| Self { record: key as u32, ..Default::default() },
-|key, input| Ok(Self { record: key as u32, sources: read_value(Kind::Opaque, input)?, daily: read_value(Kind::Opaque, input)?, weekly: read_value(Kind::Opaque, input)? }),
 { 0 => (sources): Opaque, 1 => (daily): Opaque, 2 => (weekly): Opaque }, |row| {
    check_tree(&row.daily)?;
    check_tree(&row.weekly)
@@ -97,12 +95,6 @@ pub struct NavalModifierBreakdownRow {
 typed_codec!(NavalModifierBreakdownRow, 96,
 |row| (row.accumulator as u128) << 32 | row.key as u128,
 |key| Self { accumulator: (key >> 32) as u64, key: key as u32, ..Default::default() },
-|key, input| Ok(Self {
-    accumulator: (key >> 32) as u64,
-    key: key as u32,
-    uses: read_value(Kind::Opaque, input)?,
-    nodes: read_value(Kind::Opaque, input)?,
-}),
 { 0 => (uses): Opaque, 1 => (nodes): Opaque },
 |row| {
     if row.uses.is_empty()

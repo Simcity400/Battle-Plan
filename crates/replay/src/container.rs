@@ -252,7 +252,7 @@ impl Replay {
         if &prefix[..4] != HEADER_MAGIC {
             return Err(invalid("invalid replay header magic"));
         }
-        FormatVersion::read(u16::from_le_bytes(prefix[4..].try_into().unwrap()))?;
+        let format = FormatVersion::read(u16::from_le_bytes(prefix[4..].try_into().unwrap()))?;
         file.seek(SeekFrom::End(-(FOOTER_SIZE as i64)))?;
         let mut footer_bytes = [0; FOOTER_SIZE];
         file.read_exact(&mut footer_bytes)?;
@@ -275,7 +275,9 @@ impl Replay {
         let sessions = decode_list(&mut trailer, SessionStart::decode)?;
         let _branches = decode_list(&mut trailer, BranchStart::decode)?;
         let _gaps = decode_list(&mut trailer, Gap::decode)?;
-        let controls = decode_list(&mut trailer, ControlRecord::decode)?;
+        let controls = decode_list(&mut trailer, |input| {
+            ControlRecord::decode_version(input, format)
+        })?;
         let _recovery = decode_list(&mut trailer, RecoveryNote::decode)?;
         let count = trailer.count(40)?;
         trailer.take(count * 40)?;
@@ -356,6 +358,14 @@ impl Replay {
         segments: &[&[Record]],
         observe: &mut FrameObserver<'_>,
     ) -> io::Result<Self> {
+        // Existing blocks keep their original contract. Never mix current
+        // writer rows under an older header or rewrite that header as migration.
+        if self.format != FormatVersion::CURRENT {
+            return Err(invalid(format!(
+                "Replay append requires format {FORMAT_VERSION}; this recording is format {}; open it read-only and record into a new file",
+                self.format.version()
+            )));
+        }
         let pending = collect(
             segments,
             &self.identity,
@@ -399,6 +409,7 @@ impl Replay {
         segments: &[(u32, Recovery)],
         mut observe: impl FnMut(&Frame, &DecodedFrame, [usize; TABLE_COUNT]) -> io::Result<()>,
     ) -> io::Result<Self> {
+        require_current_spools(segments)?;
         let records = ordered_records(segments)?;
         Self::from_record_slices(campaign_id, &records, &mut observe)?.add_recovery_notes(segments)
     }
@@ -413,6 +424,7 @@ impl Replay {
         segments: &[(u32, Recovery)],
         mut observe: impl FnMut(&Frame, &DecodedFrame, [usize; TABLE_COUNT]) -> io::Result<()>,
     ) -> io::Result<Self> {
+        require_current_spools(segments)?;
         let records = ordered_records(segments)?;
         self.append_record_slices(&records, &mut observe)?
             .add_recovery_notes(segments)
@@ -593,7 +605,9 @@ impl Replay {
         let sessions = decode_list(&mut trailer, SessionStart::decode)?;
         let branches = decode_list(&mut trailer, BranchStart::decode)?;
         let gaps = decode_list(&mut trailer, Gap::decode)?;
-        let controls = decode_list(&mut trailer, ControlRecord::decode)?;
+        let controls = decode_list(&mut trailer, |input| {
+            ControlRecord::decode_version(input, format)
+        })?;
         let recovery_notes = decode_list(&mut trailer, RecoveryNote::decode)?;
         let count = trailer.count(40)?;
         let mut index = Vec::with_capacity(count);
@@ -638,6 +652,19 @@ impl Replay {
             trailer_start,
             partial_control,
         })
+    }
+
+    /// Persistent named layout, meaning and lifetime gaps shared by every open path.
+    pub fn compatibility_gaps(&self) -> Vec<String> {
+        TableId::ALL
+            .into_iter()
+            .flat_map(|table| {
+                self.format
+                    .table_refusal(table)
+                    .into_iter()
+                    .chain(self.format.field_gaps(table))
+            })
+            .collect()
     }
 
     pub fn seek(&self, branch: BranchId, hour: Hour) -> io::Result<SeekResult> {
@@ -784,7 +811,7 @@ impl Replay {
                 }
             }
         }
-        let decoded = decode_payloads(&payloads, selected, parallel);
+        let decoded = decode_payloads(&payloads, selected, parallel, self.format);
         let mut frames = Vec::with_capacity(count);
         let mut last = None;
         for (position, frame) in decoded.into_iter().enumerate() {
@@ -1362,6 +1389,25 @@ fn validate_metadata(
     Ok(())
 }
 
+fn require_current_spools(segments: &[(u32, Recovery)]) -> io::Result<()> {
+    for (segment, recovery) in segments {
+        if recovery.format.is_none() && !recovery.records.is_empty() {
+            return Err(invalid(format!(
+                "Spool segment {segment} has no proven recording format"
+            )));
+        }
+        if let Some(format) = recovery.format
+            && format != FormatVersion::CURRENT
+        {
+            return Err(invalid(format!(
+                "Spool finalization requires format {FORMAT_VERSION}; segment {segment} is format {}; historical rows are never rewritten",
+                format.version()
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_partial_controls(controls: &[ControlRecord]) -> io::Result<()> {
     for (position, control) in controls.iter().enumerate() {
         if let ControlRecord::Partial { session, reason, .. } = control
@@ -1390,10 +1436,11 @@ fn decode_payloads(
     payloads: &[&[u8]],
     selected: Option<&[crate::rows::TableId]>,
     parallel: Option<&Parallel<'_>>,
+    format: FormatVersion,
 ) -> Vec<io::Result<Frame>> {
     let decode = |payload: &&[u8]| -> io::Result<Frame> {
         let mut frame_decoder = Decoder::new(payload);
-        let frame = Frame::decode_selected(&mut frame_decoder, selected)?;
+        let frame = Frame::decode_version(&mut frame_decoder, selected, format)?;
         frame_decoder.finish()?;
         Ok(frame)
     };

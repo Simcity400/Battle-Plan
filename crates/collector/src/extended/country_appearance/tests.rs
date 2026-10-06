@@ -74,8 +74,8 @@ fn subject_payload_demand_is_positive_count_only_and_keeps_raw_order() {
     else {
         panic!("complete subject roster");
     };
-    assert_eq!(rows[0].subjects, [9, -1, 9]);
-    assert!(rows[1].subjects.is_empty());
+    assert_eq!(*rows[0].subjects.require("subjects").unwrap(), [9, -1, 9]);
+    assert!(rows[1].subjects.require("subjects").unwrap().is_empty());
 }
 
 #[test]
@@ -132,8 +132,8 @@ fn subject_shortage_and_payload_fault_omit_only_affected_countries() {
             rows.iter().map(|row| row.country).collect::<Vec<_>>(),
             [7, 11]
         );
-        assert!(rows[0].subjects.is_empty());
-        assert_eq!(rows[1].subjects, [17]);
+        assert!(rows[0].subjects.require("subjects").unwrap().is_empty());
+        assert_eq!(*rows[1].subjects.require("subjects").unwrap(), [17]);
         capture.grow(&mut capacity);
         assert!(capture.subjects.first.len() >= 4);
         assert_eq!(capture.subject_starts.len(), capture.rows.rows.len());

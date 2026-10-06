@@ -634,16 +634,11 @@ fn unversioned_spool_cannot_be_finalized_as_a_current_replay() {
 #[test]
 fn unsupported_versions_are_refused_before_decoding_frames() {
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
-    for version in [0, FORMAT_VERSION - 1, FORMAT_VERSION + 1, u16::MAX] {
+    for version in [0, 90, 95, FORMAT_VERSION + 1, u16::MAX] {
         let mut bytes = replay.bytes().to_vec();
         bytes[4..6].copy_from_slice(&version.to_le_bytes());
         let error = Replay::open(bytes).err().unwrap().to_string();
-        assert_eq!(
-            error,
-            format!(
-                "unsupported replay format version {version}; this build reads and writes {FORMAT_VERSION}"
-            )
-        );
+        assert_eq!(error, FormatVersion::read(version).unwrap_err().to_string());
     }
 }
 
@@ -727,7 +722,7 @@ fn parallel_payloads_report_the_first_bad_frame_in_position_order() {
     payloads[40].truncate(3);
     payloads[9].push(0);
     let slices: Vec<&[u8]> = payloads.iter().map(Vec::as_slice).collect();
-    let sequential = decode_payloads(&slices, None, None);
+    let sequential = decode_payloads(&slices, None, None, FormatVersion::CURRENT);
     let parallel = decode_payloads(
         &slices,
         None,
@@ -735,6 +730,7 @@ fn parallel_payloads_report_the_first_bad_frame_in_position_order() {
             workers: 4,
             on_worker: &|| {},
         }),
+        FormatVersion::CURRENT,
     );
     let first_error = |results: &[io::Result<Frame>]| {
         results
@@ -922,6 +918,7 @@ fn recovery_orders_segments_numerically_and_rejects_duplicate_numbers() {
         encoder.encode(source(1, 2).clone(), true).unwrap(),
     ));
     let recovery = |records| Recovery {
+        format: Some(FormatVersion::CURRENT),
         records,
         valid_bytes: 0,
         damage: None,
@@ -963,6 +960,7 @@ fn finalization_observer_sees_decoded_failures_and_identical_wire_sizes() {
     let segments = [(
         0,
         Recovery {
+            format: Some(FormatVersion::CURRENT),
             records: input,
             valid_bytes: 0,
             damage: None,
@@ -1006,6 +1004,7 @@ fn finalization_observer_sees_decoded_failures_and_identical_wire_sizes() {
     let next = [(
         1,
         Recovery {
+            format: Some(FormatVersion::CURRENT),
             records: records(2, &[4, 5]),
             valid_bytes: 0,
             damage: None,
@@ -1155,3 +1154,6 @@ fn every_interrupted_append_preserves_previous_file_byte_for_byte() {
         assert_eq!(disk.existing, old.bytes());
     }
 }
+
+#[path = "compatibility_tests.rs"]
+mod compatibility_tests;

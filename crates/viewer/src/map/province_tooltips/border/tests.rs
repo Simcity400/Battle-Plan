@@ -74,7 +74,9 @@ fn fixture() -> (super::super::Content, DecodedFrame, BTreeMap<u32, u32>) {
                 |(id, canonical_slot, border_land_doctrine_level)| CountryRow {
                     id,
                     canonical_slot,
-                    border_land_doctrine_level,
+                    border_land_doctrine_level: replay::rows::Recorded::Value(
+                        border_land_doctrine_level,
+                    ),
                     ..Default::default()
                 },
             )
@@ -101,8 +103,12 @@ fn fixture() -> (super::super::Content, DecodedFrame, BTreeMap<u32, u32>) {
                 .into_iter()
                 .map(|state| StateFlagRow {
                     state,
-                    border_conflict_active: u8::from(state != 4),
-                    border_conflict_countries: if state == 1 { vec![[111, 22]] } else { vec![] },
+                    border_conflict_active: replay::rows::Recorded::Value(u8::from(state != 4)),
+                    border_conflict_countries: if state == 1 {
+                        vec![[111, 22]].into()
+                    } else {
+                        vec![].into()
+                    },
                     ..Default::default()
                 })
                 .collect(),
@@ -170,7 +176,7 @@ fn fixture() -> (super::super::Content, DecodedFrame, BTreeMap<u32, u32>) {
             .into_iter()
             .map(|(division, border_combat_stats)| DivisionStatusRow {
                 division,
-                border_combat_stats,
+                border_combat_stats: replay::rows::Recorded::Value(border_combat_stats),
                 ..Default::default()
             })
             .collect(),
@@ -269,7 +275,7 @@ fn empty_provinces_demand_controller_doctrine_and_aliases_do_not_repeat_it() {
         .iter_mut()
         .find(|country| country.id == 33)
         .unwrap()
-        .border_land_doctrine_level = None;
+        .border_land_doctrine_level = replay::rows::Recorded::Value(None);
     put(&mut frame, TableRows::Countries(countries));
     assert!(
         render(&content, &frame, &links)
@@ -292,7 +298,7 @@ fn demanded_stats_and_unread_skill_refuse_but_native_invalid_skill_is_read() {
         .iter_mut()
         .find(|status| status.division == 10)
         .unwrap()
-        .border_combat_stats = None;
+        .border_combat_stats = replay::rows::Recorded::Value(None);
     put(&mut frame, TableRows::DivisionStatus(missing));
     assert!(
         render(&content, &frame, &links)

@@ -31,7 +31,7 @@ fn compare_sharing_fixture(
 
 fn fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
     let country = CountryRow {
-        border_land_doctrine_level: None,
+        border_land_doctrine_level: replay::rows::Recorded::Value(None),
         id: 11,
         canonical_slot: 7,
         tag: b"AAA".to_vec(),
@@ -730,7 +730,7 @@ fn decisions_compare_signed_target_bits_and_detect_missing_source_rows() {
             country_target: u32::MAX,
             numeric_target: 0x8000_0000,
             ignore: 1,
-            description_seed: None,
+            description_seed: replay::rows::Recorded::Value(None),
         }]));
     let mut report = Report::default();
     compare_decisions(&frame, &pack, &links, &mut report).unwrap();
@@ -804,7 +804,7 @@ fn decision_description_seeds_compare_native_first_match_and_known_absence() {
             country_target,
             numeric_target,
             target_kind: if country_target as i32 > 0 { 1 } else { 2 },
-            description_seed: Some(Some(i32::MIN)),
+            description_seed: replay::rows::Recorded::Value(Some(Some(i32::MIN))),
             ..Default::default()
         };
         let compare = |row: DecisionRow, pack: &saved::Pack, frame: &mut DecodedFrame| {
@@ -819,7 +819,7 @@ fn decision_description_seeds_compare_native_first_match_and_known_absence() {
                 .differences
                 .is_empty()
         );
-        row.description_seed = Some(None);
+        row.description_seed = replay::rows::Recorded::Value(Some(None));
         let report = compare(row.clone(), &pack, &mut frame);
         assert_eq!(report.differences.len(), 1);
         assert!(report.differences[0].contains("description_seed"));
@@ -836,9 +836,9 @@ fn decision_description_seeds_compare_native_first_match_and_known_absence() {
                 .differences
                 .is_empty()
         );
-        row.description_seed = Some(Some(0));
+        row.description_seed = replay::rows::Recorded::Value(Some(Some(0)));
         assert_eq!(compare(row.clone(), &pack, &mut frame).differences.len(), 1);
-        row.description_seed = None;
+        row.description_seed = replay::rows::Recorded::Value(None);
         assert!(compare(row, &pack, &mut frame).differences.is_empty());
     }
 }

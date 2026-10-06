@@ -184,8 +184,10 @@ impl Captured {
             |r| StateFlagRow {
                 state: r.state,
                 demilitarized: r.demilitarized,
-                border_conflict_active: r.border_conflict_active,
-                border_conflict_countries: owned_vec(copy_vec(&r.border_conflict_countries)),
+                border_conflict_active: replay::rows::Recorded::Value(r.border_conflict_active),
+                border_conflict_countries: replay::rows::Recorded::Value(owned_vec(copy_vec(
+                    &r.border_conflict_countries,
+                ))),
             },
         )]
     }

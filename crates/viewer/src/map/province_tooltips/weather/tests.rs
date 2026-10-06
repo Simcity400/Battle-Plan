@@ -49,7 +49,7 @@ fn ranges() -> [TemperatureRange; 4] {
 #[test]
 fn independent_flags_keep_native_order_and_raw_mud() {
     let province = WeatherProvinceRow {
-        raw_mud: 2,
+        raw_mud: replay::rows::Recorded::Value(2),
         display_mud: 0,
         ..Default::default()
     };
@@ -66,7 +66,7 @@ fn independent_flags_keep_native_order_and_raw_mud() {
         "Weather: 1:Rain 2:Storm 3:Snow 4:Blizzard 5:Sandstorm 6:Mud (0°C)"
     );
     let custom_only = WeatherProvinceRow {
-        raw_mud: 0,
+        raw_mud: replay::rows::Recorded::Value(0),
         display_mud: 1,
         ..Default::default()
     };
@@ -90,11 +90,17 @@ fn temperature_preserves_negative_zero_and_half_open_raw_thresholds() {
         )
         .unwrap()
     };
-    assert!(render(-1).ends_with("(-0°C)"));
-    assert!(render(199_999).contains("Clear"));
-    assert_eq!(render(200_001), "Weather: T2:Hot (2°C)");
-    assert_eq!(render(300_000), "Weather: T3: (3°C)");
-    assert!(render(500_000).contains("Clear"));
+    assert!(render(replay::rows::Recorded::Value(-1)).ends_with("(-0°C)"));
+    assert!(render(replay::rows::Recorded::Value(199_999)).contains("Clear"));
+    assert_eq!(
+        render(replay::rows::Recorded::Value(200_001)),
+        "Weather: T2:Hot (2°C)"
+    );
+    assert_eq!(
+        render(replay::rows::Recorded::Value(300_000)),
+        "Weather: T3: (3°C)"
+    );
+    assert!(render(replay::rows::Recorded::Value(500_000)).contains("Clear"));
 }
 
 #[test]
@@ -147,5 +153,24 @@ fn native_text_argument_is_a_copy_then_appended_even_when_content_uses_it() {
         )
         .unwrap(),
         "Weather: 2:Storm <2:Storm >(0°C)"
+    );
+}
+
+#[test]
+fn compatibility_weather_fields_are_not_native_zero() {
+    let mut province = WeatherProvinceRow {
+        temperature: replay::rows::Recorded::NotRecorded,
+        ..Default::default()
+    };
+    let region = WeatherRegionRow::default();
+    assert_eq!(
+        row(&loc(), &ranges(), &province, &region).unwrap_err(),
+        "WeatherProvinces.temperature not recorded"
+    );
+    province.temperature = 0.into();
+    province.raw_mud = replay::rows::Recorded::NotRecorded;
+    assert_eq!(
+        row(&loc(), &ranges(), &province, &region).unwrap_err(),
+        "WeatherProvinces.raw_mud not recorded"
     );
 }

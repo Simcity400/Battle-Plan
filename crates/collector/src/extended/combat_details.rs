@@ -1552,9 +1552,8 @@ impl Captured {
                 let r = &captured.row;
                 LandCombatDetailsRow {
                     tactic_inputs: Self::tactic_inputs(&captured.tactic_context),
-                    border_war: r
-                        .border_war
-                        .map(|border| replay::rows::LandBorderWarInputs {
+                    border_war: replay::rows::Recorded::Value(r.border_war.map(|border| {
+                        replay::rows::LandBorderWarInputs {
                             transfer_state: border.transfer_state,
                             sides: border.sides.map(|side| replay::rows::LandBorderWarSide {
                                 country: side.country,
@@ -1566,7 +1565,8 @@ impl Captured {
                                     &self.detail_text.first[side.lose_event.range()],
                                 )),
                             }),
-                        }),
+                        }
+                    })),
                     combat: r.id,
                     province: r.province,
                     phase: r.phase,

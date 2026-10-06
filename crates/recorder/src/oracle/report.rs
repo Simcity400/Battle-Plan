@@ -341,6 +341,16 @@ impl Report {
         });
         self.intel_walked = frame.metrics.table_ns[TableId::CountryIntel.index()] != 0;
         for table in TableId::ALL {
+            if let replay::frame::TableView::Complete(rows)
+            | replay::frame::TableView::Truncated { rows, .. } = &*frame.tables[table.index()]
+            {
+                for (field, count) in rows.field_gaps() {
+                    self.limitation(
+                        &format!("{table:?}.{field} not recorded"),
+                        format!("{table:?}.{field}: {count} rows not recorded"),
+                    );
+                }
+            }
             if table != TableId::CountryIntel
                 && frame.metrics.table_ns[table.index()] != 0
                 && matches!(
@@ -425,6 +435,24 @@ impl Report {
             lines.extend(differences.iter().map(|line| format!("    {line}")));
         }
         lines
+    }
+
+    pub(super) fn recorded<'a, T>(
+        &mut self,
+        field: &'a replay::rows::Recorded<T>,
+        name: &str,
+        subject: impl Into<String>,
+    ) -> Option<&'a T> {
+        match field.require(name) {
+            Ok(value) => Some(value),
+            Err(reason) => {
+                // Whole-frame comparisons already count every absent field in record_tables.
+                if self.recorded_tables.is_empty() {
+                    self.limitation(&reason, subject);
+                }
+                None
+            }
+        }
     }
 
     pub(super) fn limitation(&mut self, reason: &str, subject: impl Into<String>) {
@@ -555,10 +583,10 @@ impl Report {
         line
     }
 
-    pub(super) fn print(&self) {
+    pub(super) fn print(&self, format: replay::format::FormatVersion) {
         println!(
             "Replay format {}: comparison covers its {} recorded tables",
-            replay::FORMAT_VERSION,
+            format.version(),
             TableId::ALL.len()
         );
         println!(

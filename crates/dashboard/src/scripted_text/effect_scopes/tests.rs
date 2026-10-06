@@ -26,7 +26,7 @@ fn template_fallback_uses_recorded_language_and_template_country() {
             DivisionTemplateRow {
                 template: 9,
                 owner: 100,
-                name_key: b"force".to_vec(),
+                name_key: replay::rows::Recorded::Value(b"force".to_vec()),
                 ..Default::default()
             },
         ]));

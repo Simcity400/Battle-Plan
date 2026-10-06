@@ -4,6 +4,8 @@ Everything a widget needs natively: opened recordings, data products, the host/v
 
 Opened metadata carries the replay's terminal partial marker separately from branch gaps. The verified prefix remains readable; the marker keeps the failure reason and an optional attempted hour. An unknown failed hour adds no inferred gap. Recording-library summaries read only the validated replay trailer, leaving frame blocks to the normal source-open path.
 
+Readable older recordings keep unchanged field prefixes. Products count a named refusal only when they need an appended field that was not recorded; ordinary names, colours, flags and scopes remain usable. Layout/meaning changes still withhold tables. See [replay compatibility](../replay/README.md#compatibility-and-recovery).
+
 ## Layout
 
 | Module | What it does |

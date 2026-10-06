@@ -17,19 +17,19 @@ fn round_trip<T: RowCodec + std::fmt::Debug>(row: &T) {
 fn border_effect_operands_round_trip_raw_lists_and_three_seed_states() {
     round_trip(&CountryAppearanceRow {
         country: 3,
-        subjects: vec![i32::MIN, 17, 17, -1],
+        subjects: vec![i32::MIN, 17, 17, -1].into(),
         ..Default::default()
     });
     round_trip(&DivisionTemplateRow {
         template: 71,
-        name_key: b"native_fallback".to_vec(),
+        name_key: crate::rows::Recorded::Value(b"native_fallback".to_vec()),
         ..Default::default()
     });
     for description_seed in [None, Some(None), Some(Some(i32::MIN)), Some(Some(0))] {
         round_trip(&DecisionRow {
             country: 3,
             container: 3,
-            description_seed,
+            description_seed: crate::rows::Recorded::Value(description_seed),
             ..Default::default()
         });
     }
@@ -44,7 +44,7 @@ fn new_operands_fit_the_existing_masks_and_change_independently() {
         ..Default::default()
     };
     let row = DecisionRow {
-        description_seed: Some(Some(-3)),
+        description_seed: crate::rows::Recorded::Value(Some(Some(-3))),
         ..old.clone()
     };
     assert!(row.encode_change(Some(&old), 0, &mut bytes).unwrap());
@@ -60,7 +60,7 @@ fn decision_description_seed_is_rejected_on_non_targeted_containers() {
             let row = DecisionRow {
                 country: 3,
                 container,
-                description_seed,
+                description_seed: crate::rows::Recorded::Value(description_seed),
                 ..Default::default()
             };
             assert!(row.check_key_fields().is_err());
@@ -85,7 +85,7 @@ fn decision_description_seed_is_rejected_on_non_targeted_containers() {
             round_trip(&DecisionRow {
                 country: 3,
                 container,
-                description_seed,
+                description_seed: crate::rows::Recorded::Value(description_seed),
                 ..Default::default()
             });
         }

@@ -147,8 +147,8 @@ impl Captured {
                     permanent_snow: r.permanent_snow,
                     display_snow: r.display_snow,
                     display_mud: r.display_mud,
-                    temperature: r.temperature,
-                    raw_mud: r.raw_mud,
+                    temperature: replay::rows::Recorded::Value(r.temperature),
+                    raw_mud: replay::rows::Recorded::Value(r.raw_mud),
                 }
             }),
         ]

@@ -1840,7 +1840,7 @@ impl Captured {
                     country_target: r.country_target,
                     numeric_target: r.numeric_target,
                     ignore: r.ignore,
-                    description_seed: r.description_seed,
+                    description_seed: replay::rows::Recorded::Value(r.description_seed),
                 },
             )),
             wrap(view::<tables::DynamicModifiers, _>(

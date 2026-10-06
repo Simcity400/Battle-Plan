@@ -5,6 +5,7 @@ use super::{
 use crate::{
     BranchId, Hour, KEYFRAME_INTERVAL,
     codec::{invalid_static as invalid, put_bytes, put_string},
+    format::FormatVersion,
     rows::{TableId, TableRows, TableSchema},
 };
 use engine::allocation;
@@ -259,12 +260,24 @@ impl FrameEncoder {
         output.push(u8::from(keyframe));
         output.extend_from_slice(&source.metrics.total_ns.to_le_bytes());
         for table in TableId::ALL {
+            if !table
+                .last_change()
+                .present(FormatVersion::CURRENT.version())
+            {
+                continue;
+            }
             output.extend_from_slice(&source.metrics.table_ns[table.index()].to_le_bytes());
         }
         output.extend_from_slice(&source.metrics.pool_bytes.to_le_bytes());
         output.extend_from_slice(&source.metrics.dropped_frames.to_le_bytes());
         let mut unchanged = [false; TABLE_COUNT];
         for table in TableId::ALL {
+            if !table
+                .last_change()
+                .present(FormatVersion::CURRENT.version())
+            {
+                continue;
+            }
             allocation::reserve(&mut output, 9)?;
             let view = &source.tables[table.index()];
             unchanged[table.index()] = match view {
@@ -410,6 +423,13 @@ impl FrameEncoder {
         } = prepared;
         for (table, view) in TableId::ALL.into_iter().zip(source.tables) {
             let index = table.index();
+            if !table
+                .last_change()
+                .present(FormatVersion::CURRENT.version())
+            {
+                self.state.tables[index] = None;
+                continue;
+            }
             if let TableInput::ComparedChanges { indices, rows, .. } = view {
                 let (hour, BaselineRows::Owned(previous)) = self.state.tables[index]
                     .as_mut()

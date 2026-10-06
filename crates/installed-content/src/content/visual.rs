@@ -204,7 +204,14 @@ fn inspect(
         return Err(invalid("Invalid installed mod descriptor"));
     }
     let descriptor = user.join(id);
-    let (layer, doc) = descriptor_layer(id.into(), descriptor.clone(), user, true)?;
+    // Only the descriptor/source is used; cosmetic overlays are never hash-verified.
+    let (layer, doc) = descriptor_layer(
+        id.into(),
+        descriptor.clone(),
+        user,
+        true,
+        CoveragePolicy::default(),
+    )?;
     let recorded_id = mod_id(&doc, &descriptor)?;
     let name = scalar(&doc, b"name")?.unwrap_or_else(|| id.into());
     let files = match files(&layer.source, rules, cancel) {

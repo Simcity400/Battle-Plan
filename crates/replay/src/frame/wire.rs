@@ -4,7 +4,11 @@ use super::{
 };
 use crate::{
     codec::{Decoder, invalid_static as invalid, put_string},
-    rows::{self, TableId, TableRows},
+    format::FormatVersion,
+    rows::{
+        self, TableId, TableRows,
+        compatibility::{HISTORY, LastChange},
+    },
 };
 use engine::allocation;
 use std::io;
@@ -26,7 +30,41 @@ impl Frame {
     }
 
     pub fn table_encoded_sizes(&self) -> io::Result<[usize; TABLE_COUNT]> {
-        self.encode_with_sizes(&mut Vec::new())
+        // Size decoded values directly: absent historical fields are not
+        // re-encoded as current rows, and deltas retain their recorded mask width.
+        TableId::ALL
+            .map(|table| {
+                let bytes = match &self.tables[table.index()] {
+                    TableUpdate::Snapshot(rows) => 1 + rows.recorded_rows_bytes()?,
+                    TableUpdate::Truncated { rows, .. } => 5 + rows.recorded_rows_bytes()?,
+                    TableUpdate::Unavailable { reason } => 5 + reason.len(),
+                    TableUpdate::Unchanged { .. } => 5,
+                    TableUpdate::Delta {
+                        changed, deleted, ..
+                    } => {
+                        validate_delta(table, changed, deleted)?;
+                        let mut size = 13;
+                        let mut previous = 0;
+                        for row in changed {
+                            size += rows::varint_bytes(row.key - previous)
+                                + row.recorded_fields.div_ceil(8)
+                                + row.values.len();
+                            previous = row.key;
+                        }
+                        previous = 0;
+                        for &key in deleted {
+                            size += rows::varint_bytes(key - previous);
+                            previous = key;
+                        }
+                        size
+                    }
+                };
+                Ok(bytes)
+            })
+            .into_iter()
+            .collect::<io::Result<Vec<_>>>()?
+            .try_into()
+            .map_err(|_| invalid("table size catalog mismatch"))
     }
 
     pub fn encode_with_sizes(&self, out: &mut Vec<u8>) -> io::Result<[usize; TABLE_COUNT]> {
@@ -37,12 +75,24 @@ impl Frame {
         out.extend_from_slice(&self.metrics.total_ns.to_le_bytes());
         // Timing entries and updates use the same table-id order.
         for table in TableId::ALL {
+            if !table
+                .last_change()
+                .present(FormatVersion::CURRENT.version())
+            {
+                continue;
+            }
             out.extend_from_slice(&self.metrics.table_ns[table.index()].to_le_bytes());
         }
         out.extend_from_slice(&self.metrics.pool_bytes.to_le_bytes());
         out.extend_from_slice(&self.metrics.dropped_frames.to_le_bytes());
         let mut sizes = [0; TABLE_COUNT];
         for table in TableId::ALL {
+            if !table
+                .last_change()
+                .present(FormatVersion::CURRENT.version())
+            {
+                continue;
+            }
             allocation::reserve(out, 9)?;
             let update = &self.tables[table.index()];
             let table_start = out.len();
@@ -117,13 +167,33 @@ impl Frame {
         input: &mut Decoder<'_>,
         selected: Option<&[TableId]>,
     ) -> io::Result<Self> {
+        Self::decode_version(input, selected, FormatVersion::CURRENT)
+    }
+
+    pub(crate) fn decode_version(
+        input: &mut Decoder<'_>,
+        selected: Option<&[TableId]>,
+        format: FormatVersion,
+    ) -> io::Result<Self> {
+        Self::decode_with_history(input, selected, format, &HISTORY)
+    }
+
+    pub(crate) fn decode_with_history(
+        input: &mut Decoder<'_>,
+        selected: Option<&[TableId]>,
+        format: FormatVersion,
+        history: &[LastChange; HISTORY.len()],
+    ) -> io::Result<Self> {
+        input.format = format.version();
         let branch = input.u64()?;
         let hour = input.i32()?;
         let keyframe = input.bool()?;
         let total_ns = input.u64()?;
         let mut table_ns = [0; TABLE_COUNT];
         for table in TableId::ALL {
-            table_ns[table.index()] = input.u64()?;
+            if history[table.index()].present(format.version()) {
+                table_ns[table.index()] = input.u64()?;
+            }
         }
         let metrics = Metrics {
             total_ns,
@@ -133,11 +203,52 @@ impl Frame {
         };
         let mut tables = allocation::vec(TABLE_COUNT)?;
         for table in TableId::ALL {
-            let update = match input.u8()? {
+            let change = &history[table.index()];
+            let gap = change.table_gap(table, format.version());
+            if !change.present(format.version()) {
+                let reason =
+                    gap.ok_or_else(|| invalid("absent table has no catalogued lifetime gap"))?;
+                tables.push(TableUpdate::Unavailable { reason });
+                continue;
+            }
+            input.recorded_fields = change.fields(table, format.version());
+            let status = input.u8()?;
+            if let Some(reason) = gap {
+                if keyframe && status != 0 && status != 4 {
+                    return Err(invalid("keyframe contains a dependent or partial table"));
+                }
+                let fields = change.fields(table, format.version());
+                match status {
+                    0 => table.skip_snapshot(fields, input)?,
+                    1 => {
+                        input.i32()?;
+                        table.skip_delta(fields, input)?;
+                    }
+                    2 => {
+                        input.i32()?;
+                    }
+                    3 => {
+                        if input.u32()? == 0 {
+                            return Err(invalid("truncated table has no missing rows"));
+                        }
+                        table.skip_snapshot(fields, input)?;
+                    }
+                    4 => {
+                        if input.string()?.is_empty() {
+                            return Err(invalid("unavailable table needs a reason"));
+                        }
+                    }
+                    _ => return Err(invalid("unknown table status")),
+                }
+                tables.push(TableUpdate::Unavailable { reason });
+                continue;
+            }
+            let update = match status {
                 0 => TableUpdate::Snapshot(decode_rows(table, input)?),
                 1 => {
                     let baseline = input.i32()?;
-                    let count = decode_row_count(table, input, table.minimum_delta_bytes())?;
+                    let count =
+                        decode_row_count(table, input, table.minimum_delta_bytes_at(input.format))?;
                     let mut changed = allocation::vec(count)?;
                     let mut previous_key = 0;
                     for _ in 0..count {
@@ -214,7 +325,7 @@ fn encode_rows(table: TableId, values: &TableRows, out: &mut Vec<u8>) -> io::Res
     values.encode_rows(out)
 }
 pub(super) fn decode_rows(table: TableId, input: &mut Decoder<'_>) -> io::Result<TableRows> {
-    let count = decode_row_count(table, input, table.minimum_row_bytes())?;
+    let count = decode_row_count(table, input, table.minimum_row_bytes_at(input.format))?;
     let values = table.decode_rows(count, input)?;
     validate_rows(table, &values)?;
     Ok(values)

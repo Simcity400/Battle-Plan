@@ -5,6 +5,7 @@ use replay::{
     branches::BranchTracker,
     codec::invalid,
     container::Replay,
+    format::FormatVersion,
     identity::{Identity, SessionStart},
 };
 use std::{
@@ -107,7 +108,15 @@ impl PreparedCampaigns {
             engine::allocation::reserve(&mut bytes, count)?;
             bytes.extend_from_slice(&chunk[..count]);
         }
-        let history = Replay::open(bytes)?.into_history()?;
+        let replay = Replay::open(bytes)?;
+        if replay.format != FormatVersion::CURRENT {
+            return Err(invalid(format!(
+                "existing campaign replay is format {}; recording appends require format {}; move it aside or use another replay directory",
+                replay.format.version(),
+                FormatVersion::CURRENT.version()
+            )));
+        }
+        let history = replay.into_history()?;
         if !history.campaign_id.eq_ignore_ascii_case(name.as_bytes()) {
             return Err(invalid(
                 "existing replay filename differs from its campaign id",
@@ -175,3 +184,6 @@ impl PreparedCampaigns {
         Ok((prepared.tracker, Some(prepared.lease)))
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -757,12 +757,16 @@ fn already_finalized(previous: &Replay, segments: &[(u32, Recovery)]) -> Result<
 pub fn inspect(path: &Path) -> Result<()> {
     let replay = open(path)?;
     println!(
-        "replay={} bytes={} campaign={:?} keyframe_interval={}",
+        "replay={} format={} bytes={} campaign={:?} keyframe_interval={}",
         path.display(),
+        replay.format.version(),
         replay.bytes().len(),
         String::from_utf8_lossy(&replay.campaign_id),
         replay.keyframe_interval
     );
+    for reason in replay.compatibility_gaps() {
+        println!("Compatibility gap: {reason}");
+    }
     print_identity("header", &replay.identity);
     println!(
         "content_verified={} sessions={} branches={} blocks={}",
@@ -1117,6 +1121,16 @@ impl Summary {
                 TableUpdate::Unavailable { .. } => 4,
             };
             self.states[i][state] += 1;
+            if let TableView::Complete(rows) | TableView::Truncated { rows, .. } =
+                &*decoded.tables[i]
+            {
+                for (field, count) in rows.field_gaps() {
+                    println!(
+                        "Compatibility field gap: {table:?}.{field}: {count} rows not recorded at hour {}",
+                        frame.hour
+                    );
+                }
+            }
             let reason = match &*decoded.tables[i] {
                 TableView::Complete(_) => continue,
                 TableView::Truncated { missing, .. } => {
@@ -1474,6 +1488,46 @@ mod tests {
         fs::write(campaign.join("spool.0000.h4s"), spool).unwrap();
         fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
         (session, output, witness)
+    }
+
+    #[test]
+    fn compatibility_finalization_refuses_an_older_spool_and_retains_its_bytes() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, allocation_records, allocation_test_directory,
+        };
+        let root = allocation_test_directory("compatibility-format94-spool");
+        let session = root.join("session");
+        let campaign = session.join(std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap());
+        let output = root.join("replays");
+        fs::create_dir_all(&campaign).unwrap();
+        let mut spool = Vec::new();
+        for record in allocation_records() {
+            let mut envelope = replay::spool::encode_record(&record).unwrap();
+            // Populated fixture tables are unchanged since this contract; the changed
+            // tables have empty snapshots with identical wire framing.
+            envelope[4..6].copy_from_slice(&94_u16.to_le_bytes());
+            spool.extend(envelope);
+        }
+        let recovered = recover_prefix(&spool);
+        assert!(recovered.damage.is_none(), "{:?}", recovered.damage);
+        assert_eq!(recovered.format.unwrap().version(), 94);
+        assert_eq!(recovered.valid_bytes, spool.len());
+        let spool_path = campaign.join("spool.0000.h4s");
+        fs::write(&spool_path, &spool).unwrap();
+        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap();
+        assert!(paths.is_empty());
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(
+            issues[0].contains(&format!(
+                "Spool finalization requires format {}; segment 0 is format 94",
+                replay::FORMAT_VERSION
+            )),
+            "{}",
+            issues[0]
+        );
+        assert!(issues[0].contains("historical rows are never rewritten"));
+        assert!(fs::read_dir(&output).unwrap().next().is_none());
+        assert_eq!(fs::read(spool_path).unwrap(), spool);
     }
 
     #[test]
@@ -2218,6 +2272,7 @@ mod tests {
         let mut segments = vec![(
             0,
             Recovery {
+                format: Some(replay::format::FormatVersion::CURRENT),
                 records,
                 valid_bytes: 1,
                 damage: None,
@@ -2550,6 +2605,7 @@ mod tests {
             vec![(
                 0,
                 Recovery {
+                    format: Some(replay::format::FormatVersion::CURRENT),
                     records,
                     valid_bytes: 0,
                     damage: None,

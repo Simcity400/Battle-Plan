@@ -275,7 +275,9 @@ impl Captured {
             template: r.template,
             owner: r.owner,
             name: owned_vec(copy_vec(span(bytes, r.name).unwrap())),
-            name_key: owned_vec(copy_vec(span(bytes, r.name_key).unwrap())),
+            name_key: replay::rows::Recorded::Value(owned_vec(copy_vec(
+                span(bytes, r.name_key).unwrap(),
+            ))),
             unit_type: r.unit_type,
         })
     }

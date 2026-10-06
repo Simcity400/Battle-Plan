@@ -391,7 +391,12 @@ impl Renderer<'_, '_, '_> {
             )
         };
         let target = country_target.unwrap_or(row.numeric_target) as i32;
-        let seed = decision_seed(game_seed, definition, row.description_seed, target)?;
+        let additive = if definition.fixed_random_seed {
+            None
+        } else {
+            *row.description_seed.require("Decisions.description_seed")?
+        };
+        let seed = decision_seed(game_seed, definition, additive, target)?;
         let (at, from) = {
             let mut graph = self.graph.borrow_mut();
             let at = graph.scopes.len();

@@ -666,7 +666,7 @@ fn exile_country_tag_compares_exactly_and_nonpositive_omission_is_limited() {
         compare_leaders(frame, pack.manager.as_ref().unwrap(), &links, &mut report).unwrap();
         report
     };
-    set(&mut frame, 102);
+    set(&mut frame, replay::rows::Recorded::Value(102));
     let report = run(&frame, &pack);
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(report.differences[0].contains("government_in_exile_tag"));
@@ -679,7 +679,7 @@ fn exile_country_tag_compares_exactly_and_nonpositive_omission_is_limited() {
         .unwrap()
         .government_in_exile_tag = Some(b"GER".to_vec());
     assert!(run(&frame, &pack).differences.is_empty());
-    set(&mut frame, -1);
+    set(&mut frame, replay::rows::Recorded::Value(-1));
     pack.manager
         .as_mut()
         .unwrap()

@@ -296,10 +296,16 @@ impl Cache {
                 },
             )?;
             text.body = result;
-            if let Some(border) = &detail.border_war
-                && let Err(why) =
-                    super::border_marker::append(document, frame, viewer, &links, border, &mut text)
-            {
+            let border_result = detail
+                .border_war
+                .require("LandCombatDetails.border_war")
+                .and_then(|border| match border {
+                    Some(border) => super::border_marker::append(
+                        document, frame, viewer, &links, border, &mut text,
+                    ),
+                    None => Ok(()),
+                });
+            if let Err(why) = border_result {
                 *text
                     .refused
                     .entry(format!("land marker {id} border-conflict tail: {why}"))

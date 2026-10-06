@@ -148,7 +148,7 @@ fn conversion_preserves_exact_bytes_and_rejects_every_invalid_span() {
     };
     assert_eq!(rows[0].template, 0xffff_ffff_0000_0034);
     assert_eq!(rows[0].name, &[b'A', 0, 255]);
-    assert_eq!(rows[0].name_key, b"fallback");
+    assert_eq!(*rows[0].name_key.require("name_key").unwrap(), b"fallback");
     assert_eq!(icons[0].model_entity, b"GER_x_entity");
     assert_eq!(
         (icons[0].representative, icons[0].representative_local),

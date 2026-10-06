@@ -4,7 +4,7 @@ use super::*;
 fn border_optional_values_and_pairs_survive_delta_clear_and_reintroduction() {
     let old = DivisionStatusRow {
         division: 1,
-        border_combat_stats: Some([i64::MIN, -100_001, i64::MAX]),
+        border_combat_stats: crate::rows::Recorded::Value(Some([i64::MIN, -100_001, i64::MAX])),
         ..Default::default()
     };
     let absent = DivisionStatusRow {
@@ -26,7 +26,7 @@ fn border_optional_values_and_pairs_survive_delta_clear_and_reintroduction() {
     );
     let country = CountryRow {
         id: 1,
-        border_land_doctrine_level: Some(i32::MIN),
+        border_land_doctrine_level: crate::rows::Recorded::Value(Some(i32::MIN)),
         ..Default::default()
     };
     let absent = CountryRow {
@@ -44,8 +44,8 @@ fn border_optional_values_and_pairs_survive_delta_clear_and_reintroduction() {
     );
     let state = StateFlagRow {
         state: 1,
-        border_conflict_active: 255,
-        border_conflict_countries: vec![[i32::MIN, 0], [7, 7]],
+        border_conflict_active: crate::rows::Recorded::Value(255),
+        border_conflict_countries: vec![[i32::MIN, 0], [7, 7]].into(),
         ..Default::default()
     };
     let inactive = StateFlagRow {
@@ -66,7 +66,7 @@ fn border_optional_values_and_pairs_survive_delta_clear_and_reintroduction() {
 fn inactive_state_pair_payload_is_refused() {
     let row = StateFlagRow {
         state: 1,
-        border_conflict_countries: vec![[1, 2]],
+        border_conflict_countries: vec![[1, 2]].into(),
         ..Default::default()
     };
     assert!(row.delta(None).is_err());

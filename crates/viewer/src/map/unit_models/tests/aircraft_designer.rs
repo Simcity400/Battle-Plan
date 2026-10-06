@@ -138,7 +138,7 @@ fn frame(token: u32, saved: &str, dlc: u32) -> DecodedFrame {
             TableRows::SimulationFeatures(vec![SimulationFeatureRow {
                 dlc_mask: dlc,
                 human_ai: 0,
-                weather_suspend: None,
+                weather_suspend: replay::rows::Recorded::Value(None),
             }]),
         ),
     ];

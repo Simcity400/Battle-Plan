@@ -680,12 +680,11 @@ pub struct LandCombatDetailsRow {
     pub stored_terrain_name: Vec<u8>,
     pub sides: [LandCombatSideDetails; 2],
     pub tactic_inputs: LandCombatTacticInputs,
-    pub border_war: Option<LandBorderWarInputs>,
+    pub border_war: Recorded<Option<LandBorderWarInputs>>,
 }
 typed_codec!(LandCombatDetailsRow, 64, |row| row.combat as u128,
  |key| Self { combat: key as u64, ..Default::default() },
- |key, input| Ok(Self { combat: key as u64, province: read_value(Kind::U32, input)?, phase: read_value(Kind::I32, input)?, width_factor: read_value(Kind::I64, input)?, attacker_bonus: read_value(Kind::I64, input)?, defender_bonus: read_value(Kind::I64, input)?, stored_terrain_valid: read_value(Kind::U8, input)?, stored_terrain_name: read_value(Kind::Bytes, input)?, sides: read_value(Kind::Opaque, input)?, tactic_inputs: read_value(Kind::Opaque, input)?, border_war: read_value(Kind::Opaque, input)? }),
-  { 0 => (province): U32, 1 => (phase): I32, 2 => (width_factor): I64, 3 => (attacker_bonus): I64, 4 => (defender_bonus): I64, 5 => (stored_terrain_valid): U8, 6 => (stored_terrain_name): Bytes, 7 => (sides): Opaque, 8 => (tactic_inputs): Opaque, 9 => (border_war): Opaque }, |row| { let _ = row; Ok(()) });
+ { 0 => (province): U32, 1 => (phase): I32, 2 => (width_factor): I64, 3 => (attacker_bonus): I64, 4 => (defender_bonus): I64, 5 => (stored_terrain_valid): U8, 6 => (stored_terrain_name): Bytes, 7 => (sides): Opaque, 8 => (tactic_inputs): Opaque, 9 => (border_war): Opaque }, |row| { let _ = row; Ok(()) });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LandCombatDivisionRow {
@@ -735,7 +734,6 @@ pub struct LandCombatDivisionRow {
 }
 typed_codec!(LandCombatDivisionRow, 97, |row| (row.combat as u128) << 33 | (row.side as u128) << 32 | row.ordinal as u128,
  |key| Self { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, ordinal: key as u32, ..Default::default() },
- |key, input| Ok(Self { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, ordinal: key as u32, role: read_value(Kind::U8, input)?, province: read_value(Kind::U32, input)?, division: read_value(Kind::U64, input)?, name_type: read_value(Kind::I32, input)?, name_order: read_value(Kind::I32, input)?, name_ordered: read_value(Kind::U8, input)?, name_programmatic: read_value(Kind::U8, input)?, name_custom: read_value(Kind::Bytes, input)?, name_group: read_value(Kind::Bytes, input)?, strength_combat_factor: read_value(Kind::I64, input)?, fuel_inputs: read_value(Kind::Opaque, input)?, stat_values: read_value(Kind::Opaque, input)?, armour: read_value(Kind::I64, input)?, piercing: read_value(Kind::I64, input)?, air_attack: read_value(Kind::I64, input)?, reconnaissance: read_value(Kind::I64, input)?, initiative: read_value(Kind::I64, input)?, commander: read_value(Kind::U64, input)?, scales: read_value(Kind::Opaque, input)?, context: read_value(Kind::Opaque, input)?, width_terms: read_value(Kind::Opaque, input)?, commander_inputs: read_value(Kind::Opaque, input)?, reinforcement: read_value(Kind::Opaque, input)?, reinforcement_modifiers: read_value(Kind::Opaque, input)?, reinforcement_supply: read_value(Kind::Opaque, input)?, reinforcement_acclimatization: read_value(Kind::Opaque, input)?, reinforcement_transport: read_value(Kind::Opaque, input)?, direction_group: read_value(Kind::I32, input)?, exile: read_value(Kind::Opaque, input)?, categories: read_value(Kind::U64, input)? }),
  { 0 => (role): U8, 1 => (province): U32, 2 => (division): U64, 3 => (name_type): I32, 4 => (name_order): I32, 5 => (name_ordered): U8, 6 => (name_programmatic): U8, 7 => (name_custom): Bytes, 8 => (name_group): Bytes, 9 => (strength_combat_factor): I64, 10 => (fuel_inputs): Opaque, 11 => (stat_values): Opaque, 12 => (armour): I64, 13 => (piercing): I64, 14 => (air_attack): I64, 15 => (reconnaissance): I64, 16 => (initiative): I64, 17 => (commander): U64, 18 => (scales): Opaque, 19 => (context): Opaque, 20 => (width_terms): Opaque, 21 => (commander_inputs): Opaque, 22 => (reinforcement): Opaque, 23 => (reinforcement_modifiers): Opaque, 24 => (reinforcement_supply): Opaque, 25 => (reinforcement_acclimatization): Opaque, 26 => (reinforcement_transport): Opaque, 27 => (direction_group): I32, 28 => (exile): Opaque, 29 => (categories): U64 }, |row| { let _ = row; if row.side > 1 { return Err(invalid("invalid combat side")); } Ok(()) });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -747,7 +745,6 @@ pub struct LandCombatModifierRow {
 }
 typed_codec!(LandCombatModifierRow, 65, |row| (row.combat as u128) << 1 | row.side as u128,
  |key| Self { combat: (key >> 1) as u64, side: (key & 1) as u8, ..Default::default() },
- |key, input| Ok(Self { combat: (key >> 1) as u64, side: (key & 1) as u8, border_values: read_value(Kind::Opaque, input)?, divisions: read_value(Kind::Opaque, input)? }),
  { 0 => (border_values): Opaque, 1 => (divisions): Opaque }, |row| { let _ = row; if row.side > 1 { return Err(invalid("invalid combat side")); } Ok(()) });
 
 /// Hourly side operands of one land combat, for its map marker (1418B4BD0) and
@@ -767,7 +764,6 @@ pub struct LandCombatSideRow {
 }
 typed_codec!(LandCombatSideRow, 64, |row| row.combat as u128,
 |key| Self { combat: key as u64, ..Default::default() },
-|key, input| Ok(Self { combat: key as u64, indicator: read_value(Kind::U8, input)?, flags: read_value(Kind::Opaque, input)?, attacker_primary: read_value(Kind::U32List, input)?, attacker_secondary: read_value(Kind::U32List, input)?, defender_primary: read_value(Kind::U32List, input)?, defender_secondary: read_value(Kind::U32List, input)? }),
 { 0 => (indicator): U8, 1 => (flags): Opaque, 2 => (attacker_primary): U32List, 3 => (attacker_secondary): U32List, 4 => (defender_primary): U32List, 5 => (defender_secondary): U32List }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -787,7 +783,6 @@ pub struct NavalCombatDetailsRow {
 }
 typed_codec!(NavalCombatDetailsRow, 64, |row| row.combat as u128,
  |key| Self { combat: key as u64, ..Default::default() },
- |key, input| Ok(Self { combat: key as u64, province: read_value(Kind::U32, input)?, day: read_value(Kind::I32, input)?, duration: read_value(Kind::I32, input)?, progress: read_value(Kind::I64, input)?, sides: read_value(Kind::Opaque, input)?, custom_sea: read_value(Kind::Opaque, input)?, custom_sea_error: read_value(Kind::U8, input)? }),
  { 0 => (province): U32, 1 => (day): I32, 2 => (duration): I32, 3 => (progress): I64, 4 => (sides): Opaque, 5 => (custom_sea): Opaque, 6 => (custom_sea_error): U8 }, |row| { if row.custom_sea.as_ref().is_some_and(|sea| sea.len() % 2 != 0) { return Err(invalid("odd custom sea i16 bytes")); } else if row.custom_sea_error > 1 || (row.custom_sea.is_some() == (row.custom_sea_error != 0)) { return Err(invalid("custom sea capture status conflicts with values")); } Ok(()) });
 
 /// Ordered wing-handle occurrences in the native dense CAirBase+0x48 walk for
@@ -800,7 +795,6 @@ pub struct NavalCombatAirBaseWingHandlesRow {
 }
 typed_codec!(NavalCombatAirBaseWingHandlesRow, 64, |row| row.base as u128,
  |key| Self { base: key as u64, ..Default::default() },
- |key, input| Ok(Self { base: key as u64, wings: read_value(Kind::U64List, input)? }),
  { 0 => (wings): U64List }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -848,7 +842,6 @@ pub struct NavalCombatShipRow {
 }
 typed_codec!(NavalCombatShipRow, 97, |row| (row.combat as u128) << 33 | (row.side as u128) << 32 | row.battle_slot as u128,
  |key| Self { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, battle_slot: key as u32, ..Default::default() },
- |key, input| Ok(Self { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, battle_slot: key as u32, ship: read_value(Kind::U64, input)?, owner: read_value(Kind::U32, input)?, state: read_value(Kind::U32, input)?, member_source: read_value(Kind::U8, input)?, group_index: read_value(Kind::U32, input)?, member_index: read_value(Kind::U32, input)?, convoy: read_value(Kind::U64, input)?, subunit_index: read_value(Kind::I32, input)?, formation_type: read_value(Kind::I32, input)?, build_cost_ic: read_value(Kind::I64, input)?, cached_strength_ratio: read_value(Kind::I64, input)?, pride: read_value(Kind::U8, input)?, is_convoy: read_value(Kind::U8, input)?, name: read_value(Kind::Bytes, input)?, type_name: read_value(Kind::Bytes, input)?, sprite: read_value(Kind::Bytes, input)?, sunk_by: read_value(Kind::Bytes, input)?, variant: read_value(Kind::U64, input)?, arrival_hours: read_value(Kind::I32, input)?, received_criticals: read_value(Kind::I32, input)?, evacuation_state: read_value(Kind::I32, input)?, detection_state: read_value(Kind::I32, input)?, escape_progress: read_value(Kind::I64, input)?, escape_speed_base: read_value(Kind::I64, input)?, last_target: read_value(Kind::Opaque, input)?, received_damage: read_value(Kind::Opaque, input)?, live_ship: read_value(Kind::U8, input)?, live_convoy: read_value(Kind::U8, input)?, strength: read_value(Kind::I64, input)?, organisation: read_value(Kind::I64, input)?, base_organisation: read_value(Kind::I64, input)?, maximum_hit_points: read_value(Kind::I64, input)?, formation_flags: read_value(Kind::U64, input)?, weapon_context: read_value(Kind::Opaque, input)?, damage_entries: read_value(Kind::Opaque, input)?, air_hits: read_value(Kind::Opaque, input)?, naval_hits: read_value(Kind::Opaque, input)? }),
  { 0 => (ship): U64, 1 => (owner): U32, 2 => (state): U32, 3 => (member_source): U8, 4 => (group_index): U32, 5 => (member_index): U32, 6 => (convoy): U64, 7 => (subunit_index): I32, 8 => (formation_type): I32, 9 => (build_cost_ic): I64, 10 => (cached_strength_ratio): I64, 11 => (pride): U8, 12 => (is_convoy): U8, 13 => (name): Bytes, 14 => (type_name): Bytes, 15 => (sprite): Bytes, 16 => (sunk_by): Bytes, 17 => (variant): U64, 18 => (arrival_hours): I32, 19 => (received_criticals): I32, 20 => (evacuation_state): I32, 21 => (detection_state): I32, 22 => (escape_progress): I64, 23 => (escape_speed_base): I64, 24 => (last_target): Opaque, 25 => (received_damage): Opaque, 26 => (live_ship): U8, 27 => (live_convoy): U8, 28 => (strength): I64, 29 => (organisation): I64, 30 => (base_organisation): I64, 31 => (maximum_hit_points): I64, 32 => (formation_flags): U64, 33 => (weapon_context): Opaque, 34 => (damage_entries): Opaque, 35 => (air_hits): Opaque, 36 => (naval_hits): Opaque }, |row| { let _ = row; if row.side > 1 { return Err(invalid("invalid combat side")); } Ok(()) });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -858,7 +851,6 @@ pub struct NavalCombatResultDetailsRow {
 }
 typed_codec!(NavalCombatResultDetailsRow, 64, |row| row.result as u128,
  |key| Self { result: key as u64, ..Default::default() },
- |key, input| Ok(Self { result: key as u64, sides: read_value(Kind::Opaque, input)? }),
  { 0 => (sides): Opaque }, |row| { let _ = row; Ok(()) });
 
 opaque_value!(LandCombatTacticInputs);

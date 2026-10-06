@@ -51,7 +51,7 @@ pub fn read(
         player_country_id: None,
         content_verified: replay.content_verified(),
         partial: replay.partial().and_then(partial_recording),
-        warnings: Vec::new(),
+        warnings: replay.compatibility_gaps(),
     };
     if !metadata.content_verified {
         warn(&mut metadata.warnings, "The recorder did not verify the content identity. The dashboard reads recorded values only and does not verify local game assets.".into());

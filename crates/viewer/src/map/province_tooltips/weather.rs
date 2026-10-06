@@ -12,13 +12,17 @@ pub(super) fn row(
     province: &WeatherProvinceRow,
     region: &WeatherRegionRow,
 ) -> Result<String, String> {
+    let temperature = *province
+        .temperature
+        .require("WeatherProvinces.temperature")?;
+    let mud = *province.raw_mud.require("WeatherProvinces.raw_mud")?;
     let flags = [
         region.light_rain,
         region.heavy_rain,
         region.snow,
         region.blizzard,
         region.sandstorm,
-        province.raw_mud,
+        mud,
     ];
     let mut fragments = String::new();
     for (i, (flag, key)) in flags
@@ -50,7 +54,7 @@ pub(super) fn row(
     if let Some((i, range)) = ranges
         .iter()
         .enumerate()
-        .find(|(_, r)| r.lower <= province.temperature && province.temperature < r.upper)
+        .find(|(_, r)| r.lower <= temperature && temperature < r.upper)
     {
         let name = range
             .modifier
@@ -78,7 +82,7 @@ pub(super) fn row(
         "PROV_TOOLTIP_TEMPERATURE",
         &[
             ("TEXT", Arg::Text(&fragments)),
-            ("TEMP", Arg::Fixed5(province.temperature)),
+            ("TEMP", Arg::Fixed5(temperature)),
         ],
     )?;
     Ok(format!(

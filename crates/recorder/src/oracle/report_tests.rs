@@ -282,3 +282,53 @@ fn every_difference_prints_under_its_own_comparison_group() {
 fn a_report_without_differences_prints_no_difference_section() {
     assert!(Report::default().difference_lines().is_empty());
 }
+
+#[test]
+fn compatibility_field_limitations_aggregate_counts_without_duplicate_subjects() {
+    use replay::rows::{Recorded, WeatherProvinceRow};
+
+    let (mut frame, ..) = tests::fixture();
+    let rows: Vec<_> = (0..13_413)
+        .map(|id| WeatherProvinceRow {
+            id,
+            temperature: if id == 0 {
+                Recorded::Value(0)
+            } else {
+                Recorded::NotRecorded
+            },
+            raw_mud: Recorded::NotRecorded,
+            ..Default::default()
+        })
+        .collect();
+    for truncated in [false, true] {
+        *frame.tables[TableId::WeatherProvinces.index()] = if truncated {
+            TableView::Truncated {
+                rows: TableRows::WeatherProvinces(rows.clone()),
+                missing: 7,
+            }
+        } else {
+            TableView::Complete(TableRows::WeatherProvinces(rows.clone()))
+        };
+        let mut report = Report::default();
+        report.record_tables(&frame);
+        for row in &rows {
+            report.recorded(
+                &row.temperature,
+                "WeatherProvinces.temperature",
+                row.id.to_string(),
+            );
+            report.recorded(
+                &row.raw_mud,
+                "WeatherProvinces.raw_mud",
+                row.id.to_string(),
+            );
+        }
+        assert_eq!(report.limitations.len(), 2);
+        for (field, count) in [("temperature", 13_412), ("raw_mud", 13_413)] {
+            assert_eq!(
+                report.limitations[&format!("WeatherProvinces.{field} not recorded")],
+                [format!("WeatherProvinces.{field}: {count} rows not recorded")]
+            );
+        }
+    }
+}

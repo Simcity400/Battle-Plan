@@ -866,12 +866,34 @@ fn temporary_targets_use_root_ownership_from_lookup_and_exact_cleanup() {
 }
 
 #[test]
+fn compatibility_absent_subjects_refuses_only_faction_effect() {
+    let mut fixture = Fixture::new();
+    if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
+    {
+        rows[1].subjects = replay::rows::Recorded::NotRecorded;
+    }
+    let out = fixture.render(
+        "add_to_faction=BBB army_experience=2",
+        &mut fresh(),
+        Content::default(),
+    );
+    assert_eq!(out.text, "XP2\n");
+    assert_eq!(out.refusals.values().sum::<usize>(), 1);
+    assert!(
+        out.refusals
+            .keys()
+            .any(|reason| reason.contains("CountryAppearance.subjects not recorded"))
+    );
+}
+
+#[test]
 fn ordered_subjects_preserve_native_faction_line_order() {
     let mut fixture = Fixture::new();
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
     {
-        rows[1].subjects = vec![300, 100];
+        rows[1].subjects = vec![300, 100].into();
     }
     let out = fixture.render("add_to_faction=BBB", &mut fresh(), Content::default());
     assert_eq!(out.text, "Join Beta\nJoin Gamma\nJoin Alpha\n");
@@ -1235,7 +1257,7 @@ fn wtt_shaped_immediate_and_option_keep_marker_links_and_recorded_flag_condition
             container: 3,
             token: b"SYN_DECISION".to_vec(),
             country_target: 200,
-            description_seed: Some(None),
+            description_seed: replay::rows::Recorded::Value(Some(None)),
             ..Default::default()
         }]));
     let mut database = installed_content::decisions::Database::default();

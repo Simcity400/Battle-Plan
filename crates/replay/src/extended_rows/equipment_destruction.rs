@@ -100,8 +100,6 @@ pub struct EquipmentDestructionRow {
 typed_codec!(EquipmentDestructionRow, 104,
 |row| (row.country as u128) << 72 | (row.cause as u128) << 64 | row.variant as u128,
 |key| Self { country: (key >> 72) as u32, cause: EquipmentDestructionCause::try_from((key >> 64) as u8)?, variant: key as u64, amount_raw: 0 },
-|key, input| Ok(Self { country: (key >> 72) as u32, cause: EquipmentDestructionCause::try_from((key >> 64) as u8)?,
-    variant: key as u64, amount_raw: read_value(Kind::I64, input)? }),
 { 0 => (amount_raw): I64 }, |row| {
     if row.amount_raw <= 0 { Err(invalid("equipment destruction amount must be positive")) }
     else { Ok(()) }

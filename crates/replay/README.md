@@ -112,9 +112,11 @@ keeps remaining pools, not loss events, so it cannot certify their totals.
 
 ## Compatibility and recovery
 
-This release reads and writes only the current format. Reject other replay versions at the header and incompatible spool records explicitly; do not infer or silently translate an older layout.
+Writers emit the current format. Older recordings open when today's readers can read them correctly, within the proven history in [the code-owned compatibility catalog](src/rows/compatibility.rs). The code catalog classifies each table change. Appended fields decode through the recorded field prefix and delta-mask width; `Recorded::NotRecorded` is distinct from every native empty, zero or absent value. Only a feature needing that field is refused by name and counted. Real layout or meaning changes withhold the whole table; incompatible header or framing refuses the whole file by name. There are no migrations, translations or old row decoders. The same field framing lets readers discard incompatible table payloads without interpreting their rows. Inspection counts recorded field bytes directly and reports field gaps without rewriting historical rows. Append requires the current format so historical and current layouts are never mixed.
 
-Every spool record carries the current recording version; recovery checks it before decoding the payload and keeps only valid CRC-checked prefixes. Replay finalization and append must not destroy an existing good file when interrupted. Preserve session/branch identity and never join branches through merely probable parentage.
+Table introduction and retirement dates determine which timing entries and updates a recorded frame contains; absent new tables become named "not recorded" gaps, and retired tables retain their IDs and field framing for named discard.
+
+Every spool record carries its recording version; recovery checks its record contract before decoding the payload and keeps only valid CRC-checked prefixes. Older spools are refused by name for finalization and append and kept on disk; their rows are never re-encoded. Replay finalization and append must not destroy an existing good file when interrupted. Preserve session/branch identity and never join branches through merely probable parentage.
 
 A terminal collector allocation failure preserves the verified prefix as a normal replay. Its `Partial` trailer control carries the failing session, reason and optional attempted hour. Consumers open the prefix normally and keep the partial notice visible. Only a known, unrecorded attempted hour becomes an existing `Gap`, placed before detach; an idle failure invents no hour. A partial marker never makes a missing table complete.
 
@@ -126,7 +128,7 @@ The collector installs the shared allocation-failure callback before bootstrap d
 
 File spools keep record writes ordered while allowing one periodic durability request per segment to run in the background. Pending errors are checked before subsequent writes and on idle polls; a failed segment is abandoned through the existing recovery path. Segment creation, forced boundaries and detach remain synchronous durability barriers. Every outstanding worker is joined before its sink is destroyed. On Windows the durability handle reopens the existing file through its handle, separately from the synchronous writer; no path-based replacement or extra capture-buffer queue is involved.
 
-The replay stores content identity, ordered layer hashes and the coverage policy, not game assets or machine-specific paths. The identity codec preserves older coverage policies; content resolution refuses an unsupported policy instead of reinterpreting its hashes under the current roots. Asset resolution belongs in [installed-content](../installed-content/README.md).
+The replay stores content identity, ordered layer hashes and the coverage policy, not game assets or machine-specific paths. The identity codec preserves older coverage policies; content resolution verifies each supported policy under its own roots. Files covered only by a newer policy carry named uncovered-read notes; unsupported policies are refused by name. Asset resolution belongs in [installed-content](../installed-content/README.md).
 
 ## Checking changes
 

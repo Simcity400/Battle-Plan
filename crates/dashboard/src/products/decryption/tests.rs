@@ -11,7 +11,7 @@ fn frame(hour: i32, count: u32, amount: i64, decrypting: u8) -> DecodedFrame {
     tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
         (1..=count)
             .map(|slot| CountryRow {
-                border_land_doctrine_level: None,
+                border_land_doctrine_level: replay::rows::Recorded::Value(None),
                 id: slot * 2,
                 canonical_slot: slot,
                 tag: format!("Mod tag {slot}|suffix").into_bytes(),

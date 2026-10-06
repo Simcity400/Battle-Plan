@@ -160,7 +160,7 @@ fn decision_fixture(seed: Option<Option<i32>>) -> (Fixture, installed_content::d
             container: 3,
             token: b"SYN_DECISION".to_vec(),
             country_target: 200,
-            description_seed: seed,
+            description_seed: replay::rows::Recorded::Value(seed),
             // The description lookup does not test these execution-state fields.
             lifecycle: -1,
             ignore: 1,
@@ -245,6 +245,27 @@ fn removal_refuses_unread_seed_but_fixed_seed_bypasses_it_and_missing_instance_i
             .next()
             .unwrap()
             .contains("description_seed")
+    );
+    if let TableView::Complete(replay::rows::TableRows::Decisions(rows)) =
+        &mut *fixture.frame.tables[replay::rows::TableId::Decisions.index()]
+    {
+        rows[0].description_seed = replay::rows::Recorded::NotRecorded;
+    }
+    let historical = fixture.render(
+        body,
+        &mut scopes,
+        Content {
+            decisions: Some(&database),
+            ..Default::default()
+        },
+    );
+    assert!(historical.text.is_empty());
+    assert_eq!(historical.refusals.values().sum::<usize>(), 1);
+    assert!(
+        historical
+            .refusals
+            .keys()
+            .any(|why| why.contains("Decisions.description_seed not recorded"))
     );
     database
         .entries
@@ -338,7 +359,7 @@ fn state_target_wins_before_authored_highlight_candidates() {
             container: 3,
             token: b"SYN_DECISION".to_vec(),
             numeric_target: 3,
-            description_seed: Some(None),
+            description_seed: replay::rows::Recorded::Value(Some(None)),
             ..Default::default()
         }],
     );
@@ -392,7 +413,7 @@ fn inactive_decision_skips_unsupported_title_and_empty_trigger_does_not_enable_h
             container: 3,
             token: b"SYN_DECISION".to_vec(),
             numeric_target: 3,
-            description_seed: Some(None),
+            description_seed: replay::rows::Recorded::Value(Some(None)),
             ..Default::default()
         }],
     );

@@ -1,4 +1,4 @@
-//! The shared, deliberately incompatible spool and replay format.
+//! The shared spool and replay recording contract.
 
 pub mod branches;
 pub mod cadence;
@@ -20,7 +20,7 @@ pub mod witness;
 pub type Hour = i32;
 pub type SessionId = u64;
 pub type BranchId = u64;
-/// The only recording version this build reads and writes.
+/// The recording version this build writes. Reader history lives beside TableId.
 pub const FORMAT_VERSION: u16 = 97;
 pub const KEYFRAME_INTERVAL: u32 = 720;
 

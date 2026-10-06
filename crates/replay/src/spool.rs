@@ -11,8 +11,10 @@ use crate::{
     FORMAT_VERSION,
     branches::{BranchStart, Gap},
     codec::{Decoder, invalid, invalid_static, put_string},
+    format::FormatVersion,
     frame::{EncodedFrame, Frame},
     identity::SessionStart,
+    rows::compatibility::RecordKind,
 };
 use engine::allocation::allocation_error;
 
@@ -166,10 +168,24 @@ impl ControlRecord {
     }
 
     pub fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
-        Self::decode_tag(input.u8()?, input)
+        Self::decode_version(input, FormatVersion::CURRENT)
     }
 
-    fn decode_tag(tag: u8, input: &mut Decoder<'_>) -> io::Result<Self> {
+    pub(crate) fn decode_version(
+        input: &mut Decoder<'_>,
+        format: FormatVersion,
+    ) -> io::Result<Self> {
+        Self::decode_tag(input.u8()?, input, format)
+    }
+
+    fn decode_tag(tag: u8, input: &mut Decoder<'_>, format: FormatVersion) -> io::Result<Self> {
+        format.require(match tag {
+            4 => RecordKind::Detach,
+            5 => RecordKind::ClockWitness,
+            6 => RecordKind::GapSummary,
+            7 => RecordKind::Partial,
+            _ => return Err(invalid("unknown control record tag")),
+        })?;
         Ok(match tag {
             7 => {
                 let session = input.u64()?;
@@ -250,14 +266,18 @@ impl Record {
     }
 
     pub fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        Self::decode_version(input, FormatVersion::CURRENT)
+    }
+
+    fn decode_version(input: &mut Decoder<'_>, format: FormatVersion) -> io::Result<Self> {
         Ok(match input.u8()? {
             0 => Self::SessionStart(SessionStart::decode(input)?),
             1 => Self::BranchStart(BranchStart::decode(input)?),
             // Recovery checks the envelope's recording version before
             // decoding this payload.
-            2 => Self::Frame(Frame::decode(input)?),
+            2 => Self::Frame(Frame::decode_version(input, None, format)?),
             3 => Self::Gap(Gap::decode(input)?),
-            tag @ 4..=7 => Self::Control(ControlRecord::decode_tag(tag, input)?),
+            tag @ 4..=7 => Self::Control(ControlRecord::decode_tag(tag, input, format)?),
             _ => return Err(invalid("unknown spool record tag")),
         })
     }
@@ -442,6 +462,8 @@ impl SegmentState {
 
 #[derive(Debug)]
 pub struct Recovery {
+    /// Original envelope contract; never discarded by recovery/finalization.
+    pub format: Option<FormatVersion>,
     pub records: Vec<Record>,
     pub valid_bytes: usize,
     pub damage: Option<String>,
@@ -450,6 +472,7 @@ pub struct Recovery {
 /// Recover only this segment's valid prefix. Never scan past damage for another magic.
 pub fn recover_prefix(bytes: &[u8]) -> Recovery {
     let mut result = Recovery {
+        format: None,
         records: Vec::new(),
         valid_bytes: 0,
         damage: None,
@@ -470,10 +493,10 @@ pub fn recover_prefix(bytes: &[u8]) -> Recovery {
                 )));
             }
             let version = u16::from_le_bytes(tail[4..6].try_into().unwrap());
-            if version != FORMAT_VERSION {
-                return Err(invalid(format!(
-                    "unsupported spool format version {version}; expected {FORMAT_VERSION}"
-                )));
+            let format = FormatVersion::read(version)?;
+            format.require(RecordKind::SpoolEnvelope)?;
+            if result.format.is_some_and(|first| first != format) {
+                return Err(invalid("SpoolEnvelope format changed inside a segment"));
             }
             let length = u32::from_le_bytes(tail[6..10].try_into().unwrap()) as usize;
             if length == 0 || length > MAX_RECORD_BYTES {
@@ -488,9 +511,10 @@ pub fn recover_prefix(bytes: &[u8]) -> Recovery {
                 return Err(invalid("record CRC mismatch"));
             }
             let mut input = Decoder::new(payload);
-            let record = Record::decode(&mut input)?;
+            let record = Record::decode_version(&mut input, format)?;
             input.finish()?;
             state.accept(&record)?;
+            result.format = Some(format);
             Ok((record, RECORD_HEADER_BYTES + length))
         })();
         match decoded {

@@ -269,6 +269,36 @@ fn owned_state_builtin_and_scoped_predicate_use_recorded_operands() {
 }
 
 #[test]
+fn compatibility_template_fallback_key_is_unknown_but_explicit_name_remains_usable() {
+    use replay::rows::{DivisionTemplateRow, Recorded};
+    let mut f = frame(&countries(), &[]);
+    *f.tables[TableId::DivisionTemplates.index()] =
+        TableView::Complete(TableRows::DivisionTemplates(vec![DivisionTemplateRow {
+            template: 1,
+            owner: 100,
+            name: b"Intervention Force".to_vec(),
+            name_key: Recorded::NotRecorded,
+            ..Default::default()
+        }]));
+    assert_eq!(
+        check(&f, "", 0, "has_template = \"Intervention Force\""),
+        Eval::True
+    );
+    if let TableView::Complete(TableRows::DivisionTemplates(rows)) =
+        &mut *f.tables[TableId::DivisionTemplates.index()]
+    {
+        rows[0].name.clear();
+    }
+    let result = check(&f, "", 0, "has_template = \"Intervention Force\"");
+    assert!(
+        result
+            .decided()
+            .unwrap_err()
+            .contains("DivisionTemplates.name_key not recorded")
+    );
+}
+
+#[test]
 fn templates_compare_explicit_display_names_exactly() {
     use replay::rows::DivisionTemplateRow;
     let mut f = frame(&countries(), &[]);

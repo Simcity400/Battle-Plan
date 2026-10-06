@@ -228,7 +228,7 @@ fn old_spool_magic_is_refused_before_decoding_any_records() {
 #[test]
 fn spool_versions_are_checked_on_every_record_before_payload_decoding() {
     let prefix = valid_segment();
-    for version in [0, FORMAT_VERSION - 1, FORMAT_VERSION + 1, u16::MAX] {
+    for version in [0, 90, 95, FORMAT_VERSION + 1, u16::MAX] {
         for with_prefix in [false, true] {
             let mut wrong = encode_record(&Record::Frame(frame(12, false))).unwrap();
             wrong[4..6].copy_from_slice(&version.to_le_bytes());
@@ -250,9 +250,13 @@ fn spool_versions_are_checked_on_every_record_before_payload_decoding() {
             assert_eq!(recovered.records.len(), if with_prefix { 3 } else { 0 });
             assert_eq!(
                 recovered.damage.as_deref(),
-                Some(format!(
-                    "segment byte {valid_bytes}: unsupported spool format version {version}; expected {FORMAT_VERSION}"
-                ).as_str()),
+                Some(
+                    format!(
+                        "segment byte {valid_bytes}: {}",
+                        FormatVersion::read(version).unwrap_err()
+                    )
+                    .as_str()
+                ),
             );
         }
     }

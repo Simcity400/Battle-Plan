@@ -25,6 +25,7 @@ pub(super) type Action = Result<u8, &'static str>;
 
 /// Missing current-hour operands for the native `140C79B70` decision.
 pub(super) const CURRENT_RAIL_MODIFIERS: &str = "current strategic-redeployment modifier operands";
+const STRATEGIC_NOT_RECORDED: &str = "DivisionMovement.strategic_action not recorded";
 pub(super) const STRATEGIC_LAYOUT: &str = "division strategic action fixed layout";
 
 /// `140BEF850`, class 0. Branch operands are consulted only where native does.
@@ -51,7 +52,11 @@ pub(super) fn action_code(
         return Ok(10);
     }
     if movement.strategic_redeployment != 0 {
-        return match movement.strategic_action {
+        return match *movement
+            .strategic_action
+            .require("DivisionMovement.strategic_action")
+            .map_err(|_| STRATEGIC_NOT_RECORDED)?
+        {
             StrategicAction::Available(inputs) => Ok(if inputs.blocked() { 11 } else { 6 }),
             StrategicAction::Withheld(reason) => Err(reason.reason()),
             StrategicAction::Unreached => Err(CURRENT_RAIL_MODIFIERS),
@@ -379,7 +384,8 @@ fn admit_strategic_layout(action: Action, admitted: bool) -> Action {
 }
 
 fn strategic_unknown(reason: &str) -> bool {
-    reason == CURRENT_RAIL_MODIFIERS
+    reason == STRATEGIC_NOT_RECORDED
+        || reason == CURRENT_RAIL_MODIFIERS
         || reason == STRATEGIC_LAYOUT
         || [
             StrategicActionFailure::Owner,
@@ -461,6 +467,23 @@ mod tests {
             path: vec![20],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn compatibility_absent_rail_operand_refuses_only_the_reached_glyph() {
+        let mut movement = DivisionMovementRow {
+            path_total: 1,
+            target: 8,
+            strategic_redeployment: 1,
+            strategic_action: replay::rows::Recorded::NotRecorded,
+            ..Default::default()
+        };
+        assert_eq!(action_code(&movement, None, Ok(false), None), Ok(3));
+        movement.target = 0;
+        assert_eq!(
+            action_code(&movement, None, Ok(false), None),
+            Err(STRATEGIC_NOT_RECORDED)
+        );
     }
 
     #[test]

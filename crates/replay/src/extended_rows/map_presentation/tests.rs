@@ -5,10 +5,10 @@ fn weather_suspension_none_is_distinct_from_zero_and_opaque_tags_are_strict() {
     let before = SimulationFeatureRow {
         dlc_mask: 0x1234,
         human_ai: 7,
-        weather_suspend: None,
+        weather_suspend: crate::rows::Recorded::Value(None),
     };
     let after = SimulationFeatureRow {
-        weather_suspend: Some([0, 0]),
+        weather_suspend: crate::rows::Recorded::Value(Some([0, 0])),
         ..before.clone()
     };
     let delta = after.delta(Some(&before)).unwrap().unwrap();

@@ -309,7 +309,7 @@ impl Captured {
                 |r| SimulationFeatureRow {
                     dlc_mask: r.dlc_mask,
                     human_ai: r.human_ai,
-                    weather_suspend: r.weather_suspend,
+                    weather_suspend: replay::rows::Recorded::Value(r.weather_suspend),
                 },
             ),
             table::<tables::CountryVisibility, _>(

@@ -32,7 +32,7 @@ fn border_marker_witnesses_compare_stored_country_state_and_event_strings() {
         TableView::Complete(TableRows::LandCombatDetails(vec![LandCombatDetailsRow {
             combat,
             province: 2,
-            border_war: Some(border),
+            border_war: replay::rows::Recorded::Value(Some(border)),
             ..Default::default()
         }]));
     let mut details = save::combat_details::LandDetails {

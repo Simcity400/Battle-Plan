@@ -467,7 +467,7 @@ pub(crate) mod tests {
                         convoys_raw: None,
                         peace_conference_participant: 0,
                         manpower_residual: 0,
-                        border_land_doctrine_level: None,
+                        border_land_doctrine_level: replay::rows::Recorded::Value(None),
                     }])),
                     TableView::Complete(TableRows::CountryLinks(Vec::new())),
                     TableView::Complete(TableRows::Provinces(vec![ProvinceRow {

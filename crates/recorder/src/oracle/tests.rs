@@ -89,7 +89,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                     id: b"campaign".to_vec(),
                 }])),
                 TableView::Complete(TableRows::Countries(vec![CountryRow {
-                    border_land_doctrine_level: None,
+                    border_land_doctrine_level: replay::rows::Recorded::Value(None),
                     id: 101,
                     canonical_slot: 7,
                     tag: b"GER".to_vec(),
@@ -157,8 +157,8 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             ]));
             tables[TableId::StateFlags.index()] =
                 TableView::Complete(TableRows::StateFlags(vec![replay::rows::StateFlagRow {
-                    border_conflict_active: 0,
-                    border_conflict_countries: Vec::new(),
+                    border_conflict_active: replay::rows::Recorded::Value(0),
+                    border_conflict_countries: replay::rows::Recorded::Value(Vec::new()),
                     state: 1,
                     demilitarized: 0,
                 }]));
@@ -297,8 +297,8 @@ fn state_flags_compare_boolean_and_full_census_without_missing_field_defaults() 
     use replay::rows::StateFlagRow;
     let (mut frame, mut saved, _, _) = fixture();
     let row = StateFlagRow {
-        border_conflict_active: 0,
-        border_conflict_countries: Vec::new(),
+        border_conflict_active: replay::rows::Recorded::Value(0),
+        border_conflict_countries: replay::rows::Recorded::Value(Vec::new()),
         state: 1,
         demilitarized: 0,
     };
@@ -334,8 +334,8 @@ fn state_flags_compare_boolean_and_full_census_without_missing_field_defaults() 
         vec![
             row.clone(),
             StateFlagRow {
-                border_conflict_active: 0,
-                border_conflict_countries: Vec::new(),
+                border_conflict_active: replay::rows::Recorded::Value(0),
+                border_conflict_countries: replay::rows::Recorded::Value(Vec::new()),
                 state: 978,
                 demilitarized: 1,
             },
@@ -378,7 +378,7 @@ fn state_border_flag_compares_saved_boolean_and_rejects_missing_witness() {
         *frame.tables[TableId::StateFlags.index()] =
             TableView::Complete(TableRows::StateFlags(vec![StateFlagRow {
                 state: 1,
-                border_conflict_active: byte,
+                border_conflict_active: replay::rows::Recorded::Value(byte),
                 ..Default::default()
             }]));
         let mut report = Report::default();
@@ -875,7 +875,7 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
         template,
         owner: 102,
         name: vec![b'A', 0, 255],
-        name_key: b"FALLBACK".to_vec(),
+        name_key: replay::rows::Recorded::Value(b"FALLBACK".to_vec()),
         ..Default::default()
     };
     *frame.tables[TableId::DivisionTemplates.index()] =
@@ -4313,9 +4313,9 @@ fn strategic_action_oracle_names_unsaved_operands_and_keeps_saved_differences() 
         path_total: 2,
         path: vec![9, 8],
         strategic_redeployment: 1,
-        strategic_action: replay::rows::StrategicAction::Withheld(
+        strategic_action: replay::rows::Recorded::Value(replay::rows::StrategicAction::Withheld(
             replay::rows::StrategicActionFailure::CountryModifier,
-        ),
+        )),
         ..Default::default()
     };
     *frame.tables[TableId::DivisionMovement.index()] =

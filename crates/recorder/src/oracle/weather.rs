@@ -65,20 +65,27 @@ fn compare_provinces(frame: &DecodedFrame, saved: &Save, report: &mut Report) ->
             sparse_scalar(report, &label, "snow", actual.snow, expected.snow.as_ref());
             // 140F0DBB0 always emits temperature through 1424AE590, even
             // when zero. Absence is malformed/missing evidence, not zero.
-            report.scalar_checks += 1;
-            if expected.temperature.as_ref().map(|value| value.raw) != Some(actual.temperature) {
-                report.difference(
-                    format!("{label}.temperature"),
-                    Some(actual.temperature),
-                    expected.temperature.as_ref().map(|value| value.raw),
-                );
+            if let Some(&temperature) = report.recorded(
+                &actual.temperature,
+                "WeatherProvinces.temperature",
+                format!("{label}.temperature"),
+            ) {
+                report.scalar_checks += 1;
+                if expected.temperature.as_ref().map(|value| value.raw) != Some(temperature) {
+                    report.difference(
+                        format!("{label}.temperature"),
+                        Some(temperature),
+                        expected.temperature.as_ref().map(|value| value.raw),
+                    );
+                }
             }
-            truth(
-                report,
-                &format!("{label}.mud"),
-                actual.raw_mud,
-                expected.mud,
-            );
+            if let Some(&mud) = report.recorded(
+                &actual.raw_mud,
+                "WeatherProvinces.raw_mud",
+                format!("{label}.mud"),
+            ) {
+                truth(report, &format!("{label}.mud"), mud, expected.mud);
+            }
         }
         for id in provinces.keys() {
             report.difference(format!("weather province {id}"), "present", "absent");

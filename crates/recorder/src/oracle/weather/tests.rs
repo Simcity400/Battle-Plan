@@ -35,8 +35,8 @@ regions={0={region=0 temperature=-90071992547.40993
             permanent_snow: 4_000_000,
             display_snow: 128,
             display_mud: 255,
-            temperature: 100_000,
-            raw_mud: 7,
+            temperature: replay::rows::Recorded::Value(100_000),
+            raw_mud: replay::rows::Recorded::Value(7),
         }]));
     *frame.tables[TableId::WeatherRegions.index()] =
         TableView::Complete(TableRows::WeatherRegions(vec![WeatherRegionRow {
@@ -49,6 +49,28 @@ regions={0={region=0 temperature=-90071992547.40993
     assert!(report.differences.is_empty());
     assert_eq!(report.scalar_checks, 2);
     assert_eq!(report.limitations.len(), 3);
+
+    // Historical absence withholds only the temperature/mud comparisons.
+    let original = frame.tables[TableId::WeatherProvinces.index()].clone();
+    if let TableView::Complete(TableRows::WeatherProvinces(rows)) =
+        &mut *frame.tables[TableId::WeatherProvinces.index()]
+    {
+        rows[0].temperature = replay::rows::Recorded::NotRecorded;
+        rows[0].raw_mud = replay::rows::Recorded::NotRecorded;
+    }
+    let mut old = Report::default();
+    compare(&frame, &saved, &mut old).unwrap();
+    assert!(old.differences.is_empty());
+    assert_eq!(old.scalar_checks, 1); // snow remains compared
+    assert_eq!(
+        old.limitations["WeatherProvinces.temperature not recorded"].len(),
+        1
+    );
+    assert_eq!(
+        old.limitations["WeatherProvinces.raw_mud not recorded"].len(),
+        1
+    );
+    frame.tables[TableId::WeatherProvinces.index()] = original;
 
     for (table, name, scalar_checks) in [
         (TableId::WeatherProvinces, "WeatherProvinces", 0),
@@ -91,8 +113,11 @@ regions={0={region=0 temperature=-90071992547.40993
     else {
         unreachable!();
     };
-    rows[0].temperature -= 1;
-    rows[0].raw_mud = 0;
+    *rows[0]
+        .temperature
+        .require_mut("WeatherProvinces.temperature")
+        .unwrap() -= 1;
+    rows[0].raw_mud = replay::rows::Recorded::Value(0);
     let mut report = Report::default();
     compare(&frame, &saved, &mut report).unwrap();
     assert_eq!(report.differences.len(), 3);
@@ -111,8 +136,8 @@ regions={0={region=0 temperature=-90071992547.40993
         unreachable!();
     };
     rows[0].snow += 1;
-    rows[0].temperature = 0;
-    rows[0].raw_mud = 7;
+    rows[0].temperature = replay::rows::Recorded::Value(0);
+    rows[0].raw_mud = replay::rows::Recorded::Value(7);
     let expected = &mut saved.weather.provinces.as_mut().unwrap()[0];
     expected.temperature = Some(Decimal::parse(b"0").unwrap());
     let mut report = Report::default();

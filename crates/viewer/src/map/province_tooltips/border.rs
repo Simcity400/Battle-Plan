@@ -58,7 +58,11 @@ pub(super) fn build(
     state: u32,
     flag: &StateFlagRow,
 ) -> Result<String, String> {
-    if flag.border_conflict_active == 0 {
+    if *flag
+        .border_conflict_active
+        .require("StateFlags.border_conflict_active")?
+        == 0
+    {
         return Ok(String::new());
     }
     let states = frame
@@ -79,7 +83,10 @@ pub(super) fn build(
     let hovered = states.get(&state).ok_or("border state absent")?;
     let mut involved = same(links, hovered.controller, viewer_raw)?;
     if !involved {
-        'pairs: for pair in &flag.border_conflict_countries {
+        'pairs: for pair in flag
+            .border_conflict_countries
+            .require("StateFlags.border_conflict_countries")?
+        {
             for &raw in pair {
                 if same(links, raw as u32, viewer_raw)? {
                     involved = true;
@@ -113,7 +120,8 @@ pub(super) fn build(
             .get(&id)
             .ok_or("neighbor active predicate absent")?
             .border_conflict_active
-            != 0;
+            .require("StateFlags.border_conflict_active")?
+            != &0;
         if active && !same(links, neighbor.controller, viewer_raw)? {
             demanded.push(id);
         }
@@ -168,7 +176,9 @@ pub(super) fn build(
                 }; // native class !=0
                 let stats = statuses
                     .get(handle)
-                    .and_then(|row| row.border_combat_stats)
+                    .ok_or_else(|| format!("selected border army {handle} status unavailable"))?
+                    .border_combat_stats.require("DivisionStatus.border_combat_stats")?
+                    .as_ref().copied()
                     .ok_or_else(|| format!("selected border army {handle} cached defense/soft/hard attack unavailable"))?;
                 let skill = if division.orders_group == 0 {
                     0
@@ -209,7 +219,11 @@ pub(super) fn build(
             .ok_or("border province controller unresolved")?;
         let level = countries
             .get(slot)
-            .and_then(|c| c.border_land_doctrine_level)
+            .ok_or("selected controller absent")?
+            .border_land_doctrine_level
+            .require("Countries.border_land_doctrine_level")?
+            .as_ref()
+            .copied()
             .ok_or_else(|| format!("selected controller {raw} land-doctrine cache unavailable"))?;
         let side = usize::from(!same(links, raw, viewer_raw)?);
         power[side] = power[side].wrapping_mul(i64::from(level.wrapping_add(1)));

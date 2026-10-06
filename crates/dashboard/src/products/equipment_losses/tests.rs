@@ -266,7 +266,7 @@ fn frame(hour: i32, log: Vec<CombatLogEquipmentRow>, read: &[u32]) -> DecodedFra
         TableRows::SimulationFeatures(vec![replay::rows::SimulationFeatureRow {
             dlc_mask: engine::dlc_feature_state::EQUIPMENT_LOSSES_MASK,
             human_ai: 0,
-            weather_suspend: None,
+            weather_suspend: replay::rows::Recorded::Value(None),
         }]),
     );
     put(
@@ -1111,7 +1111,7 @@ fn a_disabled_writer_feature_is_not_logged_without_excluding_recorded_totals() {
                 // Other runtime features do not enable this writer.
                 dlc_mask: !engine::dlc_feature_state::EQUIPMENT_LOSSES_MASK,
                 human_ai: 0,
-                weather_suspend: None,
+                weather_suspend: replay::rows::Recorded::Value(None),
             },
         ]));
     let scanned = scan(&replay_of(vec![frame]), 1, "GER", &AtomicBool::new(false)).unwrap();
@@ -1292,7 +1292,7 @@ fn closed_feature_gate_stays_not_logged_with_an_unread_census() {
             replay::rows::SimulationFeatureRow {
                 dlc_mask: 0,
                 human_ai: 0,
-                weather_suspend: None,
+                weather_suspend: replay::rows::Recorded::Value(None),
             },
         ]));
     let scanned = scan(&replay_of(vec![frame]), 1, "GER", &AtomicBool::new(false)).unwrap();

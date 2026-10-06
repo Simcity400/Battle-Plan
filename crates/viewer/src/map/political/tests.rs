@@ -37,6 +37,110 @@ use replay::{
 const GER: [u8; 3] = [191, 127, 63];
 const SOV: [u8; 3] = [127, 0, 63];
 
+#[test]
+#[ignore = "read-only G2 recording; BATTLE_PLAN_COMPAT_RECORDINGS supplies its path"]
+fn compatibility_real_g2_map_impact() {
+    use replay::{
+        container::{Replay, SeekResult},
+        rows::tables,
+    };
+    let path = std::env::var("BATTLE_PLAN_COMPAT_RECORDINGS").or_else(|_| std::env::var("HOI4_COMPAT_RECORDINGS")).unwrap();
+    let replay = Replay::open(std::fs::read(path).unwrap()).unwrap();
+    let SeekResult::Frame(frame) = replay.seek(2, 60827796).unwrap() else {
+        panic!("missing G2 comparison hour")
+    };
+    let key = FrameKey::new(&frame).unwrap();
+    assert!(!key.provinces.is_empty());
+    assert!(!key.countries.is_empty());
+    assert!(!key.colors.is_empty() && key.colors_complete);
+    let index = crate::map::country_index::CountryIndex::read(&frame).unwrap();
+    assert!(!index.tags().is_empty());
+    assert!(!index.flag_tags().is_empty());
+    assert!(
+        !installed_content::equipment_graphics::countries::read(&frame)
+            .unwrap()
+            .is_empty()
+    );
+    let mut retained = Vec::new();
+    for table in [
+        TableId::Provinces,
+        TableId::CountryLinks,
+        TableId::Countries,
+        TableId::States,
+        TableId::StateFlags,
+        TableId::ProvinceNames,
+        TableId::Divisions,
+        TableId::DivisionStatus,
+        TableId::DivisionTemplateIcons,
+        TableId::OrdersGroups,
+        TableId::TaskForces,
+        TableId::Ships,
+        TableId::ShipModels,
+        TableId::NavalCombats,
+        TableId::NavalCombatDetails,
+        TableId::LandCombats,
+        TableId::LandCombatDetails,
+        TableId::RaidTooltipOperands,
+        TableId::AirWings,
+    ] {
+        if let TableView::Complete(rows) = &*frame.tables[table.index()] {
+            retained.push(format!("{table:?}={}", rows.len()));
+        } else {
+            println!(
+                "G2_MAP existing capture gap {table:?}: {:?}",
+                frame.tables[table.index()]
+            );
+        }
+    }
+    assert!(frame.complete::<tables::DivisionMovement>().is_ok());
+    let limitations = crate::map::tables::limitations(&frame).lines();
+    for line in limitations
+        .iter()
+        .filter(|line| line.contains("CountryAppearance") || line.contains("DivisionMovement"))
+    {
+        println!("G2_MAP {line}");
+    }
+    println!(
+        "G2_MAP political core: {} provinces, {} countries; colours/flag tags/model-country operands retained",
+        key.provinces.len(),
+        index.tags().len()
+    );
+    println!("G2_MAP retained tables: {}", retained.join(", "));
+}
+
+#[test]
+#[ignore = "read-only C/D/G/G2 recordings; BATTLE_PLAN_COMPAT_RECORDINGS supplies paths"]
+fn compatibility_real_recordings_map_impact() {
+    use replay::container::{Replay, SeekResult};
+    for path in std::env::var("BATTLE_PLAN_COMPAT_RECORDINGS").or_else(|_| std::env::var("HOI4_COMPAT_RECORDINGS")).unwrap().split(';') {
+        let replay = Replay::open(std::fs::read(path).unwrap()).unwrap();
+        let branch = replay.branches.last().unwrap();
+        let SeekResult::Frame(frame) = replay.seek(branch.id, branch.first_hour).unwrap() else {
+            panic!("first recorded hour missing");
+        };
+        let key = FrameKey::new(&frame).unwrap();
+        let index = crate::map::country_index::CountryIndex::read(&frame).unwrap();
+        assert!(!key.colors.is_empty());
+        assert!(!index.flag_tags().is_empty());
+        println!(
+            "MAP_RECORDING {path} format={} provinces={} colour rows={} flag tag rows={}",
+            replay.format.version(),
+            key.provinces.len(),
+            key.colors.len(),
+            index.flag_tags().len()
+        );
+        for table in TableId::ALL {
+            if let TableView::Complete(rows) | TableView::Truncated { rows, .. } =
+                &*frame.tables[table.index()]
+            {
+                for (field, count) in rows.field_gaps() {
+                    println!("MAP_FIELD_GAP {table:?}.{field} {count} rows not recorded");
+                }
+            }
+        }
+    }
+}
+
 fn appearance(country: u32, rgb: [f32; 3]) -> CountryAppearanceRow {
     CountryAppearanceRow {
         country,

@@ -68,7 +68,7 @@ fn weather_suspension_failure_preserves_features_and_recovers_through_the_codec(
             &[SimulationFeatureRow {
                 dlc_mask: 0x1234_5678,
                 human_ai: 7,
-                weather_suspend: flags
+                weather_suspend: replay::rows::Recorded::Value(flags)
             }]
         );
     }

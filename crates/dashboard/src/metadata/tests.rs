@@ -11,6 +11,170 @@ use std::{
 };
 
 #[test]
+#[ignore = "read-only G2 recording; BATTLE_PLAN_COMPAT_RECORDINGS supplies its path"]
+fn compatibility_real_g2_product_impact() {
+    use crate::{
+        products::{self, LoadContext, Product},
+        scope::{Context, RecordedScopes, Target, Unresolved},
+    };
+    use installed_content::{
+        localisation::Localisation,
+        scope::{Keyword, Scope},
+        tag_aliases::TagAliases,
+    };
+    let path = std::env::var("BATTLE_PLAN_COMPAT_RECORDINGS").or_else(|_| std::env::var("HOI4_COMPAT_RECORDINGS")).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let source = crate::Source::open(
+        crate::SourceKey {
+            source_id: "g2".into(),
+            revision: "read-only".into(),
+        },
+        path.into(),
+        &cancelled,
+    )
+    .unwrap();
+    let replay = source.replay();
+    assert_eq!(replay.format.version(), 94);
+    let replay::container::SeekResult::Frame(frame) = replay.seek(2, 60827796).unwrap() else {
+        panic!("missing G2 comparison hour")
+    };
+    let countries = frame.complete::<replay::rows::tables::Countries>().unwrap();
+    let country = countries
+        .iter()
+        .find(|country| {
+            country.canonical_slot > 0
+                && country.tag.len() == 3
+                && country.tag.iter().all(u8::is_ascii_alphabetic)
+        })
+        .unwrap();
+    let tag = std::str::from_utf8(&country.tag).unwrap();
+    let localisation = Localisation::default();
+    let styles = products::country_styles::HourStyles::read(&frame, Some(&localisation)).unwrap();
+    let coloured = countries
+        .iter()
+        .filter(|country| {
+            let tag = std::str::from_utf8(&country.tag).unwrap();
+            styles.get(tag).is_some_and(|style| style.color.is_some())
+        })
+        .count();
+    assert!(coloured > 0);
+    let flags = products::country_flags::choices(&frame).unwrap();
+    assert!(!flags.is_empty());
+    let appearances = frame
+        .complete::<replay::rows::tables::CountryAppearance>()
+        .unwrap();
+    for flag in &flags {
+        let fallback = appearances
+            .iter()
+            .find(|row| row.country == flag.raw)
+            .map(|row| std::str::from_utf8(&row.name_tag).unwrap())
+            .filter(|original| !original.is_empty())
+            .unwrap_or(&flag.tag);
+        assert_eq!(flag.candidates.last().map(String::as_str), Some(fallback));
+    }
+    let names = installed_content::country_names::CountryNames::read(&frame, &localisation);
+    assert!(names.operands(country.canonical_slot).unwrap().is_ok());
+    let scopes = RecordedScopes::read(&frame, Arc::new(TagAliases::default()));
+    assert_eq!(scopes.resolve_tag(tag).unwrap(), country.canonical_slot);
+    let context = Context::country(country.canonical_slot);
+    assert!(matches!(
+        scopes.resolve(&Scope::Keyword(Keyword::Overlord), &context),
+        Ok(_) | Err(Unresolved::Nothing(_))
+    ));
+    assert_eq!(
+        scopes
+            .resolve(&Scope::Keyword(Keyword::Root), &context)
+            .unwrap(),
+        Target::Country(country.canonical_slot)
+    );
+    let context = LoadContext { content: None };
+    let measure = products::country_measure::CountryMeasure::load(
+        &source,
+        &products::country_measure::MeasureParams {
+            branch_id: "2".into(),
+            measure: products::country_measure::Measure::CommandPower,
+            tags: vec![tag.into()],
+        },
+        &context,
+        &cancelled,
+    )
+    .unwrap();
+    assert!(measure.series.iter().any(|series| !series.runs.is_empty()));
+    let owners = products::land_owners::land_owners(&replay, None, &cancelled).unwrap();
+    println!(
+        "G2_PRODUCT country-styles: {} colour rows; country naming operands retained (localisation not loaded in this check); country-flags: {} native cosmetic/original choices; OVERLORD retained",
+        coloured,
+        flags.len()
+    );
+    println!(
+        "G2_PRODUCT command-power: {} runs; land-owners: {} countries",
+        measure
+            .series
+            .iter()
+            .map(|series| series.runs.len())
+            .sum::<usize>(),
+        owners.countries.len()
+    );
+    for table in [
+        replay::rows::TableId::CountryAppearance,
+        replay::rows::TableId::DivisionTemplates,
+        replay::rows::TableId::Decisions,
+        replay::rows::TableId::DivisionMovement,
+    ] {
+        assert!(matches!(
+            &*frame.tables[table.index()],
+            TableView::Complete(_)
+        ));
+    }
+}
+
+#[test]
+fn metadata_compatibility_opens_format94_and_surfaces_every_named_gap() {
+    let mut frame = source(1, 1000, Some(1));
+    for table in [
+        TableId::CountryAppearance,
+        TableId::DivisionTemplates,
+        TableId::Decisions,
+        TableId::DivisionMovement,
+    ] {
+        // Empty snapshots have the same wire framing in both contracts.
+        *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+    }
+    let mut records = records(1, vec![frame]);
+    let replay::spool::Record::SessionStart(session) = &mut records[0] else {
+        unreachable!();
+    };
+    session.identity.coverage_policy = 3;
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records]).unwrap();
+    let mut bytes = replay.bytes().to_vec();
+    bytes[4..6].copy_from_slice(&94_u16.to_le_bytes());
+    let replay = Arc::new(Replay::open(bytes).unwrap());
+    let metadata = crate::metadata::read(
+        &replay,
+        Path::new("format94.battleplan"),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(metadata.format, 94);
+    assert_eq!(metadata.countries.len(), 1);
+    assert_eq!(metadata.countries[0].tag, "GER");
+    let expected = replay.compatibility_gaps();
+    assert_eq!(expected.len(), 4);
+    assert_eq!(metadata.warnings, expected);
+    for table in [
+        TableId::CountryAppearance,
+        TableId::DivisionTemplates,
+        TableId::Decisions,
+        TableId::DivisionMovement,
+    ] {
+        assert!(metadata.warnings.iter().any(|warning| {
+            warning.starts_with(&format!("{table:?}."))
+                && warning.contains("this recording is format 94")
+        }));
+    }
+}
+
+#[test]
 fn metadata_partial_marker_keeps_the_failure_separate_from_known_and_unknown_hour_gaps() {
     use replay::{
         branches::Gap,

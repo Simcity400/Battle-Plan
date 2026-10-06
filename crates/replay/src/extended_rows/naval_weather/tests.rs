@@ -4,12 +4,12 @@ use super::*;
 fn temperature_and_raw_mud_deltas_keep_extreme_native_words() {
     let before = WeatherProvinceRow {
         id: 13_413,
-        temperature: i64::MIN,
+        temperature: crate::rows::Recorded::Value(i64::MIN),
         ..Default::default()
     };
     let after = WeatherProvinceRow {
-        temperature: i64::MAX,
-        raw_mud: 255,
+        temperature: crate::rows::Recorded::Value(i64::MAX),
+        raw_mud: crate::rows::Recorded::Value(255),
         ..before.clone()
     };
     let delta = after.delta(Some(&before)).unwrap().unwrap();

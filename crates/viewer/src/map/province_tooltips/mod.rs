@@ -429,7 +429,8 @@ impl Context<'_> {
                     .map_err(|e| e.to_string())?
                     .first()
                     .ok_or("simulation features absent")?
-                    .weather_suspend;
+                    .weather_suspend
+                    .require("SimulationFeatures.weather_suspend")?;
                 let centroid = self
                     .content
                     .province_geometry
@@ -444,7 +445,7 @@ impl Context<'_> {
                         .clock
                         .as_ref()
                         .map_err(Clone::clone)?,
-                    flags,
+                    *flags,
                 )?;
                 self.loc(
                     "PROV_TOOLTIP_LOCAL_TIME",

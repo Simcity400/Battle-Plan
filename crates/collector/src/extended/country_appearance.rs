@@ -182,10 +182,12 @@ impl Captured {
                 .zip(&self.subject_starts),
             |(r, &start)| CountryAppearanceRow {
                 country: r.country,
-                subjects: owned_vec(engine::allocation::collect_vec(
-                    subjects[start..start + r.subjects.count as usize]
-                        .iter()
-                        .map(|&value| value as i32),
+                subjects: replay::rows::Recorded::Value(owned_vec(
+                    engine::allocation::collect_vec(
+                        subjects[start..start + r.subjects.count as usize]
+                            .iter()
+                            .map(|&value| value as i32),
+                    ),
                 )),
                 red: r.rgba[0],
                 green: r.rgba[1],

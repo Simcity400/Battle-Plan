@@ -4,6 +4,8 @@
 
 Native layouts, offsets and guarded readers belong in [`engine`](../engine/README.md). Replay schemas, cadence and encoding belong in [`replay`](../replay/README.md).
 
+At attach, campaign history accepts only the current writing format: move an older campaign replay aside or select another replay directory before continuing it. Older recordings remain readable for viewing, but cannot seed parentage for a session that current finalization cannot append.
+
 Live-sized and potentially large rows, arenas, byte buffers, decode pools,
 staging, slicing, encoded records and status JSON use the shared checked-growth
 helpers in [engine](../engine/src/allocation.rs). Batch reserves cover subsequent
@@ -60,6 +62,8 @@ Run the ignored `equipment_destruction::tests::destruction_scale_bench` test in
 release through the build wrapper, with `--ignored --nocapture --test-threads=1`.
 It exercises the actual callback and SEH-guarded reads at the design and stress
 country scales. Synthetic timing does not certify game slowdown or live cost.
+
+Playback compatibility is for viewing only; campaign attach and append still require the current format. Older playback rows distinguish an appended field that was not recorded from a native empty or zero value. Dependent features report named, counted refusals; unchanged fields remain available. See [replay compatibility](../replay/README.md#compatibility-and-recovery).
 
 ## Start here
 
@@ -267,7 +271,7 @@ TaskForceMissions shares the hourly fleet walk of [naval_counters.rs](src/extend
 
 ## Changing a capture path
 
-**Add a table.** Add its replay row and ID in [rows.rs](../replay/src/rows.rs) or [extended row modules](../replay/src/extended_rows/), its cadence entry, and an `extended/<pack>.rs` pack with `N`, `TABLES`, `READ_GROUPS`, `Capacities` and `Captured`'s `capture`, `outcomes` and `tables`. Register it in `packs!` in [extended/mod.rs](src/extended/mod.rs), then wire acquisition and conversion through the appropriate job. Change the [format](../replay/src/format.rs) version when the wire or recorded observation semantics change. Only the current format is supported; update its writers and consumers together.
+**Add a table.** Add its replay row and ID in [rows.rs](../replay/src/rows.rs) or [extended row modules](../replay/src/extended_rows/), its cadence entry, and an `extended/<pack>.rs` pack with `N`, `TABLES`, `READ_GROUPS`, `Capacities` and `Captured`'s `capture`, `outcomes` and `tables`. Register it in `packs!` in [extended/mod.rs](src/extended/mod.rs), then wire acquisition and conversion through the appropriate job. Change the [format](../replay/src/format.rs) version when the wire or recorded observation semantics change. Writers emit the current format; update writers, consumers and the [per-table reader history](../replay/README.md#compatibility-and-recovery) together.
 
 **Move a pack into a job.** In [extended/packs.rs](src/extended/packs.rs), wire its `Captured` through the matching multi-pack struct, `spare()`, `capture`, `swap_*` and take/restore paths; remove the former inline walk without breaking the failure distinctions above. A dedicated job also needs `Job`, `Report`, `Role`, `read_anchor`, `priority`, `ROLE_COUNT`, `ROLES`, `Job::role`, and dependency-correct dispatch/join points in `sampling.rs`.
 

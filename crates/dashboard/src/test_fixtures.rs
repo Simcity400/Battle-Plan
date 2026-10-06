@@ -79,7 +79,7 @@ pub(crate) fn source(branch: u64, hour: i32, power: Option<i64>) -> DecodedFrame
         }]));
     tables[TableId::Countries.index()] =
         TableView::Complete(TableRows::Countries(vec![CountryRow {
-            border_land_doctrine_level: None,
+            border_land_doctrine_level: replay::rows::Recorded::Value(None),
             id: 9001,
             canonical_slot: 7,
             tag: b"GER".to_vec(),
