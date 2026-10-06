@@ -5,7 +5,8 @@
 
 use crate::products::country_groups::HourSpan;
 use std::{
-    collections::BTreeMap,
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet},
     io,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -67,52 +68,147 @@ pub fn top_membership<R>(
     value: impl Fn(&R) -> Option<i64>,
     cancelled: &AtomicBool,
 ) -> io::Result<BTreeMap<String, Vec<HourSpan>>> {
+    membership(
+        series,
+        count,
+        span,
+        |run| value(run).map(i128::from),
+        true,
+        false,
+        cancelled,
+    )
+}
+
+/// Exact table ranking in either direction. An active run with an unknown value
+/// sorts after all known values; no run means the country is absent. Tags break
+/// ties in recorded UTF-8 order. Callers supply identity spans independently of
+/// their measure's coverage, so missing data never becomes a recorded zero.
+pub fn top_membership_exact<R>(
+    series: &BTreeMap<String, Vec<R>>,
+    count: usize,
+    span: impl Fn(&R) -> (i32, i32),
+    value: impl Fn(&R) -> Option<i128>,
+    descending: bool,
+    cancelled: &AtomicBool,
+) -> io::Result<BTreeMap<String, Vec<HourSpan>>> {
+    membership(series, count, span, value, descending, true, cancelled)
+}
+
+// Reverse compares directly, so descending values retain both i128 extrema.
+// Every set uses one direction; either known variant precedes Unknown.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+enum RankValue {
+    Ascending(i128),
+    Descending(Reverse<i128>),
+    Unknown,
+}
+
+struct RankEvent {
+    hour: i64,
+    starts: bool,
+    index: usize,
+}
+
+fn membership<R>(
+    series: &BTreeMap<String, Vec<R>>,
+    count: usize,
+    span: impl Fn(&R) -> (i32, i32),
+    value: impl Fn(&R) -> Option<i128>,
+    descending: bool,
+    include_unknown: bool,
+    cancelled: &AtomicBool,
+) -> io::Result<BTreeMap<String, Vec<HourSpan>>> {
+    if cancelled.load(Ordering::Acquire) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "The ranking was cancelled",
+        ));
+    }
+    if count == 0 {
+        return Ok(BTreeMap::new());
+    }
     let tags: Vec<(&String, &Vec<R>)> = series.iter().collect();
-    let mut bounds: Vec<i32> = tags
-        .iter()
-        .flat_map(|(_, runs)| runs.iter())
-        .flat_map(|run| {
+    let mut events = Vec::new();
+    let mut steps = 0usize;
+    for (index, runs) in series.values().enumerate() {
+        for run in runs {
+            steps += 1;
+            if steps.is_multiple_of(4096) && cancelled.load(Ordering::Acquire) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "The ranking was cancelled",
+                ));
+            }
             let (first, last) = span(run);
-            [first, last.saturating_add(1)]
-        })
-        .collect();
-    bounds.sort_unstable();
-    bounds.dedup();
-    let mut cursors = vec![0usize; tags.len()];
+            events.push(RankEvent {
+                hour: i64::from(first),
+                starts: true,
+                index,
+            });
+            events.push(RankEvent {
+                hour: i64::from(last) + 1,
+                starts: false,
+                index,
+            });
+        }
+    }
+    // Ends precede starts at the same boundary, including adjacent equal runs.
+    // i64 keeps the one-past-i32::MAX boundary distinct from recorded hours.
+    events.sort_unstable_by_key(|event| (event.hour, event.starts));
+    if cancelled.load(Ordering::Acquire) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "The ranking was cancelled",
+        ));
+    }
     let mut spans: Vec<Vec<HourSpan>> = vec![Vec::new(); tags.len()];
-    let mut present: Vec<(i64, usize)> = Vec::with_capacity(tags.len());
-    for (step, window) in bounds.windows(2).enumerate() {
-        if step.is_multiple_of(4096) && cancelled.load(Ordering::Acquire) {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "The ranking was cancelled",
-            ));
-        }
-        let (start, end) = (window[0], window[1] - 1);
-        present.clear();
-        for (index, (_, runs)) in tags.iter().enumerate() {
-            let cursor = &mut cursors[index];
-            while runs.get(*cursor).is_some_and(|run| span(run).1 < start) {
-                *cursor += 1;
+    let mut cursors = vec![0usize; tags.len()];
+    let mut active = vec![None; tags.len()];
+    let mut ranked = BTreeSet::new();
+    let mut event_index = 0;
+    while let Some(event) = events.get(event_index) {
+        let hour = event.hour;
+        while let Some(event) = events.get(event_index).filter(|event| event.hour == hour) {
+            steps += 1;
+            if steps.is_multiple_of(4096) && cancelled.load(Ordering::Acquire) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "The ranking was cancelled",
+                ));
             }
-            // Every run starts at a bound, so one holding `start` holds to `end`.
-            if let Some(value) = runs
-                .get(*cursor)
-                .filter(|run| span(run).0 <= start)
-                .and_then(&value)
-            {
-                present.push((value, index));
+            if event.starts {
+                let amount = match value(&tags[event.index].1[cursors[event.index]]) {
+                    Some(amount) if descending => Some(RankValue::Descending(Reverse(amount))),
+                    Some(amount) => Some(RankValue::Ascending(amount)),
+                    None if include_unknown => Some(RankValue::Unknown),
+                    None => None,
+                };
+                active[event.index] = amount;
+                if let Some(amount) = amount {
+                    ranked.insert((amount, event.index));
+                }
+            } else {
+                if let Some(amount) = active[event.index].take() {
+                    ranked.remove(&(amount, event.index));
+                }
+                cursors[event.index] += 1;
             }
+            event_index += 1;
         }
-        // Highest first; tags are in order, so the index breaks ties by tag.
-        let order = |a: &(i64, usize), b: &(i64, usize)| b.0.cmp(&a.0).then(a.1.cmp(&b.1));
-        if count == 0 {
-            present.clear();
-        } else if present.len() > count {
-            present.select_nth_unstable_by(count - 1, order);
-            present.truncate(count);
-        }
-        for (_, index) in &present {
+        let Some(next) = events.get(event_index) else {
+            break;
+        };
+        let (start, end) = (hour as i32, (next.hour - 1) as i32);
+        // Changed countries update the set; its first N supply membership.
+        // The index breaks equal-value ties by the BTreeMap's UTF-8 tag order.
+        for (_, index) in ranked.iter().take(count) {
+            steps += 1;
+            if steps.is_multiple_of(4096) && cancelled.load(Ordering::Acquire) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "The ranking was cancelled",
+                ));
+            }
             let list = &mut spans[*index];
             match list.last_mut() {
                 Some(span) if span.last_hour.checked_add(1) == Some(start) => span.last_hour = end,
@@ -134,6 +230,323 @@ pub fn top_membership<R>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn ranking_sparse_changes_read_each_run_once_at_many_boundaries() {
+        let mut series: BTreeMap<_, _> = (0..5000)
+            .map(|index| (format!("country/{index:04}"), vec![(0, 999, Some(0i128))]))
+            .collect();
+        series.insert(
+            "moving".to_owned(),
+            (0..1000)
+                .map(|hour| (hour, hour, Some(if hour % 2 == 0 { 1 } else { -1 })))
+                .collect(),
+        );
+        let reads = Cell::new(0);
+        let top = top_membership_exact(
+            &series,
+            2,
+            |run| (run.0, run.1),
+            |run| {
+                reads.set(reads.get() + 1);
+                run.2
+            },
+            true,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(reads.get(), 6000);
+        assert_eq!(top.len(), 3);
+        assert_eq!(
+            top["country/0000"],
+            [HourSpan {
+                first_hour: 0,
+                last_hour: 999,
+            }]
+        );
+        assert_eq!(top["moving"].len(), 500);
+        assert!(top["moving"].iter().enumerate().all(|(index, span)| {
+            span.first_hour == index as i32 * 2 && span.last_hour == span.first_hour
+        }));
+        assert_eq!(top["country/0001"].len(), 500);
+        assert!(top["country/0001"].iter().enumerate().all(|(index, span)| {
+            span.first_hour == index as i32 * 2 + 1 && span.last_hour == span.first_hour
+        }));
+    }
+
+    #[test]
+    fn ranking_event_walk_matches_hourly_reference_with_gaps_unknowns_and_ties() {
+        let series: BTreeMap<String, Vec<(i32, i32, Option<i128>)>> = (0..64)
+            .map(|index| {
+                let tag = match index {
+                    0 => "\u{10000}".to_owned(),
+                    1 => "\u{e000}".to_owned(),
+                    _ => format!("country/{index:02}"),
+                };
+                let runs = (0..96)
+                    .filter(|hour| (hour + index) % 11 != 0)
+                    .map(|hour| {
+                        let amount = match (hour + index) % 19 {
+                            0 => None,
+                            1 => Some(i128::MIN),
+                            2 => Some(i128::MAX),
+                            _ => Some(i128::from((hour + index) % 7 - 3)),
+                        };
+                        (hour, hour, amount)
+                    })
+                    .collect();
+                (tag, runs)
+            })
+            .collect();
+        for descending in [false, true] {
+            for include_unknown in [false, true] {
+                for count in [0, 1, 7, 64, 99] {
+                    let mut expected: BTreeMap<String, Vec<HourSpan>> = BTreeMap::new();
+                    for hour in 0..96 {
+                        let mut present: Vec<_> = series
+                            .iter()
+                            .filter_map(|(tag, runs)| {
+                                let amount = runs.iter().find(|run| run.0 == hour)?.2;
+                                (include_unknown || amount.is_some()).then_some((tag, amount))
+                            })
+                            .collect();
+                        present.sort_unstable_by(|a, b| {
+                            match (a.1, b.1) {
+                                (Some(a), Some(b)) if descending => b.cmp(&a),
+                                (Some(a), Some(b)) => a.cmp(&b),
+                                (Some(_), None) => std::cmp::Ordering::Less,
+                                (None, Some(_)) => std::cmp::Ordering::Greater,
+                                (None, None) => std::cmp::Ordering::Equal,
+                            }
+                            .then(a.0.cmp(b.0))
+                        });
+                        for (tag, _) in present.into_iter().take(count) {
+                            let spans = expected.entry(tag.clone()).or_default();
+                            match spans.last_mut() {
+                                Some(span) if span.last_hour + 1 == hour => span.last_hour = hour,
+                                _ => spans.push(HourSpan {
+                                    first_hour: hour,
+                                    last_hour: hour,
+                                }),
+                            }
+                        }
+                    }
+                    let actual = membership(
+                        &series,
+                        count,
+                        |run| (run.0, run.1),
+                        |run| run.2,
+                        descending,
+                        include_unknown,
+                        &AtomicBool::new(false),
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        actual, expected,
+                        "direction={descending}, unknown={include_unknown}, count={count}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ranking_events_preserve_i32_endpoints_and_i128_extrema() {
+        let series = BTreeMap::from([
+            (
+                "A".to_owned(),
+                vec![
+                    (i32::MIN, i32::MIN, Some(i128::MIN)),
+                    (i32::MIN + 1, i32::MAX - 1, Some(i128::MAX)),
+                    (i32::MAX, i32::MAX, Some(i128::MIN)),
+                ],
+            ),
+            ("B".to_owned(), vec![(i32::MIN, i32::MAX, Some(0))]),
+        ]);
+        for descending in [false, true] {
+            let top = top_membership_exact(
+                &series,
+                1,
+                |run| (run.0, run.1),
+                |run| run.2,
+                descending,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            let endpoints = vec![
+                HourSpan {
+                    first_hour: i32::MIN,
+                    last_hour: i32::MIN,
+                },
+                HourSpan {
+                    first_hour: i32::MAX,
+                    last_hour: i32::MAX,
+                },
+            ];
+            let middle = vec![HourSpan {
+                first_hour: i32::MIN + 1,
+                last_hour: i32::MAX - 1,
+            }];
+            assert_eq!(&top["A"], if descending { &middle } else { &endpoints });
+            assert_eq!(&top["B"], if descending { &endpoints } else { &middle });
+        }
+    }
+
+    #[test]
+    fn ranking_event_preparation_observes_cancellation() {
+        let series = BTreeMap::from([(
+            "country".to_owned(),
+            (0..10000)
+                .map(|hour| (hour, hour, Some(0i128)))
+                .collect::<Vec<_>>(),
+        )]);
+        let cancelled = AtomicBool::new(false);
+        let reads = Cell::new(0);
+        let error = top_membership_exact(
+            &series,
+            1,
+            |run| {
+                reads.set(reads.get() + 1);
+                cancelled.store(true, Ordering::Release);
+                (run.0, run.1)
+            },
+            |run| run.2,
+            true,
+            &cancelled,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(reads.get() < 10000);
+    }
+
+    #[test]
+    fn scoreboard_ranking_exact_missing_last_and_direction_changes() {
+        let series = BTreeMap::from([
+            ("A".to_owned(), vec![(0, 9, Some(i128::MAX))]),
+            (
+                "B".to_owned(),
+                vec![(0, 4, Some(i128::MAX - 1)), (5, 9, None)],
+            ),
+            ("C".to_owned(), vec![(0, 9, None)]),
+            ("D".to_owned(), vec![(0, 9, Some(0))]),
+        ]);
+        let top = |descending, count| {
+            top_membership_exact(
+                &series,
+                count,
+                |run| (run.0, run.1),
+                |run| run.2,
+                descending,
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+        };
+        assert_eq!(top(true, 1).keys().cloned().collect::<Vec<_>>(), ["A"]);
+        assert_eq!(top(false, 1).keys().cloned().collect::<Vec<_>>(), ["D"]);
+        let filled = top(true, 3);
+        assert_eq!(
+            filled["B"],
+            [HourSpan {
+                first_hour: 0,
+                last_hour: 9
+            }]
+        );
+        assert!(!filled.contains_key("C"));
+        assert!(top(false, 0).is_empty());
+        let endpoint = BTreeMap::from([("edge".to_owned(), vec![(i32::MAX, i32::MAX, Some(1))])]);
+        assert_eq!(
+            top_membership_exact(
+                &endpoint,
+                1,
+                |run| (run.0, run.1),
+                |run| run.2,
+                true,
+                &AtomicBool::new(false)
+            )
+            .unwrap()["edge"],
+            [HourSpan {
+                first_hour: i32::MAX,
+                last_hour: i32::MAX
+            }]
+        );
+        assert_eq!(
+            top_membership_exact(
+                &series,
+                1,
+                |run| (run.0, run.1),
+                |run| run.2,
+                true,
+                &AtomicBool::new(true)
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::Interrupted
+        );
+    }
+
+    #[test]
+    fn scoreboard_ranking_5000_countries_opaque_tags_and_disappearance() {
+        let series: BTreeMap<_, _> = (0..5000)
+            .map(|index| {
+                (
+                    format!("country/{index:04}"),
+                    vec![(
+                        0,
+                        if index == 0 { 4 } else { 9 },
+                        if index < 2 { Some(0i128) } else { None },
+                    )],
+                )
+            })
+            .collect();
+        for descending in [false, true] {
+            let top = top_membership_exact(
+                &series,
+                3,
+                |run| (run.0, run.1),
+                |run| run.2,
+                descending,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            assert_eq!(
+                top["country/0000"],
+                [HourSpan {
+                    first_hour: 0,
+                    last_hour: 4
+                }]
+            );
+            assert_eq!(
+                top["country/0002"],
+                [HourSpan {
+                    first_hour: 0,
+                    last_hour: 9
+                }]
+            );
+            assert_eq!(
+                top["country/0003"],
+                [HourSpan {
+                    first_hour: 5,
+                    last_hour: 9
+                }]
+            );
+            assert_eq!(top.len(), 4);
+        }
+        let tags = BTreeMap::from([
+            ("\u{10000}".to_owned(), vec![(0, 1, None)]),
+            ("\u{e000}".to_owned(), vec![(0, 1, None)]),
+        ]);
+        let top = top_membership_exact(
+            &tags,
+            1,
+            |run| (run.0, run.1),
+            |run| run.2,
+            true,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(top.contains_key("\u{e000}"));
+    }
 
     #[test]
     fn ranking_clipping_preserves_gaps_read_origins_and_refusals() {

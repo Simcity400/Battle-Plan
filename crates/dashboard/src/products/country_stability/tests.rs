@@ -421,4 +421,102 @@ fn a_stability_breakdown_needs_the_same_country_identity_as_its_history() {
     // CountryLinks no longer maps GER: the history leaves the hour out, and
     // so does the breakdown.
     assert!(load(102).series[0].breakdown.is_none());
+    let cached = super::histories(&source, 1, &["GER".into()], &AtomicBool::new(false)).unwrap();
+    // Naming an hour-specific breakdown never mutates the shared history.
+    assert!(cached["GER"].breakdown.is_none());
+}
+
+#[test]
+fn stability_histories_keep_large_sets_shared_after_a_new_widget_tag() {
+    let replay = Arc::new(
+        Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(
+                1,
+                vec![stability_frame(100, stability_inputs(), 100, vec![])],
+            )],
+        )
+        .unwrap(),
+    );
+    let source = crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: "stability-cache".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        replay,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let mut tags: Vec<String> = (0..4999).map(|index| format!("C{index}")).collect();
+    tags.push("GER".into());
+    let before = super::histories(&source, 1, &tags, &AtomicBool::new(false)).unwrap();
+    assert_eq!(before.len(), 5000);
+    assert!(before["GER"].recorded);
+    let small = super::histories(
+        &source,
+        1,
+        &["new-widget-tag".into()],
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(!small["new-widget-tag"].recorded);
+    // A cancelled token would reject any attempted scan. Cached histories need
+    // no new scan, and retain the exact same allocation for every country.
+    let after = super::histories(&source, 1, &tags, &AtomicBool::new(true)).unwrap();
+    for tag in &tags {
+        assert!(Arc::ptr_eq(&before[tag], &after[tag]), "{tag}");
+    }
+    let state = source.state::<super::Cache>();
+    let cache = state.lock().unwrap();
+    assert_eq!(cache.entries[&1].len(), 5001);
+}
+
+#[test]
+fn stability_breakdown_index_preserves_first_tag_match_and_link_validation() {
+    use crate::products::{LoadContext, Product};
+    let mut frame = stability_frame(100, stability_inputs(), 100, vec![]);
+    let mut countries = frame
+        .complete::<replay::rows::tables::Countries>()
+        .unwrap()
+        .to_vec();
+    // The first GER row has no link. A later valid row with the same tag cannot
+    // supply its identity.
+    countries.insert(
+        0,
+        replay::rows::CountryRow {
+            id: 1,
+            canonical_slot: 1,
+            tag: b"GER".to_vec(),
+            ..Default::default()
+        },
+    );
+    *frame.tables[TableId::Countries.index()] =
+        TableView::Complete(TableRows::Countries(countries));
+    let replay =
+        Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap());
+    let source = crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: "stability-breakdown-index".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        replay,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let reply = super::CountryStability::load(
+        &source,
+        &super::CountryStabilityParams {
+            branch_id: "1".into(),
+            tags: vec!["GER".into()],
+            hour: Some(100),
+            breakdown_only: true,
+        },
+        &LoadContext { content: None },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(reply.series[0].breakdown.is_none());
+    assert!(reply.warnings.is_empty());
 }

@@ -247,16 +247,7 @@ hour: number | null,
  * chart does not move them again.
  */
 breakdownOnly: boolean, };
-export type FixedRun = { firstHour: number, lastHour: number,
-/**
- * The exact stored integer as a decimal string.
- */
-valueRaw: string,
-/**
- * The line breaks before this run: it follows a gap, a missing value or a
- * different country identity rather than continuing the previous run.
- */
-startsSegment: boolean, };
+export type FixedRun = { firstHour: number, lastHour: number, valueRaw: string, startsSegment: boolean, };
 export type ReadRun = { firstHour: number, lastHour: number, readHour: number, };
 export type FormulaTerm = { term: string, valueRaw: string | null, };
 export type FormulaBreakdown = {
@@ -392,11 +383,7 @@ export type Measure = "politicalPower" | "commandPower";
 export type MeasureParams = { branchId: string, measure: Measure, tags: Array<string>, };
 export type BalanceDrop = { hour: number, beforeRaw: string, afterRaw: string, };
 export type MeasureSeries = { tag: string, runs: Array<FixedRun>, drops: Array<BalanceDrop>, };
-export type MeasureReply = { branchId: string, measure: Measure,
-/**
- * Decimal places of every raw value in this reply.
- */
-decimals: number, series: Array<MeasureSeries>, warnings: Array<string>, };
+export type MeasureReply = { branchId: string, measure: Measure, decimals: number, series: Array<MeasureSeries>, warnings: Array<string>, };
 export type FuelDay = {
 /**
  * Fuel the updates added, in [`FuelReply::gain_scale`] units (`ring_gain_raw`).
@@ -514,6 +501,28 @@ fields: Array<FactoryField>,
  * top N, by tag.
  */
 series: Array<FactorySeries>, warnings: Array<string>, };
+export type ScoreboardColumnKey = "factories" | "armySize" | "territory" | "casualties" | "planes" | "ships" | "factoriesBuilt" | "factoriesTopbar" | "equipmentProduced" | "politicalPower" | "commandPower" | "stability" | "warSupport" | "nukes";
+export type ScoreboardTop = { count: number, sort: ScoreboardColumnKey, descending: boolean, };
+export type ScoreboardParams = { branchId: string, columns: Array<ScoreboardColumnKey>, tags: Array<string>, top: ScoreboardTop | null, };
+export type ScoreboardColumn = { key: ScoreboardColumnKey, label: string, unit: string, decimals: number, available: boolean, reason: string | null, };
+export type ScoreboardRun = { firstHour: number, lastHour: number,
+/**
+ * Exact signed integer in units of 10^-decimals. None is unknown.
+ */
+amount: string | null, startsSegment: boolean, };
+export type ScoreboardReadRun = { firstHour: number, lastHour: number, readHour: number,
+/**
+ * Every hour is a supplying read; otherwise read_hour supplies this span.
+ */
+hourly: boolean, };
+export type CountryIdentityRun = { firstHour: number, lastHour: number, slot: number, countryId: number, };
+export type ScoreboardColumnSeries = { key: ScoreboardColumnKey, runs: Array<ScoreboardRun>, readRuns: Array<ScoreboardReadRun>, };
+export type ScoreboardSeries = { tag: string, segments: Array<HourSpan>, identities: Array<CountryIdentityRun>, membership: Array<HourSpan> | null, columns: Array<ScoreboardColumnSeries>, };
+export type ScoreboardReply = { branchId: string, defaultColumns: Array<ScoreboardColumnKey>, defaultSort: ScoreboardColumnKey,
+/**
+ * The one complete column registry, also returned for settings-only reads.
+ */
+columns: Array<ScoreboardColumn>, series: Array<ScoreboardSeries>, warnings: Array<string>, };
 export type NukesParams = { branchId: string, tags: Array<string>, top: number | null, };
 export type NukeTypeInfo = { ordinal: number, token: string | null, name: string | null, supported: boolean, };
 export type NukeCount = { ordinal: number, value: number, };
@@ -2234,4 +2243,4 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "country-nukes", "raids", "occupied-states", "idea-history", "party-history", "resource-balance", "decryption", "production-lines", "production-line-detail", "equipment-stockpile", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "equipment-losses", "construction-spending", "espionage-log", "agency-comparison"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "scoreboard", "country-nukes", "raids", "occupied-states", "idea-history", "party-history", "resource-balance", "decryption", "production-lines", "production-line-detail", "equipment-stockpile", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "equipment-losses", "construction-spending", "espionage-log", "agency-comparison"] as const;

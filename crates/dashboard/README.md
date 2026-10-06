@@ -204,3 +204,34 @@ Explicit province text contexts use recorded province names, state ownership and
 Saved-global event targets resolve from the recorded registry in native first-match order. Scope keys, country operands, scoped variables and tag aliases use their respective native lookup paths; missing, cleared and dead targets decide as invalid. Current consumers construct fresh scopes; event-chain consumers must supply their runtime target arrays when introduced. Live object kinds without a reproduced evaluator remain named refusals; countries, states, characters and character-backed leaders are supported in triggers. Scripted-text promotions use their separate native selector for countries, states and characters; a missing or invalid name leaves the text context unchanged. Other text object kinds remain named refusals.
 
 `has_dynamic_modifier` reads the current country's or state's recorded modifier container. Its optional `scope` operand uses the shared scoped-variable evaluator: a country target compares country aliases, a state target compares the stored state ID, and an empty target tests only the first matching entry for an empty scope. Explicit targets scan every entry of the definition. Presence ignores the entry's enabled state and remaining duration. Definition names come from the recorded native definitions and the trigger body from the recorded content stack; missing tables and unresolved target links remain named refusals.
+
+The [Scoreboard product](src/products/scoreboard.rs) is a table of requested
+shared per-country measures, with a single registry for labels, units, exact
+formatting. Its defaults are returned by the product; country selection has no
+product count cap. Factory counts use the Factories scan and count helper;
+Stability and War support use their single-stat histories; Nukes and Equipment
+produced reuse their existing cached scans. Political and Command power share
+the country identity/balance scan in
+[country_history.rs](src/products/country_history.rs) with Country measure.
+That cache retains identities for every country and materializes each balance
+field only when requested. Native values stay numeric internally, and adding
+another field shares existing histories through Arc while scanning only the
+missing field. Stability histories also share immutable per-country cache entries
+without evicting a large table when another widget asks for a new country.
+Owned territory is the recorded native owned-state roster count, which excludes
+zero-province state templates exactly as the native roster writer does. An
+unavailable or ambiguous row remains unknown rather than becoming zero.
+
+The Military leads' Army size, Planes, Ships and Casualties columns each have
+one unavailable adapter supplying both availability and values, pending their
+shared measures. Unavailable measures cannot supply top-N membership. The table
+ranks over every identity-present country, places missing values last in either
+sort direction, and cuts requested values to top-membership spans using the shared
+ranking helper. Ranking updates ordered membership only for countries whose
+value changes; supplying read dates are merged in a forward walk only for
+returned countries. Manual country picks follow their recorded native identity
+through a tag rename. Values and supplying read dates are separate; gaps and
+identity changes end runs. Replies refuse the shared product budget rather than
+truncating. The UI sends one request for the chosen countries or top N;
+only the shared reply-size budget refuses an oversized Scoreboard response.
+No live capture or new recording field is required.

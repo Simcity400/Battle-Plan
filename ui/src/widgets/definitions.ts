@@ -24,6 +24,7 @@ import { definition as politicalPower } from './political-power/definition.ts';
 import { definition as productionLines } from './production-lines/definition.ts';
 import { definition as productionSpending } from './production-spending/definition.ts';
 import { definition as research } from './research/definition.ts';
+import { definition as scoreboard } from './scoreboard/definition.ts';
 import { definition as raidLog } from './raid-log/definition.ts';
 import { definition as raidTally } from './raid-tally/definition.ts';
 import { definition as resourceBalance } from './resource-balance/definition.ts';
@@ -35,6 +36,6 @@ import { definition as subjects } from './subjects/definition.ts';
 import { definition as tradeFlows } from './trade-flows/definition.ts';
 import { definition as worldTension } from './world-tension/definition.ts';
 
-export const widgetMetas = [map, nationalFocus, research, politicalPower, commandPower, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, resourceBalance, equipmentStockpile, fuel, productionLines, factories, equipmentProduced, productionSpending, occupiedStates, experience, factions, subjects, tradeFlows, worldTension, autonomy, constructionLog, constructionSpending, specialProjects, nuclearArsenal, raidLog, raidTally, decryption, espionageLog, agencyComparison, placeholder] as const;
+export const widgetMetas = [map, nationalFocus, research, politicalPower, commandPower, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, resourceBalance, equipmentStockpile, fuel, productionLines, factories, equipmentProduced, productionSpending, occupiedStates, experience, factions, subjects, tradeFlows, worldTension, autonomy, constructionLog, constructionSpending, specialProjects, nuclearArsenal, raidLog, raidTally, decryption, espionageLog, agencyComparison, scoreboard, placeholder] as const;
 
 registerWidgets(widgetMetas);

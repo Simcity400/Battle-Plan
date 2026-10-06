@@ -861,7 +861,7 @@ struct ContentCache {
 
 /// The branch's scan: the cached one, or one scanned now while the lock keeps any
 /// other request for it waiting for this scan.
-fn scanned_branch(
+pub(crate) fn scanned_branch(
     source: &Source,
     branch: u64,
     cancelled: &AtomicBool,

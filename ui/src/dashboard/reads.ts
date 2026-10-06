@@ -1,4 +1,5 @@
 import { formatDateTime } from './calendar.ts';
+import { runAt } from '../charts/series.ts';
 
 /** When recorded values were true. A table read on a cadence (daily, say) carries
  * each read's values to the hours until the next read; products list the hours of
@@ -14,6 +15,17 @@ export function readAt(reads: readonly number[], hour: number): number | null {
     if (reads[middle] <= hour) { found = reads[middle]; low = middle + 1; } else high = middle - 1;
   }
   return found;
+}
+
+export interface ReadRun { firstHour: number; lastHour: number; readHour: number; hourly: boolean }
+/** Compressed read history: hourly runs were read at the exact shown hour;
+ * cadence-held runs retain their supplying read. Outside full coverage stays
+ * missing. Stability's carried-only lists explicitly use implicit hourly reads. */
+export function readRunAt(reads: readonly ReadRun[], hour: number): number | null;
+export function readRunAt(reads: readonly Omit<ReadRun, 'hourly'>[], hour: number, implicitHourly: true): number;
+export function readRunAt(reads: readonly (Omit<ReadRun, 'hourly'> & { hourly?: boolean })[], hour: number, implicitHourly = false): number | null {
+  const run = runAt(reads, hour);
+  return run ? run.hourly ? hour : run.readHour : implicitHourly ? hour : null;
 }
 
 /** The recorded entry that applies at an hour (such as a variant's name as a read

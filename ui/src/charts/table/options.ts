@@ -1,4 +1,5 @@
 import type { OptionField } from '../../dashboard/options';
+import { contentKey, setToken } from '../../dashboard/options.ts';
 import type { Sort } from './logic';
 
 export const TABLE_OPTIONS: readonly OptionField[] = [
@@ -13,15 +14,25 @@ export const sortKey = (sort: Sort): string => JSON.stringify([sort.column, sort
 export function tableSortOf(value: unknown, fallback: Sort): Sort {
   if (typeof value !== 'string') return fallback;
   try {
-    const parsed: unknown = JSON.parse(value);
+    const parsed: unknown = JSON.parse(value.startsWith('[') ? value : contentKey(value));
     if (!Array.isArray(parsed) || parsed.length !== 2) return fallback;
     const [column, direction] = parsed;
     return typeof column === 'string' && (direction === 'ascending' || direction === 'descending') ? { column, direction } : fallback;
   } catch { return fallback; }
 }
-export function tableSortOptions(columns: readonly { key: string; label: string; sortable?: boolean }[], sort: Sort): OptionField[] {
+type SortColumn = { key: string; label: string; sortable?: boolean };
+/** Recording-dependent columns use a content choice; header clicks store this token. */
+export const tableSortToken = (sort: Sort): string => setToken(sortKey(sort));
+function sortChoices(columns: readonly SortColumn[], token: (sort: Sort) => string): { value: string; label: string }[] {
+  return columns.filter(column => column.sortable !== false).flatMap(column => (['descending', 'ascending'] as const).map(direction => ({
+    value: token({ column: column.key, direction }), label: `${column.label} · ${direction}`,
+  })));
+}
+export function tableSortChoices(columns: readonly SortColumn[]): { value: string; label: string }[] {
+  return sortChoices(columns, tableSortToken);
+}
+export function tableSortOptions(columns: readonly SortColumn[], sort: Sort, content = false): OptionField[] {
+  if (content) return [{ key: 'tableSort', section: 'options', label: 'Sort by', kind: 'content-choice', default: '', automatic: `Default column · ${sort.direction}` }];
   return [{ key: 'tableSort', section: 'options', label: 'Sort by', kind: 'choice', default: sortKey(sort),
-    choices: columns.filter(column => column.sortable !== false).flatMap(column => (['descending', 'ascending'] as const).map(direction => ({
-      value: sortKey({ column: column.key, direction }), label: `${column.label} · ${direction === 'descending' ? 'descending' : 'ascending'}`,
-    }))) }];
+    choices: sortChoices(columns, sortKey) }];
 }

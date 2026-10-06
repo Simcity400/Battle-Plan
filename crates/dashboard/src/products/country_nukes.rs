@@ -486,7 +486,7 @@ struct Scans {
     branch: Option<(u64, Arc<ScannedNukes>)>,
 }
 
-fn scanned_branch(
+pub(crate) fn scanned_branch(
     source: &Source,
     branch: u64,
     cancelled: &AtomicBool,

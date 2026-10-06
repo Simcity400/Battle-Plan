@@ -58,7 +58,9 @@ export interface ProductState<T> { data?: T; error?: string; retry: () => void }
  * Request order is reply order; one failure never presents a partial comparison
  * as complete. Playback still performs only local lookups. */
 export function useProducts<T>(client: DashboardClient, requests: readonly ProductRequest[], active: boolean, validate?: (data: unknown) => T): ProductState<T[]> {
-  const key = JSON.stringify(requests.map(productKey));
+  const content = useContentRevision(client);
+  // Every request uses the current content revision, never its array index.
+  const key = JSON.stringify(requests.map(request => productKey(request, content)));
   const [state, setState] = useState<{ key: string; data?: T[]; error?: string }>();
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {

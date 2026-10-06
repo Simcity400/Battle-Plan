@@ -20,7 +20,11 @@ export type { TableColumn } from './columns';
 const WINDOWING_THRESHOLD = 120;
 export interface TableProps<T> {
   label: string; rows: readonly T[]; columns: readonly TableColumn<T>[]; rowKey: (row: T) => string;
+  /** Current recorded tag order may differ from a country's stable motion key. */
+  tieKey?: (row: T) => string;
   sort: Sort; setOption?: WidgetProps['setOption'];
+  /** Content-dependent column choices encode their persisted sort token. */
+  sortOptionValue?: (sort: Sort) => string;
   cellBars?: boolean; rank?: boolean; rankMarkers?: boolean; density?: 'comfortable' | 'compact';
   /** Comfortable-density height in layout pixels; compact scales by the CSS ratio. */
   rowHeight?: number;
@@ -34,7 +38,7 @@ export interface TableProps<T> {
 }
 
 /** style-5 Scoreboard: real table semantics, only the viewport's rows mounted. */
-export default function Table<T>({ label, rows, columns, rowKey, sort: storedSort, setOption, cellBars = true,
+export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey, sort: storedSort, setOption, sortOptionValue = sortKey, cellBars = true,
   rank = false, rankMarkers = true, density = 'comfortable', rowHeight, onRowClick, muted, menu: rowMenu,
   tooltip, onVisibleRows, hoursPerSecond = 1 }: TableProps<T>) {
   const owner = useId();
@@ -55,8 +59,8 @@ export default function Table<T>({ label, rows, columns, rowKey, sort: storedSor
     ?? columns.find(column => column.sortable !== false);
   const sort = { column: sortedColumn?.key ?? '', direction: requestedSort.direction };
   const ordered = useMemo(() => {
-    return sortRows(rows, sortedColumn?.value ?? (() => null), sort.direction, rowKey);
-  }, [rows, sortedColumn, sort.direction, rowKey]);
+    return sortRows(rows, sortedColumn?.value ?? (() => null), sort.direction, rowKey, tieKey);
+  }, [rows, sortedColumn, sort.direction, rowKey, tieKey]);
   const items = useMemo(() => ordered.map((item, slot) => ({ key: rowKey(item), item: { value: item, rank: slot + 1 } })), [ordered, rowKey]);
   const moving = useRowMotion(items);
   const committedWindow = useRef<{ items: typeof items; keys: ReadonlySet<string> } | null>(null);
@@ -181,11 +185,11 @@ export default function Table<T>({ label, rows, columns, rowKey, sort: storedSor
     onScroll={event => { const top = event.currentTarget.scrollTop; setView(before => ({ ...before, top })); }} onPointerLeave={() => { if (activeTip.current?.origin === 'pointer') clearTip(); }}>
     <table aria-label={label} aria-rowcount={ordered.length + 1}>
       <thead><tr>{rank && <th scope="col" className="table-rank">#</th>}{columns.map(column => <th key={column.key} scope="col"
-        className={`${column.numeric ? 'is-numeric ' : ''}align-${columnAlign(column)}`} aria-label={column.label}
+        className={`${column.numeric ? 'is-numeric ' : ''}align-${columnAlign(column)}`} aria-label={column.label} data-tooltip={column.hint}
         aria-sort={column.sortable === false ? undefined : sort.column === column.key ? sort.direction : 'none'}>
         {column.sortable === false ? naturalContent(column, column.header) : <button type="button" aria-label={column.label} onClick={() => {
           const next = nextSort(sort, column.key, column.numeric ? 'descending' : 'ascending');
-          if (setOption) setOption('tableSort', sortKey(next)); else setLocalSort(next);
+          if (setOption) setOption('tableSort', sortOptionValue(next)); else setLocalSort(next);
         }}>{naturalContent(column, <>{column.header}{(sort.column === column.key || column.width === 'max-content') && <span className="table-sort" aria-hidden="true" style={{ visibility: sort.column === column.key ? undefined : 'hidden' }}> {sort.direction === 'descending' ? '▾' : '▴'}</span>}</>)}</button>}
       </th>)}</tr></thead>
       <tbody style={{ height: count * view.rowHeight }}>{mounted.map(row => {

@@ -4,11 +4,14 @@ use std::sync::{Arc, atomic::AtomicBool};
 
 #[test]
 fn measure_runs_compress_equal_hours_break_at_gaps_and_mark_net_drops() {
-    use crate::products::country_measure::{BalanceDrop, FixedRun, Measure, scan};
-    let run = |first_hour, last_hour, value: &str, starts_segment| FixedRun {
+    use crate::products::{
+        country_history::{NumericBalanceDrop, NumericRun, scan_histories},
+        country_measure::Measure,
+    };
+    let run = |first_hour, last_hour, value, starts_segment| NumericRun {
         first_hour,
         last_hour,
-        value_raw: value.into(),
+        value,
         starts_segment,
     };
     let replay = Replay::from_records(
@@ -29,36 +32,36 @@ fn measure_runs_compress_equal_hours_break_at_gaps_and_mark_net_drops() {
         )],
     )
     .unwrap();
-    let result = scan(
+    let result = scan_histories(
         &replay,
         1,
-        Measure::PoliticalPower,
-        &["GER", "ITA"],
+        false,
+        &[Measure::PoliticalPower],
         &AtomicBool::new(false),
     )
     .unwrap();
-    let germany = &result["GER"];
+    let germany = &result.countries["GER"].political_power;
     assert_eq!(
         germany.runs,
         [
-            run(100, 101, "1000000", true),
+            run(100, 101, 1_000_000, true),
             // A new value in the next hour continues the line.
-            run(102, 102, "900000", false),
+            run(102, 102, 900_000, false),
             // After a missing value or a missing hour the line starts again.
-            run(104, 104, "500000", true),
-            run(106, 106, "400000", true),
-            run(107, 107, "450000", false)
+            run(104, 104, 500_000, true),
+            run(106, 106, 400_000, true),
+            run(107, 107, 450_000, false)
         ]
     );
     assert_eq!(
         germany.drops,
-        [BalanceDrop {
+        [NumericBalanceDrop {
             hour: 102,
-            before_raw: "1000000".into(),
-            after_raw: "900000".into()
+            before: 1_000_000,
+            after: 900_000,
         }]
     );
-    assert!(result["ITA"].runs.is_empty());
+    assert!(!result.countries.contains_key("ITA"));
 }
 
 #[test]
@@ -136,6 +139,7 @@ fn measures_reply_every_requested_country_and_warn_for_unrecorded_ones() {
     )
     .unwrap();
     assert_eq!(command.measure, Measure::CommandPower);
+    assert_eq!(command.series[0].runs[0].value_raw, i64::MAX.to_string());
     assert_ne!(command.series[0].runs, reply.series[0].runs);
     let too_many = MeasureParams {
         branch_id: "1".into(),

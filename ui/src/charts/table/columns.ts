@@ -8,6 +8,8 @@ export interface TableColumn<T> {
   header: ReactNode;
   /** Accessible header name and the settings' Sort by text, even if header is empty. */
   label: string;
+  /** Header hint, including why a requested measure is unavailable. */
+  hint?: string;
   value: (row: T) => SortValue;
   render?: (row: T) => ReactNode;
   renderMissing?: boolean;

@@ -10,13 +10,14 @@ export const isMissing = (v: SortValue) => v == null || (typeof v === 'number' &
 const compareKey = compareTags;
 const valueCollator = new Intl.Collator(undefined, { numeric: true });
 /** Equal values always order by key, in either direction and across input updates. */
-export function sortRows<T>(rows: readonly T[], value: (row: T) => SortValue, direction: SortDirection, rowKey: (row: T) => string): T[] {
+export function sortRows<T>(rows: readonly T[], value: (row: T) => SortValue, direction: SortDirection, rowKey: (row: T) => string,
+  tieKey: (row: T) => string = rowKey): T[] {
   const present: { row: T; key: string; value: NonNullable<SortValue>; numeric: number }[] = [];
   const absent: { row: T; key: string }[] = [];
   let numerical = true;
   for (const row of rows) {
     const v = value(row);
-    const key = rowKey(row);
+    const key = tieKey(row);
     if (isMissing(v)) absent.push({ row, key }); else {
       numerical &&= typeof v !== 'string';
       present.push({ row, key, value: v!, numeric: typeof v === 'string' ? 0 : Number(v) });

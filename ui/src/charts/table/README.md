@@ -24,6 +24,7 @@ interface TableColumn<T> {
   key: string;
   header: ReactNode;
   label: string;
+  hint?: string;
   value: (row: T) => SortValue;
   render?: (row: T) => ReactNode;
   renderMissing?: boolean;
@@ -39,8 +40,10 @@ interface TableProps<T> {
   rows: readonly T[];
   columns: readonly TableColumn<T>[];
   rowKey: (row: T) => string;
+  tieKey?: (row: T) => string;
   sort: Sort;
   setOption?: WidgetProps['setOption'];
+  sortOptionValue?: (sort: Sort) => string;
   cellBars?: boolean;
   rank?: boolean;
   rankMarkers?: boolean;
@@ -71,6 +74,14 @@ Null, undefined and nonfinite numbers display **—**, even with `render`, unles
 including missing ones, tie-break by `rowKey` using UTF-8/code-point order
 (not locale or input order), ascending in both sort directions. Keys must be
 unique and stable across updates. There is no human/AI visibility gate.
+
+`tieKey` defaults to `rowKey`. Country tables can keep the recorded country
+identity as `rowKey` for motion while ties follow the current tag via `tieKey`.
+`hint` supplies the shared header tooltip, including unavailable-measure reasons.
+For recording-dependent column labels, declare `tableSortOptions(columns, sort,
+true)`, provide `tableSortChoices(columns)` to the settings hook and pass
+`sortOptionValue={tableSortToken}`. This stores an escaped content token on header
+clicks; `tableSortOf` reads both this token and the established static sort value.
 
 `rowHeight` is a positive comfortable-density height in layout pixels. Omit it
 to measure the CSS default once: 34px comfortable, 25px compact. Explicit

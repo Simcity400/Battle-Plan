@@ -44,6 +44,7 @@ pub mod raids;
 pub mod research;
 pub mod resource_balance;
 pub mod resources;
+pub mod scoreboard;
 pub mod special_projects;
 pub mod stability_parts;
 pub mod subjects;
@@ -271,6 +272,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<country_measure::CountryMeasure>(),
     register::<country_fuel::CountryFuel>(),
     register::<country_factories::CountryFactories>(),
+    register::<scoreboard::Scoreboard>(),
     register::<country_nukes::CountryNukes>(),
     register::<raids::Raids>(),
     register::<occupied_states::OccupiedStates>(),

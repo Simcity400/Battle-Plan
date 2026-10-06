@@ -11,7 +11,7 @@ import { recordingName } from '../shell/api';
 import type { Breakpoint, DashboardTemplate, GridLayouts, WidgetSpec } from './model';
 import { widgetDefinition } from './definitions';
 import type { WidgetRuntime } from './definitions';
-import { setOption } from './options';
+import { OptionDraft } from './optionDraft';
 import type { OptionValue } from './options';
 import WidgetSettingsMenu from './WidgetSettingsMenu';
 import CountryChip from './CountryChip';
@@ -66,9 +66,11 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
   }, []);
   const [mapOptions, setMapOptions] = useState<MapOptions>({ country: null, fog: true });
   const definition = widgetDefinition(widget.kind);
+  const optionDraft = useRef(new OptionDraft(widget.options));
+  optionDraft.current.sync(widget.options);
   // An option set from inside the widget saves at once, as the settings panel does.
   const saveOption = useCallback((key: string, value: OptionValue) => {
-    const options = setOption(definition?.options, widget.options, key, value);
+    const options = optionDraft.current.update(definition?.options, key, value);
     if (options) onApply({ ...widget, options }, true);
   }, [definition, widget, onApply]);
   const reset = definition ? () => {

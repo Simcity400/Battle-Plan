@@ -271,6 +271,120 @@ pub fn month_before(hour: i32) -> Option<i32> {
     i32::try_from(i64::from(HOUR_EPOCH) + (year * 365 + before + day) * 24 + hour_of_day).ok()
 }
 
+/// Exact all-type running totals with the single-stat widget's default refit
+/// selection. Reuses its bases and measured arithmetic over the cached shared
+/// production walk; missing or tainted samples stay unknown, including zero.
+/// P: delivered units are the logistics accounting call 14135F0E0's fixed5
+/// amount from ProduceEquipment (140F596C0 / 140F59ED0 / 140F5A940).
+/// The recorder observes those deliveries; the game keeps no per-line total.
+pub(crate) struct CountryTotalRun {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub amount: Option<i64>,
+    pub starts_segment: bool,
+}
+
+pub(crate) fn country_totals(
+    scanned: &ScannedProduced,
+    tags: &[String],
+    cancelled: &AtomicBool,
+) -> io::Result<BTreeMap<String, Vec<CountryTotalRun>>> {
+    let mut out = BTreeMap::new();
+    for tag in tags {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Equipment totals cancelled",
+            ));
+        }
+        let Some(track) = scanned.tags.get(tag) else {
+            continue;
+        };
+        let base = bases(track, ProducedMeasure::Total, &scanned.tainted);
+        let values = measured(track, &base, true, |entry| !entry.1);
+        let runs = track
+            .hours
+            .iter()
+            .enumerate()
+            .map(|(sample, first)| CountryTotalRun {
+                first_hour: *first,
+                last_hour: track.last_hours[sample],
+                amount: values[sample],
+                starts_segment: track.starts[sample] || sample > 0 && base[sample - 1].is_none(),
+            })
+            .collect();
+        out.insert(tag.clone(), runs);
+    }
+    Ok(out)
+}
+
+/// Counted recording limitations shared by every consumer of delivered totals.
+/// Content/type diagnostics remain with the consumer that resolves those facts.
+pub(crate) fn recording_warnings(scanned: &ScannedProduced) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if scanned.reads.is_empty() {
+        warnings.push(match &scanned.unread_reason {
+            Some(reason) => format!(
+                "Equipment produced is not in this recording: the production output was not recorded ({reason})."
+            ),
+            None => "Equipment produced is not in this recording: it has no production output (ProductionLineOutput).".to_owned(),
+        });
+    } else if scanned.unread > 0 {
+        warnings.push(format!(
+            "{} reads of the production lines have no readable output{}; every total is unknown from the first of them on (an ended line's final count is published only once).",
+            scanned.unread,
+            scanned
+                .unread_reason
+                .as_ref()
+                .map(|reason| format!(" ({reason})"))
+                .unwrap_or_default()
+        ));
+    }
+    if let Some((_, from)) = scanned.tainted.iter().next() {
+        warnings.push(format!(
+            "{} recorded frames, reads or output rows could not be ingested (a frame unreadable, a read without complete countries, links or output, or units of a producer the links cannot tell); what an output publication held is published only once, so every total is unknown from hour {from} on, until the collector's observation restarts.",
+            scanned.missed,
+        ));
+    }
+    if scanned.inexact > 0 {
+        warnings.push(format!(
+            "{} production output rows left out a tick the collector could not count; their country's total of that variant is unknown from then on.",
+            scanned.inexact
+        ));
+    }
+    if scanned.lost > 0 {
+        warnings.push(format!(
+            "{} production output rows disappeared without their final count; their country's total of that variant is unknown from then on.",
+            scanned.lost
+        ));
+    }
+    if scanned.unattributed > 0 {
+        warnings.push(format!(
+            "{} production output rows name a producer the links do not resolve to a tagged country; they are left out.",
+            scanned.unattributed
+        ));
+    }
+    if scanned.unlisted > 0 {
+        warnings.push(format!(
+            "{} lines were made and deleted between two reads, so their kind is not recorded; what they delivered counts as new production.",
+            scanned.unlisted
+        ));
+    }
+    if scanned.observations.len() > 1 {
+        warnings.push(format!(
+            "The production output observation restarted {} times in this branch; running totals start again at each.",
+            scanned.observations.len() - 1
+        ));
+    }
+    if scanned.unnamed > 0 {
+        warnings.push(format!(
+            "{} country-hours have a tag that is not text; they are left out.",
+            scanned.unnamed
+        ));
+    }
+    warnings
+}
+
 /// Each group's total at the samples where it changed, from the entries in it
 /// (`group_of` gives an entry's group, none leaves it out): its units and
 /// whether every row behind it is exact.
@@ -1028,66 +1142,7 @@ pub fn reply(
     for reason in untyped.iter().take(8) {
         warnings.push(format!("An equipment type cannot be resolved: {reason}."));
     }
-    if scanned.reads.is_empty() {
-        warnings.push(match &scanned.unread_reason {
-            Some(reason) => format!(
-                "Equipment produced is not in this recording: the production output was not recorded ({reason})."
-            ),
-            None => "Equipment produced is not in this recording: it has no production output (ProductionLineOutput).".to_owned(),
-        });
-    } else if scanned.unread > 0 {
-        warnings.push(format!(
-            "{} reads of the production lines have no readable output{}; every total is unknown from the first of them on (an ended line's final count is published only once).",
-            scanned.unread,
-            scanned
-                .unread_reason
-                .as_ref()
-                .map(|reason| format!(" ({reason})"))
-                .unwrap_or_default()
-        ));
-    }
-    if let Some((_, from)) = scanned.tainted.iter().next() {
-        warnings.push(format!(
-            "{} recorded frames, reads or output rows could not be ingested (a frame unreadable, a read without complete countries, links or output, or units of a producer the links cannot tell); what an output publication held is published only once, so every total is unknown from hour {from} on, until the collector's observation restarts.",
-            scanned.missed,
-        ));
-    }
-    if scanned.inexact > 0 {
-        warnings.push(format!(
-            "{} production output rows left out a tick the collector could not count; their country's total of that variant is unknown from then on.",
-            scanned.inexact
-        ));
-    }
-    if scanned.lost > 0 {
-        warnings.push(format!(
-            "{} production output rows disappeared without their final count; their country's total of that variant is unknown from then on.",
-            scanned.lost
-        ));
-    }
-    if scanned.unattributed > 0 {
-        warnings.push(format!(
-            "{} production output rows name a producer the links do not resolve to a tagged country; they are left out.",
-            scanned.unattributed
-        ));
-    }
-    if scanned.unlisted > 0 {
-        warnings.push(format!(
-            "{} lines were made and deleted between two reads, so their kind is not recorded; what they delivered counts as new production.",
-            scanned.unlisted
-        ));
-    }
-    if scanned.observations.len() > 1 {
-        warnings.push(format!(
-            "The production output observation restarted {} times in this branch; running totals start again at each.",
-            scanned.observations.len() - 1
-        ));
-    }
-    if scanned.unnamed > 0 {
-        warnings.push(format!(
-            "{} country-hours have a tag that is not text; they are left out.",
-            scanned.unnamed
-        ));
-    }
+    warnings.extend(recording_warnings(scanned));
     for tag in params
         .tags
         .iter()
