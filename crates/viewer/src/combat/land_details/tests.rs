@@ -446,7 +446,9 @@ fn border_width_badge_refuses_missing_configured_width_instead_of_terrain_totals
     for directions in [1, 2] {
         let expected = if directions == 1 { "70" } else { "105" };
         assert_eq!(
-            width_badge(Some(false), || Ok(total_width(&detail, terrain, directions))),
+            width_badge(Some(false), || Ok(total_width(
+                &detail, terrain, directions
+            ))),
             Ok(expected.into())
         );
         let refusal = width_badge(Some(true), || unreachable!()).unwrap_err();

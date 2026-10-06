@@ -95,12 +95,8 @@ fn land_balance_bar_and_frame_share_native_outlook_and_delayed_explanation() {
     ] {
         let mut values = Values::new();
         let mut refused = BTreeMap::new();
-        let outlook = super::super::land_marker_tooltips::outlook(
-            &NoIcons,
-            &loc,
-            scores,
-            [true, false],
-        );
+        let outlook =
+            super::super::land_marker_tooltips::outlook(&NoIcons, &loc, scores, [true, false]);
         land_progress_hovers(&mut values, &NoIcons, &loc, outlook, &mut refused);
         assert!(refused.is_empty());
         for key in ["combat_progress", "land_battle_progress_frame"] {

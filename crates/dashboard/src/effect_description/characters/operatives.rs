@@ -176,7 +176,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     fn char_operative_codename_days(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let operative = self.effect_unit_leader(scopes)?;
         let days = self.char_operative_days(item, scopes)?;
-        if days <= 0 || !operative.is_some_and(|leader| leader.category() == 3) {
+        if days <= 0 || operative.is_none_or(|leader| leader.category() != 3) {
             return Ok(String::new());
         }
         Err("operative codename (COperativeLeader+0x1030, 140C06040) is unrecorded".into())

@@ -189,6 +189,29 @@ fn random_iterator_advances_singletons_and_subset_uses_swap_removal() {
 }
 
 #[test]
+fn unrecorded_subjects_refuse_the_subject_roster() {
+    let mut fixture = Fixture::new();
+    let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
+    else {
+        panic!("the fixture records CountryAppearance");
+    };
+    rows[0].subjects = Recorded::NotRecorded;
+    let out = fixture.render(
+        "every_subject_country={army_experience=2}",
+        &mut fresh(),
+        Content::default(),
+    );
+    assert!(
+        out.refusals
+            .keys()
+            .any(|reason| reason.contains("CountryAppearance.subjects not recorded")),
+        "{:?}",
+        out.refusals
+    );
+}
+
+#[test]
 fn recorded_country_subject_and_character_rosters_select_natively() {
     let mut fixture = Fixture::new();
     let out = fixture.render(
@@ -200,7 +223,7 @@ fn recorded_country_subject_and_character_rosters_select_natively() {
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
     {
-        rows[0].subjects = vec![300, 200];
+        rows[0].subjects = vec![300, 200].into();
     }
     let out = fixture.render(
         "every_subject_country={army_experience=2}",

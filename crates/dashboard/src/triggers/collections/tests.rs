@@ -95,6 +95,37 @@ fn collection_selection_uses_order_limits_and_fresh_root_environment() {
 }
 
 #[test]
+fn unrecorded_subjects_refuse_country_and_all_subjects() {
+    let mut f = frame(
+        &[(100, 1, "AAA", 2, "", ""), (200, 2, "GER", 1, "", "")],
+        &[],
+    );
+    let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *f.tables[TableId::CountryAppearance.index()]
+    else {
+        panic!("the fixture records CountryAppearance");
+    };
+    rows[0].subjects = replay::rows::Recorded::NotRecorded;
+    with_world(&f, "", Err("none"), |world| {
+        let graph = Rc::new(RefCell::new(EventScopes::new(vec![EventScope::of(
+            EventObject::Country(1),
+        )])));
+        let evaluator = Evaluator::new(world, None).with_event_scopes(graph);
+        let caller = evaluator.event_scopes(0).unwrap();
+        // The country itself fails the limit, so its subjects are read.
+        let spec =
+            collection("input=game:scope operators={country_and_all_subjects limit={tag=GER}}");
+        let Err(error) = evaluator.collection_representative(&spec, caller) else {
+            panic!("unrecorded subjects refuse");
+        };
+        assert!(
+            error.contains("CountryAppearance.subjects not recorded"),
+            "{error}"
+        );
+    });
+}
+
+#[test]
 fn collection_owned_order_is_needed_only_for_multiple_passing_paths() {
     use replay::rows::StateRow;
     let mut f = frame(&[(100, 1, "AAA", 2, "", "")], &[]);

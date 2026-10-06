@@ -1465,16 +1465,15 @@ fn border_war_hooks_after_neighbouring_text(reference: bool) {
     let tables = captured.tables();
     let rows = detail_rows(&tables[0]);
     assert_eq!(rows.len(), shape.combats);
-    assert!(rows[0].border_war.is_none());
-    let border = rows[1].border_war.as_ref().unwrap();
+    let recorded = |row: usize| rows[row].border_war.require("border_war").unwrap().as_ref();
+    assert!(recorded(0).is_none());
+    let border = recorded(1).unwrap();
     for (side, expected) in border.sides.iter().zip([[win, lose], [lose, win]]) {
         assert_eq!(side.win_event, expected[0]);
         assert_eq!(side.lose_event, expected[1]);
     }
     assert!(
-        rows[2]
-            .border_war
-            .as_ref()
+        recorded(2)
             .unwrap()
             .sides
             .iter()
