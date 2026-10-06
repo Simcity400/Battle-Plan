@@ -158,8 +158,8 @@ pub fn link_slot(links: &[CountryLinkRow], raw: u32) -> Option<u32> {
 }
 
 /// Each raw country link id's tag this hour, for a scan over a branch's hours.
-/// Rebuilt only when the country tables change (unchanged tables share one
-/// allocation from hour to hour). The views are held, not just their addresses,
+/// Rebuilt only when country tags, slots or links change; balance-only updates
+/// keep the mapping. The views are held, not just their addresses,
 /// so a freed table's address can never be mistaken for them. A link whose
 /// country has no tag, or a tag that is not UTF-8, names no country.
 #[derive(Default)]
@@ -170,20 +170,44 @@ pub struct LinkTags {
 
 impl LinkTags {
     /// Reads this hour's country tables: `Ok(true)` when the tags were rebuilt,
-    /// `Ok(false)` when the tables are those of the hour before, and an error when
-    /// either table is not complete this hour (the tags are then left as they were).
+    /// `Ok(false)` when their country identities are unchanged, and an error when
+    /// either table is not complete (tags stay held; the next complete read rebuilds).
     pub fn update(&mut self, frame: &DecodedFrame) -> io::Result<bool> {
-        let (countries, links) = country_tables(frame)?;
+        let (countries, links) = match country_tables(frame) {
+            Ok(tables) => tables,
+            Err(error) => {
+                self.from = None;
+                return Err(error);
+            }
+        };
         let views = (
             frame.tables[TableId::Countries.index()].clone(),
             frame.tables[TableId::CountryLinks.index()].clone(),
         );
-        let same = self.from.as_ref().is_some_and(|(countries, links)| {
-            SharedView::ptr_eq(countries, &views.0) && SharedView::ptr_eq(links, &views.1)
+        let same = self.from.as_ref().is_some_and(|(previous, old_links)| {
+            if !SharedView::ptr_eq(old_links, &views.1) {
+                return false;
+            }
+            if SharedView::ptr_eq(previous, &views.0) {
+                return true;
+            }
+            let TableView::Complete(rows) = &**previous else {
+                return false;
+            };
+            let Some(old) = rows.rows::<tables::Countries>() else {
+                return false;
+            };
+            old.len() == countries.len()
+                && old.iter().zip(countries).all(|(old, new)| {
+                    old.canonical_slot == new.canonical_slot && old.tag == new.tag
+                })
         });
         if same {
+            self.from = Some(views);
             return Ok(false);
         }
+        // Resolve the link's country (140BA5140 / 140BA6240), then use its
+        // recorded current tag; 140BA5C20's raw alias string is not recorded here.
         let slots: HashMap<u32, &[u8]> = countries
             .iter()
             .map(|country| (country.canonical_slot, country.tag.as_slice()))

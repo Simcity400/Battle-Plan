@@ -169,6 +169,87 @@ fn subjects_follow_relations_their_levels_and_break_at_gaps() {
 }
 
 #[test]
+fn subjects_link_tags_follow_identity_changes_and_unavailable_reads() {
+    use crate::products::country_groups::HourSpan;
+    use crate::products::subjects::{LevelStep, SubjectRun, scan_branch};
+    let frames = (100..=108)
+        .map(|hour| {
+            let mut frame = subject_frame(hour, &[(9001, 45, 40)], Some(&[(45, "mod_level")]));
+            if let TableView::Complete(TableRows::Countries(rows)) =
+                &mut *frame.tables[TableId::Countries.index()]
+            {
+                for row in rows {
+                    row.political_power_raw = Some(i64::from(hour));
+                    if row.id == 44 && hour >= 102 {
+                        row.tag = if hour >= 107 { b"REC" } else { b"REN" }.to_vec();
+                    }
+                }
+            }
+            if let TableView::Complete(TableRows::CountryLinks(rows)) =
+                &mut *frame.tables[TableId::CountryLinks.index()]
+            {
+                rows.push(CountryLinkRow {
+                    id: 45,
+                    canonical_slot: if (103..=106).contains(&hour) { 9 } else { 8 },
+                });
+                rows.sort_by_key(|row| row.id);
+            }
+            // Each unavailable identity table interrupts the relation separately.
+            if hour == 104 || hour == 106 {
+                let table = if hour == 104 {
+                    TableId::Countries
+                } else {
+                    TableId::CountryLinks
+                };
+                *frame.tables[table.index()] = TableView::Unavailable {
+                    reason: "fixture".into(),
+                };
+            }
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let scan = scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
+    let run = |subject: &str, first_hour, last_hour| SubjectRun {
+        overlord: "GER".into(),
+        subject: subject.into(),
+        start_hour: 40,
+        first_hour,
+        last_hour,
+        steps: vec![LevelStep {
+            first_hour,
+            last_hour,
+            level: Some("mod_level".into()),
+        }],
+    };
+    assert_eq!(
+        scan.runs(),
+        [
+            run("FRA", 100, 101),
+            run("REN", 102, 102),
+            run("CTL", 103, 103),
+            run("CTL", 105, 105),
+            run("REC", 107, 108),
+        ]
+    );
+    assert_eq!(
+        scan.unobserved(),
+        [
+            HourSpan {
+                first_hour: 104,
+                last_hour: 104,
+            },
+            HourSpan {
+                first_hour: 106,
+                last_hour: 106,
+            },
+        ]
+    );
+    assert_eq!(scan.warnings().len(), 1);
+    assert!(scan.warnings()[0].contains("incomplete at 2 hours"));
+}
+
+#[test]
 fn subjects_leave_unknown_countries_out_and_mark_the_hour() {
     use crate::products::country_groups::HourSpan;
     use crate::products::subjects::scan_branch;

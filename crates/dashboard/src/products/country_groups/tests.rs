@@ -440,3 +440,143 @@ fn country_groups_follow_each_faction_s_leader_at_order_zero() {
     };
     assert_eq!(scan.faction_incomplete(7), Some(&[hour][..]));
 }
+
+#[test]
+fn country_groups_link_tags_keep_balances_and_follow_identity_changes() {
+    use crate::products::country_groups::{
+        HourSpan, IdentityChange, MembershipRun, WarPairRun, WarStart, scan_branch,
+    };
+    let run = |tag: &str, first_hour, last_hour| MembershipRun {
+        tag: tag.into(),
+        first_hour,
+        last_hour,
+    };
+    let change = |hour, from: &str, to: &str| IdentityChange {
+        hour,
+        from: from.into(),
+        to: to.into(),
+    };
+    let pair = |first: &str, second: &str, first_hour, last_hour| WarPairRun {
+        first: first.into(),
+        second: second.into(),
+        first_hour,
+        last_hour,
+    };
+    for unavailable in [TableId::Countries, TableId::CountryLinks] {
+        let frames = (100..=109)
+            .map(|hour| {
+                // 11 is an alias of 9001. All histories must resolve the alias.
+                let mut frame = group_frame(hour, &[11], &[(7, "Pact", &[11, 55])], &[(11, 55)]);
+                if let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *frame.tables[TableId::Countries.index()]
+                {
+                    let country = rows.iter_mut().find(|row| row.id == 9001).unwrap();
+                    country.political_power_raw = Some(i64::from(hour));
+                    if hour >= 102 {
+                        country.tag = b"BBB".to_vec();
+                    }
+                    if hour == 109 {
+                        rows.iter_mut().find(|row| row.id == 44).unwrap().tag = b"CCC".to_vec();
+                    }
+                }
+                if hour >= 104
+                    && let TableView::Complete(TableRows::CountryLinks(rows)) =
+                        &mut *frame.tables[TableId::CountryLinks.index()]
+                {
+                    rows.iter_mut()
+                        .find(|row| row.id == 11)
+                        .unwrap()
+                        .canonical_slot = 8;
+                }
+                if let TableView::Complete(TableRows::WarRelations(rows)) =
+                    &mut *frame.tables[TableId::WarRelations.index()]
+                {
+                    rows[0].first_was_instigator = 1;
+                    rows[0].start_hour = match hour {
+                        100..=101 => 100,
+                        102..=103 => 102,
+                        104..=105 => 104,
+                        // First seen after an unread hour: its participants are unknown.
+                        106..=107 => 106,
+                        _ => hour,
+                    };
+                }
+                if hour == 106 {
+                    *frame.tables[unavailable.index()] = TableView::Unavailable {
+                        reason: "fixture identity read failed".into(),
+                    };
+                }
+                frame
+            })
+            .collect();
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+        let scan = scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
+        let expected = [
+            run("GER", 100, 101),
+            run("BBB", 102, 103),
+            run("FRA", 104, 105),
+            run("FRA", 107, 108),
+            run("CCC", 109, 109),
+        ];
+        assert_eq!(scan.humans(), expected, "{unavailable:?}");
+        assert_eq!(scan.faction_leaders(7).unwrap(), expected);
+        assert_eq!(
+            scan.faction(7).unwrap().3,
+            [
+                run("GER", 100, 101),
+                run("CTL", 100, 105),
+                run("BBB", 102, 103),
+                run("FRA", 104, 105),
+                run("FRA", 107, 108),
+                run("CTL", 107, 109),
+                run("CCC", 109, 109),
+            ]
+        );
+        assert_eq!(
+            scan.wars(),
+            [
+                pair("CTL", "GER", 100, 101),
+                pair("BBB", "CTL", 102, 103),
+                pair("CTL", "FRA", 104, 105),
+                pair("CTL", "FRA", 107, 108),
+                pair("CCC", "CTL", 109, 109),
+            ]
+        );
+        // Both canonical and alias links rename; each tag change is emitted once.
+        assert_eq!(
+            scan.identity_changes(),
+            [
+                change(102, "GER", "BBB"),
+                change(104, "BBB", "FRA"),
+                change(109, "FRA", "CCC"),
+            ]
+        );
+        let starts: Vec<_> = [
+            (100, "GER"),
+            (102, "BBB"),
+            (104, "FRA"),
+            (108, "FRA"),
+            (109, "CCC"),
+        ]
+        .into_iter()
+        .map(|(hour, attacking)| WarStart {
+            hour,
+            attacking: attacking.into(),
+            defending: "CTL".into(),
+        })
+        .collect();
+        assert_eq!(scan.war_starts(), starts);
+        let missing = [HourSpan {
+            first_hour: 106,
+            last_hour: 106,
+        }];
+        assert_eq!(scan.unobserved().humans, missing);
+        assert_eq!(scan.unobserved().factions, missing);
+        assert_eq!(scan.unobserved().wars, missing);
+        assert!(
+            scan.warnings()
+                .iter()
+                .any(|warning| warning.contains("which countries they were is not known"))
+        );
+    }
+}

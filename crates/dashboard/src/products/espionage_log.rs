@@ -914,6 +914,101 @@ mod tests {
     }
 
     #[test]
+    fn espionage_link_tags_follow_balance_rename_alias_and_unavailable_reads() {
+        let mut first = frame(100, 2);
+        let mut operation = first.complete::<tables::Operations>().unwrap()[0].clone();
+        operation.owner = 77;
+        *first.tables[TableId::Operations.index()] =
+            TableView::Complete(TableRows::Operations(vec![operation]));
+        let mut links = first.complete::<tables::CountryLinks>().unwrap().to_vec();
+        links.push(CountryLinkRow {
+            id: 77,
+            canonical_slot: 1,
+        });
+        *first.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(links.clone()));
+        let mut balance = first.clone();
+        balance.hour = 101;
+        let mut countries = balance.complete::<tables::Countries>().unwrap().to_vec();
+        countries[0].political_power_raw = Some(999);
+        *balance.tables[TableId::Countries.index()] =
+            TableView::Complete(TableRows::Countries(countries.clone()));
+        let mut renamed = balance.clone();
+        renamed.hour = 102;
+        countries[0].tag = b"renamed-mod".to_vec();
+        *renamed.tables[TableId::Countries.index()] =
+            TableView::Complete(TableRows::Countries(countries));
+        let mut repointed = renamed.clone();
+        repointed.hour = 103;
+        links[2].canonical_slot = 2;
+        *repointed.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(links));
+        let mut missing_countries = repointed.clone();
+        missing_countries.hour = 104;
+        *missing_countries.tables[TableId::Countries.index()] = TableView::Unavailable {
+            reason: "synthetic missing countries".into(),
+        };
+        let mut missing_links = repointed.clone();
+        missing_links.hour = 105;
+        *missing_links.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
+            reason: "synthetic missing links".into(),
+        };
+        let mut recovered = repointed.clone();
+        recovered.hour = 106;
+        let replay = crate::test_fixtures::replay(vec![
+            first,
+            balance,
+            renamed,
+            repointed,
+            missing_countries,
+            missing_links,
+            recovered,
+        ]);
+        let reply = scan(
+            &replay,
+            &BranchParams {
+                branch_id: "1".into(),
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(
+            reply
+                .operations
+                .iter()
+                .map(|op| (
+                    op.first_read,
+                    op.owner_tag.as_deref(),
+                    op.target_tag.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (100, Some("mod1"), Some("mod2")),
+                (102, Some("renamed-mod"), Some("mod2")),
+                (103, Some("mod2"), Some("mod2")),
+                (104, None, None),
+                (106, Some("mod2"), Some("mod2")),
+            ]
+        );
+        assert_eq!(reply.operations[0].runs[0].last_hour, 101);
+        assert_eq!(reply.operations[3].runs[0].last_hour, 105);
+        for (operation, by_hour, owner) in [
+            (&reply.operations[0], 102, "renamed-mod"),
+            (&reply.operations[1], 103, "mod2"),
+            (&reply.operations[2], 104, "mod2"),
+            (&reply.operations[3], 106, "mod2"),
+        ] {
+            let end = operation.end.as_ref().unwrap();
+            assert_eq!(end.by_hour, by_hour);
+            assert_eq!(end.owner_tag.as_deref(), Some(owner));
+            assert_eq!(end.target_tag.as_deref(), Some("mod2"));
+        }
+        assert_eq!(reply.read_hours, [100, 101, 102, 103, 104, 105, 106]);
+        assert!(reply.warnings.iter().any(|warning| warning
+            == "Country identities unavailable at operation read (2 observations)."));
+    }
+
+    #[test]
     fn espionage_execution_signed_native_days_and_sentinels() {
         let mut row = OperationRow {
             start_hour: 43_800_023,

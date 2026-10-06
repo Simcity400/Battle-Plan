@@ -461,7 +461,7 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
         .find(|start| start.id == branch)
         .map(|start| branch_bounds(replay, start));
     let mut previous_hour: Option<i32> = bounds.and_then(|(first, _)| first.checked_sub(1));
-    // Link id to tag, rebuilt only when the country tables change.
+    // Link id to tag, rebuilt only when country identities change.
     let mut tags = LinkTags::default();
     for block in replay.index.iter().filter(|block| block.branch == branch) {
         if cancelled.load(Ordering::Acquire) {

@@ -980,6 +980,102 @@ fn changed_controller(mut observed: DecodedFrame, controller: u32) -> DecodedFra
 }
 
 #[test]
+fn raids_link_tags_keep_balance_reads_and_follow_identity_changes_without_bridging_unread_hours() {
+    let mut first = changed_controller(frame(100, vec![raid(1, 4, 0)]), 11);
+    if let TableView::Complete(TableRows::RaidCountries(rows)) =
+        &mut *first.tables[TableId::RaidCountries.index()]
+    {
+        rows[0].country = 9001;
+    }
+    let mut balance = first.clone();
+    balance.hour = 101;
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *balance.tables[TableId::Countries.index()]
+    {
+        rows[0].political_power_raw = Some(2);
+    }
+    let mut renamed = balance.clone();
+    renamed.hour = 102;
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *renamed.tables[TableId::Countries.index()]
+    {
+        rows[0].tag = b"NEW".to_vec();
+    }
+    let mut repointed = renamed.clone();
+    repointed.hour = 103;
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *repointed.tables[TableId::CountryLinks.index()]
+    {
+        rows.iter_mut()
+            .find(|row| row.id == 11)
+            .unwrap()
+            .canonical_slot = 8;
+    }
+    let mut unread_countries = repointed.clone();
+    unread_countries.hour = 104;
+    *unread_countries.tables[TableId::Countries.index()] = TableView::Unavailable {
+        reason: "synthetic unread countries".into(),
+    };
+    let mut unread_links = repointed.clone();
+    unread_links.hour = 105;
+    *unread_links.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
+        reason: "synthetic unread links".into(),
+    };
+    let mut recovered = repointed.clone();
+    recovered.hour = 106;
+    let mut scan = Scan::new();
+    for observed in [
+        first,
+        balance,
+        renamed,
+        repointed,
+        unread_countries,
+        unread_links,
+        recovered,
+    ] {
+        scan.observe(&observed, None).unwrap();
+    }
+    let result = scan.finish();
+    assert_eq!(result.read_hours, [100, 101, 102, 103, 106]);
+    assert_eq!(
+        result.unobserved,
+        [HourSpan {
+            first_hour: 104,
+            last_hour: 105,
+        }]
+    );
+    assert_eq!(result.episodes.len(), 1);
+    assert_eq!(
+        result.episodes[0]
+            .runs
+            .iter()
+            .map(|run| (
+                run.first_hour,
+                run.last_hour,
+                run.raider.as_deref(),
+                run.victim.as_deref(),
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (100, 101, Some("GER"), Some("GER")),
+            (102, 102, Some("NEW"), Some("NEW")),
+            (103, 103, Some("NEW"), Some("MOD")),
+            (106, 106, Some("NEW"), Some("MOD")),
+        ]
+    );
+    assert_eq!(result.series["GER"][0].launched, 1);
+    assert_eq!(result.series["GER"][0].last_hour, 101);
+    assert_eq!(
+        result.series["NEW"]
+            .iter()
+            .map(|run| (run.first_hour, run.last_hour, run.launched))
+            .collect::<Vec<_>>(),
+        [(102, 103, 0), (106, 106, 0)],
+        "a tag change does not re-count the same native raid handle"
+    );
+}
+
+#[test]
 fn raids_round2_ended_victim_freezes_at_first_phase_five_read_including_unknown() {
     let mut scan = Scan::new();
     scan.observe(

@@ -1,14 +1,239 @@
 use crate::test_fixtures::{CAMPAIGN, records, scale_frame, source};
 use replay::{
     container::Replay,
-    frame::TableView,
-    rows::{CountryLinkRow, CountryRow, TableId, TableRows},
+    frame::{FrameDecoder, FrameEncoder, SharedView, TableUpdate, TableView},
+    rows::{CountryLinkRow, CountryRow, TableId, TableRows, tables},
 };
 use std::{
     io,
     path::Path,
     sync::{Arc, atomic::AtomicBool},
 };
+
+#[test]
+fn link_tags_balance_reads_keep_mapping_and_identity_changes_rebuild_at_5000_countries() {
+    let mut sample = scale_frame(1, 100, 5000);
+    let mut tags = super::LinkTags::default();
+    assert!(tags.update(&sample).unwrap());
+    assert!(!tags.update(&sample).unwrap());
+    let allocation = tags.get(100_000).unwrap().as_ptr();
+    let previous = sample.tables[TableId::Countries.index()].clone();
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *sample.tables[TableId::Countries.index()]
+    {
+        for country in rows {
+            country.political_power_raw = Some(12_345);
+        }
+    }
+    assert!(!SharedView::ptr_eq(
+        &previous,
+        &sample.tables[TableId::Countries.index()],
+    ));
+    assert!(!tags.update(&sample).unwrap());
+    assert_eq!(tags.get(100_000).unwrap().as_ptr(), allocation);
+    assert!(SharedView::ptr_eq(
+        &tags.from.as_ref().unwrap().0,
+        &sample.tables[TableId::Countries.index()],
+    ));
+    for country in sample.complete::<tables::Countries>().unwrap() {
+        assert_eq!(
+            tags.get(country.id).unwrap().as_bytes(),
+            country.tag.as_slice(),
+        );
+    }
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *sample.tables[TableId::Countries.index()]
+    {
+        rows[0].tag = b"renamed opaque tag".to_vec();
+    }
+    assert!(tags.update(&sample).unwrap());
+    assert_eq!(tags.get(100_000).unwrap(), "renamed opaque tag");
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *sample.tables[TableId::Countries.index()]
+    {
+        rows[0].canonical_slot = 5000;
+    }
+    assert!(tags.update(&sample).unwrap());
+    assert_eq!(tags.get(100_000), None);
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *sample.tables[TableId::CountryLinks.index()]
+    {
+        rows[0].canonical_slot = 1;
+    }
+    assert!(tags.update(&sample).unwrap());
+    assert_eq!(tags.get(100_000), tags.get(100_001));
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *sample.tables[TableId::Countries.index()]
+    {
+        rows.remove(1);
+    }
+    assert!(tags.update(&sample).unwrap());
+    assert_eq!(tags.get(100_000), None);
+}
+
+#[test]
+fn link_tags_incomplete_reads_are_errors_and_recovery_rebuilds_even_the_same_views() {
+    let complete = source(1, 100, Some(1));
+    let mut tags = super::LinkTags::default();
+    for table in [TableId::Countries, TableId::CountryLinks] {
+        for truncated in [false, true] {
+            assert!(tags.update(&complete).unwrap());
+            let mut failed = complete.clone();
+            let rows = match &*failed.tables[table.index()] {
+                TableView::Complete(rows) => rows.clone(),
+                _ => unreachable!(),
+            };
+            *failed.tables[table.index()] = if truncated {
+                TableView::Truncated { rows, missing: 1 }
+            } else {
+                TableView::Unavailable {
+                    reason: "fixture".into(),
+                }
+            };
+            assert!(tags.update(&failed).is_err());
+            assert_eq!(tags.get(11).unwrap(), "GER");
+            assert!(tags.from.is_none());
+        }
+    }
+    assert!(tags.update(&complete).unwrap());
+    assert!(!tags.update(&complete).unwrap());
+}
+
+#[test]
+fn link_tags_aliases_join_slots_without_requiring_a_countries_own_link() {
+    // 140BA5140 / 140BA6240 resolve each raw link to a slot; 140BA60A0
+    // permits distinct links to the same country. Missing target rows name none.
+    let mut sample = source(1, 100, Some(1));
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *sample.tables[TableId::Countries.index()]
+    {
+        rows.push(CountryRow {
+            id: 9002,
+            canonical_slot: 8,
+            tag: b"GER".to_vec(),
+            ..Default::default()
+        });
+    }
+    *sample.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        [(11, 7), (12, 7), (13, 8), (14, 9), (9001, 7), (9002, 8)]
+            .map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot })
+            .to_vec(),
+    ));
+    let mut tags = super::LinkTags::default();
+    assert!(tags.update(&sample).unwrap());
+    for raw in [11, 12, 13] {
+        assert_eq!(tags.get(raw).unwrap(), "GER");
+    }
+    assert_eq!(tags.get(14), None);
+    // Equal tag strings do not merge the two canonical countries.
+    assert_eq!(tags.get(9001).unwrap(), "GER");
+    assert_eq!(tags.get(9002).unwrap(), "GER");
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *sample.tables[TableId::CountryLinks.index()]
+    {
+        rows.truncate(4);
+    }
+    assert!(tags.update(&sample).unwrap());
+    for raw in [11, 12, 13] {
+        assert_eq!(tags.get(raw).unwrap(), "GER");
+    }
+    assert_eq!(tags.get(9001), None);
+    assert_eq!(tags.get(9002), None);
+}
+
+#[test]
+fn link_tags_contradictory_raw_links_and_conflicting_slots_never_reach_a_scan() {
+    for duplicate_slot in [false, true] {
+        let mut sample = source(1, 100, Some(1));
+        let table = if duplicate_slot {
+            TableId::Countries
+        } else {
+            TableId::CountryLinks
+        };
+        let mut wire = FrameEncoder::new().encode(sample.clone(), false).unwrap();
+        if duplicate_slot {
+            if let TableView::Complete(TableRows::Countries(rows)) =
+                &mut *sample.tables[TableId::Countries.index()]
+            {
+                rows.push(CountryRow {
+                    id: 9002,
+                    canonical_slot: 7,
+                    tag: b"other".to_vec(),
+                    ..Default::default()
+                });
+            }
+        } else if let TableView::Complete(TableRows::CountryLinks(rows)) =
+            &mut *sample.tables[TableId::CountryLinks.index()]
+        {
+            rows.insert(
+                1,
+                CountryLinkRow {
+                    id: 11,
+                    canonical_slot: 8,
+                },
+            );
+        }
+        let TableView::Complete(rows) = &*sample.tables[table.index()] else {
+            unreachable!();
+        };
+        wire.tables[table.index()] = TableUpdate::Snapshot(rows.clone());
+        let error = FrameEncoder::new().encode(sample, false).unwrap_err();
+        let reason = if duplicate_slot {
+            "duplicate canonical slots"
+        } else {
+            "unique ascending keys"
+        };
+        assert!(error.to_string().contains(reason), "{error}");
+        let decoded = FrameDecoder::new().apply(&wire).unwrap();
+        assert!(matches!(
+            &*decoded.tables[table.index()],
+            TableView::Unavailable { reason: why } if why.contains(reason)
+        ));
+        assert!(super::LinkTags::default().update(&decoded).is_err());
+    }
+}
+
+#[test]
+#[ignore = "manual LinkTags::update timing in the test profile"]
+fn link_tags_update_cost_5000_countries() {
+    use std::{hint::black_box, time::Instant};
+    let first = scale_frame(1, 100, 5000);
+    // Prepare allocations before timing; Countries changes every built hour,
+    // while CountryLinks retains the same view as an hourly replay decoder.
+    let hours: Vec<_> = (101..=124)
+        .map(|hour| {
+            let mut sample = first.clone();
+            sample.hour = hour;
+            if let TableView::Complete(TableRows::Countries(rows)) =
+                &mut *sample.tables[TableId::Countries.index()]
+            {
+                for country in rows {
+                    country.political_power_raw = Some(i64::from(hour));
+                }
+            }
+            sample
+        })
+        .collect();
+    let mut costs = Vec::new();
+    for _ in 0..5 {
+        let mut tags = super::LinkTags::default();
+        tags.update(&first).unwrap();
+        let start = Instant::now();
+        for _ in 0..10 {
+            for hour in &hours {
+                black_box(tags.update(black_box(hour)).unwrap());
+            }
+        }
+        let ns_per_hour = start.elapsed().as_nanos() / (10 * hours.len()) as u128;
+        assert_eq!(tags.iter().count(), 5000);
+        costs.push(ns_per_hour);
+    }
+    costs.sort_unstable();
+    eprintln!(
+        "LinkTags::update 5000 countries, 240 built hours/sample: {costs:?} ns/hour; median {} ns/hour",
+        costs[2]
+    );
+}
 
 #[test]
 #[ignore = "read-only G2 recording; BATTLE_PLAN_COMPAT_RECORDINGS supplies its path"]
