@@ -12,6 +12,10 @@ use replay::{
 };
 use std::time::Duration;
 
+/// How long a test waits on a service thread before failing instead of
+/// hanging; only a hang guard, never a timing check.
+const HANG_GUARD: Duration = Duration::from_secs(120);
+
 /// A valid in-memory source needs a session identity, but no map assets,
 /// recorded tables or file I/O for these ownership tests.
 fn source() -> Arc<Source> {
@@ -205,7 +209,7 @@ fn unknown_products_and_unleased_sources_fail_before_loading() {
     });
     let mut errors = Vec::new();
     for _ in 0..2 {
-        match receive.recv_timeout(Duration::from_secs(5)).unwrap() {
+        match receive.recv_timeout(HANG_GUARD).unwrap() {
             DataEvent::Error { id, message } => errors.push((id, message)),
             other => panic!("unexpected event {other:?}"),
         }
@@ -314,14 +318,14 @@ fn failed_delivery_stops_admission_and_shutdown_still_joins() {
             .push_back((Arc::clone(&request), serde_json::to_string(&reply).unwrap()));
     }
     service.inner.signal.notify();
-    receive.recv_timeout(Duration::from_secs(5)).unwrap();
+    receive.recv_timeout(HANG_GUARD).unwrap();
     {
         let guard = service.inner.signal.mutex.lock().unwrap();
         let (guard, _) = service
             .inner
             .signal
             .changed
-            .wait_timeout_while(guard, Duration::from_secs(5), |_| {
+            .wait_timeout_while(guard, HANG_GUARD, |_| {
                 !service.inner.closed.load(Ordering::Acquire)
             })
             .unwrap();

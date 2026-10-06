@@ -57,6 +57,12 @@ mod table_capture;
 mod unit_scale_tests;
 mod watch_registry;
 
+/// How long a test waits on another thread before failing instead of hanging.
+/// Only a hang guard, never a timing check: a full build saturates every core
+/// and can starve a test thread for many seconds.
+#[cfg(test)]
+const TEST_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(120);
+
 use std::ffi::c_void;
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HINSTANCE},

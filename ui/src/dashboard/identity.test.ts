@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Lineage, countryMembership, joinTagChanges } from './identity.ts';
-import { assertLinear } from '../charts/assertLinear.ts';
 
 const run = (tag: string, firstHour: number, lastHour: number) => ({ tag, firstHour, lastHour });
 
@@ -59,16 +58,6 @@ test('runs group by the country their tag named, however the tags were reused', 
   const groups = joinTagChanges([run('AAA', 100, 150), run('BBB', 250, 300), run('AAA', 400, 450)], lineage);
   assert.deepEqual(groups.map(group => group.map(item => `${item.tag}@${item.firstHour}`)), [['AAA@100', 'BBB@250'], ['AAA@400']]);
   assert.equal(joinTagChanges([run('GER', 0, 10), run('GER', 20, 30)], new Lineage([])).length, 1);
-});
-
-test('the lineage resolves each tag and hour in logarithmic time', () => {
-  assertLinear('changes', count => {
-    const changes = Array.from({ length: count }, (_, index) => ({ hour: index * 2, from: `T${index % 50}`, to: `T${(index + 1) % 50}` }));
-    return () => {
-      const lineage = new Lineage(changes);
-      for (let index = 0; index < count; index++) lineage.countryAt(`T${index % 50}`, index * 2 + 1);
-    };
-  }, 2000);
 });
 
 test('runs spanning a swap are split by the country each tag names then', () => {

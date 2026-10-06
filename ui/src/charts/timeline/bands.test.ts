@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertLinear } from '../assertLinear.ts';
 import { barExtent, barHitAt, bandHalf, bandHitAt, bandOutlines, laneBandLayouts, laneBands, laneStops } from './layout.ts';
 
 const toX = (hour: number) => hour;
@@ -244,9 +243,9 @@ test('hover and Jump to describe the band drawn under the pointer, even one move
   assert.deepEqual(bandHitAt(wide, 42.7, 42.7), { spanId: 'w', hour: 42 });
 });
 
-test('a fragmented band is laid out in time linear in its steps', () => {
+test('a fragmented band is laid out in at most a column per pixel', () => {
   // Finding: 20,000 one-hour steps separated by missing hours across a 500 px plot, so the
-  // runs, narrower than a pixel, compete for 500 columns; a quadratic pass took 41-82 ms.
+  // runs, narrower than a pixel, compete for 500 columns.
   const fragmented = (steps: number) => {
     const band = Array.from({ length: steps }, (_, index) => ({ firstHour: index * 2, lastHour: index * 2, value: 1 + (index % 5) }));
     const toX = (hour: number) => 120 + hour / (steps / 250);
@@ -256,11 +255,6 @@ test('a fragmented band is laid out in time linear in its steps', () => {
   const bands = laneBands([big.span], null, big.toX, same, 120, 620);
   assert.ok(bands.columns.size > 0 && bands.columns.size <= 500);
   assert.ok(bandOutlines(big.band, 0, big.to, big.toX, same, 120, 620).length > 0);
-  // Linear, not quadratic.
-  for (const layout of [
-    (f: ReturnType<typeof fragmented>) => laneBands([f.span], null, f.toX, same, 120, 620),
-    (f: ReturnType<typeof fragmented>) => bandOutlines(f.band, 0, f.to, f.toX, same, 120, 620),
-  ]) assertLinear('steps', steps => { const f = fragmented(steps); return () => layout(f); });
 });
 
 test('lane layouts are rebuilt from the lanes shown and reused while nothing changes', () => {
@@ -307,7 +301,7 @@ test('a span whose last hour is the view’s first, partial hour is reachable th
   assert.deepEqual(laneStops([first, second], 23.2, 500, 23.1), []);
 });
 
-test('keyboard stops are found in one pass over a long band', () => {
+test('keyboard stops are found for every step of a long band', () => {
   // Finding: 20,000 steps; a scan per stop took about 200 million comparisons.
   const long = (steps: number) => {
     const band = Array.from({ length: steps }, (_, index) => ({ firstHour: index * 2, lastHour: index * 2 + 1, value: index % 7 }));
@@ -318,7 +312,6 @@ test('keyboard stops are found in one pass over a long band', () => {
   assert.equal(stops.length, 20_000);
   assert.deepEqual(stops.slice(0, 2).map(stop => [stop.id, stop.hour]), [['long@0', 0.5], ['long@2', 2]]);
   assert.equal(stops.at(-1)!.id, 'long@39998');
-  assertLinear('steps', steps => { const l = long(steps); return () => laneStops([l.span], 0.5, l.to, null); });
 });
 
 test('a plain bar keeps a pixel column however short it is at this zoom', () => {

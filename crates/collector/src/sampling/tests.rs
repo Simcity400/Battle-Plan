@@ -549,7 +549,7 @@ fn exhausted_pool_wait_cancels_without_a_live_consumer() {
         std::thread::yield_now();
     }
     shared.cancel_buffer_wait.store(true, Ordering::Release);
-    let result = receive.recv_timeout(Duration::from_secs(2));
+    let result = receive.recv_timeout(crate::TEST_HANG_GUARD);
     waiter.join().unwrap();
     assert_eq!(result.unwrap(), None);
     for index in held {

@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn executor_completion_preserves_exact_counts_on_workers_callers_and_panics() {
-        use std::{sync::mpsc, time::Duration};
+        use std::sync::mpsc;
 
         for workers in [0, 2] {
             let (entered_tx, entered_rx) = mpsc::channel();
@@ -281,7 +281,7 @@ mod tests {
                 let ticket = unsafe { pool.submit(&mut request) }.unwrap();
                 // A worker already inside the runner cannot be replaced by helping.
                 let worker_thread = (workers != 0)
-                    .then(|| entered_rx.recv_timeout(Duration::from_secs(10)).unwrap());
+                    .then(|| entered_rx.recv_timeout(crate::TEST_HANG_GUARD).unwrap());
                 let completed = pool.finish(ticket).unwrap();
                 let executing_thread =
                     worker_thread.unwrap_or_else(|| entered_rx.try_recv().unwrap());

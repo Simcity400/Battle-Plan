@@ -1345,7 +1345,9 @@ mod tests {
         let watcher = {
             let session = session.clone();
             std::thread::spawn(move || {
-                for _ in 0..200 {
+                // Only a hang guard: a busy machine can delay the request.
+                let deadline = Instant::now() + Duration::from_secs(120);
+                while Instant::now() < deadline {
                     if let Ok(token) = fs::read_to_string(session.join("refresh.request")) {
                         assert!(!token.trim().is_empty());
                         fs::write(session.join("refresh.ack"), token.trim()).unwrap();

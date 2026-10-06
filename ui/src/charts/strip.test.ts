@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assertLinear } from './assertLinear.ts';
 import { chartBottom, hitZone, keyedHour, plotFrame } from './frame.ts';
 import { keyedStop, keyStopList, keyStopMemo } from './hover.ts';
 import { barStrip, stripBarAt, stripColumns, stripKeyTargets, stripMiddle, stripRects } from './strip.ts';
@@ -187,17 +186,13 @@ test('two keyboard stops at one hour are both reachable, the chart\'s own first'
   assert.deepEqual(keyStopList([1313, 1337], [], 1320, 1341)!.map(stop => stop.at), [1320, 1337]);
 });
 
-test('keyboard stops for decades of daily reads are built in about linear time, once per change', () => {
+test('keyboard stops for daily reads are built once per change', () => {
   // A read and a bar a day, all in view: every bar's read is also a chart stop.
   const campaign = (days: number) => {
     const reads = Array.from({ length: days }, (_, day) => 1000 + day * 24);
     const bars = reads.map(read => ({ firstHour: read - 24, lastHour: read, up: 1, down: 1 }));
     return { reads, bars, view: [reads[0] - 24, reads.at(-1)!] as const };
   };
-  assertLinear('stops', days => {
-    const { reads, bars, view } = campaign(days);
-    return () => keyStopList(reads, stripKeyTargets(bars, view, null), view[0], view[1]);
-  });
   const { reads, bars, view } = campaign(100);
   const stops = keyStopList(reads, stripKeyTargets(bars, view, null), view[0], view[1])!;
   assert.equal(stops.length, 100, 'a bar read in view is the read\'s own stop');

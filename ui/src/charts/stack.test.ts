@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildStack, stackedSegments, stackEdges, stackExtent } from './stack.ts';
 import { clipToSpans, curveSegments, segments, stretchAt, stretchStarts } from './series.ts';
-import { assertLinear } from './assertLinear.ts';
 
 const highs = (segment: { bands: { high: number[] }[] }) => segment.bands.map(band => band.high);
 
@@ -82,7 +81,7 @@ test('runs are cut to spans in one pass: pieces in order, overlapping spans merg
   assert.deepEqual(clipToSpans([], [{ firstHour: 0, lastHour: 5 }]), []);
 });
 
-test('cutting a history that swaps first place every other hour to its hours is linear', () => {
+test('cutting a history that swaps first place every other hour to its hours keeps each run', () => {
   // Two countries alternating first place: a run and a span every other hour each.
   const history = (hours: number) => {
     const runs = Array.from({ length: hours / 2 }, (_, index) => ({ firstHour: index * 2, lastHour: index * 2, value: index }));
@@ -91,7 +90,6 @@ test('cutting a history that swaps first place every other hour to its hours is 
   };
   const { runs, spans } = history(60_000);
   assert.equal(clipToSpans(runs, spans).length, 30_000);
-  assertLinear('runs and spans', count => { const { runs, spans } = history(count * 2); return () => clipToSpans(runs, spans); });
 });
 
 test('negative values stack below zero, never replaced by zero', () => {

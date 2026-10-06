@@ -329,9 +329,6 @@ mod tests {
         sync::{Arc, mpsc},
     };
 
-    /// Generous: every wait in these tests ends in a failure, never a hang.
-    const TIMEOUT: Duration = Duration::from_secs(30);
-
     /// Releases a stalled fake write when dropped, so a failing assertion
     /// unwinds without hanging the writer's join. Declared after the writer,
     /// it drops first.
@@ -383,7 +380,7 @@ mod tests {
         let handle = writer.handle();
         handle.publish(status, json!({ "hour": 0 })).unwrap();
         entered
-            .recv_timeout(TIMEOUT)
+            .recv_timeout(crate::TEST_HANG_GUARD)
             .expect("the first write stalls");
         let (done_tx, done) = mpsc::channel();
         let publisher = handle.clone();
@@ -394,7 +391,7 @@ mod tests {
             }
             let _ = done_tx.send(());
         });
-        done.recv_timeout(TIMEOUT)
+        done.recv_timeout(crate::TEST_HANG_GUARD)
             .expect("hand-overs finish while the write is stuck");
         assert_eq!(
             handle.inner.lock().pending.len(),
@@ -430,7 +427,9 @@ mod tests {
         spool
             .publish(Path::new("status.json"), json!({ "hour": 1 }))
             .unwrap();
-        entered.recv_timeout(TIMEOUT).expect("the write stalls");
+        entered
+            .recv_timeout(crate::TEST_HANG_GUARD)
+            .expect("the write stalls");
         // Only now, with the write stuck, does the spool side end early.
         let (done_tx, done) = mpsc::channel();
         std::thread::spawn(move || {
@@ -440,7 +439,7 @@ mod tests {
             drop(spool);
             let _ = done_tx.send(());
         });
-        done.recv_timeout(TIMEOUT)
+        done.recv_timeout(crate::TEST_HANG_GUARD)
             .expect("the spool side returned while the write is stuck");
         drop(release);
         writer.finish();
@@ -471,7 +470,9 @@ mod tests {
             .unwrap();
         // The retry succeeded while the writer was running; finishing only
         // lets its counters settle before they are read.
-        wrote.recv_timeout(TIMEOUT).expect("the retry succeeds");
+        wrote
+            .recv_timeout(crate::TEST_HANG_GUARD)
+            .expect("the retry succeeds");
         writer.finish();
         assert_eq!(*attempts.lock().unwrap(), 3);
         assert_eq!(handle.json()["failures"], 2);
@@ -501,7 +502,7 @@ mod tests {
             if first {
                 // Fail only after the test has published the newer snapshot.
                 let _ = entered_tx.lock().unwrap().send(());
-                let _ = proceed.lock().unwrap().recv_timeout(TIMEOUT);
+                let _ = proceed.lock().unwrap().recv_timeout(crate::TEST_HANG_GUARD);
                 return Err(io::Error::from_raw_os_error(32));
             }
             let _ = wrote_tx.lock().unwrap().send(());
@@ -513,12 +514,12 @@ mod tests {
         let path = Path::new("status.json");
         handle.publish(path, json!({ "hour": 1 })).unwrap();
         entered
-            .recv_timeout(TIMEOUT)
+            .recv_timeout(crate::TEST_HANG_GUARD)
             .expect("the first write is in flight");
         handle.publish(path, json!({ "hour": 2 })).unwrap();
         drop(release);
         wrote
-            .recv_timeout(TIMEOUT)
+            .recv_timeout(crate::TEST_HANG_GUARD)
             .expect("the newer snapshot is written");
         writer.finish();
         assert_eq!(

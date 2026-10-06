@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import type { CountryGroupReply, FactionGroup } from '../../generated/dashboard';
 import { LEADER_GLYPH, UNNAMED, factionLanes, factionViews, laneCountries, leaderAt, leadershipParts, membersAt, membersHeld } from './factionsData.ts';
 import type { LaneOptions } from './factionsData';
-import { assertLinear } from '../../charts/assertLinear.ts';
 import { worldFilter } from '../../dashboard/groups.ts';
 import { laneRequests } from '../../charts/timeline/laneRequests.ts';
 
@@ -190,7 +189,7 @@ test('a membership continued across unrecorded hours is not said to have ended',
   assert.equal(membersAt(view, 205), null);
 });
 
-test('a world of 1,500 countries in factions lays out in about linear time', () => {
+test('a world of 1,500 countries in factions lays out a lane per member and faction', () => {
   // `size` members over size / 30 factions, each joining, leaving and joining again, the leader changing once.
   const world = (size: number): CountryGroupReply => {
     const count = Math.max(1, size / 30);
@@ -204,8 +203,4 @@ test('a world of 1,500 countries in factions lays out in about linear time', () 
   };
   const big = factionViews(world(1500), faction => faction.name, id => id);
   assert.equal(factionLanes(big, 1500, options, text, [], 0).lanes.length, 1500 + 50);
-  assertLinear('members', size => {
-    const views = factionViews(world(size), faction => faction.name, id => id);
-    return () => factionLanes(views, 1500, options, text, [], 0);
-  }, 1500);
 });

@@ -186,7 +186,6 @@ even if they move outside it. Reduced motion removes leaving rows immediately.
 the log kit on `origin/widgets/w3-construction-log`; neither imports the other
 branch. Offsets include the sticky header; ranges have exclusive ends.
 
-Node tests include 5,000-row sort, motion commits, rank markers, bars and
-viewport preparation against a 4.2ms warm-median CPU budget. Wall time is also
-reported. This measures JavaScript preparation; React reconciliation and
-browser layout/paint require the lead's dev-browser check.
+Node tests check that a 5,000-row redraw mounts only the rows in view and those
+sliding through it. They do not time it; React reconciliation and browser
+layout/paint require the lead's dev-browser check.

@@ -123,11 +123,11 @@ fn preflight_fault_skips_water_and_independent_pass_renders() {
     device
         .poll(wgpu::PollType::Wait {
             submission_index: Some(submission),
-            timeout: Some(std::time::Duration::from_secs(10)),
+            timeout: Some(crate::TEST_HANG_GUARD),
         })
         .unwrap();
     receive
-        .recv_timeout(std::time::Duration::from_secs(10))
+        .recv_timeout(crate::TEST_HANG_GUARD)
         .unwrap()
         .unwrap();
     assert_eq!(

@@ -1369,7 +1369,7 @@ mod tests {
         pool: &Pool<J, R>,
         active: usize,
     ) {
-        let limit = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let limit = std::time::Instant::now() + crate::TEST_HANG_GUARD;
         while pool.calibration().active < active {
             assert!(std::time::Instant::now() < limit, "job never started");
             std::thread::yield_now();
@@ -1391,7 +1391,7 @@ mod tests {
     }
 
     fn wait_for_starts(started: &AtomicU64, count: u64) {
-        let limit = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let limit = std::time::Instant::now() + crate::TEST_HANG_GUARD;
         while started.load(Ordering::Acquire) < count {
             assert!(std::time::Instant::now() < limit, "job never started");
             std::thread::yield_now();
@@ -1423,7 +1423,7 @@ mod tests {
             wait_for_starts(&started, order);
             std::thread::scope(|scope| {
                 let helper = scope.spawn(|| {
-                    let limit = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    let limit = std::time::Instant::now() + crate::TEST_HANG_GUARD;
                     while pool.calibration().spins == spins_before
                         && std::time::Instant::now() < limit
                     {

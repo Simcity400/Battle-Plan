@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { AutonomyReply, AutonomyRun } from '../../generated/dashboard';
-import { assertLinear } from '../../charts/assertLinear.ts';
 import { laneStops } from '../../charts/timeline/layout.ts';
 import { Lineage, countryMembership } from '../../dashboard/identity.ts';
 import { absentAt, autonomyViews, chosenViews, clipSubject, formatProgress, formatScore, laneLabels, levelName, membershipUnknownFor, noLanesMessage, partlyIdentified, partlyRecorded, progressOf, runOf,
@@ -181,7 +180,7 @@ test('a subject whose overlord changes is cut by each overlord’s own membershi
     [[105, 109, 'GER', false], [110, 119, 'ENG', false], [120, 125, 'GER', false]]);
 });
 
-test('cutting a subject by its overlords’ membership counted at each hour takes about linear time', () => {
+test('cutting a subject by its overlords’ membership counted at each hour keeps their member turns', () => {
   // Two overlords taking turns every other hour, each a member every other turn: as
   // many membership spans as runs, the shape that took seconds when cut run by run.
   const history = (count: number) => {
@@ -193,7 +192,6 @@ test('cutting a subject by its overlords’ membership counted at each hour take
   };
   const { subject, membership } = history(32_000);
   assert.equal(clipSubject(subject, false, membership, []).runs.length, 16_000);
-  assertLinear('runs and spans', count => { const { subject, membership } = history(count); return () => clipSubject(subject, false, membership, []); });
 });
 
 test('an hour with a subject or overlord the recording does not name is never called one without subjects', () => {

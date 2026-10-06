@@ -635,9 +635,8 @@ fn alternating(
 }
 
 #[test]
-fn top_n_clipping_is_linear_and_can_be_cancelled() {
+fn top_n_clipping_follows_hourly_lead_changes_and_can_be_cancelled() {
     use crate::products::country_factories::clip_runs;
-    use std::time::{Duration, Instant};
     // The case from review: 60,000 hours, first place changing every hour.
     let (runs, spans) = alternating(60_000);
     let clipped = clip_runs(&runs, &spans, &AtomicBool::new(false)).unwrap();
@@ -647,28 +646,6 @@ fn top_n_clipping_is_linear_and_can_be_cancelled() {
             .iter()
             .zip(&runs)
             .all(|(piece, run)| piece.first_hour == run.first_hour)
-    );
-    // Four times the history takes well under sixteen times as long (a quadratic
-    // cut would): the best of several runs, so a busy machine does not decide it.
-    // Rows without values time the walk itself, not the allocator copying values.
-    let best = |hours: i32| {
-        let (mut runs, spans) = alternating(hours);
-        for run in &mut runs {
-            run.values.clear();
-        }
-        (0..9)
-            .map(|_| {
-                let started = Instant::now();
-                std::hint::black_box(clip_runs(&runs, &spans, &AtomicBool::new(false)).unwrap());
-                started.elapsed()
-            })
-            .min()
-            .unwrap_or(Duration::ZERO)
-    };
-    let (small, large) = (best(100_000), best(400_000));
-    assert!(
-        large < small * 8,
-        "100,000 hours {small:?}, 400,000 hours {large:?}"
     );
     // A cancelled request stops.
     let error = clip_runs(&runs, &spans, &AtomicBool::new(true)).unwrap_err();

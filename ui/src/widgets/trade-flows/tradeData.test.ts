@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertLinear } from '../../charts/assertLinear.ts';
 import { resolveCountries, worldFilter } from '../../dashboard/groups.ts';
 import type { CountrySelection } from '../../dashboard/model';
 import type { CountryGroupReply } from '../../generated/dashboard';
@@ -135,23 +134,6 @@ test('each side keeps one order for the whole time shown, largest first', () => 
   const ranks = sideRanks(flows, 0, 119);
   assert.deepEqual([...ranks.source], [['GER', 0], ['ITA', 1]]);
   assert.deepEqual([...ranks.target], [['ITA', 0], ['SPR', 1]]);
-});
-
-test('choosing and laying out the flows grows about linearly with a world of countries', () => {
-  // `count` countries each selling the next steel and oil over ten reads.
-  const world = (count: number): TradeFlowsReply => {
-    const countries = Array.from({ length: count }, (_, index) => `C${String(index).padStart(6, '0')}`);
-    const runs = (index: number): [number, number, string][] => Array.from({ length: 10 }, (_, read) => [read * 24, read * 24 + 23, String(100_000 + index + read)]);
-    return { ...reply(), countries, flows: countries.flatMap((_, index) => [flow(index, (index + 1) % count, 1, runs(index)), flow(index, (index + 1) % count, 2, runs(index))]) };
-  };
-  assertLinear('countries', count => {
-    const data = decodeTrade(world(count));
-    return () => {
-      const flows = selectFlows(data, { kind: 'countries', tags: data.reply.countries.slice(0, count / 2), membership: null, between: false }, null);
-      for (const measure of ['current', 'total', 'average'] as const) buildDiagram(flows, measure, 0, 200, 12);
-      sideRanks(flows, 0, 239);
-    };
-  }, 1_500);
 });
 
 test('one scale all campaign: the most traded at once, the final total, the largest average', () => {

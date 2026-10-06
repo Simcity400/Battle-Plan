@@ -66,7 +66,7 @@ Who sells which resources to whom: a Sankey of sellers (left) to buyers (right),
 **Built from the kit:**
 - the flow diagram ([charts/flow](../../charts/flow/));
 - `fitTooltip`, `formatAmount`, `rescale`, `rescaleSum` and `readAt`;
-- `nudgeApart`, `jumpItem`, `useCountryLooks`, `useHoverLabels`, `worldFilter`, `compareTags`, the country groups and `assertLinear` for the timing test.
+- `nudgeApart`, `jumpItem`, `useCountryLooks`, `useHoverLabels`, `worldFilter`, `compareTags` and the country groups.
 
 This folder keeps only what trade means: the measures, the summing of the rest into one node and the wording.
 

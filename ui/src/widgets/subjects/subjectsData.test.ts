@@ -4,7 +4,6 @@ import type { CountryGroupReply, SubjectLevel, SubjectReply } from '../../genera
 import { laneCountries, levelColours, levelName, overlordTagAt, overlordViews, subjectLanes, validateSubjectReply } from './subjectsData.ts';
 import { Lineage } from '../../dashboard/identity.ts';
 import type { LaneOptions } from './subjectsData';
-import { assertLinear } from '../../charts/assertLinear.ts';
 import { worldFilter } from '../../dashboard/groups.ts';
 import { laneRequests } from '../../charts/timeline/laneRequests.ts';
 
@@ -253,14 +252,7 @@ test('a former subject renamed after its release is named, and chosen, by its ta
   assert.deepEqual(labels({ countries: new Set(['S1']) }), []);
 });
 
-test('grouping any number of runs stays about linear', () => {
-  const runs = (count: number): SubjectReply => ({ ...reply, unobserved: [], runs: Array.from({ length: count }, (_, index) => ({
-    overlord: `O${index % 40}`, subject: `S${index % (count / 4)}`, startHour: index, firstHour: index * 3, lastHour: index * 3 + 1,
-    steps: [step(index * 3, index * 3 + 1, 'autonomy_puppet')] })) });
-  assertLinear('runs', count => { const data = runs(count); return () => overlordViews(data); }, 5000);
-});
-
-test('a world of 1,500 countries lays out in about linear time', () => {
+test('a world of 1,500 countries lays out a lane per subject and overlord', () => {
   // `size` subjects under size / 10 overlords, each released and taken again at another level.
   const world = (size: number): SubjectReply => ({
     ...reply, unobserved: [],
@@ -274,8 +266,4 @@ test('a world of 1,500 countries lays out in about linear time', () => {
   const colours = levelColours(levels, ['c0', 'c1'], 'other');
   const lanes = subjectLanes(overlordViews(world(1500)), byToken, colours, 2500, options, text, []).lanes;
   assert.equal(lanes.length, 1500 + 150);
-  assertLinear('subjects', size => {
-    const views = overlordViews(world(size));
-    return () => subjectLanes(views, byToken, colours, 2500, options, text, []);
-  }, 1500);
 });

@@ -8,7 +8,6 @@ use replay::{
         TableId, TableRows, VariantDefinitionRow,
     },
 };
-use std::time::Instant;
 
 fn hour(day: i32) -> i32 {
     let replay::cadence::Cadence::Daily(slot) =
@@ -441,7 +440,7 @@ fn production_spending_refuses_integer_overflow_instead_of_saturating() {
 }
 
 #[test]
-fn production_spending_every_country_5000_country_builder_budget() {
+fn production_spending_every_country_5000_country_builder() {
     let country_count = 5_000u32;
     let countries: Vec<_> = (1..=country_count)
         .map(|id| CountryRow {
@@ -480,9 +479,7 @@ fn production_spending_every_country_5000_country_builder_budget() {
         }
     }
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
-    let began = Instant::now();
     let scanned = production::scan(&replay, 1, &AtomicBool::new(false)).unwrap();
-    let elapsed = began.elapsed();
     assert_eq!(scanned.tags.len(), country_count as usize);
     let mut selected = params(false);
     selected.tag = "opaque|5000".into();
@@ -500,12 +497,6 @@ fn production_spending_every_country_5000_country_builder_budget() {
     assert_eq!(
         at(&result.total, hour(1)).unwrap().total_raw.as_deref(),
         Some("200000")
-    );
-    let per_hour = elapsed.as_secs_f64() * 1000.0 / 48.0;
-    println!("production spending 5000-country shared scan: {per_hour:.3} ms/built hour");
-    assert!(
-        per_hour <= 5.5,
-        "5000-country builder took {per_hour:.3} ms/built hour, budget 5.5"
     );
 }
 

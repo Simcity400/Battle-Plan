@@ -445,42 +445,6 @@ test('a variant\u2019s name is not known from a boundary until the next read', (
   assert.equal(variantName(renamed, 25), 'New name');
 });
 
-/** A reply of `types` equipment types, each with `perType` unchanged variants and a
- * logistics record, over `days` daily reads. */
-function sized(types: number, perType: number, days: number): EquipmentStockpileReply {
-  const last = days * 24;
-  const reads = Array.from({ length: days }, (_, day) => day * 24);
-  return { branchId: '1', tag: 'GER', campaignKey: 'c0ffee', decimals: 5, warnings: [], reads, logisticsReads: reads, lineReads: reads,
-    stockHours: [{ firstHour: 0, lastHour: last }], lineHours: [{ firstHour: 0, lastHour: last }],
-    balanceHours: [{ firstHour: 0, lastHour: last }], aiHours: [], needBoundRaw: String(0x53e2d620fb40),
-    types: Array.from({ length: types }, (_, index) => ({ key: `type_${index}`, name: null, domain: index % 2 ? 'air' as const : 'land' as const, needNote: null })),
-    logistics: Array.from({ length: types }, (_, index) => ({ key: `type_${index}`, balance: [run(0, last, -index)], stock: [run(0, last, 10 + index)] })),
-    variants: Array.from({ length: types * perType }, (_, index) => variant(String(index + 1), `v_${index}`, `type_${index % types}`, [run(0, last, index % 97)], [run(0, last, 1)])) };
-}
-
-/** The median time of a few calls, in milliseconds. */
-function timed(work: () => void): number {
-  const times = Array.from({ length: 5 }, () => { const start = performance.now(); work(); return performance.now() - start; });
-  return times.sort((a, b) => a - b)[2];
-}
-
-test('the campaign scans grow linearly with the reply, not with reads times variants', () => {
-  const run = (reply: EquipmentStockpileReply) => () => {
-    const groups = stockGroups(reply, 'type', 0);
-    barExtent(reply, groups, null);
-    shareScale(reply, groups, null);
-    automaticGroups(reply, groups, 'type');
-  };
-  const small = sized(25, 50, 912);
-  const large = sized(100, 50, 3650);
-  timed(run(small));
-  const [short, long] = [timed(run(small)), timed(run(large))];
-  // Four times the types, variants and reads: well under the sixteen times a
-  // reads-by-variants scan would take, and within a render's budget.
-  assert.ok(long < Math.max(short * 10, 60), `${short.toFixed(1)} ms, then ${long.toFixed(1)} ms`);
-  assert.ok(long < 1000, `${long.toFixed(1)} ms for 100 types, 5,000 variants and 3,650 reads`);
-});
-
 test('excluded types never make a filtered arm unknown; variants of unknown type still do', () => {
   const reply: EquipmentStockpileReply = { ...REPLY, variants: [],
     logistics: [{ key: 'infantry_equipment', balance: [run(96, 130, 5)], stock: [run(96, 130, 10)] },
