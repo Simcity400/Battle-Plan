@@ -13,7 +13,11 @@ use super::{
     modifier_text::{Block, Definitions, Refusal},
     tooltips::{hover_text, refuse_hovers, set_hover},
 };
-use crate::{document::Document, map::perspective::Vision, table_access::rows};
+use crate::{
+    document::Document,
+    map::{counters::NativeWindows, perspective::Vision},
+    table_access::rows,
+};
 use installed_content::{
     ResolvedLayers,
     defines::Defines,
@@ -891,7 +895,8 @@ struct AssignedCommander<'a> {
 /// each refusal and each entry the native readers drop.
 fn assigned(
     out: &mut Bindings,
-    document: &Document,
+    content: &Content,
+    windows: &NativeWindows,
     key: &str,
     commander: AssignedCommander<'_>,
     effect_context: &EffectContext<'_>,
@@ -904,8 +909,7 @@ fn assigned(
         ));
         return;
     };
-    let (icons, loc) = (&document.icons.combat, &document.names.localisation);
-    let content = &document.icons.combat.commander_tooltips;
+    let (icons, loc) = (effect_context.icons, effect_context.loc);
     let mut refused: BTreeMap<String, usize> = BTreeMap::new();
     let mut dropped: BTreeMap<String, usize> = BTreeMap::new();
     let mut ignored: BTreeMap<String, usize> = BTreeMap::new();
@@ -918,9 +922,17 @@ fn assigned(
         .filter(|item| item.kind != 0 && item.relevant != 0)
         .collect();
     let entry_count = grid.entries.len();
-    for (entry, &item) in grid.entries.iter_mut().zip(&shown) {
+    for (index, (entry, &item)) in grid.entries.iter_mut().zip(&shown).enumerate() {
         let label = String::from_utf8_lossy(&item.token).into_owned();
         let result = (|| -> Result<(String, String), String> {
+            // 141C5F730 names HEADER literally; exile hovers require the
+            // content definition rather than the localiser's missing-key text.
+            if item.kind == 6 && loc.get(super::tooltips::HEADER).is_none() {
+                return Err(format!(
+                    "native exile tooltip key {} is not defined in the content localisation",
+                    super::tooltips::HEADER
+                ));
+            }
             let trait_token = std::str::from_utf8(&item.token)
                 .map_err(|_| format!("recorded trait token {label} is not UTF-8"))?;
             let name = country_localized(icons, loc, commander.country_tag, trait_token)
@@ -1043,7 +1055,43 @@ fn assigned(
                 None
             }
         };
-        set(entry, "Background", result);
+        if item.kind == 6 {
+            // 141C5EF70 selects the exile template and installs the trait
+            // handler on its container. 1422AF2D0 -> 14229D3A0 propagates it
+            // to every child, including exile_flag (1429D71B0), with no
+            // Background. Follow the authored tree, including mod children.
+            let template = grid
+                .entry_templates
+                .get(&index)
+                .or(grid.entry_template.as_ref());
+            if let Some(template) = template
+                && let Some(root) = windows.gui_type(template.as_bytes())
+            {
+                let mut pending = vec![(String::new(), root)];
+                while let Some((path, element)) = pending.pop() {
+                    for child in element.nested() {
+                        let child_path = if path.is_empty() {
+                            child.name().into_owned()
+                        } else {
+                            format!("{path}/{}", child.name())
+                        };
+                        pending.push((child_path, child));
+                    }
+                    set(entry, path, result.clone());
+                }
+            } else {
+                let keys: Vec<_> = entry.keys().cloned().collect();
+                refuse_hovers(entry, keys);
+                *absent
+                    .entry(format!(
+                        "trait {label}: exile entry template {} is not in the combat interface files",
+                        template.map_or("<unbound>", String::as_str)
+                    ))
+                    .or_default() += 1;
+            }
+        } else {
+            set(entry, "Background", result);
+        }
     }
     if entry_count != shown.len() {
         out.warnings.push(format!(
@@ -1245,7 +1293,8 @@ pub(super) fn bind(
         let leader = unit_leader(leaders.rows(), side.commander);
         assigned(
             out,
-            document,
+            content,
+            &document.icons.combat.native_windows,
             &format!("{prefix}_traits_grid"),
             AssignedCommander {
                 traits: &side.traits,
