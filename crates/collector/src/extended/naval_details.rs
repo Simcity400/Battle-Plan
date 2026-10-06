@@ -115,6 +115,35 @@ pub struct Capacities {
     breakdown_text: usize,
     breakdown_depth: usize,
 }
+impl Capacities {
+    /// Live combat/header demand before attach and on the spool thread.
+    /// Full capture still supplies growth after a change between observations.
+    pub(crate) fn raise_for_live_breakdowns(
+        &mut self,
+        demand: engine::naval_ship_modifier_breakdown::Demand,
+    ) {
+        for (capacity, required) in [
+            (&mut self.details, demand.rows),
+            (&mut self.ships, demand.ships),
+            (&mut self.groups, demand.groups),
+            (&mut self.planes, demand.planes),
+            (&mut self.commanders, demand.commanders),
+            (&mut self.side_units, demand.side_units),
+            (&mut self.damage_sources, demand.damage_sources),
+            (&mut self.wing_types, demand.wing_types),
+            (&mut self.plane_wings, demand.plane_wings),
+            (&mut self.plane_air, demand.plane_air_hits),
+            (&mut self.plane_hits, demand.plane_naval_hits),
+            (&mut self.breakdown_requests, demand.requests),
+            (&mut self.breakdown_roots, demand.roots),
+            (&mut self.breakdown_nodes, demand.nodes),
+            (&mut self.breakdown_text, demand.text),
+            (&mut self.breakdown_depth, demand.depth),
+        ] {
+            grow_capacity(capacity, required);
+        }
+    }
+}
 impl Default for Capacities {
     fn default() -> Self {
         Self {
@@ -184,6 +213,26 @@ pub struct Captured {
     summary_countries_len: usize,
 }
 impl Captured {
+    pub(crate) fn try_grow_hint(&mut self, c: &Capacities) -> Result<(), &'static str> {
+        crate::table_capture::grow_hint! {
+            self.details.rows => c.details,
+            self.ships.rows => c.ships,
+            self.groups => c.groups,
+            self.planes.first => c.planes,
+            self.commanders.first => c.commanders,
+            self.side_units.first => c.side_units,
+            self.damage_sources.first => c.damage_sources,
+            self.wing_types.first => c.wing_types,
+            self.plane_wings.first => c.plane_wings,
+            self.plane_air.first => c.plane_air,
+            self.plane_hits.first => c.plane_hits,
+            self.breakdown_requests.first => c.breakdown_requests,
+            self.breakdown_roots.first => c.breakdown_roots,
+            self.breakdown_nodes.first => c.breakdown_nodes,
+            self.breakdown_text.first => c.breakdown_text,
+            self.breakdown_depth.first => c.breakdown_depth,
+        }
+    }
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
         Self::with_capacities(&Capacities {

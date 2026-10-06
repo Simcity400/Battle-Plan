@@ -1,5 +1,5 @@
 use super::*;
-use engine::Memory;
+use engine::{Memory, naval_ship_modifier_breakdown as breakdown};
 use std::{
     hint::black_box,
     time::{Duration, Instant},
@@ -55,6 +55,120 @@ fn naval_empty_hour_keeps_all_tables_complete_without_tree_storage() {
             .iter()
             .all(|view| matches!(view, TableView::Complete(_)))
     );
+}
+
+#[test]
+fn naval_live_headers_presize_attach_and_combat_growth_before_capture() {
+    let mut capacities = Capacities::default();
+    assert_eq!(capacities.breakdown_requests, 0);
+    for combats in [1, 66, 71] {
+        let memory = Fixture::new(combats);
+        let demand = breakdown::demand(&memory, IMAGE, STATE).unwrap();
+        assert_eq!(demand.rows, combats);
+        let old = capacities;
+        capacities.raise_for_live_breakdowns(demand);
+        let mut captured = Captured::with_capacities(&old);
+        captured.try_grow_hint(&capacities).unwrap();
+        captured.capture(&memory, IMAGE, STATE);
+        assert_eq!(captured.details.outcome, Outcome::Rows { len: combats });
+        let status = captured.breakdown_status();
+        assert!(
+            matches!(status.outcome, Outcome::Rows { .. }),
+            "{:?}",
+            status.outcome
+        );
+        for (required, bound) in status.required.into_iter().zip([
+            demand.requests,
+            demand.roots,
+            demand.nodes,
+            demand.text,
+            demand.depth,
+        ]) {
+            assert!(
+                required <= bound,
+                "native demand {required} exceeds header bound {bound}"
+            );
+        }
+        let retained = capacities;
+        capacities.raise_for_live_breakdowns(Default::default());
+        assert!(capacities == retained);
+    }
+}
+
+#[test]
+fn naval_live_headers_presize_broad_deep_carrier_and_escape_trees_at_attach() {
+    let memory = live_shape();
+    let demand = breakdown::demand(&memory, IMAGE, STATE).unwrap();
+    let mut capacities = crate::extended::Capacities::default();
+    capacities.naval_details.raise_for_live_breakdowns(demand);
+    let mut captured = crate::extended::Captured::with_capacities(&Default::default());
+    captured
+        .naval_details
+        .try_grow_hint(&capacities.naval_details)
+        .unwrap();
+    let countries =
+        std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+    let mut request = captured.take_ordinary_request(&countries, IMAGE, STATE);
+    request.packs.naval_details.capture(&memory, IMAGE, STATE);
+    captured.restore_ordinary_request(request, None);
+    let status = captured.naval_details.breakdown_status();
+    assert_eq!(status.required, [161, 40, 2008, 17_952, 4]);
+    assert!(
+        matches!(status.outcome, Outcome::Rows { .. }),
+        "{:?}",
+        status.outcome
+    );
+    assert!(matches!(
+        captured.naval_details.breakdown_table(),
+        TableView::Complete(rows::TableRows::NavalModifierBreakdowns(_))
+    ));
+    let mut work = BreakdownWork::default();
+    work.observe(status).unwrap();
+    let json = serde_json::to_value(work.status()).unwrap();
+    assert_eq!(json["available_hours"], 1);
+    assert_eq!(json["refused_hours"], 0);
+}
+
+#[test]
+fn naval_live_header_bounds_scale_from_actual_combat_demand() {
+    let mut memory = Fixture::new(1);
+    let one = breakdown::demand(&memory, IMAGE, STATE).unwrap();
+    for combats in [1500, 5000] {
+        let roster = memory.allocate(combats * 8);
+        for index in 0..combats {
+            memory.u64(roster + index * 8, BODIES as u64);
+        }
+        memory.array(STATE + engine::cgame_state::COMBATS + 8, roster, combats);
+        let demand = breakdown::demand(&memory, IMAGE, STATE).unwrap();
+        assert_eq!(demand.rows, combats);
+        assert_eq!(demand.requests, one.requests * combats);
+        assert_eq!(demand.ships, one.ships * combats);
+        assert_eq!(demand.planes, one.planes * combats);
+        // The repeated combat shares native roots; topology is counted once.
+        assert_eq!(
+            (demand.roots, demand.nodes, demand.text),
+            (one.roots, one.nodes, one.text)
+        );
+        let mut capacities = Capacities::default();
+        capacities.raise_for_live_breakdowns(demand);
+        assert!(capacities.details >= combats);
+        assert!(capacities.breakdown_requests >= demand.requests);
+        assert!(capacities.breakdown_nodes >= demand.nodes);
+        assert!(capacities.breakdown_text >= demand.text);
+    }
+}
+
+#[test]
+fn naval_hint_reserve_failure_keeps_existing_lengths() {
+    let capacities = Capacities::default();
+    let mut captured = Captured::with_capacities(&capacities);
+    let mut hint = capacities;
+    hint.details += 1;
+    hint.breakdown_text = usize::MAX;
+    assert!(captured.try_grow_hint(&hint).is_err());
+    assert_eq!(captured.details.rows.len(), capacities.details);
+    assert!(captured.breakdown_text.first.is_empty());
+    captured.try_grow_hint(&capacities).unwrap();
 }
 
 #[test]

@@ -11,7 +11,7 @@
 
 use crate::{extended, map_capture::MapCapacities, sampling};
 use engine::{Memory, cgame_state, country_memory::Cache};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// Largest registry observed this attachment, for raw-copy jobs whose pools
 /// live outside the frame. Only rises.
@@ -110,6 +110,57 @@ pub fn observe_production_lines(memory: &impl Memory, base: usize) -> Option<usi
             len.checked_add(unread_rows as usize)
         }
         engine::walk::Outcome::Unavailable { .. } => None,
+    }
+}
+
+static COMBAT_HINT_FAILURES: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+
+pub(crate) fn note_combat_hint_failure(index: usize) {
+    COMBAT_HINT_FAILURES[index].fetch_add(1, Ordering::Relaxed);
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct CombatHintStatus {
+    land_skipped: u64,
+    naval_skipped: u64,
+}
+
+pub(crate) fn combat_hint_status() -> CombatHintStatus {
+    CombatHintStatus {
+        land_skipped: COMBAT_HINT_FAILURES[0].load(Ordering::Relaxed),
+        naval_skipped: COMBAT_HINT_FAILURES[1].load(Ordering::Relaxed),
+    }
+}
+
+/// Shared count-only land details with mutable-header consistency checks.
+pub fn observe_land_details(
+    memory: &impl Memory,
+    base: usize,
+) -> Option<engine::cland_combat::DetailDemand> {
+    let state = engine::read::<u64>(memory, base.checked_add(cgame_state::SINGLETON_RVA)?)?;
+    let state = usize::try_from(state).ok().filter(|state| *state != 0)?;
+    match engine::cland_combat::detail_demand(memory, base, state) {
+        Ok(demand) => Some(demand),
+        Err(_) => {
+            note_combat_hint_failure(0);
+            None
+        }
+    }
+}
+
+/// Shared native source selection and count-only modifier tree census.
+pub fn observe_naval_breakdowns(
+    memory: &impl Memory,
+    base: usize,
+) -> Option<engine::naval_ship_modifier_breakdown::Demand> {
+    let state = engine::read::<u64>(memory, base.checked_add(cgame_state::SINGLETON_RVA)?)?;
+    let state = usize::try_from(state).ok().filter(|state| *state != 0)?;
+    match engine::naval_ship_modifier_breakdown::demand(memory, base, state) {
+        Ok(demand) => Some(demand),
+        Err(_) => {
+            note_combat_hint_failure(1);
+            None
+        }
     }
 }
 

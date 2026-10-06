@@ -167,6 +167,42 @@ fn clock(hour: i32, session: i64) -> Option<Clock> {
 }
 
 #[test]
+fn refusals_identify_each_writer_without_changing_branch_poisoning() {
+    let _serial = SERIAL.lock().unwrap();
+    setup(8, 1);
+    for site in 0..native::SITES.len() {
+        boundary(clock(1, site as i64 + 1));
+        boundary(clock(2, site as i64 + 1));
+        let count = SITE_REFUSALS[site].load(Ordering::Relaxed);
+        STORE
+            .lock()
+            .unwrap()
+            .refuse(Some(site), "synthetic destruction refusal");
+        let held = STORE.lock().unwrap();
+        let refusal = serde_json::to_value(held.refusal).unwrap();
+        assert_eq!(refusal["site_index"], site);
+        assert_eq!(refusal["reason"], "synthetic destruction refusal");
+        // Reading status must retain the first diagnostic while STORE is held.
+        let status = serde_json::to_value(status()).unwrap();
+        assert!(!status["refusal"].is_null());
+        assert_eq!(
+            status["refusal"],
+            serde_json::to_value(FIRST_REFUSAL.get()).unwrap()
+        );
+        drop(held);
+        assert_eq!(status["hooks"][site]["site_index"], site);
+        assert_eq!(status["hooks"][site]["refusals"], count + 1);
+        assert!(status["branch_unavailable"].as_bool().unwrap());
+        boundary(clock(3, site as i64 + 1));
+        assert_eq!(drain(&mut []), Err("synthetic destruction refusal"));
+    }
+    let first = serde_json::to_value(status()).unwrap()["refusal"].clone();
+    boundary(clock(1, 10));
+    assert_eq!(serde_json::to_value(status()).unwrap()["refusal"], first);
+    assert!(!POISONED.load(Ordering::SeqCst));
+}
+
+#[test]
 fn actual_events_every_country_fail_closed_and_detach() {
     let _serial = SERIAL.lock().unwrap();
     let memory = unsafe { engine::memory::LiveMemory::new() };

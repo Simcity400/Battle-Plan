@@ -142,17 +142,20 @@ fn doctrine_fixture(count: usize) -> Fixture {
 
 fn doctrine_sources(memory: &Fixture) -> Result<Vec<SourceRow>, &'static str> {
     let mut sources = Vec::new();
-    Capture {
+    let (mut terms, mut lengths, mut required) = (Vec::new(), [0; 2], [0; 2]);
+    let mut capture = Capture {
         memory,
         base: IMAGE,
         buffers: InfluenceBuffers {
             sources: &mut sources,
-            terms: &mut Vec::new(),
-            lengths: &mut [0; 2],
-            required: &mut [0; 2],
+            terms: &mut terms,
+            lengths: &mut lengths,
+            required: &mut required,
         },
-    }
-    .doctrine(TASK)?;
+    };
+    visit_doctrine(memory, IMAGE, TASK, true, &mut |row, accumulator| {
+        capture.source(row, accumulator)
+    })?;
     Ok(sources)
 }
 
@@ -161,6 +164,29 @@ fn doctrine_exceeds_4096_nodes() {
     let sources = doctrine_sources(&doctrine_fixture(4097)).unwrap();
     assert_eq!(sources.len(), 4097);
     assert_eq!(sources[4096].index, 4096);
+}
+
+#[test]
+fn doctrine_source_visitor_sizes_without_key_name_or_weight_operands() {
+    for count in [1500, 5000] {
+        let mut memory = doctrine_fixture(count);
+        memory.fail = Some(IMAGE + crate::cpdx_lexer::INITIALIZED_RVA);
+        let mut sources = Vec::new();
+        visit_doctrine(&memory, IMAGE, TASK, false, &mut |row, accumulator| {
+            sources.push((row.scope, row.index, accumulator));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(sources.len(), count);
+        assert_eq!(sources[count - 1], (4, count as u32 - 1, Some(0x1800)));
+        assert!(
+            memory
+                .reads
+                .borrow()
+                .iter()
+                .all(|&(address, _)| address != IMAGE + crate::cpdx_lexer::INITIALIZED_RVA)
+        );
+    }
 }
 
 #[test]

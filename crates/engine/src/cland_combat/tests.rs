@@ -1055,6 +1055,122 @@ fn commander_trait_lists_report_exact_demand_beyond_any_arena() {
 }
 
 #[test]
+fn detail_demand_uses_capture_census_and_rejects_unreadable_payloads() {
+    let mut fixture = commander_fixture();
+    let memory = DetailMemory {
+        fixture: &fixture,
+        copies: 0.into(),
+        bytes: 0.into(),
+    };
+    let mut arenas = Arenas::new();
+    let mut view = arenas.view();
+    read_details(
+        &memory,
+        BASE,
+        detail_source(),
+        &Members::none(),
+        &mut Commanders::default(),
+        &mut view,
+    )
+    .unwrap();
+    let demand = detail_demand(&memory, BASE, STATE).unwrap();
+    assert_eq!(demand.rows, 1); // the mixed registry also contains a naval combat
+    assert_eq!(demand.census_participants, 3);
+    assert_eq!(demand.arenas, view.required);
+
+    // A header alone cannot certify off-thread demand from an unreadable list.
+    let unreadable = 0x7fff_0000;
+    for (header, count) in [
+        (ATTACK + cland_combatant::AIR_SUPPORT, 5000),
+        (COMMANDER + crate::cunit_leader::TIMED_TRAIT_DATA, 1500),
+    ] {
+        let mut changed = Fixture(fixture.0.clone());
+        changed.array(header, unreadable, count);
+        assert!(detail_demand(&changed.memory(), BASE, STATE).is_err());
+    }
+    fixture.u32(ATTACK + cland_combatant::AIR_SUPPORT + 12, 5001);
+    assert!(detail_demand(&fixture.memory(), BASE, STATE).is_err());
+}
+
+#[test]
+fn detail_demand_discards_changed_array_and_string_headers() {
+    let mut fixture = commander_fixture();
+    fixture.array(COMMANDER + crate::cunit_leader::TIMED_TRAIT_DATA, 0xf100, 1);
+    fixture.u64(0xf100, 0xe100);
+    let memory = fixture.memory();
+    let observed = Observed::new(&memory, &[]);
+    detail_demand(&observed, BASE, STATE).unwrap();
+    let reads = observed.reads.borrow();
+    for (address, width, byte) in [
+        (ATTACK + cland_combatant::UNITS, 16, 12),
+        (ATTACK + cland_combatant::COMMITTED, 16, 12),
+        (ATTACK + cland_combatant::RESERVES, 16, 12),
+        (ATTACK + cland_combatant::AIR_SUPPORT, 16, 12),
+        (COMMANDER + crate::cunit_leader::TRAIT_DATA, 16, 12),
+        (COMMANDER + crate::cunit_leader::TIMED_TRAIT_DATA, 16, 12),
+        (
+            COMMANDER + crate::cunit_leader::TRAIT_EXPERIENCE_DATA,
+            16,
+            12,
+        ),
+        (COMMANDER + crate::cunit_leader::TOKEN, 32, 16),
+        (0x8200 + crate::cterrain_type::NAME, 32, 16),
+        (STATE + cgame_state::COMBATS + 8, 16, 12),
+    ] {
+        let ordinal = reads
+            .iter()
+            .rposition(|&(at, len)| (at, len) == (address, width))
+            .unwrap();
+        let mut torn = Observed::new(&memory, &[]);
+        torn.change = Some((ordinal, byte));
+        assert!(detail_demand(&torn, BASE, STATE).is_err(), "{address:#x}");
+    }
+}
+
+#[test]
+fn detail_demand_scales_combat_participant_and_arena_occurrences() {
+    const LARGE_REGISTRY: usize = 0x12000;
+    const LARGE_COMBATS: usize = 0x20000;
+    const COMBAT_STRIDE: usize = 0x1000;
+    for count in [1500_usize, 5000] {
+        let mut fixture = detail_fixture();
+        fixture.0.resize(LARGE_COMBATS + count * COMBAT_STRIDE, 0);
+        fixture.array(
+            STATE + cgame_state::COMBATS + 8,
+            LARGE_REGISTRY,
+            count as u32,
+        );
+        let combat = fixture.0[COMBAT - STATE..COMBAT - STATE + 0xe0].to_vec();
+        let attacker = fixture.0[ATTACK - STATE..ATTACK - STATE + 0x1b0].to_vec();
+        let defender = fixture.0[DEFEND - STATE..DEFEND - STATE + 0x1b0].to_vec();
+        for index in 0..count {
+            let pointer = LARGE_COMBATS + index * COMBAT_STRIDE;
+            let attack = pointer + 0x100;
+            let defend = pointer + 0x300;
+            for (address, bytes) in [(pointer, &combat), (attack, &attacker), (defend, &defender)] {
+                let start = address - STATE;
+                fixture.0[start..start + bytes.len()].copy_from_slice(bytes);
+            }
+            fixture.u64(LARGE_REGISTRY + index * 8, pointer as u64);
+            fixture.u64(
+                pointer + HANDLE,
+                ((index as u64 + 1) << 32) | TYPE_WORD as u64,
+            );
+            fixture.u64(pointer + ATTACKER, attack as u64);
+            fixture.u64(pointer + DEFENDER, defend as u64);
+            fixture.u64(attack + cland_combatant::COMBAT, pointer as u64);
+            fixture.u64(defend + cland_combatant::COMBAT, pointer as u64);
+        }
+        let demand = detail_demand(&fixture.memory(), BASE, STATE).unwrap();
+        assert_eq!(demand.rows, count);
+        assert_eq!(demand.census_participants, 3 * count);
+        assert_eq!(demand.arenas.participants, 3 * count);
+        assert_eq!(demand.arenas.air, count);
+        assert_eq!(demand.arenas.text, 9 * count);
+    }
+}
+
+#[test]
 fn commander_selection_preserves_equal_skill_category_tie_and_hourly_traits() {
     let fixture = commander_fixture();
     let memory = DetailMemory {
@@ -1766,16 +1882,24 @@ fn border_marker_inputs_keep_stored_country_state_event_bytes_and_inactive_skip(
         }
     }
     let mut arenas = Arenas::new();
+    let mut view = arenas.view();
     let row = read_details(
         &fixture.memory(),
         BASE,
         source,
         &Members::none(),
         &mut Commanders::default(),
-        &mut arenas.view(),
+        &mut view,
     )
     .unwrap();
     let border = row.border_war.unwrap();
+    let counts = view.required;
+    assert_eq!(
+        detail_demand(&fixture.memory(), BASE, STATE)
+            .unwrap()
+            .arenas,
+        counts
+    );
     assert_eq!(border.transfer_state, 9);
     assert_eq!(border.combat_width, -1);
     assert_eq!(border.sides[0].country, -7);
@@ -1804,6 +1928,13 @@ fn border_marker_inputs_keep_stored_country_state_event_bytes_and_inactive_skip(
             .sides
             .iter()
             .all(|side| { side.win_event.len == 0 && side.lose_event.len == 0 })
+    );
+    assert_eq!(
+        detail_demand(&fixture.memory(), BASE, STATE)
+            .unwrap()
+            .arenas
+            .text,
+        counts.text - 4 * b"event.1".len()
     );
     fixture.u64(ATTACK + 0x4a8, 1);
     assert!(

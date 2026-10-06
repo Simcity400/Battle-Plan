@@ -893,6 +893,55 @@ fn roomy() -> Capacities {
     }
 }
 
+#[test]
+fn live_detail_demand_presizes_attach_and_later_combat_arena_growth() {
+    let mut capacities = Capacities::default();
+    for (combats, divisions) in [(66, 5), (71, 17), (1500, 3), (5000, 3)] {
+        let built = world(&Shape {
+            combats,
+            divisions,
+            ..Shape::small()
+        });
+        let demand = engine::cland_combat::detail_demand(&built.world, 0, GAME).unwrap();
+        assert_eq!(demand.rows, combats);
+        assert_eq!(demand.census_participants, combats * divisions);
+        let old = capacities;
+        capacities.raise_for_live_details(demand);
+        assert!(capacities.details >= combats);
+        assert!(capacities.census_participants >= demand.census_participants);
+        assert!(capacities.rosters >= demand.arenas.participants);
+        assert!(capacities.air_counts >= demand.arenas.air);
+        assert!(capacities.detail_text >= demand.arenas.text);
+        assert!(capacities.commander_traits >= demand.arenas.traits);
+        assert!(capacities.timed_traits >= demand.arenas.timed);
+        assert!(capacities.learning_traits >= demand.arenas.learning);
+        assert!(capacities.details >= old.details);
+        let mut captured = Captured::with_capacities(&old);
+        captured.try_grow_hint(&capacities).unwrap();
+        pass(&mut captured, &built.world);
+        assert_eq!(captured.details.outcome, Outcome::Rows { len: combats });
+        assert_eq!(captured.detail_text.required, demand.arenas.text);
+        assert_eq!(captured.air_counts.required, demand.arenas.air);
+        assert_eq!(captured.rosters.required, demand.arenas.participants);
+        let retained = capacities;
+        capacities.raise_for_live_details(Default::default());
+        assert!(capacities == retained);
+    }
+}
+
+#[test]
+fn combat_details_hint_reserve_failure_keeps_existing_lengths() {
+    let capacities = Capacities::default();
+    let mut captured = Captured::with_capacities(&capacities);
+    let mut hint = capacities;
+    hint.combats += 1;
+    hint.details = usize::MAX;
+    assert!(captured.try_grow_hint(&hint).is_err());
+    assert_eq!(captured.census.len(), capacities.combats);
+    assert_eq!(captured.details.rows.len(), capacities.details);
+    captured.try_grow_hint(&capacities).unwrap();
+}
+
 pub(super) fn allocation_failure_exercise(arm: impl FnOnce(), disarm: impl FnOnce()) {
     let built = world(&Shape::small());
     let mut capacities = roomy();

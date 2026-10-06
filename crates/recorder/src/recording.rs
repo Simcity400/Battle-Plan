@@ -542,6 +542,7 @@ fn capture(
     // The collector can fail while draining, after signaling was requested. Its
     // files become terminal evidence only after unload or process termination.
     let process_exited = process.handle.signaled()?;
+    print_status(&directory.join("status.json"));
     requested_detach |= STOP.load(Ordering::Acquire) || detach.handle.signaled()?;
     let mut outcome = terminal_outcome(
         &directory,
@@ -971,6 +972,9 @@ fn print_status(path: &Path) {
     if let Ok(bytes) = fs::read(path)
         && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
     {
+        if let Some((site, reason)) = destruction_refusal(&value) {
+            eprintln!("EquipmentDestruction refusal site={site}: {reason}");
+        }
         if let Some(error) = value["error"]
             .as_str()
             .or_else(|| value["last_error"].as_str())
@@ -1000,6 +1004,11 @@ fn print_status(path: &Path) {
     } else {
         println!("Attached; waiting for the first recorded game hour.");
     }
+}
+
+fn destruction_refusal(status: &Value) -> Option<(u64, &str)> {
+    let refusal = &status["equipment_destruction"]["refusal"];
+    Some((refusal["site_index"].as_u64()?, refusal["reason"].as_str()?))
 }
 
 fn write_json(path: &Path, value: &Value) -> Result<(), String> {
@@ -1242,6 +1251,29 @@ mod tests {
             .unwrap_err(),
             "--alloc-fault requires recorder feature alloc-fault-injection"
         );
+    }
+
+    #[test]
+    fn destruction_console_diagnostic_retains_the_site_and_reason() {
+        for site in 0..4 {
+            let status = json!({"equipment_destruction": {
+                "refusal": {"site_index": site, "reason": "synthetic pool increase"}
+            }});
+            assert_eq!(
+                destruction_refusal(&status),
+                Some((site, "synthetic pool increase"))
+            );
+        }
+        for status in [
+            json!({}),
+            json!({"equipment_destruction": {"refusal": null}}),
+        ] {
+            assert_eq!(destruction_refusal(&status), None);
+        }
+        let status = json!({"equipment_destruction": {
+            "refusal": {"site_index": null, "reason": "buffer allocation failed"}
+        }});
+        assert_eq!(destruction_refusal(&status), None);
     }
 
     #[test]

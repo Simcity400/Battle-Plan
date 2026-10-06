@@ -102,6 +102,24 @@ pub(crate) fn grow_vec<T: Default>(rows: &mut Vec<T>, capacity: usize) -> bool {
     true
 }
 
+// Advisory off-thread demand cannot invoke the terminal allocation callback.
+// Reserve every vector before publishing any new logical length.
+macro_rules! grow_hint {
+    ($($rows:expr => $capacity:expr),+ $(,)?) => {{
+        (|| {
+            $(if $rows.len() < $capacity {
+                $rows.try_reserve_exact($capacity - $rows.len())
+                    .map_err(|_| "combat sizing hint allocation failed")?;
+            })+
+            $(if $rows.len() < $capacity {
+                $rows.resize_with($capacity, Default::default);
+            })+
+            Ok::<(), &'static str>(())
+        })()
+    }};
+}
+pub(crate) use grow_hint;
+
 pub struct Arena<T> {
     pub first: Vec<T>,
     pub len: usize,
@@ -138,6 +156,16 @@ impl<T: Default> Arena<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sizing_hint_reserve_failure_preserves_lengths_and_retries() {
+        let mut rows = vec![0u32; 2];
+        let mut text = vec![0u8; 3];
+        assert!(grow_hint! { rows => 4, text => usize::MAX }.is_err());
+        assert_eq!((rows.len(), text.len()), (2, 3));
+        grow_hint! { rows => 4, text => 8 }.unwrap();
+        assert_eq!((rows.len(), text.len()), (4, 8));
+    }
 
     #[test]
     fn bounded_preserves_outcomes_and_refuses_invalid_counts_in_order() {

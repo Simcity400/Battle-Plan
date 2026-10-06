@@ -10,6 +10,9 @@ use crate::{
     naval_ship_modifier_inputs, read,
 };
 
+mod demand;
+pub use demand::{Demand, demand};
+
 /// NNavy::COMBAT_INITIAL_DURATION native global read by 14195C7D0 and
 /// loaded by 14092B4B0; 140C29020 uses it for early combat sources.
 pub const COMBAT_INITIAL_DURATION_RVA: usize = 0x0331_d1ac;
@@ -118,6 +121,7 @@ pub struct Root {
 pub struct Frame {
     address: usize,
     children: Array,
+    header: [u8; 16],
     next: u32,
 }
 
@@ -400,6 +404,11 @@ fn side_trees(
     }
     Ok(())
 }
+
+// Candidate unions for sizing: all ship escape branches (14195C7D0), plus
+// the two carrier selectors (141963700) when the side has active carrier air.
+const SHIP_ESCAPE_KEYS: &[u32] = &[0x59, 0x5b, 0x5c];
+const SHIP_CARRIER_ESCAPE_KEYS: &[u32] = &[0x24, 0x59, 0x5b, 0x5c, 0x1b6];
 
 /// The keys selected by 14195C7D0. The initial-duration define is read from
 /// its signed native global; 14092B4B0 loads that value from NNavy.
@@ -708,11 +717,12 @@ fn capture_root(
                 memory, address, &selection, store, buffers, depth, None, limits,
             )?;
         } else {
-            let children = capture_node(memory, address, &selection, store, buffers)?;
+            let (children, header) = capture_node(memory, address, &selection, store, buffers)?;
             buffers.stack_required = buffers.stack_required.max(depth + 1);
             buffers.stack[depth] = Frame {
                 address,
                 children,
+                header,
                 next: 0,
             };
             depth += 1;
@@ -723,6 +733,9 @@ fn capture_root(
             }
             let frame = &mut buffers.stack[depth - 1];
             if frame.next == frame.children.count {
+                if !store {
+                    validate_children(memory, frame.address, frame.header)?;
+                }
                 depth -= 1;
                 continue;
             }
@@ -760,9 +773,10 @@ fn capture_node(
     selection: &Selection,
     store: bool,
     buffers: &mut Buffers<'_>,
-) -> Result<Array, &'static str> {
-    let children = Array::read(memory, at(address, 0x18)?, 8)
-        .ok_or("naval modifier children unreadable or invalid")?;
+) -> Result<(Array, [u8; 16]), &'static str> {
+    let header = field(memory, address, 0x18)?;
+    let children =
+        Array::from_header(header, 8).ok_or("naval modifier children unreadable or invalid")?;
     let mut raw = [modifier_accumulator::Value::default(); KEYS.len()];
     modifier_accumulator::lookup_many_at(
         memory,
@@ -793,6 +807,9 @@ fn capture_node(
             name.copy(memory, output)?;
             buffers.text_len = name_end;
         }
+        if !store && read::<[u8; msvc_string::STRIDE]>(memory, name_address) != Some(header) {
+            return Err("naval modifier display header changed");
+        }
         name.len
     } else {
         0
@@ -809,7 +826,18 @@ fn capture_node(
         };
         buffers.node_len += 1;
     }
-    Ok(children)
+    Ok((children, header))
+}
+
+fn validate_children(
+    memory: &impl Memory,
+    address: usize,
+    header: [u8; 16],
+) -> Result<(), &'static str> {
+    if read::<[u8; 16]>(memory, at(address, 0x18)?) != Some(header) {
+        return Err("naval modifier child header changed");
+    }
+    Ok(())
 }
 
 struct Ancestor<'a> {
@@ -855,7 +883,7 @@ fn walk_without_scratch(
         depth += 1;
         previous = ancestor.parent;
     }
-    let children = capture_node(memory, address, selection, store, buffers)?;
+    let (children, header) = capture_node(memory, address, selection, store, buffers)?;
     buffers.stack_required = buffers.stack_required.max(depth);
     let current = Ancestor {
         address,
@@ -874,6 +902,9 @@ fn walk_without_scratch(
             Some(&current),
             stack_limits,
         )?;
+    }
+    if !store {
+        validate_children(memory, address, header)?;
     }
     Ok(())
 }
@@ -1047,7 +1078,7 @@ mod tests {
             &StackLimits::current(),
         )
         .unwrap();
-        assert_eq!(memory.visits.get(), [1, 1]);
+        assert_eq!(memory.visits.get(), [2, 2]);
         assert_eq!(buffers.root_required, 2);
         assert_eq!(buffers.node_required, 2);
         assert_eq!(buffers.text_required, 3);

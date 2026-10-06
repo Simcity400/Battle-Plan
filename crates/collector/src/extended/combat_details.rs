@@ -95,6 +95,24 @@ pub struct Capacities {
     learning_traits: usize,
 }
 impl Capacities {
+    /// Before attach and on the spool thread, from the live combat census
+    /// and the shared count-only detail walk. Capture keeps its growth fallback.
+    pub(crate) fn raise_for_live_details(&mut self, demand: cland_combat::DetailDemand) {
+        for (capacity, required) in [
+            (&mut self.combats, demand.rows),
+            (&mut self.details, demand.rows),
+            (&mut self.census_participants, demand.census_participants),
+            (&mut self.rosters, demand.arenas.participants),
+            (&mut self.air_counts, demand.arenas.air),
+            (&mut self.detail_text, demand.arenas.text),
+            (&mut self.commander_traits, demand.arenas.traits),
+            (&mut self.timed_traits, demand.arenas.timed),
+            (&mut self.learning_traits, demand.arenas.learning),
+        ] {
+            grow_capacity(capacity, required);
+        }
+    }
+
     /// Presize from the live country registry. Each exile list holds at most
     /// one tag per country slot (the reader refuses longer ones), so twice the
     /// slot count always fits one committed division's cores and occupiers.
@@ -999,6 +1017,21 @@ pub struct Captured {
     reference: bool,
 }
 impl Captured {
+    pub(crate) fn try_grow_hint(&mut self, c: &Capacities) -> Result<(), &'static str> {
+        crate::table_capture::grow_hint! {
+            self.census => c.combats,
+            self.census_participants => c.census_participants,
+            self.census_pointers => c.census_participants,
+            self.commander_keys => c.census_participants,
+            self.details.rows => c.details,
+            self.rosters.first => c.rosters,
+            self.air_counts.first => c.air_counts,
+            self.detail_text.first => c.detail_text,
+            self.commander_traits.first => c.commander_traits,
+            self.timed_traits.first => c.timed_traits,
+            self.learning_traits.first => c.learning_traits,
+        }
+    }
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
         Self::with_capacities(&Capacities {
@@ -1173,7 +1206,6 @@ impl Captured {
         c.division_commanders = c
             .division_commanders
             .max(self.division_commanders.first.capacity());
-        c.commander_keys = c.commander_keys.max(self.commander_keys.capacity());
         c.divisions = c.divisions.max(self.divisions.rows.capacity());
         c.width_terms = c.width_terms.max(self.width_terms.first.capacity());
         c.exile_tags = c.exile_tags.max(self.exile_tags.first.capacity());
@@ -1236,7 +1268,7 @@ impl Captured {
         grow_vec(&mut self.census, c.combats);
         grow_vec(&mut self.census_participants, c.census_participants);
         grow_vec(&mut self.census_pointers, c.census_participants);
-        c.commander_keys = c.commander_keys.max(self.census_participants.len());
+        c.commander_keys = c.commander_keys.max(c.census_participants);
         grow_vec(&mut self.commander_keys, c.commander_keys);
     }
     fn pass(

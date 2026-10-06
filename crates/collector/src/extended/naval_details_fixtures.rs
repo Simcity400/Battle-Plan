@@ -2,11 +2,11 @@
 
 use engine::{Memory, cgame_state, memory::SliceMemory};
 
-pub(super) const IMAGE: usize = 0x1400_0000;
-pub(super) const STATE: usize = 0x1000;
+pub(crate) const IMAGE: usize = 0x1400_0000;
+pub(crate) const STATE: usize = 0x1000;
 pub(super) const REGISTRY: usize = 0x4000;
-pub(super) const BODIES: usize = 0x10_0000;
-pub(super) const STRIDE: usize = 0x2_0000;
+pub(crate) const BODIES: usize = 0x10_0000;
+pub(crate) const STRIDE: usize = 0x2_0000;
 pub(super) const COUNTRY_SLOTS: usize = 0x5000;
 pub(super) const COUNTRY_LINKS: usize = 0x6000;
 pub(super) const COUNTRY_BASE: usize = 0x2_0000;
@@ -51,9 +51,9 @@ impl Hour {
     }
 }
 
-pub(super) struct Fixture(pub(super) Vec<u8>);
+pub(crate) struct Fixture(pub(super) Vec<u8>);
 impl Fixture {
-    pub(super) fn new(combats: usize) -> Self {
+    pub(crate) fn new(combats: usize) -> Self {
         let tree_children = BODIES + combats * STRIDE + 0x2000;
         let tree_nodes = tree_children + COUNTRY_COUNT * TREE_CHILDREN * 8;
         let child_entries = tree_nodes + COUNTRY_COUNT * TREE_CHILDREN * 0xc0;
@@ -269,6 +269,7 @@ impl Fixture {
                 this.u64(side + 0x298, 1);
                 this.u64(damage_sentinel, damage_node as u64);
                 this.u64(damage_node, damage_sentinel as u64);
+                this.u64(damage_node + 8, damage_sentinel as u64);
                 this.u32(damage_node + 0x10, 17);
                 this.u64(damage_node + 0x18, 3_000);
                 this.u64(side + 0x158, 100_000);
@@ -427,7 +428,7 @@ impl Fixture {
     pub(super) fn pointer(&self, at: usize) -> usize {
         u64::from_le_bytes(self.0[at - STATE..at - STATE + 8].try_into().unwrap()) as usize
     }
-    pub(super) fn allocate(&mut self, bytes: usize) -> usize {
+    pub(crate) fn allocate(&mut self, bytes: usize) -> usize {
         let at = STATE + self.0.len();
         self.0.resize(self.0.len() + bytes, 0);
         at
@@ -453,7 +454,7 @@ impl Fixture {
         self.u64(at + engine::reference_bucket::TYPE, handle);
         self.u64(at + engine::reference_bucket::OBJECT, pointer as u64);
     }
-    pub(super) fn inline(&mut self, at: usize, value: &[u8]) {
+    pub(crate) fn inline(&mut self, at: usize, value: &[u8]) {
         self.put(at, value);
         self.u64(at + 16, value.len() as u64);
         self.u64(at + 24, 15);
@@ -461,13 +462,13 @@ impl Fixture {
     pub(super) fn put(&mut self, at: usize, bytes: &[u8]) {
         self.0[at - STATE..at - STATE + bytes.len()].copy_from_slice(bytes);
     }
-    pub(super) fn u64(&mut self, at: usize, value: u64) {
+    pub(crate) fn u64(&mut self, at: usize, value: u64) {
         self.put(at, &value.to_le_bytes());
     }
-    pub(super) fn u32(&mut self, at: usize, value: u32) {
+    pub(crate) fn u32(&mut self, at: usize, value: u32) {
         self.put(at, &value.to_le_bytes());
     }
-    pub(super) fn array(&mut self, at: usize, data: usize, count: usize) {
+    pub(crate) fn array(&mut self, at: usize, data: usize, count: usize) {
         self.u64(at, data as u64);
         self.u32(at + 8, count as u32);
         self.u32(at + 12, count as u32);

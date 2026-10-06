@@ -672,6 +672,7 @@ fn run(
     if let Ok(Some(demand)) = crate::country_scale::observe_politics(&memory, base) {
         sizing.extended.raise_for_politics(demand);
     }
+    let combat_hints = CombatHints::observe(&memory, base);
     sizing.extended.line_output.entries = sizing.extended.line_output.entries.max(lines);
     let pe_offset = read::<u32>(&memory, module as usize + 0x3c).unwrap_or(0) as usize;
     let image_size = read::<u32>(&memory, module as usize + pe_offset + 0x50).unwrap_or(0) as usize;
@@ -693,6 +694,16 @@ fn run(
     let shared = Arc::new(
         Shared::with_sizing(base, hook.trampoline(), frequency as u64, &sizing)
             .map_err(|e| error_reason(e, "capture buffers allocation failed"))?,
+    );
+    let mut spool_state = SpoolState {
+        sizing,
+        applied_combat_hints: [CombatHintState::default(); sampling::BUFFERS],
+    };
+    grow_combat_hints(
+        &shared,
+        &spool_state.sizing.extended,
+        &combat_hints,
+        &mut spool_state.applied_combat_hints,
     );
     let acquisition = acquisition::Pool::start(
         crate::acquisition::recommended_worker_count(),
@@ -734,7 +745,7 @@ fn run(
                 session,
                 processor,
                 &spool_status,
-                sizing,
+                spool_state,
                 spool_writer,
             )
         })
@@ -1369,6 +1380,7 @@ struct RegistryWatch {
     last_politics: Option<Instant>,
     politics: crate::country_scale::PoliticsDemand,
     last_lines: Option<Instant>,
+    last_combat_hints: Option<Instant>,
 }
 
 impl RegistryWatch {
@@ -1376,6 +1388,23 @@ impl RegistryWatch {
     /// The intel total walks every country's table header, so it is sampled
     /// less often than the three registry headers.
     const INTEL_INTERVAL: Duration = Duration::from_secs(1);
+
+    /// Both combat families can grow without a country registry change.
+    /// Failed hints are offered again; only actual capture latches capacities.
+    fn poll_combat_hints(
+        &mut self,
+        memory: &impl engine::Memory,
+        base: usize,
+    ) -> Option<CombatHints> {
+        if self
+            .last_combat_hints
+            .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
+        {
+            return None;
+        }
+        self.last_combat_hints = Some(Instant::now());
+        Some(CombatHints::observe(memory, base))
+    }
 
     /// Line rosters can grow without the country registry changing. Repeat
     /// the offer even without growth so a failed allocation can be retried.
@@ -1545,6 +1574,98 @@ fn strategic_regions(memory: &impl engine::Memory, base: usize) -> usize {
     engine::cgame_state::read_strategic_region_count(memory, base).map_or(0, |count| count as usize)
 }
 
+struct CombatHints {
+    land: Option<engine::cland_combat::DetailDemand>,
+    naval: Option<engine::naval_ship_modifier_breakdown::Demand>,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct CombatHintState {
+    land: Option<crate::extended::combat_details::Capacities>,
+    naval: Option<crate::extended::naval_details::Capacities>,
+}
+
+struct SpoolState {
+    sizing: crate::country_scale::Sizing,
+    applied_combat_hints: [CombatHintState; sampling::BUFFERS],
+}
+
+impl CombatHints {
+    fn observe(memory: &impl engine::Memory, base: usize) -> Self {
+        Self {
+            land: crate::country_scale::observe_land_details(memory, base),
+            naval: crate::country_scale::observe_naval_breakdowns(memory, base),
+        }
+    }
+
+    fn pending(
+        &self,
+        capacities: &crate::extended::Capacities,
+        applied: &CombatHintState,
+    ) -> CombatHintState {
+        let mut pending = CombatHintState::default();
+        if let Some(demand) = self.land {
+            let mut capacity = applied.land.unwrap_or(capacities.combat_details);
+            capacity.raise_for_live_details(demand);
+            if applied.land != Some(capacity) {
+                pending.land = Some(capacity);
+            }
+        }
+        if let Some(demand) = self.naval {
+            let mut capacity = applied.naval.unwrap_or(capacities.naval_details);
+            capacity.raise_for_live_breakdowns(demand);
+            if applied.naval != Some(capacity) {
+                pending.naval = Some(capacity);
+            }
+        }
+        pending
+    }
+}
+
+/// Hint reserves are nonterminal and never raise the ordinary capture-driven
+/// capacities. A failed attempt retains existing storage and is retried later.
+fn grow_combat_hints(
+    shared: &Shared,
+    capacities: &crate::extended::Capacities,
+    hints: &CombatHints,
+    applied: &mut [CombatHintState; sampling::BUFFERS],
+) {
+    let pending: [_; sampling::BUFFERS] =
+        std::array::from_fn(|index| hints.pending(capacities, &applied[index]));
+    if pending
+        .iter()
+        .all(|hint| hint.land.is_none() && hint.naval.is_none())
+    {
+        return;
+    }
+    for _ in 0..shared.free.len() {
+        let Some(index) = shared.free.pop() else {
+            break;
+        };
+        let hint = pending[index];
+        if hint.land.is_none() && hint.naval.is_none() {
+            shared.recycle_frame(index);
+            continue;
+        }
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        let before = frame.allocated_bytes();
+        let success = frame
+            .extended
+            .apply_combat_hints(hint.land.as_ref(), hint.naval.as_ref());
+        if success[0] {
+            applied[index].land = hint.land;
+        }
+        if success[1] {
+            applied[index].naval = hint.naval;
+        }
+        shared.pool_bytes.fetch_add(
+            frame.allocated_bytes().saturating_sub(before) as u64,
+            Ordering::Relaxed,
+        );
+        shared.recycle_frame(index);
+    }
+}
+
 /// Grow every idle frame to the current capacities under its queue lease.
 fn grow_idle_frames(
     shared: &Shared,
@@ -1602,6 +1723,7 @@ struct SpoolStatus<P, D, W> {
     #[serde(skip_serializing_if = "Option::is_none")]
     active_callbacks: Option<u64>,
     status_writer: W,
+    combat_sizing_hints: crate::country_scale::CombatHintStatus,
 }
 #[allow(clippy::too_many_arguments)]
 fn spool_status<'a>(
@@ -1633,6 +1755,7 @@ fn spool_status<'a>(
         original_bytes_verified: terminal.then_some(true),
         active_callbacks: terminal.then_some(0),
         status_writer: writer.status(),
+        combat_sizing_hints: crate::country_scale::combat_hint_status(),
     })
 }
 
@@ -1657,13 +1780,15 @@ fn spool_loop(
     mut session: SessionStart,
     mut processor: Processor,
     status_path: &Path,
-    sizing: crate::country_scale::Sizing,
+    state: SpoolState,
     // Status and content files are written on the loader's writer thread:
     // this thread only hands snapshots over and never waits on status I/O,
     // nor joins that thread (#94).
     writer: crate::status_writer::StatusHandle,
 ) -> Result<SpoolOutcome, &'static str> {
     let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
+    let sizing = state.sizing;
+    let mut applied_combat_hints = state.applied_combat_hints;
     let mut capacities = sizing.core;
     let mut map_capacities = sizing.map;
     let mut extended_capacities = sizing.extended;
@@ -2007,6 +2132,14 @@ fn spool_loop(
                 processor.observe_input_demand_error(reason);
                 last_warning = Some(reason);
             }
+        }
+        if let Some(hints) = registry.poll_combat_hints(&live, shared.base) {
+            grow_combat_hints(
+                shared,
+                &extended_capacities,
+                &hints,
+                &mut applied_combat_hints,
+            );
         }
         if crate::allocation::failed() {
             return Err("collector allocation failed");
@@ -2373,6 +2506,277 @@ mod tests {
         memory.0.set(1 << 20);
         watch.last = None;
         assert_eq!(watch.poll(&memory, 0), None);
+    }
+
+    #[test]
+    fn land_detail_watch_presizes_growth_without_country_registry_changes() {
+        use engine::{cland_combat as combat, cland_combatant as side, cprovince, cterrain_type};
+
+        struct Combats(Vec<u8>);
+        impl Combats {
+            fn put(&mut self, at: usize, bytes: &[u8]) {
+                self.0[at - 0x1000..at - 0x1000 + bytes.len()].copy_from_slice(bytes);
+            }
+            fn word(&mut self, at: usize, value: u64) {
+                self.put(at, &value.to_le_bytes());
+            }
+            fn array(&mut self, at: usize, data: u64, count: u32) {
+                self.word(at, data);
+                self.put(at + 8, &count.to_le_bytes());
+                self.put(at + 12, &count.to_le_bytes());
+            }
+        }
+        impl engine::Memory for Combats {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                if address == cgame_state::SINGLETON_RVA && output.len() == 8 {
+                    output.copy_from_slice(&0x1000u64.to_le_bytes());
+                    return true;
+                }
+                engine::memory::SliceMemory {
+                    base: 0x1000,
+                    bytes: &self.0,
+                }
+                .copy(address, output)
+            }
+        }
+        let mut memory = Combats(vec![0; 0x6000]);
+        memory.word(0x2000, combat::VTABLE_RVA as u64);
+        memory.word(0x2000 + combat::BODY, combat::BODY_VTABLE_RVA as u64);
+        memory.word(
+            0x2000 + combat::HANDLE,
+            (1 << 32) | u64::from(combat::TYPE_WORD),
+        );
+        memory.word(0x2000 + combat::ATTACKER, 0x3000);
+        memory.word(0x2000 + combat::DEFENDER, 0x4000);
+        memory.word(0x2000 + combat::STORED_TERRAIN, 0x5000);
+        memory.word(0x5000, cterrain_type::NULL_VTABLE_RVA as u64);
+        for (pointer, attacker) in [(0x3000, 1), (0x4000, 0)] {
+            memory.word(pointer, side::VTABLE_RVA as u64);
+            memory.word(pointer + side::COMBAT, 0x2000);
+            memory.put(pointer + side::IS_ATTACKER, &[attacker]);
+        }
+        memory.word(0x2000 + combat::PROVINCE, 0x5200);
+        memory.word(0x5200, cprovince::VTABLE_RVA as u64);
+        memory.put(0x5200 + cprovince::ID, &1u32.to_le_bytes());
+        memory.word(0x5408, 0x5200);
+        memory.array(0x1000 + cgame_state::PROVINCES, 0x5400, 2);
+        for index in 0..71 {
+            memory.word(0x6000 + index * 8, 0x2000);
+        }
+        let roster = 0x1000 + cgame_state::COMBATS + 8;
+        memory.array(roster, 0x6000, 66);
+        let mut watch = RegistryWatch::default();
+        let initial = watch
+            .poll_combat_hints(&memory, 0)
+            .and_then(|hints| hints.land)
+            .unwrap();
+        assert_eq!(initial.rows, 66);
+        memory.array(roster, 0x6000, 71);
+        assert!(watch.poll_combat_hints(&memory, 0).is_none()); // throttled
+        watch.last_combat_hints = None;
+        assert_eq!(
+            watch
+                .poll_combat_hints(&memory, 0)
+                .unwrap()
+                .land
+                .unwrap()
+                .rows,
+            71
+        );
+        // An unreadable air payload contributes no hint; a valid one grows it.
+        memory.array(0x3000 + side::AIR_SUPPORT, 0x7fff_0000, 300);
+        watch.last_combat_hints = None;
+        assert!(watch.poll_combat_hints(&memory, 0).unwrap().land.is_none());
+        for index in 0..300 {
+            memory.word(0x5600 + index * 8, 0x5500);
+        }
+        memory.array(0x3000 + side::AIR_SUPPORT, 0x5600, 300);
+        watch.last_combat_hints = None;
+        let raised = watch
+            .poll_combat_hints(&memory, 0)
+            .and_then(|hints| hints.land)
+            .unwrap();
+        assert_eq!(raised.arenas.air, 71 * 300);
+        memory.array(roster, 0x6000, 1);
+        watch.last_combat_hints = None;
+        assert_eq!(
+            watch
+                .poll_combat_hints(&memory, 0)
+                .unwrap()
+                .land
+                .unwrap()
+                .rows,
+            1
+        );
+        memory.put(roster + 12, &72u32.to_le_bytes()); // invalid count/capacity
+        watch.last_combat_hints = None;
+        assert!(watch.poll_combat_hints(&memory, 0).unwrap().land.is_none());
+    }
+
+    #[test]
+    fn naval_breakdown_watch_presizes_growth_without_country_registry_changes() {
+        use crate::extended::naval_details::fixtures::{BODIES, Fixture, IMAGE, STATE, STRIDE};
+
+        let mut memory = Fixture::new(2);
+        let roster = STATE + cgame_state::COMBATS + 8;
+        memory.array(roster, 0x4000, 1);
+        let mut watch = RegistryWatch::default();
+        let initial = watch
+            .poll_combat_hints(&memory, IMAGE)
+            .and_then(|hints| hints.naval)
+            .unwrap();
+        assert_eq!(initial.rows, 1);
+        assert!(initial.requests > 0 && initial.nodes > 0 && initial.text > 0);
+        memory.array(roster, 0x4000, 2);
+        assert!(watch.poll_combat_hints(&memory, IMAGE).is_none());
+        watch.last_combat_hints = None;
+        let raised = watch
+            .poll_combat_hints(&memory, IMAGE)
+            .and_then(|hints| hints.naval)
+            .unwrap();
+        assert_eq!(raised.rows, 2);
+        assert!(raised.requests > initial.requests);
+        // The native source topology grows while combat and country counts stay put.
+        let ship = BODIES + STRIDE + 0xc000;
+        let root = ship + 0x750;
+        let children = memory.allocate(8 + 0xc0);
+        memory.array(root + 0x18, children, 1);
+        memory.u64(children, (children + 8 - 0x10) as u64);
+        memory.inline(children + 8 + 0x48, b"late source");
+        let entries = memory.allocate(16);
+        memory.array(children + 8, entries, 1);
+        memory.u32(entries, 0x5b);
+        memory.u64(entries + 8, 7000);
+        watch.last_combat_hints = None;
+        let tree_growth = watch
+            .poll_combat_hints(&memory, IMAGE)
+            .and_then(|hints| hints.naval)
+            .unwrap();
+        assert!(tree_growth.nodes > raised.nodes);
+        assert!(tree_growth.text > raised.text);
+        memory.array(roster, 0x4000, 1);
+        watch.last_combat_hints = None;
+        assert_eq!(
+            watch
+                .poll_combat_hints(&memory, IMAGE)
+                .unwrap()
+                .naval
+                .unwrap()
+                .rows,
+            1
+        );
+        memory.u32(roster + 12, 2); // count exceeds capacity
+        watch.last_combat_hints = None;
+        assert!(
+            watch
+                .poll_combat_hints(&memory, IMAGE)
+                .unwrap()
+                .naval
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn combat_hints_skip_failed_reserves_without_latching_demand() {
+        let shared = Shared::new(0, 0, 1);
+        let capacities = crate::extended::Capacities::default();
+        let mut applied = [CombatHintState::default(); sampling::BUFFERS];
+        let before = crate::country_scale::combat_hint_status();
+        let hints = CombatHints {
+            land: Some(engine::cland_combat::DetailDemand {
+                rows: usize::MAX,
+                ..Default::default()
+            }),
+            naval: Some(engine::naval_ship_modifier_breakdown::Demand {
+                requests: usize::MAX,
+                ..Default::default()
+            }),
+        };
+        let stopped = crate::allocation::failed();
+        grow_combat_hints(&shared, &capacities, &hints, &mut applied);
+        grow_combat_hints(&shared, &capacities, &hints, &mut applied);
+        assert!(applied == [CombatHintState::default(); sampling::BUFFERS]);
+        assert_eq!(crate::allocation::failed(), stopped);
+        let after = crate::country_scale::combat_hint_status();
+        let before = serde_json::to_value(before).unwrap();
+        let after = serde_json::to_value(after).unwrap();
+        for name in ["land_skipped", "naval_skipped"] {
+            assert!(
+                after[name].as_u64().unwrap()
+                    >= before[name].as_u64().unwrap() + 2 * sampling::BUFFERS as u64
+            );
+        }
+        assert!(capacities == crate::extended::Capacities::default());
+        // A later valid observation is retried, without the failed huge peak.
+        let before = shared.pool_bytes.load(Ordering::Relaxed);
+        let valid = CombatHints {
+            land: Some(engine::cland_combat::DetailDemand {
+                rows: 600,
+                ..Default::default()
+            }),
+            naval: Some(engine::naval_ship_modifier_breakdown::Demand {
+                requests: 1,
+                ..Default::default()
+            }),
+        };
+        grow_combat_hints(&shared, &capacities, &valid, &mut applied);
+        assert!(
+            applied
+                .iter()
+                .all(|state| state.land.is_some() && state.naval.is_some())
+        );
+        assert!(shared.pool_bytes.load(Ordering::Relaxed) > before);
+        assert_eq!(shared.free.len(), sampling::BUFFERS);
+    }
+
+    #[test]
+    fn combat_hints_keep_applied_state_and_grow_directly_recycled_frames() {
+        let shared = Shared::new(0, 0, 1);
+        let capacities = crate::extended::Capacities::default();
+        let mut applied = [CombatHintState::default(); sampling::BUFFERS];
+        let mut hints = CombatHints {
+            land: Some(engine::cland_combat::DetailDemand {
+                rows: 600,
+                ..Default::default()
+            }),
+            naval: Some(engine::naval_ship_modifier_breakdown::Demand {
+                requests: 1,
+                ..Default::default()
+            }),
+        };
+        grow_combat_hints(&shared, &capacities, &hints, &mut applied);
+        let grown = applied;
+        assert!(
+            grown
+                .iter()
+                .all(|state| state.land.is_some() && state.naval.is_some())
+        );
+        grow_combat_hints(&shared, &capacities, &hints, &mut applied);
+        assert!(applied == grown);
+        hints.land.as_mut().unwrap().rows = 100;
+        hints.naval.as_mut().unwrap().requests = 0;
+        grow_combat_hints(&shared, &capacities, &hints, &mut applied);
+        assert!(applied == grown);
+
+        // A leased frame must still receive a later hint when it returns.
+        let held = shared.free.pop().unwrap();
+        let previous = applied[held];
+        hints.land.as_mut().unwrap().rows = 1200;
+        hints.naval.as_mut().unwrap().requests = 257;
+        grow_combat_hints(&shared, &capacities, &hints, &mut applied);
+        assert!(applied[held] == previous);
+        let grown = applied;
+        grow_combat_hints(&shared, &capacities, &hints, &mut applied);
+        assert!(applied == grown);
+        // A queue-full drop returns directly to free, without a ready pop.
+        shared.recycle_frame(held);
+        grow_combat_hints(&shared, &capacities, &hints, &mut applied);
+        assert!(applied[held].land != previous.land);
+        assert!(applied[held].naval != previous.naval);
+        let grown = applied;
+        grow_combat_hints(&shared, &capacities, &hints, &mut applied);
+        assert!(applied == grown);
+        assert_eq!(shared.free.len(), sampling::BUFFERS);
     }
 
     #[test]

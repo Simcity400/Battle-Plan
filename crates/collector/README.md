@@ -58,6 +58,14 @@ observations count `prepare_failures` and skip growth without invalidating the
 existing branch observation. Both detach quiescence checks include every
 writer's ACTIVE counter, including while its original is running outside the DLL.
 
+Refusals retain their hook site index in status and the recorder console,
+with cumulative per-hook refusal counts; allocation preparation has no hook
+site. The first refusal since attach stays visible while a writer owns the
+store, and across branch transitions; the branch's poison still resets only
+at a branch boundary. Pool increases remain named refusals and withhold the
+branch's cumulative table. Native signed loss corrections require the separate
+signed-row format change; this collector change accepts none of them.
+
 Run the ignored `equipment_destruction::tests::destruction_scale_bench` test in
 release through the build wrapper, with `--ignored --nocapture --test-threads=1`.
 It exercises the actual callback and SEH-guarded reads at the design and stress
@@ -87,7 +95,17 @@ Raid naming, capture and save comparison follow the [raid tooltip contract](../v
 
 The naval details pack follows the [naval modifier tree contract](../replay/README.md#naval-modifier-breakdowns); future reuse needs the writer coverage described below.
 
-Its tree arenas start empty and grow on the spool thread from capture demand.
+Before hooks are installed, its request, root, node, text and depth arenas are
+sized from the live naval-combat census (`country_scale::observe_naval_breakdowns`).
+The spool thread observes the same demand at most once a second, independently
+of the country registry, and raises idle frames before later acquisition.
+Side/group member and plane headers, CFEXAir wing headers and the shared
+native ship source selector bound the hover requests: native side paths enqueue
+at most one country-only request plus two sets of four sources; a member
+can enqueue two escape keys and, when its side has active air, two carrier keys
+per source. Doctrine, critical and support source counts follow their native
+headers. The same census presizes combat rows and prerequisite arenas.
+
 A short arena still counts every request, root, node, display byte and depth
 in the same capture pass. When requests do not fit, allocation-free request
 re-enumeration selects each distinct accumulator and its actual key union;
@@ -102,8 +120,9 @@ up; frames captured before the spool grew from the refusing one refuse too, so
 a backlog of k frames can cost up to k+1 refused hours. No partial tree is
 published, no population cap is imposed, and capture allocates no tree storage.
 Uses share the request arena; their replay projection allocates off-thread.
-The production loan/restore/growth regression includes broad four-level trees
-and carrier/escape requests and requires exactly one counted refusal.
+The attach regression includes broad four-level trees and carrier/escape
+requests and requires a complete first capture. Loan/restore/growth tests
+retain the deliberate short-arena fallback and require one counted refusal.
 Growth consumes every captured hour's demand before reset, including after
 earlier complete captures. A later-rise regression exceeds all five arenas,
 then requires one refusal, complete capture after growth, and no further
@@ -114,6 +133,35 @@ hours, groups refusals by their exact names, and reports each arena's latest
 required and allocated lengths (text in bytes). The spool worker observes these
 before growth, including captures whose frame is subsequently rejected;
 clockless frames do not recount an earlier capture.
+
+Node and text demand have no fixed per-request factor. Native
+`FormatModifierBreakdown@14054D0F0` follows each accumulator's immediate
+children (+0x18/count +0x24), then each child+0x10 recursively; it stores no
+subtree node or byte total. `AddFilteredModifierBlock@14054AD00` appends one
+clone to that vector without a descendant total. Depth two in a capture does
+not bound native breadth or depth, and native strings have no byte ceiling.
+Sizing therefore uses capture's count-only tree census for each distinct
+candidate source and its selected key union, including the same effective-value
+walk and validated string descriptors. No display-name payload is copied.
+The request/source union still includes candidates that the current hover
+would filter out, so it can retain more memory than an exact hover census;
+that cost remains for the performance round. Sizing rereads mutable selecting
+headers, visited child headers and selected leaf string headers, discarding
+torn hints.
+
+The named, counted short-arena exception covers only growth beyond the attach
+sizing, including demand arising between later observations or before idle
+frames receive them. Valid combat-active attach demand starts all arenas with
+storage. Failed observations or reserves skip the hint and count
+`status.json.combat_sizing_hints.land_skipped` or `naval_skipped`; they cannot
+fail the collector. Hint growth reserves every vector before increasing logical
+lengths and does not latch demand into the capture-driven capacity maxima.
+Hourly capture retains its ordinary completeness checks and growth fallback.
+Successful hints are tracked per frame from attach onward. When every frame
+already covers the demand, unchanged or smaller hints leave the free queue
+untouched. Failed reserves and leased frames remain pending; observations retry
+one free-frame round per second until the missing growth succeeds, including
+a frame recycled directly after a queue-full drop.
 
 `status.json.division_naming` counts captured and refused naming operands,
 groups refusals by their native reader or capacity reason, and reports the
@@ -165,7 +213,7 @@ Keep typed walks in pool jobs. Document necessary game-thread exceptions beside 
 
 `Role::priority()` orders queued jobs by their dependencies, lower first and FIFO among equals. The character role jobs are dispatched after the roster join, with the portrait shares, and joined at the typed-fallback boundary. Short, early-joined jobs must not wait behind large, late-joined jobs; the exception is the longest hourly jobs (World, Governance, Research), which claim first because the block cannot end before they do. With few workers, early-joined short jobs can then wait for one of them, so check the callback join waits on a constrained machine when changing this order. A join waits only for its own job: it must not execute unrelated queued work, and jobs must not submit other jobs. The pool has one worker per logical CPU in the game's process affinity, less one for the callback. A join spins on its own running ticket, for at most the recorder's per-hour budget, while another worker is idle, because a parked game thread can wait for a free CPU long after its job finishes; with every worker busy it parks at once. The decode and spool threads run below normal priority except while the capture buffers are backlogged, when the game thread may be waiting for them; `background_priority` in `status.json` counts the changes. The collector never changes a game thread's priority or affinity.
 
-Tables with one or a fixed few rows per country slot are sized from the live country registry, never from a vanilla count: once before the hook is installed and again whenever the spool thread sees the registry grow (a save loaded after attaching at the main menu fills it before its first hourly tick). [country_scale.rs](src/country_scale.rs) owns the per-table factors; the same observation presizes the country authentication cache, which the hook swaps in without allocating, and the raw-copy job censuses. Nothing caps the country count below the engine's own u16 slot ceiling. Arenas whose per-country demand content decides are sized from that live demand instead: the raid type tokens of every raid parent and the player cache, every country's convoy reservation words, and RaidPathDistances from the session memo's slot capacity (`country_scale::observe_raid_arenas`), before the hook and whenever the spool thread sees the demand grow (at most once a second, like the CountryIntel total). A full hour, whose sliced reads have no earlier rows to merge into, must read every row, so these are never left to the walk's own growth. The one accepted exception is the naval modifier breakdown arenas: their request demand comes from that hour's own naval combat walk, with no header to presize from, so a rise costs one counted refused hour before spool-side growth (see the naval details pack below). The same holds for Characters, sized from the live roster's rows and its names' and template files' bytes, and for ScriptFlags, sized from every flag manager's own count, characters' included (`country_scale::observe_characters`, on the same schedule). The political tables whose sizes content and play decide are sized from their own walks run with no row storage, which count every row from array headers (`country_scale::observe_politics`, on the same schedule): CountryCharacters and CountryRetiredCharacters from every country's active and retired records, the character inputs from their own roster walk, PartyLeaders from every party's leader vector, CountryCivilWars from every country's civil-war array, AdvisorTokens from the set's keys and their bytes, FactionAdvisors from every faction's occupied advisor slots and their tokens. CountryCharacters and CountryRetiredCharacters are read hourly in the Slow job's hired advisors pack, in one walk of the same per-country character object; HiredAdvisors keeps its daily slot. CharacterRoleTraits and CharacterOperatives are read hourly in the Slow job's character inputs pack, from one pass over the character roster: its pointers in pages and each page's identities and role fields in one guarded gather, then only the nonempty role maps, scientist roles and nonzero unit-leader references. PartyLeaders is read in the governance family's hourly politics walk, from the same authenticated political status as Politics and PoliticalParties, and charged to its own table. CountryCivilWars is read in the country counter pack, over the same country census as CountryCounterInputs. AdvisorTokens is read hourly in the hired advisors pack (the advisor family) and published sorted by its keys' bytes. FactionAdvisors is read hourly in the faction theatres pack, over the same faction roster.
+Tables with one or a fixed few rows per country slot are sized from the live country registry, never from a vanilla count: once before the hook is installed and again whenever the spool thread sees the registry grow (a save loaded after attaching at the main menu fills it before its first hourly tick). [country_scale.rs](src/country_scale.rs) owns the per-table factors; the same observation presizes the country authentication cache, which the hook swaps in without allocating, and the raw-copy job censuses. Nothing caps the country count below the engine's own u16 slot ceiling. Arenas whose per-country demand content decides are sized from that live demand instead: the raid type tokens of every raid parent and the player cache, every country's convoy reservation words, and RaidPathDistances from the session memo's slot capacity (`country_scale::observe_raid_arenas`), before the hook and whenever the spool thread sees the demand grow (at most once a second, like the CountryIntel total). A full hour, whose sliced reads have no earlier rows to merge into, must read every row, so these are never left to the walk's own growth. LandCombatDetails rows and arenas use the existing detail walk with empty arenas (`country_scale::observe_land_details`), on the same attach and spool schedule. That authenticated census counts combat/participant/arena occurrences and checks mutable headers again; it copies no variable text payload. The naval pack's sizing and counted hint failures are described above. The same holds for Characters, sized from the live roster's rows and its names' and template files' bytes, and for ScriptFlags, sized from every flag manager's own count, characters' included (`country_scale::observe_characters`, on the same schedule). The political tables whose sizes content and play decide are sized from their own walks run with no row storage, which count every row from array headers (`country_scale::observe_politics`, on the same schedule): CountryCharacters and CountryRetiredCharacters from every country's active and retired records, the character inputs from their own roster walk, PartyLeaders from every party's leader vector, CountryCivilWars from every country's civil-war array, AdvisorTokens from the set's keys and their bytes, FactionAdvisors from every faction's occupied advisor slots and their tokens. CountryCharacters and CountryRetiredCharacters are read hourly in the Slow job's hired advisors pack, in one walk of the same per-country character object; HiredAdvisors keeps its daily slot. CharacterRoleTraits and CharacterOperatives are read hourly in the Slow job's character inputs pack, from one pass over the character roster: its pointers in pages and each page's identities and role fields in one guarded gather, then only the nonempty role maps, scientist roles and nonzero unit-leader references. PartyLeaders is read in the governance family's hourly politics walk, from the same authenticated political status as Politics and PoliticalParties, and charged to its own table. CountryCivilWars is read in the country counter pack, over the same country census as CountryCounterInputs. AdvisorTokens is read hourly in the hired advisors pack (the advisor family) and published sorted by its keys' bytes. FactionAdvisors is read hourly in the faction theatres pack, over the same faction roster.
 
 CountryCounterInputs retains the native owned, controlled and core state lists
 and army/navy leader lists during its existing country walk. OwnedWargoals reads

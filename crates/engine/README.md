@@ -115,9 +115,33 @@ divisions destroyed in combat (logged by
 `CLandCombatant::participant_lifecycle` 141299850); those writers are queued for
 follow-up hooks. The engine maps verified caller RVAs to semantic causes; replay
 owns their stable encoding. Unrecognized callers produce an explicit unknown
-cause and are counted, preserving the actual removal. Negative pools, increases,
+cause and are counted, preserving the actual removal. Negative pools, pool increases,
 short reads and arithmetic overflow remain named refusals. Live coverage and
 removal agreement remain unverified until the coordinated capture.
+
+Native equipment accounting is signed: land damage (140C7BFC0), stochastic
+rounding (140FFCCE0), scripted scaling (14049B2C0/14049B2F3), merge surplus
+(14134F8FB) and negative aircraft requests (140F4E400) can raise pools.
+The current destruction reader still refuses increases; signed corrections
+belong to the separately coordinated format change.
+
+[The land detail demand reader](src/cland_combat/demand.rs) runs the existing
+`read_details` census with empty arenas for each authenticated land/border
+combat. It counts actual participant, air, trait and text demand and rechecks
+mutable headers after their walks. This reads ordinary detail operands but
+copies no variable text payload, and allocates no census storage. The hint
+never certifies recorded values or replaces hourly validation.
+
+[The naval hover demand reader](src/naval_ship_modifier_breakdown/demand.rs)
+bounds requests from live combat/member/plane headers and the shared native
+source visitor (140C29020, 14195C7D0, 141963700). Capture's count-only tree census
+counts nodes, selected leaf text and depth for each distinct candidate source
+and key union. Native 14054D0F0 walks with depth -1; observed depth two supplies
+no fixed breadth or text bound. The census reads modifier values to select
+text, validates string descriptors without copying display text, and rechecks
+child/string and selecting headers. Hint-only allocations return failure
+without the collector's terminal callback. Candidate hover/source bounds can
+still overprovision storage; live cost remains unmeasured.
 
 [fixed5.rs](src/fixed5.rs) owns the native logarithm, exponential and power series
 (1424DAA00, 1424DA930, 1424DAB50), shared by movement and naval mission derivation.

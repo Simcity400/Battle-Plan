@@ -640,6 +640,27 @@ impl Captured {
         &self.construction_ic
     }
 
+    pub(crate) fn apply_combat_hints(
+        &mut self,
+        land: Option<&combat_details::Capacities>,
+        naval: Option<&naval_details::Capacities>,
+    ) -> [bool; 2] {
+        let mut applied = [false; 2];
+        if let Some(capacity) = land {
+            applied[0] = self.combat_details.try_grow_hint(capacity).is_ok();
+            if !applied[0] {
+                crate::country_scale::note_combat_hint_failure(0);
+            }
+        }
+        if let Some(capacity) = naval {
+            applied[1] = self.naval_details.try_grow_hint(capacity).is_ok();
+            if !applied[1] {
+                crate::country_scale::note_combat_hint_failure(1);
+            }
+        }
+        applied
+    }
+
     #[cfg(test)]
     pub(crate) fn construction_ic_mut(&mut self) -> &mut construction_ic::Captured {
         &mut self.construction_ic

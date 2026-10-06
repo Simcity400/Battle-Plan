@@ -19,13 +19,19 @@ pub struct Entry {
     pub amount_raw: i64,
 }
 
+#[derive(Clone, Copy, serde::Serialize)]
+struct Refusal {
+    site_index: Option<usize>,
+    reason: &'static str,
+}
+
 struct Store {
     entries: Vec<Entry>,
     before: Vec<equipment_entry::Row>,
     after: Vec<equipment_entry::Row>,
     raw: Vec<u8>,
     transition: bool,
-    refusal: Option<&'static str>,
+    refusal: Option<Refusal>,
 }
 impl Store {
     const fn new() -> Self {
@@ -54,8 +60,13 @@ impl Store {
         record_hourly_peak(self.entries.len(), self.entries.capacity());
         Ok(())
     }
-    fn refuse(&mut self, reason: &'static str) {
-        self.refusal.get_or_insert(reason);
+    fn refuse(&mut self, site_index: Option<usize>, reason: &'static str) {
+        let refusal = Refusal { site_index, reason };
+        self.refusal.get_or_insert(refusal);
+        let _ = FIRST_REFUSAL.set(refusal);
+        if let Some(site) = site_index {
+            SITE_REFUSALS[site].fetch_add(1, Ordering::Relaxed);
+        }
         REFUSALS.fetch_add(1, Ordering::Relaxed);
         poison();
     }
@@ -69,6 +80,8 @@ impl Store {
     }
 }
 static STORE: Mutex<Store> = Mutex::new(Store::new());
+// The first attach-level diagnostic stays visible while a writer owns STORE.
+static FIRST_REFUSAL: OnceLock<Refusal> = OnceLock::new();
 // Only the hourly boundary writes this clock. It advances even if a writer
 // owns STORE, so an overlapping drain cannot masquerade as a later branch.
 static CLOCK: Mutex<Option<Clock>> = Mutex::new(None);
@@ -84,6 +97,7 @@ static ORIGINAL: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
 static INSTALLED: [AtomicBool; 4] = [const { AtomicBool::new(false) }; 4];
 static SITE_ENABLED: [AtomicBool; 4] = [const { AtomicBool::new(false) }; 4];
 static CALLS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+static SITE_REFUSALS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 static UNHOOKED: OnceLock<&'static str> = OnceLock::new();
 static EVENTS: AtomicU64 = AtomicU64::new(0);
 static OVERFLOW: AtomicU64 = AtomicU64::new(0);
@@ -158,9 +172,13 @@ pub fn prepare(memory: &impl Memory, base: usize, countries: usize) {
         || engine::allocation::reserve_exact(&mut raw, raw_bytes).is_err()
     {
         if let Ok(mut store) = STORE.try_lock() {
-            store.refuse("equipment destruction buffer allocation failed");
+            store.refuse(None, "equipment destruction buffer allocation failed");
         } else {
             REFUSALS.fetch_add(1, Ordering::Relaxed);
+            let _ = FIRST_REFUSAL.set(Refusal {
+                site_index: None,
+                reason: "equipment destruction buffer allocation failed",
+            });
             poison();
         }
         return;
@@ -229,9 +247,10 @@ pub fn drain(output: &mut [Entry]) -> Result<usize, &'static str> {
         return Err("equipment destruction writer overlaps hourly drain");
     };
     if POISONED.load(Ordering::SeqCst) {
-        return Err(store
-            .refusal
-            .unwrap_or("equipment destruction lost observation; branch unavailable"));
+        return Err(store.refusal.map_or(
+            "equipment destruction lost observation; branch unavailable",
+            |r| r.reason,
+        ));
     }
     if store.transition {
         return Err("equipment destruction first/branch interval is partial");
@@ -376,7 +395,7 @@ unsafe extern "system" fn land(
     let memory = unsafe { engine::memory::LiveMemory::new() };
     let result = observe_pool(&mut store, 0, a, cause, &memory, base, run);
     if let Err(reason) = result {
-        store.refuse(reason);
+        store.refuse(Some(0), reason);
     }
 }
 
@@ -419,7 +438,7 @@ unsafe extern "system" fn air(a: usize, b: usize, c: usize, caller: usize) {
         Err("unsupported negative KillAirplanes request")
     };
     if let Err(reason) = result {
-        store.refuse(reason);
+        store.refuse(Some(2), reason);
     }
 }
 unsafe extern "system" fn garrison(a: usize, b: usize, c: usize) {
@@ -450,7 +469,7 @@ unsafe extern "system" fn garrison(a: usize, b: usize, c: usize) {
         BASE.load(Ordering::Relaxed),
         run,
     ) {
-        store.refuse(reason);
+        store.refuse(Some(3), reason);
     }
 }
 fn observe_variant(
@@ -506,7 +525,7 @@ unsafe extern "system" fn attrition(pool: usize, variant: usize, quantity: usize
     let base = BASE.load(Ordering::Relaxed);
     let result = observe_variant(&mut store, &memory, base, pool, variant, run);
     if let Err(reason) = result {
-        store.refuse(reason);
+        store.refuse(Some(1), reason);
     }
 }
 
@@ -587,18 +606,21 @@ impl Hooks {
     }
 }
 pub fn status() -> impl serde::Serialize {
+    let refusal = FIRST_REFUSAL.get().copied();
     let hooks = std::array::from_fn::<_, { native::SITES.len() }, _>(|i| {
         let site = &native::SITES[i];
         crate::status::status!({
-            "name": site.name, "rva": site.rva, "sentinel": site.sentinel,
+            "site_index": i, "name": site.name, "rva": site.rva, "sentinel": site.sentinel,
             "installed": INSTALLED[i].load(Ordering::Acquire),
             "enabled": SITE_ENABLED[i].load(Ordering::SeqCst),
             "active": ACTIVE[i].load(Ordering::SeqCst),
             "calls": CALLS[i].load(Ordering::Relaxed),
+            "refusals": SITE_REFUSALS[i].load(Ordering::Relaxed),
         })
     });
     crate::status::status!({"hooks":crate::status::sequence(hooks.into_iter()),"unhooked":UNHOOKED.get(),"branch_unavailable":POISONED.load(Ordering::SeqCst),
-        "events":EVENTS.load(Ordering::Relaxed),"overflow":OVERFLOW.load(Ordering::Relaxed),"refusals":REFUSALS.load(Ordering::Relaxed),
+        "events":EVENTS.load(Ordering::Relaxed),"overflow":OVERFLOW.load(Ordering::Relaxed),
+        "refusals":REFUSALS.load(Ordering::Relaxed),"refusal":refusal,
         "lost_drains":LOST.load(Ordering::Relaxed),"overlaps":OVERLAPS.load(Ordering::Relaxed),"drains":DRAINS.load(Ordering::Relaxed),
         "handed_over":HANDED_OVER.load(Ordering::Relaxed),"event_capacity":capacity(),"design_capacity":DESIGNS.load(Ordering::Acquire),
         "prepare_failures":PREPARE_FAILURES.load(Ordering::Relaxed),

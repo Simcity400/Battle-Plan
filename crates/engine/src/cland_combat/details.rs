@@ -71,6 +71,7 @@ pub struct DetailArenas<'a> {
     pub learning: &'a mut [CommanderLearningTrait],
     pub used: DetailCounts,
     pub required: DetailCounts,
+    pub(super) verify_headers: bool,
 }
 
 impl<'a> DetailArenas<'a> {
@@ -91,6 +92,7 @@ impl<'a> DetailArenas<'a> {
             learning,
             used: DetailCounts::default(),
             required: DetailCounts::default(),
+            verify_headers: false,
         }
     }
 
@@ -259,8 +261,20 @@ pub(super) fn read_border_war(
         row.sides[index] = BorderWarSide {
             country,
             state,
-            win_event: reader.string(&events[..lose_offset], &BORDER_WIN_EVENT, arenas)?,
-            lose_event: reader.string(&events[lose_offset..], &BORDER_LOSE_EVENT, arenas)?,
+            win_event: reader.string(
+                pointer,
+                side::WIN_EVENT,
+                &events[..lose_offset],
+                &BORDER_WIN_EVENT,
+                arenas,
+            )?,
+            lose_event: reader.string(
+                pointer,
+                side::LOSE_EVENT,
+                &events[lose_offset..],
+                &BORDER_LOSE_EVENT,
+                arenas,
+            )?,
         };
     }
     Ok(row)
@@ -410,6 +424,7 @@ pub fn read_details(
                     handle,
                 );
             }
+            reader.verify_array(pointer, vector_offset, 8, vector, arenas)?;
         }
         let tactic = reader.pointer(pointer, cland_combatant::TACTIC)?;
         let tactic_vtable = if tactic == 0 {
@@ -454,6 +469,7 @@ pub fn read_details(
                 planes,
             );
         }
+        reader.verify_array(pointer, cland_combatant::AIR_SUPPORT, 8, air, arenas)?;
         let (mut anti_air, mut kills, mut damage, mut loss_count) =
             ([0; 8], [0; 4], [0; 48], [0; 4]);
         copy_detail_spans(
@@ -601,7 +617,7 @@ impl<M: Memory> Reader<'_, M> {
                 .checked_add(offset)
                 .and_then(|address| read(self.memory, address))
                 .ok_or(unreadable)?;
-            *span = self.string(&header, errors, arenas)?;
+            *span = self.string(selected, offset, &header, errors, arenas)?;
         }
         if (commander.category as u32) < 2 {
             row.commander_formation = self.field(selected, carmy_leader::FORMATION_REFERENCE)?;
@@ -675,6 +691,17 @@ impl<M: Memory> Reader<'_, M> {
                 value,
             );
         }
+        for (offset, stride, vector) in [
+            (cunit_leader::TRAIT_DATA, 8, traits),
+            (
+                cunit_leader::TIMED_TRAIT_DATA,
+                cunit_leader::TIMED_TRAIT_STRIDE,
+                timed,
+            ),
+            (cunit_leader::TRAIT_EXPERIENCE_DATA, 16, learning),
+        ] {
+            self.verify_array(selected, offset, stride, vector, arenas)?;
+        }
         Ok(())
     }
 
@@ -689,6 +716,11 @@ impl<M: Memory> Reader<'_, M> {
         let address = pointer
             .checked_add(offset)
             .ok_or("land detail string address overflow")?;
+        let header = if arenas.verify_headers {
+            Some(self.field::<[u8; 32]>(pointer, offset)?)
+        } else {
+            None
+        };
         let (source, len) = crate::cdynamic_modifier::literal(self.memory, address)?;
         let start = arenas.used.text;
         arenas.required.text = arenas
@@ -705,6 +737,11 @@ impl<M: Memory> Reader<'_, M> {
             }
             arenas.used.text += len;
         }
+        if let Some(header) = header
+            && read::<[u8; 32]>(self.memory, address) != Some(header)
+        {
+            return Err("land detail demand string changed");
+        }
         Ok(Span { start, len })
     }
 
@@ -713,6 +750,8 @@ impl<M: Memory> Reader<'_, M> {
     /// Bytes that do not fit are counted, not stored.
     fn string(
         &self,
+        pointer: usize,
+        offset: usize,
         header: &[u8],
         errors: &crate::cname_group_member::StringErrors,
         arenas: &mut DetailArenas<'_>,
@@ -730,6 +769,29 @@ impl<M: Memory> Reader<'_, M> {
         if copied.is_some() {
             arenas.used.text += len;
         }
+        if arenas.verify_headers {
+            let address = pointer
+                .checked_add(offset)
+                .ok_or("land detail string address overflow")?;
+            let observed = read::<[u8; 32]>(self.memory, address);
+            if observed.as_ref().map(|value| value.as_slice()) != Some(header) {
+                return Err("land detail demand string changed");
+            }
+        }
         Ok(Span { start, len })
+    }
+
+    fn verify_array(
+        &self,
+        pointer: usize,
+        offset: usize,
+        stride: usize,
+        vector: Array,
+        arenas: &DetailArenas<'_>,
+    ) -> Result<(), &'static str> {
+        if arenas.verify_headers && self.array(pointer, offset, stride)? != vector {
+            return Err("land detail demand array changed");
+        }
+        Ok(())
     }
 }
