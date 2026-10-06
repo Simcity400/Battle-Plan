@@ -3,7 +3,7 @@ use super::*;
 use replay::rows::{AdvisorRoleRow, CharacterRoleTraitRow, CharacterRow};
 
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
-    pub(super) fn advisor_idea_character(
+    pub(in crate::effect_description) fn advisor_idea_character(
         &self,
         token: &str,
         scopes: Scopes,

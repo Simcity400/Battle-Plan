@@ -326,12 +326,12 @@ impl Renderer<'_, '_, '_> {
             0x142767A90 /* CReleaseNationEffect<> */ => self.politics_country(item, scopes, b"EFFECT_RELEASE_NATION", false), // 14036E4C0
             0x14275B2B8 /* CSoundEffect */ => self.politics_sound(item, scopes, false), // 140385DA0
             0x142761F98 /* CRemoveOperationTokenEffect */ => self.politics_operation_token(item, scopes, true), // 140389F00
-            0x1427AEFE8 /* CAddRaidHistoryEntryEffect@?A0x8a0aef5d@NRaids */ => Err("CEventScope RAID_INSTANCE_REFERENCE (+0x88/+0x8C) is not represented by the event graph (140529460); Raids records the handles".into()), // 1404A2FB0
+            0x1427AEFE8 /* CAddRaidHistoryEntryEffect@?A0x8a0aef5d@NRaids */ => self.char_raid_history_entry(scopes), // 1404A2FB0
             0x14275AF28 /* CAddRelationRuleOverrideEffect */ => self.politics_relation_rule(item, scopes, false, None), // 1403769B0
             0x14275C158 /* CSetMajorEffect */ => self.politics_major(item, scopes), // 140391AB0
             0x14273C320 /* CModifyTechnologySharingBonusEffect */ => self.politics_sharing_bonus(item, scopes), // 140321840
             0x14275B4B0 /* CPlaySongEffect */ => self.politics_sound(item, scopes, false), // 140385DA0
-            0x1427976C0 /* CAddHistoryEntryEffect */ => Err("CEventScope UNIT_REFERENCE (+0x70/+0x74) is not represented by the event graph (140529260); Divisions records the handles".into()), // 14045D2E0
+            0x1427976C0 /* CAddHistoryEntryEffect */ => self.char_history_entry(scopes), // 14045D2E0
             0x142761218 /* CRecallVolunteersFromEffect */ => self.politics_country(item, scopes, b"EFFECT_RECALL_VOLUNTEERS_FROM", true), // 140386960
             0x142759440 /* CHoldElectionEffect */ => self.politics_country(item, scopes, b"POLITICS_HOLD_ELECTION", false), // 140382C20
             0x1427526E0 /* CSetPoliticalPowerEffect */ => self.numeric_value(item, scopes, b"POLITICS_SET_POLITICAL_POWER"), // 1403927B0

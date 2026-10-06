@@ -844,7 +844,7 @@ impl Renderer<'_, '_, '_> {
     }
 
     /// 14128C8E0 -> 14054E050: stored definition IDs and numeric-array order.
-    pub(super) fn cached_modifier_description_with(
+    pub(in crate::effect_description) fn cached_modifier_description_with(
         &self,
         entries: &[CachedModifier],
         prefix: &str,

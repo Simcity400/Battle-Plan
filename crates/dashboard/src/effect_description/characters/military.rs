@@ -263,9 +263,17 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             1 => b"EFFECT_REMOVE_CC_LEADER",
             2 => b"EFFECT_REMOVE_NAVY_LEADER",
             3 => {
-                return Err(
-                    "operative codename (COperativeLeader+0x1030, 140C06040) is unrecorded".into(),
-                );
+                let codename = self.effect_operative_codename(leader)?;
+                let name = self.effect_resolved_leader_name(leader)?;
+                return self.char_native_text(
+                    b"EFFECT_REMOVE_OPERATIVE_LEADER",
+                    &[
+                        ("CODENAME", Argument::Text(&codename)),
+                        ("NAME", Argument::Text(&name)),
+                    ],
+                    scopes,
+                    false,
+                ); // 1402ECF90: no scope expansion or LF.
             }
             _ => return Ok(String::new()),
         };
@@ -375,10 +383,81 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 14045D8B0: after the same ResolveArmy, GetName 140C72F00 copies
-    // the stored Army+0x340 -> CNameGroupMember+0x60 cache. Naming operands
-    // cannot prove this stale cache. Core carries UNIT; only its name remains
-    // a recording gap. Null Army returns native empty without reading operands.
+    // Format 98 records the selected naming operands. Lead D2's format-98
+    // follow-up PR will use them in the shared CArmy formatter (140C72F00).
+    fn char_recorded_unit_name(&self, reference: u64) -> Result<String, String> {
+        // A UNIT absent from Divisions (possibly non-Army) conservatively
+        // refuses; native ResolveArmy null gives empty (14045D0D0).
+        self.context.world()?.unit(reference)?;
+        let row = self
+            .character_table::<tables::DivisionStatus>()?
+            .iter()
+            .find(|row| row.division == reference)
+            .ok_or("DivisionStatus lacks UNIT naming row")?;
+        row.naming
+            .require("Army name (Army+0x340 -> CNameGroupMember+0x60, 140C72F00)")?
+            .as_ref()
+            .ok_or(
+                "Army name (Army+0x340 -> CNameGroupMember+0x60, 140C72F00) capture unavailable",
+            )?;
+        Err("shared UNIT name formatter (140C72F00) awaits lead D2's format-98 follow-up PR to use DivisionStatus.naming".into())
+    }
+
+    // Own 14045D2E0: ResolveArmy, slot-13 name, UNIT@142776CA8;
+    // key/subject/allow are execution-only. No expansion or appended LF.
+    pub(in crate::effect_description) fn char_history_entry(
+        &self,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let Scope::Unit(reference) = scopes.this else {
+            return Ok(String::new());
+        };
+        if reference == 0 {
+            return Ok(String::new());
+        }
+        let name = self.char_recorded_unit_name(reference)?;
+        self.char_native_text(
+            b"EFFECT_ADD_HISTORY_ENTRY_UNIT_EFFECT",
+            &[("UNIT", Argument::Text(&name))],
+            scopes,
+            false,
+        )
+    }
+
+    // Own 1404A2FB0 -> 141454480: the raid's +0xC8 assigned Army first,
+    // then +0xD0 air wing. NAME@142727E7C, plain localisation, final LF.
+    pub(in crate::effect_description) fn char_raid_history_entry(
+        &self,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let Scope::Raid(reference) = scopes.this else {
+            return Ok(String::new());
+        };
+        if reference == 0 {
+            return Ok(String::new());
+        }
+        let raid = self.context.world()?.raid(reference)?;
+        let name = if raid.unit != 0 {
+            // A missing Divisions row cannot prove native ResolveArmy null.
+            self.char_recorded_unit_name(raid.unit)?
+        } else if raid.air_wing != 0 {
+            return Err(
+                "shared wing naming hook (141454480 -> 140F4B8F0, CAirWing+0x998) is unavailable"
+                    .into(),
+            );
+        } else {
+            String::new()
+        };
+        self.char_native_line(
+            b"EFFECT_ADD_RAID_HISTORY_ENTRY_UNIT_EFFECT",
+            &[("NAME", Argument::Text(&name))],
+            scopes,
+            false,
+        )
+    }
+
+    // Own 14045D8B0: ResolveArmy then GetName 140C72F00, DIV@142797880.
+    // Null Army returns native empty without reading naming operands.
     pub(in crate::effect_description) fn char_unit_medal(
         &self,
         scopes: Scopes,
@@ -390,7 +469,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(String::new());
         }
         // Missing Divisions cannot prove ResolveArmy null (140529260/14045D8B0).
-        let name = self.unit_name(reference)?;
+        let name = self.char_recorded_unit_name(reference)?;
         self.char_native_text(
             b"ADD_UNIT_MEDAL_DIV_EFFECT",
             &[("DIV", Argument::Text(&name))],

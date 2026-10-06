@@ -684,17 +684,163 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 14036F000/14037E3B0 -> 1410D69C0 searches the available
-    // advisor roster before retired characters. Neither persistent roles nor
-    // appointments proves that primary lookup. Cache rebuild 14128FF90 also
-    // omits the own modifier that factory 141289CF0/load 14128E7D0 adds;
-    // recorded current traits cannot distinguish those refresh histories.
+    // Own 14036F000/14037E3B0; scalar reader 1403A91F0. FindIdeaByNameOrAdvisor
+    // 1410D69C0 checks +0x40 in native order with an exact string comparison,
+    // then retired +0x28 and each advisor map (140F8A630), without case.
+    // The +0x1A0 CModifier's raw accumulator is +0x1B0 (1401FAA10 +0x10);
+    // format 98 keeps its numbers. Never rebuild them from current traits.
     pub(in crate::effect_description) fn char_activate_advisor(
         &self,
-        _item: &Item,
-        _scopes: Scopes,
+        item: &Item,
+        scopes: Scopes,
     ) -> Result<String, String> {
-        Err("advisor lookup requires the unrecorded available-advisor roster (CCountryCharacters+0x40/+0x4C, 1410D69C0) and cached modifiers (CAdvisor+0x1A0, 14036F000/14037E3B0)".into())
+        let idea = std::str::from_utf8(installed_content::parser::c_string(
+            item.value.scalar().unwrap_or_default(),
+        ))
+        .map_err(|_| "advisor idea token is not UTF-8")?;
+        let Some(character_id) = self.advisor_idea_character(idea, scopes)? else {
+            return Ok(String::new()); // Native diagnostic only when lookup is null.
+        };
+        // 14036F054/14037E404 retain 1410D69C0's advisor pointer and format
+        // that exact cache; unlike 14128BE00, they do not look up a role again.
+        // 140F8A630's retired lookup selects the first folded match in tree
+        // order (recorded ordinal). A unique exact match at that same ordinal
+        // is also safe for the primary path. Other exact matches lose pointer
+        // identity in the character-only result; do not rescan the roster.
+        let matching: Vec<_> = self
+            .character_table::<tables::AdvisorRoles>()?
+            .iter()
+            .filter(|role| {
+                role.character == character_id && role.idea.eq_ignore_ascii_case(idea.as_bytes())
+            })
+            .collect();
+        let advisor = matching
+            .iter()
+            .copied()
+            .min_by_key(|role| role.ordinal)
+            .ok_or_else(|| format!("AdvisorRoles lacks character {character_id} idea {idea}"))?;
+        let mut exact = matching
+            .iter()
+            .copied()
+            .filter(|role| role.idea == idea.as_bytes());
+        let first_exact = exact.next();
+        if exact.next().is_some() || first_exact.is_some_and(|role| role.ordinal != advisor.ordinal)
+        {
+            return Err(format!(
+                "advisor {character_id} / {idea} has ambiguous role identity after character-only lookup (1410D69C0 returns the advisor pointer)"
+            ));
+        }
+        let cache = advisor
+            .modifier_cache
+            .require("advisor modifier cache (CAdvisor+0x1B0 accumulator, 14036F000/14037E3B0)")?
+            .as_ref()
+            .ok_or(
+                "advisor modifier cache (CAdvisor+0x1B0 accumulator, 14036F000/14037E3B0) capture unavailable",
+            )?;
+        let character = self
+            .effect_character(Scope::Character(advisor.character))?
+            .ok_or("AdvisorRoles references missing character")?;
+        let catalogue = self
+            .character_content()?
+            .catalogue
+            .as_ref()
+            .map_err(Clone::clone)?;
+        let idea_token =
+            std::str::from_utf8(&advisor.idea).map_err(|_| "advisor idea token is not UTF-8")?;
+        let built = crate::products::identity::built_template(
+            character,
+            self.character_table::<tables::LexicalTokens>().ok(),
+        );
+        let role = catalogue
+            .held_advisor(idea_token, built.as_ref().map_err(String::as_str))?
+            .ok_or_else(|| format!("advisor role {idea_token} is absent from content"))?;
+        // Factory@141289CF0 (14128A0A6) and load@14128E7D0 (14128E8D0)
+        // add the own block after Rebuild@14128FF90, which omits it. Its
+        // tooltip membership at +0x218 therefore depends on refresh history.
+        let mut own_blocks = vec![&role.modifiers];
+        while let Some(block) = own_blocks.pop() {
+            if let Some(why) = block.unheld.cause() {
+                return Err(why.to_owned());
+            }
+            if !block.tooltips().is_empty() {
+                return Err("advisor own-block custom tooltip presence in +0x218 depends on refresh history (141289CF0/14128E7D0 vs 14128FF90)".into());
+            }
+            own_blocks.extend(&block.children);
+        }
+        // With no own-block tooltips, Rebuild@14128FF90 copies current
+        // trait tooltip keys into +0x218;
+        // Clear@14054B860 retains that table's capacity and therefore its
+        // slot order. Zero/one distinct key is independent of that order;
+        // two or more need the unrecorded order. Reuse the catalogue's set.
+        let mut modifiers = Modifiers::default();
+        let mut tooltip_key: Option<String> = None;
+        for row in self
+            .character_table::<tables::CharacterRoleTraits>()?
+            .iter()
+            .filter(|row| {
+                row.character == advisor.character
+                    && row.kind == CharacterRoleTraitRow::ADVISOR
+                    && row.role == advisor.ordinal
+            })
+        {
+            let traits = self.char_country_traits()?;
+            for &definition in &row.definitions {
+                let trait_ = traits.by_ordinal(definition).ok_or_else(|| {
+                    format!("advisor trait definition {definition} is absent from content")
+                })?;
+                if let Some(why) = trait_.modifiers.unheld.cause() {
+                    return Err(why.to_owned());
+                }
+                for key in trait_.modifiers.tooltips() {
+                    if tooltip_key
+                        .as_ref()
+                        .is_some_and(|previous| previous != &key)
+                    {
+                        return Err("advisor cached tooltip keys/slot order (CAdvisor+0x218, 141290135/14054E050) not recorded".into());
+                    }
+                    if tooltip_key.is_none() {
+                        modifiers = trait_.modifiers.clone();
+                        tooltip_key = Some(key);
+                    }
+                }
+            }
+        }
+        modifiers.values.clear();
+        modifiers.hidden.clear();
+        modifiers.children.clear();
+        // 14036F0A2/14037E452: raw 14054E050, mask FFFFFFFF, prefix null;
+        // +0x1B0 numeric-array order and definition IDs need no lexer lookup.
+        // DESC@142751CF0 expands only after substitution into the wrapper.
+        let options = ModifierListOptions {
+            category_mask: u32::MAX,
+            ..Default::default()
+        };
+        let mut description = self.cached_modifier_description_with(&cache.entries, "", options)?;
+        if tooltip_key.is_some() {
+            let tooltip = self.modifier_description_with(&modifiers, "", options)?;
+            // 14054E296/14054E2AF: one LF before a nonempty tooltip, only
+            // when the numeric text is nonempty and does not already end in LF.
+            if !tooltip.is_empty() {
+                if !description.is_empty() && !description.ends_with('\n') {
+                    description.push('\n');
+                }
+                description.push_str(&tooltip);
+            }
+        }
+        let name = self.effect_character_name(character)?;
+        self.char_native_text(
+            if item.keyword_is("deactivate_advisor") {
+                b"EFFECT_DEACTIVATE_ADVISOR"
+            } else {
+                b"EFFECT_ASSIGN_ADVISOR"
+            },
+            &[
+                ("NAME", Argument::Text(&name)),
+                ("DESC", Argument::Text(&description)),
+            ],
+            scopes,
+            true,
+        )
     }
 
     // Own 14038F4D0's inverted guard is preserved: THIS character omits its

@@ -13,6 +13,8 @@ fn fixture(event_argument: &str) -> (Fixture, Folder) {
             " EFFECT_CAPTURE_OPERATIVE:0 \"Capture $OPERATIVE$ by $CAPTURED_BY$ [Root.GetTag]\"\n",
             " EFFECT_KILL_OPERATIVE:0 \"Kill $OPERATIVE$ by $KILLED_BY$ [Root.GetTag]\"\n",
             " EFFECT_TURN_OPERATIVE:0 \"Turn $OPERATIVE$ by $TURNED_BY$ [Root.GetTag]\"\n",
+            " EFFECT_FORCE_OPERATIVE_INTO_HIDING:0 \"Hide $NAME$/$CODENAME$/$DAYS|0$ [Root.GetTag]\"\n",
+            " EFFECT_HARM_OPERATIVE:0 \"Harm $NAME$/$CODENAME$/$DAYS|0$ [Root.GetTag]\"\n",
             " EFFECT_COUNTRY_EVENT:0 \"Event ${}$ [Root.GetTag]\"\n",
             " UNIT_TITLE:0 \"Unit [From.GetTag]\"\n",
             " OPERATIVE_TITLE:0 \"Operative [From.GetTag]/[From.From.GetTag]/[Root.GetTag]\"\n",
@@ -26,6 +28,10 @@ fn fixture(event_argument: &str) -> (Fixture, Folder) {
             "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
         ),
         ("localisation/test_l_english.yml", &localisation),
+        (
+            "common/units/codenames_operatives/test.txt",
+            "synthetic_codes={type=codename unique={\"Nightjar\"}}",
+        ),
     ]);
     catalogue
         .scripted_content()
@@ -58,6 +64,7 @@ fn fixture(event_argument: &str) -> (Fixture, Folder) {
                 category: 3,
                 owner: 100,
                 inherited_text_b: b"Agent text".to_vec(),
+                codename: Recorded::NotRecorded,
                 ..Default::default()
             },
             UnitLeaderRow {
@@ -195,7 +202,7 @@ fn hide_operative_refuses_codename_only_after_native_gates() {
         Content::default(),
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect CForceOperativeLeaderIntoHiding: key force_operative_leader_into_hiding: operative codename (COperativeLeader+0x1030, 140C06040) is unrecorded".into(), 1)]));
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect CForceOperativeLeaderIntoHiding: key force_operative_leader_into_hiding: operative codename (COperativeLeader+0x1030, 140C06040) not recorded".into(), 1)]));
     for days in ["0", "-1"] {
         let out = fixture.render(
             &format!("force_operative_leader_into_hiding={days}"),
@@ -217,11 +224,153 @@ fn harm_operative_refuses_codename_only_after_native_gates() {
         Content::default(),
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect CHarmOperativeEffect: key harm_operative_leader: operative codename (COperativeLeader+0x1030, 140C06040) is unrecorded".into(), 1)]));
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect CHarmOperativeEffect: key harm_operative_leader: operative codename (COperativeLeader+0x1030, 140C06040) not recorded".into(), 1)]));
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
     let out = fixture.render("harm_operative_leader=90", &mut scopes, Content::default());
     assert_eq!(out.text, "");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+// 140380AB0/140382790 substitute NAME, CODENAME, DAYS then expand;
+// only harm appends LF. Both direct and registry-only roles carry operands.
+#[test]
+fn format98_codename_days_use_direct_and_referenced_roles() {
+    let (mut fixture, _folder) = fixture("EVENT");
+    let codename = NameOperands {
+        kind: 2,
+        order: 0,
+        group: b"synthetic_codes".to_vec(),
+        ..Default::default()
+    };
+    for referenced in [false, true] {
+        if referenced {
+            *fixture.frame.tables[TableId::UnitLeaders.index()] =
+                TableView::Complete(TableRows::UnitLeaders(vec![]));
+            *fixture.frame.tables[TableId::CharacterOperatives.index()] =
+                TableView::Complete(TableRows::CharacterOperatives(vec![
+                    CharacterOperativeRow {
+                        character: 7,
+                        reference: (5_u64 << 32) | 55,
+                        resolved: true,
+                        category: 3,
+                        name: Recorded::Value(Some(b"Agent text".to_vec())),
+                        codename: Recorded::Value(Some(codename.clone())),
+                        ..Default::default()
+                    },
+                ]));
+        } else if let TableView::Complete(TableRows::UnitLeaders(rows)) =
+            &mut *fixture.frame.tables[TableId::UnitLeaders.index()]
+        {
+            rows[0].kind = 3;
+            rows[0].codename = Recorded::Value(Some(codename.clone()));
+        }
+        for (source, expected) in [
+            (
+                "force_operative_leader_into_hiding=28",
+                "Hide Agent text/Nightjar/28 AAA",
+            ),
+            (
+                "harm_operative_leader=90",
+                "Harm Agent text/Nightjar/90 AAA\n",
+            ),
+        ] {
+            let out = fixture.render(source, &mut operative_scopes(), Content::default());
+            assert_eq!(out.text, expected);
+            assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+        }
+        if referenced {
+            if let TableView::Complete(TableRows::CharacterOperatives(rows)) =
+                &mut *fixture.frame.tables[TableId::CharacterOperatives.index()]
+            {
+                rows[0].codename = Recorded::NotRecorded;
+            }
+            for (source, class) in [
+                (
+                    "force_operative_leader_into_hiding=28",
+                    "CForceOperativeLeaderIntoHiding",
+                ),
+                ("harm_operative_leader=90", "CHarmOperativeEffect"),
+            ] {
+                let out = fixture.render(source, &mut operative_scopes(), Content::default());
+                assert_eq!(out.text, "");
+                assert_eq!(
+                    out.refusals,
+                    BTreeMap::from([(
+                        format!(
+                            "synthetic effect {class}: key {}: operative codename (COperativeLeader+0x1030, 140C06040) not recorded",
+                            source.split('=').next().unwrap()
+                        ),
+                        1
+                    )])
+                );
+            }
+        }
+    }
+}
+
+// 14037AFB0/1403834B0/140398B70 all copy the selected leader's +0x40.
+#[test]
+fn operative_actions_use_format98_registry_only_name() {
+    let (mut fixture, _folder) = fixture("EVENT");
+    *fixture.frame.tables[TableId::UnitLeaders.index()] =
+        TableView::Complete(TableRows::UnitLeaders(vec![]));
+    *fixture.frame.tables[TableId::CharacterOperatives.index()] =
+        TableView::Complete(TableRows::CharacterOperatives(vec![
+            CharacterOperativeRow {
+                character: 7,
+                reference: (5_u64 << 32) | 55,
+                resolved: true,
+                category: 3,
+                name: Recorded::Value(Some(b"Referenced agent".to_vec())),
+                ..Default::default()
+            },
+        ]));
+    for (key, class, field, expected) in [
+        (
+            "capture_operative",
+            "CCaptureOperativeEffect",
+            "captured_by",
+            "Capture Referenced agent by Beta union AAA",
+        ),
+        (
+            "kill_operative",
+            "CKillOperativeEffect",
+            "killed_by",
+            "Kill Referenced agent by beta union AAA",
+        ),
+        (
+            "turn_operative",
+            "CTurnOperativeLeaderEffect",
+            "turned_by",
+            "Turn Referenced agent by beta union AAA",
+        ),
+    ] {
+        let source = format!("{key}={{{field}=FROM}}");
+        let out = fixture.render(&source, &mut operative_scopes(), Content::default());
+        assert_eq!(out.text, expected);
+        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+        if let TableView::Complete(TableRows::CharacterOperatives(rows)) =
+            &mut *fixture.frame.tables[TableId::CharacterOperatives.index()]
+        {
+            rows[0].name = Recorded::NotRecorded;
+        }
+        let out = fixture.render(&source, &mut operative_scopes(), Content::default());
+        assert_eq!(out.text, "");
+        assert_eq!(
+            out.refusals,
+            BTreeMap::from([(
+                format!(
+                    "synthetic effect {class}: key {key}: character 7 referenced unit leader name (+0x40, 140C16FB0) not recorded"
+                ),
+                1
+            )])
+        );
+        if let TableView::Complete(TableRows::CharacterOperatives(rows)) =
+            &mut *fixture.frame.tables[TableId::CharacterOperatives.index()]
+        {
+            rows[0].name = Recorded::Value(Some(b"Referenced agent".to_vec()));
+        }
+    }
 }
 
 // common/decisions/ETH.txt:96; fresh scope's FROM is caller ROOT.

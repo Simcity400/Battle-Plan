@@ -5,7 +5,17 @@ use crate::scripted_text::{EventObject, EventScope, Link};
 use replay::{frame::TableView, rows::*};
 
 fn fixture() -> (Fixture, Folder) {
+    fixture_with_advisor_modifier("")
+}
+
+fn fixture_with_advisor_modifier(modifier: &str) -> (Fixture, Folder) {
     let mut fixture = Fixture::new();
+    let characters = [
+        "characters={synthetic_character={name=synthetic_name country_leader={ideology=synthetic_ideology traits={synthetic_trait}} advisor={slot=synthetic_slot idea_token=synthetic_advisor traits={synthetic_trait} modifier={",
+        modifier,
+        "}}} synthetic_unrecruited={name=unrecruited_name country_leader={ideology=synthetic_ideology}} synthetic_conditional={instance={allowed={always=no} name=conditional_name country_leader={ideology=synthetic_ideology}} instance={allowed={always=no} name=conditional_name country_leader={ideology=synthetic_ideology}}} synthetic_split_name={instance={allowed={always=yes} name=first country_leader={ideology=synthetic_ideology}} instance={allowed={always=yes} name=second country_leader={ideology=synthetic_ideology}}}}",
+    ]
+    .concat();
     let (catalogue, folder) = folder_catalogue(&[
         (
             "common/defines/test.lua",
@@ -17,12 +27,9 @@ fn fixture() -> (Fixture, Folder) {
         ),
         (
             "common/country_leader/test.txt",
-            "leader_traits={synthetic_trait={} synthetic_numeric={political_power_gain=0.1}}",
+            "leader_traits={synthetic_trait={} synthetic_numeric={political_power_gain=0.1} synthetic_tip={custom_modifier_tooltip=SYN_TIP} synthetic_two_tips={custom_modifier_tooltip=SYN_TIP custom_modifier_tooltip=SYN_OTHER_TIP}}",
         ),
-        (
-            "common/characters/test.txt",
-            "characters={synthetic_character={name=synthetic_name country_leader={ideology=synthetic_ideology traits={synthetic_trait}} advisor={slot=synthetic_slot idea_token=synthetic_advisor traits={synthetic_trait}}} synthetic_unrecruited={name=unrecruited_name country_leader={ideology=synthetic_ideology}} synthetic_conditional={instance={allowed={always=no} name=conditional_name country_leader={ideology=synthetic_ideology}} instance={allowed={always=no} name=conditional_name country_leader={ideology=synthetic_ideology}}} synthetic_split_name={instance={allowed={always=yes} name=first country_leader={ideology=synthetic_ideology}} instance={allowed={always=yes} name=second country_leader={ideology=synthetic_ideology}}}}",
-        ),
+        ("common/characters/test.txt", characters.as_str()),
         (
             "common/factions/templates/test.txt",
             "synthetic_faction={name=synthetic_faction_name} synthetic_bound={name={localization_key=synthetic_faction_root PART={localization_key=synthetic_faction_nested WORD=synthetic_word}}}",
@@ -34,6 +41,7 @@ fn fixture() -> (Fixture, Folder) {
                 " AAA:0 \"Alpha\"\n BBB:0 \"Beta\"\n AAA_DEF:0 \"alpha\"\n BBB_DEF:0 \"beta\"\n",
                 " synthetic_group:0 \"Group\"\n synthetic_trait:0 \"Trait\"\n synthetic_slot:0 \"Slot [Root.GetTag]\"\n",
                 " POWER:0 \"Power\"\n synthetic_numeric:0 \"Numeric\"\n",
+                " SYN_TIP:0 \"Tip [Root.GetTag]\"\n",
                 " POWER_WITH_ARG:0 \"Power $ARG$\"\n ARG:0 \"Argument fallback\"\n",
                 " synthetic_faction_name:0 \"Template [Root.GetTag]\"\n synthetic_faction_root:0 \"Root $PART$\"\n synthetic_faction_nested:0 \"Nested $WORD$\"\n synthetic_word:0 \"Word\"\n",
                 " AAA_legacy_name:0 \"Localized legacy\"\n synthetic_name:0 \"Content name\"\n unrecruited_name:0 \"Unrecruited [Root.GetTag]\"\n",
@@ -47,6 +55,8 @@ fn fixture() -> (Fixture, Folder) {
                 " EFFECT_REMOVE_ADVISOR_ROLE:0 \"Remove advisor $NAME$/$SLOT$ [Root.GetTag]\"\n",
                 " EFFECT_ADD_ADVISOR_ROLE:0 \"Add advisor $NAME$/$SLOT$/$MODIFIER$ [Root.GetTag]\"\n",
                 " EFFECT_ADD_ADVISOR_ROLE_APPOINT:0 \"Appoint $NAME$/$SLOT$/$MODIFIER$ [Root.GetTag]\"\n",
+                " EFFECT_ASSIGN_ADVISOR:0 \"Activate $NAME$/$DESC$ [Root.GetTag]\"\n",
+                " EFFECT_DEACTIVATE_ADVISOR:0 \"Deactivate $NAME$/$DESC$ [Root.GetTag]\"\n",
                 " EFFECT_SET_CAN_BE_FIRED:0 \"Fire $CHARACTER$/$SLOT$[Root.GetTag]\"\n",
                 " EFFECT_SET_CANNOT_BE_FIRED:0 \"Keep $CHARACTER$/$SLOT$[Root.GetTag]\"\n",
                 " EFFECT_RECRUIT_CHARACTER:0 \"Recruit $NAME$ [Root.GetTag]\"\n",
@@ -148,7 +158,20 @@ fn fixture() -> (Fixture, Folder) {
             ordinal: 0,
             idea: b"synthetic_advisor".to_vec(),
             slot: b"synthetic_slot".to_vec(),
+            modifier_cache: Recorded::Value(Some(AdvisorModifierCache {
+                entries: vec![CachedModifier {
+                    definition: 0,
+                    value: 20_000,
+                }],
+            })),
             ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::AvailableAdvisors.index()] =
+        TableView::Complete(TableRows::AvailableAdvisors(vec![AvailableAdvisorRow {
+            country: 100,
+            ordinal: 0,
+            character: 7,
+            idea: b"synthetic_advisor".to_vec(),
         }]));
     crate::effect_description::characters::tests::empty_variable_stores(&mut fixture);
     (fixture, folder)
@@ -268,7 +291,10 @@ fn promote_character_uses_character_scope_reader_fields() {
     }
     for (body, expected) in [
         ("promote_character=missing_ideology", ""),
-        ("promote_character=yes", "Promote Current name/Group [Root.GetTag]\n"),
+        (
+            "promote_character=yes",
+            "Promote Current name/Group [Root.GetTag]\n",
+        ),
         (
             "promote_character={character=synthetic_unrecruited ideology=synthetic_ideology}",
             "Promote Current name/Group [Root.GetTag]\n",
@@ -522,14 +548,19 @@ fn current_character_omission_and_slot_parentheses_match_inverted_native_guard()
 }
 
 fn advisor_gap(source: &str, class: &str) {
-    let (fixture, _folder) = fixture();
+    let (mut fixture, _folder) = fixture();
+    if let TableView::Complete(TableRows::AdvisorRoles(rows)) =
+        &mut *fixture.frame.tables[TableId::AdvisorRoles.index()]
+    {
+        rows[0].modifier_cache = Recorded::NotRecorded;
+    }
     let out = render(&fixture, source, &mut country_scopes());
     assert_eq!(out.text, "");
     assert_eq!(
         out.refusals,
         BTreeMap::from([(
             format!(
-                "synthetic effect {class}: key {}: advisor lookup requires the unrecorded available-advisor roster (CCountryCharacters+0x40/+0x4C, 1410D69C0) and cached modifiers (CAdvisor+0x1A0, 14036F000/14037E3B0)",
+                "synthetic effect {class}: key {}: advisor modifier cache (CAdvisor+0x1B0 accumulator, 14036F000/14037E3B0) not recorded",
                 source.split('=').next().unwrap()
             ),
             1
@@ -537,19 +568,78 @@ fn advisor_gap(source: &str, class: &str) {
     );
 }
 
-// common/decisions/FIN.txt:2180, scalar idea token. Persistent roles
-// cannot prove the available lookup roster or its cached modifier.
+// common/decisions/FIN.txt:2180. FormatDescription@14036F0A2 uses
+// the recorded cache rather than the content trait's 0.1.
 #[test]
 fn activate_advisor() {
-    advisor_gap(
+    text(
         "activate_advisor=synthetic_advisor",
-        "CActivateAdvisorEffect",
+        "Activate Current name/Power: \u{11}G+0.20\u{11}! AAA",
     );
 }
 
 // common/national_focus/czechoslovakia_mu.txt:5818.
 #[test]
 fn deactivate_advisor() {
+    text(
+        "deactivate_advisor=synthetic_advisor",
+        "Deactivate Current name/Power: \u{11}G+0.20\u{11}! AAA",
+    );
+}
+
+// Mod 1137372539 common/characters/SOV.txt:1918,1951,2007. Factory/load
+// 141289CF0/14128E7D0 add the own block after 14128FF90; later rebuilds omit it.
+#[test]
+fn advisor_own_block_tooltips_refuse_both_lines_without_guessing_refresh_history() {
+    for (modifier, refuses) in [
+        ("", false),
+        ("political_power_gain=0.5", false),
+        ("custom_modifier_tooltip=SYN_TIP", true),
+        ("added_modifier={custom_modifier_tooltip=SYN_TIP}", true),
+    ] {
+        let (fixture, _folder) = fixture_with_advisor_modifier(modifier);
+        for (key, class, expected) in [
+            (
+                "activate_advisor",
+                "CActivateAdvisorEffect",
+                "Activate Current name/Power: \u{11}G+0.20\u{11}! AAA",
+            ),
+            (
+                "deactivate_advisor",
+                "CDeactivateAdvisorEffect",
+                "Deactivate Current name/Power: \u{11}G+0.20\u{11}! AAA",
+            ),
+        ] {
+            let out = render(
+                &fixture,
+                &format!("{key}=synthetic_advisor"),
+                &mut country_scopes(),
+            );
+            if refuses {
+                assert_eq!(out.text, "");
+                assert_eq!(
+                    out.refusals,
+                    BTreeMap::from([(
+                        format!(
+                            "synthetic effect {class}: key {key}: advisor own-block custom tooltip presence in +0x218 depends on refresh history (141289CF0/14128E7D0 vs 14128FF90)"
+                        ),
+                        1,
+                    )])
+                );
+            } else {
+                assert_eq!(out.text, expected);
+                assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+            }
+        }
+    }
+}
+
+#[test]
+fn advisor_cache_not_recorded_refuses_each_class() {
+    advisor_gap(
+        "activate_advisor=synthetic_advisor",
+        "CActivateAdvisorEffect",
+    );
     advisor_gap(
         "deactivate_advisor=synthetic_advisor",
         "CDeactivateAdvisorEffect",
@@ -557,7 +647,7 @@ fn deactivate_advisor() {
 }
 
 #[test]
-fn absent_persistent_advisor_cannot_prove_absent_native_available_roster() {
+fn complete_native_rosters_prove_absent_advisor_is_empty() {
     let (fixture, _folder) = fixture();
     let out = render(
         &fixture,
@@ -565,10 +655,7 @@ fn absent_persistent_advisor_cannot_prove_absent_native_available_roster() {
         &mut country_scopes(),
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([
-        ("synthetic effect CActivateAdvisorEffect: key activate_advisor: advisor lookup requires the unrecorded available-advisor roster (CCountryCharacters+0x40/+0x4C, 1410D69C0) and cached modifiers (CAdvisor+0x1A0, 14036F000/14037E3B0)".into(), 1),
-        ("synthetic effect CDeactivateAdvisorEffect: key deactivate_advisor: advisor lookup requires the unrecorded available-advisor roster (CCountryCharacters+0x40/+0x4C, 1410D69C0) and cached modifiers (CAdvisor+0x1A0, 14036F000/14037E3B0)".into(), 1),
-    ]));
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
 // Mod 3350890356 events/TFR_events_IRQ.txt:45, global token lookup.
@@ -654,25 +741,356 @@ fn empty_display_name_uses_recorded_original_key() {
 }
 
 #[test]
-fn advisor_refusal_does_not_join_five_thousand_country_rosters() {
+fn advisor_lookup_at_five_thousand_countries_without_character_roster_join() {
     let (mut fixture, _folder) = fixture();
-    *fixture.frame.tables[TableId::AdvisorRoles.index()] =
-        TableView::Complete(TableRows::AdvisorRoles((0..5_000).map(|id| AdvisorRoleRow {
-            character: id,
-            country: id,
-            idea: b"synthetic_advisor".to_vec(),
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryLinks.index()]
+    {
+        rows.extend((0..5_000).map(|id| CountryLinkRow {
+            id: 10_000 + id,
+            canonical_slot: 10 + id,
+        }));
+    }
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *fixture.frame.tables[TableId::Countries.index()]
+    {
+        rows.extend((0..5_000).map(|id| CountryRow {
+            id: 10_000 + id,
+            canonical_slot: 10 + id,
+            tag: format!("S{id}").into_bytes(),
             ..Default::default()
-        }).collect()));
-    *fixture.frame.tables[TableId::CountryCharacters.index()] =
-        TableView::Complete(TableRows::CountryCharacters((0..5_000).map(|id| CountryCharacterRow {
-            country: id,
-            ordinal: 0,
-            character: Some(id),
-        }).collect()));
-    let out = render(&fixture, "activate_advisor=synthetic_advisor deactivate_advisor=absent_advisor", &mut country_scopes());
+        }));
+    }
+    let TableView::Complete(TableRows::AdvisorRoles(existing)) =
+        &*fixture.frame.tables[TableId::AdvisorRoles.index()]
+    else {
+        unreachable!()
+    };
+    let selected = existing[0].clone();
+    *fixture.frame.tables[TableId::AdvisorRoles.index()] =
+        TableView::Complete(TableRows::AdvisorRoles(
+            (0..5_000)
+                .map(|id| AdvisorRoleRow {
+                    character: 10_000 + id,
+                    country: 10_000 + id,
+                    idea: b"synthetic_advisor".to_vec(),
+                    ..Default::default()
+                })
+                .chain(std::iter::once(selected))
+                .collect(),
+        ));
+    *fixture.frame.tables[TableId::AvailableAdvisors.index()] =
+        TableView::Complete(TableRows::AvailableAdvisors(
+            (0..5_000)
+                .map(|id| AvailableAdvisorRow {
+                    country: 10_000 + id,
+                    ordinal: 0,
+                    character: 10_000 + id,
+                    idea: b"synthetic_advisor".to_vec(),
+                })
+                .chain(std::iter::once(AvailableAdvisorRow {
+                    country: 100,
+                    ordinal: 0,
+                    character: 7,
+                    idea: b"synthetic_advisor".to_vec(),
+                }))
+                .collect(),
+        ));
+    *fixture.frame.tables[TableId::CountryCharacters.index()] = TableView::Unavailable {
+        reason: "unused primary character roster".into(),
+    };
+    let out = render(
+        &fixture,
+        "activate_advisor=synthetic_advisor deactivate_advisor=absent_advisor",
+        &mut country_scopes(),
+    );
+    assert_eq!(
+        out.text,
+        "Activate Current name/Power: \u{11}G+0.20\u{11}! AAA"
+    );
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+#[test]
+fn advisor_roster_and_cache_capture_failures_are_named() {
+    let (mut fixture, _folder) = fixture();
+    if let TableView::Complete(TableRows::AdvisorRoles(rows)) =
+        &mut *fixture.frame.tables[TableId::AdvisorRoles.index()]
+    {
+        rows[0].modifier_cache = Recorded::Value(None);
+    }
+    let out = render(
+        &fixture,
+        "activate_advisor=synthetic_advisor",
+        &mut country_scopes(),
+    );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([
-        ("synthetic effect CActivateAdvisorEffect: key activate_advisor: advisor lookup requires the unrecorded available-advisor roster (CCountryCharacters+0x40/+0x4C, 1410D69C0) and cached modifiers (CAdvisor+0x1A0, 14036F000/14037E3B0)".into(), 1),
-        ("synthetic effect CDeactivateAdvisorEffect: key deactivate_advisor: advisor lookup requires the unrecorded available-advisor roster (CCountryCharacters+0x40/+0x4C, 1410D69C0) and cached modifiers (CAdvisor+0x1A0, 14036F000/14037E3B0)".into(), 1),
-    ]));
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect CActivateAdvisorEffect: key activate_advisor: advisor modifier cache (CAdvisor+0x1B0 accumulator, 14036F000/14037E3B0) capture unavailable".into(), 1)]));
+    *fixture.frame.tables[TableId::AvailableAdvisors.index()] = TableView::Unavailable {
+        reason: "format 97 lacks AvailableAdvisors".into(),
+    };
+    let out = render(
+        &fixture,
+        "activate_advisor=synthetic_advisor",
+        &mut country_scopes(),
+    );
+    assert_eq!(out.text, "");
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect CActivateAdvisorEffect: key activate_advisor: hour 1 AvailableAdvisors is unavailable: format 97 lacks AvailableAdvisors".into(), 1)]));
+}
+
+// Primary exact strings and retired case-folded maps have different native
+// lookup rules (1410D69C0 -> 140F8A630); roster/map ordinals break ties.
+#[test]
+fn advisor_primary_order_precedes_retired_case_folded_lookup() {
+    let (mut fixture, _folder) = fixture();
+    if let TableView::Complete(TableRows::Characters(rows)) =
+        &mut *fixture.frame.tables[TableId::Characters.index()]
+    {
+        rows.push(CharacterRow {
+            id: 8,
+            name: b"Retired name".to_vec(),
+            ..Default::default()
+        });
+    }
+    if let TableView::Complete(TableRows::AdvisorRoles(rows)) =
+        &mut *fixture.frame.tables[TableId::AdvisorRoles.index()]
+    {
+        let mut retired = rows[0].clone();
+        retired.character = 8;
+        rows.push(retired);
+    }
+    *fixture.frame.tables[TableId::AvailableAdvisors.index()] =
+        TableView::Complete(TableRows::AvailableAdvisors(vec![
+            AvailableAdvisorRow {
+                country: 100,
+                ordinal: 9,
+                character: 8,
+                idea: b"synthetic_advisor".to_vec(),
+            },
+            AvailableAdvisorRow {
+                country: 100,
+                ordinal: 0,
+                character: 7,
+                idea: b"synthetic_advisor".to_vec(),
+            },
+        ]));
+    *fixture.frame.tables[TableId::CountryRetiredCharacters.index()] =
+        TableView::Complete(TableRows::CountryRetiredCharacters(vec![
+            CountryCharacterRow {
+                country: 100,
+                ordinal: 0,
+                character: Some(8),
+            },
+        ]));
+    if let TableView::Complete(TableRows::ModifierDefinitions(rows)) =
+        &mut *fixture.frame.tables[TableId::ModifierDefinitions.index()]
+    {
+        rows[0].category_mask = 1 << 31; // Raw full mask, unlike the default 00FFFFFF.
+    }
+    for (token, name) in [
+        ("synthetic_advisor", "Current name"),
+        ("SYNTHETIC_ADVISOR", "Retired name"),
+    ] {
+        let out = render(
+            &fixture,
+            &format!("activate_advisor={token}"),
+            &mut country_scopes(),
+        );
+        assert_eq!(
+            out.text,
+            format!("Activate {name}/Power: \u{11}G+0.20\u{11}! AAA")
+        );
+        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    }
+}
+
+// 14036F054/14037E404 consume the returned advisor pointer, not the first
+// folded role as 14128BE00 does. The shared character ID can lose that cache.
+#[test]
+fn advisor_cache_role_requires_unambiguous_pointer_identity() {
+    for second_idea in ["synthetic_advisor", "SYNTHETIC_ADVISOR"] {
+        let (mut fixture, _folder) = fixture();
+        if let TableView::Complete(TableRows::AdvisorRoles(rows)) =
+            &mut *fixture.frame.tables[TableId::AdvisorRoles.index()]
+        {
+            let mut second = rows[0].clone();
+            second.ordinal = 4;
+            second.idea = second_idea.as_bytes().to_vec();
+            second.slot = b"synthetic_other_slot".to_vec();
+            second.modifier_cache = Recorded::Value(Some(AdvisorModifierCache {
+                entries: vec![CachedModifier {
+                    definition: 0,
+                    value: 90_000,
+                }],
+            }));
+            rows.insert(0, second);
+        }
+        *fixture.frame.tables[TableId::CountryRetiredCharacters.index()] =
+            TableView::Complete(TableRows::CountryRetiredCharacters(vec![
+                CountryCharacterRow {
+                    country: 100,
+                    ordinal: 0,
+                    character: Some(7),
+                },
+            ]));
+        for (key, class, expected) in [
+            (
+                "activate_advisor",
+                "CActivateAdvisorEffect",
+                "Activate Current name/Power: \u{11}G+0.20\u{11}! AAA",
+            ),
+            (
+                "deactivate_advisor",
+                "CDeactivateAdvisorEffect",
+                "Deactivate Current name/Power: \u{11}G+0.20\u{11}! AAA",
+            ),
+        ] {
+            let out = render(
+                &fixture,
+                &format!("{key}={second_idea}"),
+                &mut country_scopes(),
+            );
+            assert_eq!(out.text, "");
+            assert_eq!(
+                out.refusals,
+                BTreeMap::from([(
+                    format!(
+                        "synthetic effect {class}: key {key}: advisor 7 / {second_idea} has ambiguous role identity after character-only lookup (1410D69C0 returns the advisor pointer)"
+                    ),
+                    1,
+                )])
+            );
+            // No exact role matches this spelling: it must be the retired
+            // path's first folded ordinal, even if rows arrive out of order.
+            let out = render(
+                &fixture,
+                &format!("{key}=SyNtHeTiC_AdViSoR"),
+                &mut country_scopes(),
+            );
+            assert_eq!(out.text, expected);
+            assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+        }
+    }
+}
+
+// 141290135 fills the cache's string table separately from its numeric
+// entries. Omit the whole wrapper rather than draw a partial DESC.
+#[test]
+fn advisor_single_tooltip_is_derivable_but_several_need_recorded_slot_order() {
+    let (mut fixture, _folder) = fixture();
+    if let TableView::Complete(TableRows::ModifierDefinitions(rows)) =
+        &mut *fixture.frame.tables[TableId::ModifierDefinitions.index()]
+    {
+        rows.push(ModifierDefinitionRow {
+            index: 1,
+            token: 32, // The stored numeric definition needs no lexer spelling.
+            ..rows[0].clone()
+        });
+    }
+    if let TableView::Complete(TableRows::AdvisorRoles(rows)) =
+        &mut *fixture.frame.tables[TableId::AdvisorRoles.index()]
+    {
+        rows[0].modifier_cache = Recorded::Value(Some(AdvisorModifierCache {
+            entries: vec![
+                CachedModifier {
+                    definition: 1,
+                    value: 30_000,
+                },
+                CachedModifier {
+                    definition: 0,
+                    value: 20_000,
+                },
+            ],
+        }));
+    }
+    let definition = fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .environment()
+        .unwrap()
+        .leader_traits()
+        .unwrap()
+        .first_ordinal("synthetic_tip")
+        .unwrap()
+        .unwrap();
+    *fixture.frame.tables[TableId::CharacterRoleTraits.index()] =
+        TableView::Complete(TableRows::CharacterRoleTraits(vec![
+            CharacterRoleTraitRow {
+                character: 7,
+                kind: CharacterRoleTraitRow::ADVISOR,
+                role: 0,
+                tokens: vec![999],
+                definitions: vec![definition],
+            },
+        ]));
+    for (key, class) in [
+        ("activate_advisor", "CActivateAdvisorEffect"),
+        ("deactivate_advisor", "CDeactivateAdvisorEffect"),
+    ] {
+        let out = render(
+            &fixture,
+            &format!("{key}=synthetic_advisor"),
+            &mut country_scopes(),
+        );
+        assert_eq!(
+            out.text,
+            format!(
+                "{} Current name/Power: \u{11}G+0.30\u{11}!\nPower: \u{11}G+0.20\u{11}!\nTip AAA AAA",
+                if key == "activate_advisor" {
+                    "Activate"
+                } else {
+                    "Deactivate"
+                }
+            )
+        );
+        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+        let definition = fixture
+            .catalogue
+            .scripted_content()
+            .unwrap()
+            .environment()
+            .unwrap()
+            .leader_traits()
+            .unwrap()
+            .first_ordinal("synthetic_two_tips")
+            .unwrap()
+            .unwrap();
+        if let TableView::Complete(TableRows::CharacterRoleTraits(rows)) =
+            &mut *fixture.frame.tables[TableId::CharacterRoleTraits.index()]
+        {
+            rows[0].definitions[0] = definition;
+        }
+        let out = render(
+            &fixture,
+            &format!("{key}=synthetic_advisor"),
+            &mut country_scopes(),
+        );
+        assert_eq!(out.text, "");
+        assert_eq!(
+            out.refusals,
+            BTreeMap::from([(
+                format!(
+                    "synthetic effect {class}: key {key}: advisor cached tooltip keys/slot order (CAdvisor+0x218, 141290135/14054E050) not recorded"
+                ),
+                1
+            )])
+        );
+        let definition = fixture
+            .catalogue
+            .scripted_content()
+            .unwrap()
+            .environment()
+            .unwrap()
+            .leader_traits()
+            .unwrap()
+            .first_ordinal("synthetic_tip")
+            .unwrap()
+            .unwrap();
+        if let TableView::Complete(TableRows::CharacterRoleTraits(rows)) =
+            &mut *fixture.frame.tables[TableId::CharacterRoleTraits.index()]
+        {
+            rows[0].definitions[0] = definition;
+        }
+    }
 }

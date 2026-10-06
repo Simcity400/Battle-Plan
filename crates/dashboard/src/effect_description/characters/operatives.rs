@@ -173,13 +173,37 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
     }
 
-    fn char_operative_codename_days(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
+    fn char_operative_codename_days(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+        key: &[u8],
+        newline: bool,
+    ) -> Result<String, String> {
         let operative = self.effect_unit_leader(scopes)?;
         let days = self.char_operative_days(item, scopes)?;
-        if days <= 0 || operative.is_none_or(|leader| leader.category() != 3) {
+        if days <= 0 {
             return Ok(String::new());
         }
-        Err("operative codename (COperativeLeader+0x1030, 140C06040) is unrecorded".into())
+        let Some(operative) = operative.filter(|leader| leader.category() == 3) else {
+            return Ok(String::new());
+        };
+        let codename = self.effect_operative_codename(operative)?;
+        let name = self.effect_resolved_leader_name(operative)?;
+        let mut text = self.char_native_text(
+            key,
+            &[
+                ("NAME", Argument::Text(&name)),
+                ("CODENAME", Argument::Text(&codename)),
+                ("DAYS", Argument::Int32(days)),
+            ],
+            scopes,
+            true,
+        )?;
+        if newline {
+            text.push('\n');
+        }
+        Ok(text)
     }
 
     // Own 140380AB0: EFFECT_FORCE_OPERATIVE_INTO_HIDING@142762C28,
@@ -189,7 +213,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        self.char_operative_codename_days(item, scopes)
+        self.char_operative_codename_days(
+            item,
+            scopes,
+            b"EFFECT_FORCE_OPERATIVE_INTO_HIDING",
+            false,
+        )
     }
 
     // Own 140382790: EFFECT_HARM_OPERATIVE@142762AB8; same args, then LF.
@@ -198,7 +227,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        self.char_operative_codename_days(item, scopes)
+        self.char_operative_codename_days(item, scopes, b"EFFECT_HARM_OPERATIVE", true)
     }
 
     // 14052B630 -> ProcessString 1412B9CA0 expands the raw authored bytes.
@@ -257,9 +286,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<String, String> {
         let evaluator = self.evaluator()?;
         let selected = evaluator.event_scopes(at)?;
-        match event.deterministic_title_key(|triggers| {
-            evaluator.evaluate(triggers, selected).decided()
-        })? {
+        match event
+            .deterministic_title_key(|triggers| evaluator.evaluate(triggers, selected).decided())?
+        {
             Some(key) => self.localised(key, &[], selected, true),
             None => Ok(String::new()),
         }

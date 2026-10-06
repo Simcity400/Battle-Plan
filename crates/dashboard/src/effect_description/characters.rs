@@ -208,6 +208,19 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         match leader {
             UnitLeader::Direct(row) => self.effect_leader_name(row),
             UnitLeader::Referenced(row) => {
+                // Format 98 retains the referenced role's own +0x40 bytes
+                // (140C16FB0); older recordings may join an exact direct handle.
+                if let replay::rows::Recorded::Value(Some(name)) = &row.name {
+                    return crate::scripted_text::stored_text(
+                        self.context.localisation,
+                        self.context.text.recorded_language(),
+                        name,
+                        &format!(
+                            "character {} referenced unit leader name (+0x40)",
+                            row.character
+                        ),
+                    );
+                }
                 let named = self
                     .character_table::<tables::UnitLeaders>()?
                     .iter()
@@ -217,8 +230,13 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     })
                     .ok_or_else(|| {
                         format!(
-                            "character {} referenced unit leader name (+0x40) is unrecorded",
-                            row.character
+                            "character {} referenced unit leader name (+0x40, 140C16FB0) {}",
+                            row.character,
+                            if matches!(row.name, replay::rows::Recorded::NotRecorded) {
+                                "not recorded"
+                            } else {
+                                "capture unavailable"
+                            }
                         )
                     })?;
                 self.effect_leader_name(named)
@@ -319,27 +337,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(country) = self.country_target(operand, scopes)? else {
             return Ok(String::new());
         };
-        let name = match leader {
-            UnitLeader::Direct(row) => self.effect_leader_name(row)?,
-            UnitLeader::Referenced(row) => {
-                // Referenced roles (+0xC8) do not capture names themselves, but
-                // another character's direct role can record the same handle.
-                let Some(leader) =
-                    self.character_table::<tables::UnitLeaders>()?
-                        .iter()
-                        .find(|leader| {
-                            (u64::from(leader.id) << 32) | u64::from(leader.reference_type)
-                                == row.reference
-                        })
-                else {
-                    return Err(format!(
-                        "character {} referenced army leader name (+0x40) is unrecorded",
-                        row.character
-                    ));
-                };
-                self.effect_leader_name(leader)?
-            }
-        };
+        let name = self.effect_resolved_leader_name(leader)?;
         let country = self.country_name(country, true)?;
         self.localised(
             b"EFFECT_CAPTURE_GENERAL",
@@ -353,8 +351,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     }
 
     // Own 140374C60 gates on ResolveAbilityCaster/category 3 and a positive
-    // country. The valid line also requires ptr_0x1030 140C06040 (CODENAME),
-    // which neither UnitLeaders nor CharacterOperatives records.
+    // country. NAME is +0x40, CODENAME is 140C06040, and NATIONALITY
+    // is ccountry_tag::adjective 140BA5560; only the containing text expands.
     pub(in crate::effect_description) fn character_add_nationality(
         &self,
         item: &Item,
@@ -363,9 +361,66 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(leader) = self.effect_unit_leader(scopes)? else {
             return Ok(String::new());
         };
-        if leader.category() != 3 || self.country_target(item, scopes)?.is_none() {
+        if leader.category() != 3 {
             return Ok(String::new());
         }
-        Err("operative codename (COperativeLeader+0x1030, 140C06040) is unrecorded".into())
+        let Some(country) = self.country_target(item, scopes)? else {
+            return Ok(String::new());
+        };
+        let nationality = self.context.text.country_adjective(country)?;
+        let codename = self.effect_operative_codename(leader)?;
+        let name = self.effect_resolved_leader_name(leader)?;
+        self.char_native_text(
+            b"EFFECT_ADD_NATIONALITY_TO_OPERATIVE",
+            &[
+                ("NAME", Argument::Text(&name)),
+                ("CODENAME", Argument::Text(&codename)),
+                ("NATIONALITY", Argument::Text(&nationality)),
+            ],
+            scopes,
+            true,
+        )
+    }
+
+    // 140C06040 returns the embedded name member's +0x60. Format 98
+    // retains its selected operands; the shared name catalogue implements
+    // 1409B5640/1409B57C0, without selecting or reserving another name.
+    pub(super) fn effect_operative_codename(
+        &self,
+        leader: UnitLeader<'f>,
+    ) -> Result<String, String> {
+        let field = "operative codename (COperativeLeader+0x1030, 140C06040)";
+        let recorded = match leader {
+            UnitLeader::Direct(row) => &row.codename,
+            UnitLeader::Referenced(row) => &row.codename,
+        };
+        let name = recorded
+            .require(field)?
+            .as_ref()
+            .ok_or_else(|| format!("{field} capture unavailable"))?;
+        if name.kind != 2 {
+            return Err(format!("{field} has naming kind {}, expected 2", name.kind));
+        }
+        // The reader retains custom bytes only on the native stored-name
+        // branch, including a programmatic override with a null group.
+        if !name.custom.is_empty() {
+            if name.programmatic != 0 {
+                return crate::scripted_text::stored_text(
+                    self.context.localisation,
+                    self.context.text.recorded_language(),
+                    &name.custom,
+                    field,
+                );
+            }
+            return String::from_utf8(name.custom.clone())
+                .map_err(|_| format!("{field} custom name is not UTF-8"));
+        }
+        let group =
+            std::str::from_utf8(&name.group).map_err(|_| format!("{field} group is not UTF-8"))?;
+        self.character_content()?
+            .name_groups
+            .as_ref()
+            .map_err(Clone::clone)?
+            .name(group, name.order, name.ordered != 0)
     }
 }

@@ -33,7 +33,13 @@ fn fixture() -> (Fixture, Folder) {
                 " EFFECT_SET_LEADER_NATIONALITY:0 \"Nationality $NAME$/$COUNTRYDEF$ [Root.GetTag]\"\n",
                 " EFFECT_RETIRE_CHARACTER:0 \"Retire $NAME$/$COUNTRY$ [Root.GetTag]\"\n",
                 " EFFECT_CAPTURE_GENERAL:0 \"Capture $NAME$/$COUNTRY_NAME_DEF$ [Root.GetTag]\"\n",
+                " BBB_ADJ:0 \"Beta adjective\"\n",
+                " EFFECT_ADD_NATIONALITY_TO_OPERATIVE:0 \"Nationality $NAME$/$CODENAME$/$NATIONALITY$ [Root.GetTag]\"\n",
             ),
+        ),
+        (
+            "common/units/codenames_operatives/test.txt",
+            "synthetic_codes={type=codename unique={\"Nightjar\"}}",
         ),
     ]);
     catalogue
@@ -166,7 +172,10 @@ fn capture_by() {
 fn capture_by_block_reads_country_without_target_leak() {
     let (fixture, _folder) = fixture();
     for (body, expected) in [
-        ("capture_by={country=BBB province=17}", "Capture Army name/beta [Root.GetTag]"),
+        (
+            "capture_by={country=BBB province=17}",
+            "Capture Army name/beta [Root.GetTag]",
+        ),
         ("capture_by={target=BBB province=17}", ""),
     ] {
         let out = fixture.render(body, &mut character_scopes(), Content::default());
@@ -199,7 +208,11 @@ fn country_target_zero_and_state_owner_follow_native_character_gates() {
                 Content::default(),
             );
             assert_eq!(out.text, "", "{key}={selector}");
-            assert!(out.refusals.is_empty(), "{key}={selector}: {:?}", out.refusals);
+            assert!(
+                out.refusals.is_empty(),
+                "{key}={selector}: {:?}",
+                out.refusals
+            );
         }
     }
     if let TableView::Complete(TableRows::UnitLeaders(rows)) =
@@ -229,6 +242,7 @@ fn referenced_leader_uses_matching_recorded_handle_or_refuses_its_missing_name()
                 reference: (5_u64 << 32) | 55,
                 resolved: true,
                 category: 0,
+                name: Recorded::NotRecorded,
                 ..Default::default()
             },
         ]));
@@ -259,7 +273,7 @@ fn referenced_leader_uses_matching_recorded_handle_or_refuses_its_missing_name()
     );
     assert_eq!(out.text, "");
     assert_eq!(out.refusals, BTreeMap::from([(
-        "synthetic effect CCaptureGeneralEffect: key capture_by: character 7 referenced army leader name (+0x40) is unrecorded".to_owned(),
+        "synthetic effect CCaptureGeneralEffect: key capture_by: character 7 referenced unit leader name (+0x40, 140C16FB0) not recorded".to_owned(),
         1
     )]));
 }
@@ -303,6 +317,7 @@ fn valid_operative_refuses_unrecorded_codename_by_class_and_field() {
             id: 5,
             character_id: 7,
             category: 3,
+            codename: Recorded::NotRecorded,
             ..Default::default()
         }]));
     let out = fixture.render(
@@ -311,7 +326,7 @@ fn valid_operative_refuses_unrecorded_codename_by_class_and_field() {
         Content::default(),
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect CAddNationalityToOperativeEffect: key add_nationality: operative codename (COperativeLeader+0x1030, 140C06040) is unrecorded".to_owned(), 1)]));
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect CAddNationalityToOperativeEffect: key add_nationality: operative codename (COperativeLeader+0x1030, 140C06040) not recorded".to_owned(), 1)]));
     let out = fixture.render(
         "capture_by=BBB",
         &mut character_scopes(),
@@ -321,11 +336,88 @@ fn valid_operative_refuses_unrecorded_codename_by_class_and_field() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// common/decisions/_debug_decisions.txt:511. Scope gate only: the graph
-// cannot yet express the authored division scope's UNIT_REFERENCE (+0x70/+0x74),
-// or distinguish a known-absent carried reference from a dropped one.
+// Format-98 registry-only +0x40 is the actual selected role, not another
+// character's display name (140F8A840 -> 1402F8130).
 #[test]
-fn add_history_entry_refuses_missing_graph_reference() {
+fn capture_by_uses_format98_referenced_name_and_capture_status() {
+    let (mut fixture, _folder) = fixture();
+    *fixture.frame.tables[TableId::UnitLeaders.index()] =
+        TableView::Complete(TableRows::UnitLeaders(vec![]));
+    *fixture.frame.tables[TableId::CharacterOperatives.index()] =
+        TableView::Complete(TableRows::CharacterOperatives(vec![
+            CharacterOperativeRow {
+                character: 7,
+                reference: (5_u64 << 32) | 55,
+                resolved: true,
+                category: 1,
+                name: Recorded::Value(Some(b"Referenced general".to_vec())),
+                ..Default::default()
+            },
+        ]));
+    let out = fixture.render(
+        "capture_by=BBB",
+        &mut character_scopes(),
+        Content::default(),
+    );
+    assert_eq!(out.text, "Capture Referenced general/beta [Root.GetTag]");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    if let TableView::Complete(TableRows::CharacterOperatives(rows)) =
+        &mut *fixture.frame.tables[TableId::CharacterOperatives.index()]
+    {
+        rows[0].name = Recorded::Value(None);
+    }
+    let out = fixture.render(
+        "capture_by=BBB",
+        &mut character_scopes(),
+        Content::default(),
+    );
+    assert_eq!(out.text, "");
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect CCaptureGeneralEffect: key capture_by: character 7 referenced unit leader name (+0x40, 140C16FB0) capture unavailable".into(), 1)]));
+}
+
+// common/decisions/_debug_decisions.txt:724, scalar country;
+// NAME/CODENAME/NATIONALITY@140374C60, expanded with no appended LF.
+#[test]
+fn add_nationality_uses_format98_selected_codename() {
+    let (mut fixture, _folder) = fixture();
+    for custom in [Vec::new(), b"Chosen name".to_vec()] {
+        if let TableView::Complete(TableRows::UnitLeaders(rows)) =
+            &mut *fixture.frame.tables[TableId::UnitLeaders.index()]
+        {
+            rows[0].category = 3;
+            rows[0].kind = 3;
+            rows[0].codename = Recorded::Value(Some(NameOperands {
+                kind: 2,
+                order: 0,
+                group: b"synthetic_codes".to_vec(),
+                custom: custom.clone(),
+                ..Default::default()
+            }));
+        }
+        let out = fixture.render(
+            "add_nationality=BBB",
+            &mut character_scopes(),
+            Content::default(),
+        );
+        assert_eq!(
+            out.text,
+            format!(
+                "Nationality Army name/{}/Beta adjective AAA",
+                if custom.is_empty() {
+                    "Nightjar"
+                } else {
+                    "Chosen name"
+                }
+            )
+        );
+        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    }
+}
+
+// common/decisions/_debug_decisions.txt:511. ResolveArmy@140529260
+// is null outside UNIT; the carrier no longer drops this reference.
+#[test]
+fn add_history_entry_is_empty_without_unit_reference() {
     let (fixture, _folder) = fixture();
     let out = fixture.render(
         "add_history_entry={key=synthetic_history subject=\"Custom String\" allow=yes}",
@@ -333,16 +425,13 @@ fn add_history_entry_refuses_missing_graph_reference() {
         Content::default(),
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([(
-        "synthetic effect CAddHistoryEntryEffect: key add_history_entry: CEventScope UNIT_REFERENCE (+0x70/+0x74) is not represented by the event graph (140529260); Divisions records the handles".to_owned(),
-        1
-    )]));
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// common/raids/land_infiltration_custom.txt:218. Missing graph fields are refused; the
-// compatible raid graph (+0x88/+0x8C) and full native line remain unimplemented.
+// common/raids/land_infiltration_custom.txt:218. ResolveRaidInstance
+// 140529460 is null outside RAID; 1404A2FB0 emits only a diagnostic.
 #[test]
-fn add_raid_history_entry_refuses_missing_graph_reference() {
+fn add_raid_history_entry_is_empty_without_raid_reference() {
     let (fixture, _folder) = fixture();
     let out = fixture.render(
         "add_raid_history_entry=yes",
@@ -350,10 +439,7 @@ fn add_raid_history_entry_refuses_missing_graph_reference() {
         Content::default(),
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([(
-        "synthetic effect CAddRaidHistoryEntryEffect@?A0x8a0aef5d@NRaids: key add_raid_history_entry: CEventScope RAID_INSTANCE_REFERENCE (+0x88/+0x8C) is not represented by the event graph (140529460); Raids records the handles".to_owned(),
-        1
-    )]));
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
 #[test]
@@ -484,7 +570,11 @@ fn character_lookup_keeps_country_five_thousand() {
     else {
         unreachable!()
     };
-    stores.push(ScriptVariablesRow { scope_kind: 1, scope_id: 6_000, ..Default::default() });
+    stores.push(ScriptVariablesRow {
+        scope_kind: 1,
+        scope_id: 6_000,
+        ..Default::default()
+    });
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(5_000))]);
     let out = fixture.render(
         "set_nationality={character=synthetic_other target_country=BBB}",

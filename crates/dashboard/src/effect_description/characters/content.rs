@@ -8,6 +8,7 @@ pub(in crate::effect_description) struct CharacterContent {
     pub(super) scientist_traits: Result<installed_content::scientist_traits::ScientistTraits, String>,
     pub(super) factions: Result<installed_content::faction_templates::Catalog, String>,
     pub(super) mio_traits: Result<installed_content::mio_traits::Catalog, String>,
+    pub(in crate::effect_description) name_groups: Result<installed_content::raids::names::Groups, String>,
     pub(in crate::effect_description) notes: Vec<String>,
 }
 
@@ -53,6 +54,11 @@ impl CharacterContent {
         let mio_traits = installed_content::mio_traits::read(layers)
             .inspect(|db| notes.extend(db.warnings.iter().cloned()))
             .map_err(|why| why.to_string());
+        // 1409B8510 loads all naming families into one database, including codenames.
+        // These four common/units/ naming directories differ from name_lists' common/names/.
+        let name_groups = installed_content::raids::names::Groups::read(layers)
+            .inspect(|db| notes.extend(db.warnings.iter().map(|(_, why)| why.clone())))
+            .map_err(|why| why.to_string());
         Self {
             catalogue,
             unit_leaders,
@@ -60,6 +66,7 @@ impl CharacterContent {
             scientist_traits,
             factions,
             mio_traits,
+            name_groups,
             notes,
         }
     }
