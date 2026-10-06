@@ -567,8 +567,18 @@ pub const BODY_GROUPS: [&str; 4] = ["and", "or", "not", "custom_trigger_tooltip"
 /// `tooltip` (0x92) and `not_tooltip` (0x43D0) before LoadKey, so neither
 /// adds a condition, even when content has a trigger with the same name.
 pub fn empty_scalar_groups(place: &str, items: &mut [Item], logged: &mut Vec<String>) {
+    normalise_trigger_body(place, items, logged, false);
+}
+
+pub(crate) fn normalise_trigger_body(
+    place: &str,
+    items: &mut [Item],
+    logged: &mut Vec<String>,
+    tooltip_bindings: bool,
+) {
     for item in items {
         let custom_tooltip = item.keyword_is("custom_trigger_tooltip");
+        let bindings = custom_tooltip || item.keyword_is("custom_override_tooltip");
         let group = item
             .keyword()
             .is_some_and(|keyword| BODY_GROUPS.iter().any(|name| keyword.is(name)));
@@ -582,12 +592,26 @@ pub fn empty_scalar_groups(place: &str, items: &mut [Item], logged: &mut Vec<Str
                 item.value = Value::Block(Vec::new());
             }
             Value::Block(children) => {
-                if custom_tooltip {
+                if custom_tooltip && !tooltip_bindings {
                     children.retain(|child| {
                         !child.keyword_is("tooltip") && !child.keyword_is("not_tooltip")
                     });
                 }
-                empty_scalar_groups(place, children, logged);
+                for child in children {
+                    // 141395B30: localisation argument keys are not triggers.
+                    if tooltip_bindings
+                        && bindings
+                        && (child.keyword_is("tooltip") || child.keyword_is("not_tooltip"))
+                    {
+                        continue;
+                    }
+                    normalise_trigger_body(
+                        place,
+                        std::slice::from_mut(child),
+                        logged,
+                        tooltip_bindings,
+                    );
+                }
             }
             Value::Scalar(_) | Value::Tagged { .. } => {}
         }

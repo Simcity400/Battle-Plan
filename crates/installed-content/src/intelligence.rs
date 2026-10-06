@@ -5,6 +5,7 @@ use crate::{
     ResolvedLayers,
     fields::invalid,
     key_names::KeyNames,
+    modifiers,
     parser::{
         Item,
         native::{self, Field, Shape},
@@ -233,9 +234,469 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Intelligence> {
     Ok(result)
 }
 
+/// COperationToken's name (+0x50) and text icon (+0x70), 140A70B70.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OperationToken {
+    pub token: String,
+    pub name: String,
+    pub icon: String,
+}
+
+#[derive(Default)]
+pub struct OperationTokens {
+    pub definitions: BTreeMap<String, OperationToken>,
+    pub refusals: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl OperationTokens {
+    pub fn token(&self, token: &str) -> Result<Option<&OperationToken>, String> {
+        if self.refusals.is_empty() {
+            Ok(self.definitions.get(&token.to_ascii_lowercase()))
+        } else {
+            Err(format!(
+                "operation token {token}: {}",
+                self.refusals.join("; ")
+            ))
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TokenNode {
+    File,
+    Token,
+}
+
+/// 140166AA0 registers the first token and skips a duplicate body;
+/// 140A70B70 dispatches its fields. The loader uses lexer mode 0.
+pub fn parse_operation_tokens(
+    input: &[u8],
+    names: &KeyNames,
+    earlier: &BTreeSet<String>,
+) -> io::Result<(Vec<OperationToken>, Vec<String>)> {
+    let mut seen = earlier.clone();
+    let read = native::read(
+        input,
+        native::Mode::KeepMark,
+        native::Top::Persistent(TokenNode::File),
+        Some(names),
+        &mut |node, field| match node {
+            TokenNode::File => {
+                if seen.insert(String::from_utf8_lossy(field.key.c_str()).to_ascii_lowercase()) {
+                    Shape::Object(TokenNode::Token)
+                } else {
+                    Shape::Skip
+                }
+            }
+            TokenNode::Token => match field.keyword().as_deref() {
+                Some(
+                    b"name" | b"desc" | b"icon" | b"text_icon" | b"intel_source" | b"intel_gain",
+                ) => Shape::One,
+                Some(b"targeted_modifier") if field.skips_block() => Shape::Unsettled(format!(
+                    "operation token targeted_modifier at line {}: block consumption depends on the static-modifier lookup 140550940 (count: 1)",
+                    field.key.line
+                )),
+                Some(b"targeted_modifier") => Shape::One,
+                _ => Shape::Skip,
+            },
+        },
+    );
+    if let Some(cause) = read.unsettled {
+        return Err(invalid(format!("operation token definitions: {cause}")));
+    }
+    let mut projected = earlier.clone();
+    let mut result = Vec::new();
+    for item in read.items {
+        let Some(fields) = item.value.items() else {
+            continue;
+        };
+        let token = token(&item)?;
+        if !projected.insert(token.to_ascii_lowercase()) {
+            continue;
+        }
+        let mut definition = OperationToken {
+            token,
+            ..OperationToken::default()
+        };
+        for field in fields {
+            if field.keyword_is("name") {
+                definition.name = string(field)?;
+            } else if field.keyword_is("text_icon") {
+                definition.icon = string(field)?;
+            }
+        }
+        result.push(definition);
+    }
+    Ok((
+        result,
+        read.misreads
+            .into_iter()
+            .map(|why| why.to_string())
+            .collect(),
+    ))
+}
+
+pub fn read_operation_tokens(layers: &ResolvedLayers) -> io::Result<OperationTokens> {
+    let names = layers.key_names()?;
+    let mut result = OperationTokens::default();
+    let mut earlier = BTreeSet::new();
+    for path in script_files::paths(layers, "common/operation_tokens/", Some(".txt")) {
+        match parse_operation_tokens(&layers.read(&path)?, &names, &earlier) {
+            Ok((definitions, warnings)) => {
+                result
+                    .warnings
+                    .extend(warnings.into_iter().map(|why| format!("{path}: {why}")));
+                for definition in definitions {
+                    let key = definition.token.to_ascii_lowercase();
+                    earlier.insert(key.clone());
+                    result.definitions.entry(key).or_insert(definition);
+                }
+            }
+            Err(why) => result.refusals.push(format!("{path}: {why}")),
+        }
+    }
+    result.warnings.extend(result.refusals.iter().cloned());
+    Ok(result)
+}
+
+/// CAgencyUpgrade's authored identifier (+0x18), constructed by 140615D50;
+/// 140616BC0 localises it. Its reader 1406188D0 has no name override.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgencyUpgrade {
+    pub token: String,
+    pub name: String,
+}
+
+#[derive(Default)]
+pub struct AgencyUpgrades {
+    pub definitions: BTreeMap<String, AgencyUpgrade>,
+    pub refusals: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl AgencyUpgrades {
+    pub fn upgrade(&self, token: &str) -> Result<Option<&AgencyUpgrade>, String> {
+        if self.refusals.is_empty() {
+            Ok(self.definitions.get(&token.to_ascii_lowercase()))
+        } else {
+            Err(format!(
+                "agency upgrade {token}: {}",
+                self.refusals.join("; ")
+            ))
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum UpgradeNode {
+    File,
+    Branch,
+    Upgrade,
+    Level,
+    Mtth,
+    Modifier(modifiers::Node),
+}
+
+type UpgradeBranches = Vec<(String, Vec<AgencyUpgrade>)>;
+
+/// 140617860 loads branches until EOF. 140618C40 reconstructs a repeated
+/// upgrade in the same branch; the loader keeps the first global pointer.
+fn parse_agency_upgrades(
+    input: &[u8],
+    names: &KeyNames,
+) -> io::Result<(UpgradeBranches, Vec<String>)> {
+    let mut undecided = Vec::new();
+    let registry = &|key: &[u8]| modifiers::registered(key, Some(names));
+    let read = native::read(
+        input,
+        native::Mode::KeepMark,
+        native::Top::File(UpgradeNode::File),
+        Some(names),
+        &mut |node, field| match node {
+            UpgradeNode::File => Shape::Object(UpgradeNode::Branch),
+            UpgradeNode::Branch => Shape::Object(UpgradeNode::Upgrade),
+            // CAgencyUpgrade::vf4 1406188D0.
+            UpgradeNode::Upgrade => match field.keyword().as_deref() {
+                Some(b"frame" | b"picture" | b"sound") => Shape::One,
+                Some(b"available" | b"visible") => Shape::Trigger,
+                Some(b"ai_will_do") => Shape::Object(UpgradeNode::Mtth),
+                Some(b"modifiers_during_progress") => {
+                    Shape::Object(UpgradeNode::Modifier(modifiers::Node::Modifier))
+                }
+                Some(b"level") => Shape::Object(UpgradeNode::Level),
+                _ => Shape::Skip,
+            },
+            // CUpgradeLevel::vf4 140618F90.
+            UpgradeNode::Level => match field.keyword().as_deref() {
+                Some(b"modifier") => {
+                    Shape::Object(UpgradeNode::Modifier(modifiers::Node::Modifier))
+                }
+                Some(b"complete_effect") => Shape::EffectIn(4),
+                _ => Shape::Skip,
+            },
+            UpgradeNode::Mtth => native::mean_time_to_happen(field),
+            UpgradeNode::Modifier(node) => {
+                modifiers::shape(node, field, registry, &mut undecided).map(UpgradeNode::Modifier)
+            }
+        },
+    );
+    if let Some(cause) = read.unsettled {
+        return Err(invalid(format!(
+            "agency upgrade definitions: {cause} (count: 1)"
+        )));
+    }
+    if !undecided.is_empty() {
+        return Err(invalid(format!(
+            "agency upgrade definitions: {} (count: {})",
+            undecided
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; "),
+            undecided.len()
+        )));
+    }
+    let mut result = Vec::new();
+    for item in read.items {
+        let Some(fields) = item.value.items() else {
+            continue;
+        };
+        let branch = token(&item)?;
+        let mut upgrades = Vec::new();
+        for field in fields {
+            let token = token(field)?;
+            upgrades.push(AgencyUpgrade {
+                name: token.clone(),
+                token,
+            });
+        }
+        result.push((branch, upgrades));
+    }
+    Ok((
+        result,
+        read.misreads
+            .into_iter()
+            .map(|why| why.to_string())
+            .collect(),
+    ))
+}
+
+pub fn read_agency_upgrades(layers: &ResolvedLayers) -> io::Result<AgencyUpgrades> {
+    let names = layers.key_names()?;
+    let mut result = AgencyUpgrades::default();
+    let mut owners = BTreeMap::new();
+    for path in script_files::paths(layers, "common/intelligence_agency_upgrades/", Some(".txt")) {
+        match parse_agency_upgrades(&layers.read(&path)?, &names) {
+            Ok((branches, warnings)) => {
+                result
+                    .warnings
+                    .extend(warnings.into_iter().map(|why| format!("{path}: {why}")));
+                for (branch, upgrades) in branches {
+                    let branch = branch.to_ascii_lowercase();
+                    for upgrade in upgrades {
+                        let key = upgrade.token.to_ascii_lowercase();
+                        let owner = owners.entry(key.clone()).or_insert_with(|| branch.clone());
+                        if owner == &branch {
+                            result.definitions.insert(key, upgrade);
+                        }
+                    }
+                }
+            }
+            Err(why) => result.refusals.push(format!("{path}: {why}")),
+        }
+    }
+    result.warnings.extend(result.refusals.iter().cloned());
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn intelligence_operation_token_name_text_icon_and_duplicate_skip() {
+        let (definitions, warnings) = parse_operation_tokens(
+            br#"
+            @name=MOD_NAME
+            custom={name=@name icon=wrong text_icon=MOD_ICON desc=MOD_DESC intel_source=army intel_gain=10}
+            CUSTOM={name=LATER @leaked=wrong}
+            second={name=@leaked text_icon=SECOND}
+            "#,
+            &KeyNames::default(),
+            &BTreeSet::new(),
+        ).unwrap();
+        assert_eq!(
+            definitions,
+            [
+                OperationToken {
+                    token: "custom".into(),
+                    name: "MOD_NAME".into(),
+                    icon: "MOD_ICON".into()
+                },
+                OperationToken {
+                    token: "second".into(),
+                    name: "@leaked".into(),
+                    icon: "SECOND".into()
+                }
+            ]
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let (definitions, _) = parse_operation_tokens(
+            b"CUSTOM={name=ignored} empty={} } later={name=ignored}",
+            &KeyNames::default(),
+            &BTreeSet::from(["custom".into()]),
+        )
+        .unwrap();
+        assert_eq!(
+            definitions,
+            [OperationToken {
+                token: "empty".into(),
+                ..OperationToken::default()
+            }]
+        );
+        let why = parse_operation_tokens(
+            b"custom={targeted_modifier={name=unknown}}",
+            &KeyNames::default(),
+            &BTreeSet::new(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(why.contains("targeted_modifier") && why.contains("count: 1"));
+    }
+
+    #[test]
+    fn intelligence_agency_upgrade_native_readers_and_identifier_name() {
+        let (branches, warnings) = parse_agency_upgrades(
+            br#"
+            branch={
+                custom={name=ignored picture=custom_art frame=custom_frame sound=custom_sound
+                    available={always=yes} visible={always=yes}
+                    ai_will_do={factor=1 modifier={factor=2 always=yes}}
+                    modifiers_during_progress={political_power_factor=0.1}
+                    level={modifier={political_power_factor=0.2} complete_effect={log=debug}}
+                }
+                CUSTOM={picture=other}
+            }
+        "#,
+            &KeyNames::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            branches,
+            [(
+                "branch".into(),
+                vec![
+                    AgencyUpgrade {
+                        token: "custom".into(),
+                        name: "custom".into()
+                    },
+                    AgencyUpgrade {
+                        token: "CUSTOM".into(),
+                        name: "CUSTOM".into()
+                    }
+                ]
+            )]
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn intelligence_token_upgrade_layers_first_global_pointer_and_replace_path() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_intelligence_domains_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let base = root.join("base");
+        let over = root.join("over");
+        for folder in [&base, &over] {
+            std::fs::create_dir_all(folder.join("common/operation_tokens")).unwrap();
+            std::fs::create_dir_all(folder.join("common/intelligence_agency_upgrades")).unwrap();
+        }
+        std::fs::write(
+            base.join("common/operation_tokens/a.txt"),
+            b"custom={name=BASE text_icon=BASE_ICON}",
+        )
+        .unwrap();
+        std::fs::write(
+            over.join("common/operation_tokens/b.txt"),
+            b"custom={name=ignored text_icon=ignored} second={name=MOD text_icon=MOD_ICON}",
+        )
+        .unwrap();
+        std::fs::write(
+            base.join("common/intelligence_agency_upgrades/a.txt"),
+            b"branch={custom={}} discarded={removed={}}",
+        )
+        .unwrap();
+        std::fs::write(
+            over.join("common/intelligence_agency_upgrades/b.txt"),
+            b"other={CUSTOM={}} BRANCH={Custom={}} ",
+        )
+        .unwrap();
+        let stack =
+            ResolvedLayers::from_test_common_folders(&[(&base, &[]), (&over, &[])]).unwrap();
+        assert_eq!(
+            read_operation_tokens(&stack)
+                .unwrap()
+                .token("CUSTOM")
+                .unwrap()
+                .unwrap()
+                .name,
+            "BASE"
+        );
+        assert_eq!(
+            read_agency_upgrades(&stack)
+                .unwrap()
+                .upgrade("CUSTOM")
+                .unwrap()
+                .unwrap()
+                .name,
+            "Custom"
+        );
+        let replaced = ResolvedLayers::from_test_common_folders(&[
+            (&base, &[]),
+            (
+                &over,
+                &[
+                    "common/operation_tokens",
+                    "common/intelligence_agency_upgrades",
+                ],
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            read_operation_tokens(&replaced)
+                .unwrap()
+                .token("custom")
+                .unwrap()
+                .unwrap()
+                .name,
+            "ignored"
+        );
+        let upgrades = read_agency_upgrades(&replaced).unwrap();
+        assert_eq!(upgrades.upgrade("custom").unwrap().unwrap().name, "CUSTOM");
+        assert!(upgrades.upgrade("removed").unwrap().is_none());
+        std::fs::write(
+            over.join("common/operation_tokens/c.txt"),
+            b"unknown={targeted_modifier={unknown=yes}}",
+        )
+        .unwrap();
+        let refused =
+            ResolvedLayers::from_test_common_folders(&[(&base, &[]), (&over, &[])]).unwrap();
+        let why = read_operation_tokens(&refused)
+            .unwrap()
+            .token("custom")
+            .unwrap_err();
+        assert!(why.contains("c.txt") && why.contains("count: 1"));
+        let cleanup_root = std::fs::canonicalize(root).unwrap();
+        let cleanup_parent = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        assert_eq!(cleanup_root.parent(), Some(cleanup_parent.as_path()));
+        std::fs::remove_dir_all(cleanup_root).unwrap();
+    }
 
     #[test]
     fn intelligence_operation_names_art_variables_and_native_duplicate_skip() {

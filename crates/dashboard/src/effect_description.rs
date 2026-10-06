@@ -40,7 +40,7 @@ mod events;
 mod lists;
 mod modifiers;
 mod numeric;
-mod politics {}
+mod politics;
 mod scopes;
 mod states;
 mod technology;
@@ -72,6 +72,7 @@ pub struct Content<'a> {
 
 /// Per recorded content stack. Event bodies use the caller's lazy ID cache.
 pub struct CachedContent {
+    politics: politics::PoliticsContent,
     doctrines: Option<installed_content::doctrines::Database>,
     decisions: Option<installed_content::decisions::Database>,
     ideas: Option<installed_content::ideas::IdeaContent>,
@@ -122,7 +123,10 @@ impl CachedContent {
             "effect key names",
             &mut gaps,
         );
+        let politics = politics::PoliticsContent::read(layers);
+        notes.extend(politics.notes.iter().cloned());
         Ok(Self {
+            politics,
             doctrines,
             decisions,
             ideas,

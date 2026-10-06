@@ -98,6 +98,60 @@ fn name_key(
 }
 
 impl Renderer<'_, '_, '_> {
+    // 140373020: +0x118 distinguishes authored definitions from the null sentinel
+    // (140716650 / 140716C90); it is not an active-decision timer guard.
+    pub(super) fn decision_remove_days(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let fields = children(item);
+        let id = field(fields, "decision")
+            .and_then(|item| item.value.read_string())
+            .unwrap_or_default();
+        let database = self
+            .context
+            .content
+            .decisions
+            .ok_or("decision content is unread (140373020)")?;
+        let Some(definition) = database.decision(id)? else {
+            return Ok(String::new());
+        };
+        let name = self.decision_title(definition, scopes)?;
+        // ReadEffect 1403AED20 uses ReadScriptSignedInt32 1424AB970. A failed
+        // scan leaves the field unchanged. 140373082 negates it in both branches.
+        let days = fields
+            .iter()
+            .filter(|item| item.keyword_is("days"))
+            .filter_map(|item| {
+                item.value
+                    .scalar()
+                    .and_then(|value| installed_content::crt::scan_i32(value).stored())
+            })
+            .next_back()
+            .unwrap_or(0);
+        self.line(
+            if days < 0 {
+                b"REMOVE_DAYS_TO_DECISION" // 14275E688.
+            } else {
+                b"ADD_DAYS_TO_DECISION" // 14275E6A0.
+            },
+            &[
+                ("DAYS", Argument::Int32(days.wrapping_neg())), // 14275179C.
+                ("DECISION", Argument::Text(&name)),            // 14275E678.
+            ],
+            scopes,
+            true,
+        )
+    }
+
+    // GetLocalizedNameForScope 140720B40 selects the stored alternate/base key,
+    // then 140721730's country ladder. It expands in the supplied scope unchanged.
+    fn decision_title(&self, definition: &Decision, scopes: Scopes) -> Result<String, String> {
+        let label_key = self.decision_name_key(definition, self.current_country(scopes)?)?;
+        self.localised(label_key.as_bytes(), &[], scopes, true)
+    }
+
     pub(super) fn custom_tooltip(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         // 1413832B0
         let key = item
@@ -213,8 +267,7 @@ impl Renderer<'_, '_, '_> {
             return Err(why.clone());
         }
         let title_scope = self.decision_title_scope(definition, row, owner)?;
-        let label_key = self.decision_name_key(definition, owner)?;
-        let name = self.localised(label_key.as_bytes(), &[], title_scope, true)?;
+        let name = self.decision_title(definition, title_scope)?;
         let mut text = self.localised(
             b"EFFECT_REMOVE_TARGETED_DECISION",
             &[("NAME", Argument::Text(&name))],
@@ -487,5 +540,126 @@ impl Renderer<'_, '_, '_> {
         let index = random::scoped_draw(scope.random_seed, scope.random_counter) as usize
             % candidates.len();
         Ok(candidates.into_iter().nth(index))
+    }
+}
+
+#[cfg(test)]
+mod politics_days {
+    use super::*;
+    use crate::{catalogue::tests::folder_catalogue, effect_description::tests::Fixture};
+    use replay::{
+        frame::TableView,
+        rows::{PoliticalPartyRow, PoliticsRow, TableId, TableRows},
+    };
+
+    #[test]
+    fn remove_days_uses_caller_title_scope_and_negates_each_branch_without_instance_reads() {
+        let mut fixture = Fixture::new();
+        let (catalogue, _folder) = folder_catalogue(&[
+            (
+                "common/defines/test.lua",
+                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            ),
+            (
+                "localisation/test_l_english.yml",
+                concat!(
+                    "\u{feff}l_english:\n",
+                    " AAA:0 \"Alpha\"\n BBB:0 \"Beta\"\n CCC:0 \"Gamma\"\n",
+                    " ADD_DAYS_TO_DECISION:0 \"Add $DAYS|H$ to $DECISION|H$ in [Root.GetTag]\"\n",
+                    " REMOVE_DAYS_TO_DECISION:0 \"Remove $DAYS|H$ from $DECISION|H$ in [Root.GetTag]\"\n",
+                    " SYN_DECISION:0 \"Wrong base\"\n",
+                    " SYN_TITLE:0 \"Wrong fallback\"\n",
+                    " AAA_SYN_TITLE_group:0 \"Mission [From.GetTag]/[Prev.GetTag]/[Root.GetTag]\"\n"
+                ),
+            ),
+        ]);
+        catalogue
+            .scripted_content()
+            .unwrap()
+            .set_synthetic_environment(Default::default());
+        fixture.catalogue = catalogue;
+        *fixture.frame.tables[TableId::Politics.index()] =
+            TableView::Complete(TableRows::Politics(vec![PoliticsRow {
+                country: 100,
+                ruling_party: Some(7),
+                ..Default::default()
+            }]));
+        *fixture.frame.tables[TableId::PoliticalParties.index()] =
+            TableView::Complete(TableRows::PoliticalParties(vec![PoliticalPartyRow {
+                country: 100,
+                id: 7,
+                token: b"group".to_vec(),
+                ..Default::default()
+            }]));
+        for table in [TableId::Clock, TableId::Decisions] {
+            *fixture.frame.tables[table.index()] = TableView::Unavailable {
+                reason: "unused decision execution data".into(),
+            };
+        }
+        let mut database = installed_content::decisions::Database::default();
+        database.entries.insert(
+            b"syn_decision".to_vec(),
+            Decision {
+                id: b"SYN_DECISION".to_vec(),
+                name: b"SYN_TITLE".to_vec(),
+                ..Default::default()
+            },
+        );
+        let mut caller = EventScope::of(EventObject::Country(1));
+        caller.root = Link::Scope(1);
+        caller.from = Link::Scope(2);
+        caller.random_seed = 123;
+        caller.random_counter = 456;
+        let mut scopes = EventScopes::new(vec![
+            caller,
+            EventScope::of(EventObject::Country(3)),
+            EventScope::of(EventObject::Country(2)),
+        ]);
+        for (days, expected) in [
+            (
+                "-60",
+                "Remove \u{11}H60\u{11}! from \u{11}HMission BBB/AAA/CCC\u{11}! in CCC\n",
+            ),
+            (
+                "60",
+                "Add \u{11}H-60\u{11}! to \u{11}HMission BBB/AAA/CCC\u{11}! in CCC\n",
+            ),
+            (
+                "0",
+                "Add \u{11}H0\u{11}! to \u{11}HMission BBB/AAA/CCC\u{11}! in CCC\n",
+            ),
+            (
+                "-2147483648",
+                "Remove \u{11}H-2147483648\u{11}! from \u{11}HMission BBB/AAA/CCC\u{11}! in CCC\n",
+            ),
+            (
+                "-074 days = invalid",
+                "Remove \u{11}H60\u{11}! from \u{11}HMission BBB/AAA/CCC\u{11}! in CCC\n",
+            ),
+        ] {
+            // BUL.txt:9289's reached decision/days block, using a synthetic id.
+            let output = fixture.render(
+                &format!("add_days_remove = {{ decision = SYN_DECISION days = {days} }}"),
+                &mut scopes,
+                Content {
+                    decisions: Some(&database),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(output.text, expected, "days={days}");
+            assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+            assert_eq!(scopes.scopes[0], caller);
+            assert_eq!(scopes.scopes.len(), 3);
+        }
+        let absent = fixture.render(
+            "add_days_remove = { decision = ABSENT days = -60 }",
+            &mut scopes,
+            Content {
+                decisions: Some(&database),
+                ..Default::default()
+            },
+        );
+        assert_eq!(absent.text, "");
+        assert!(absent.refusals.is_empty());
     }
 }

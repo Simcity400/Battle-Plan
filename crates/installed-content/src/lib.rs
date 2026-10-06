@@ -71,6 +71,7 @@ pub mod states;
 pub mod static_modifiers;
 pub mod tag_aliases;
 pub mod technology;
+pub mod technology_sharing;
 pub mod terrain;
 pub mod tokens;
 pub mod train_gfx;

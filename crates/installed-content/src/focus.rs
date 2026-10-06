@@ -407,10 +407,24 @@ pub fn point_days(layers: &ResolvedLayers) -> io::Result<Option<f64>> {
 
 /// Reader diagnostics with severity retained from their creation sites.
 pub fn read(layers: &ResolvedLayers) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
+    read_databases(layers, true)
+}
+
+/// CNationalFocusDatabase lookup (1402D1D60) never reads the separate
+/// continuous-focus database (1406B6140).
+pub fn read_national(layers: &ResolvedLayers) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
+    read_databases(layers, false)
+}
+
+fn read_databases(
+    layers: &ResolvedLayers,
+    continuous: bool,
+) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
     let mut paths = layers
         .paths()
         .filter(|p| {
-            (p.starts_with("common/national_focus/") || p.starts_with("common/continuous_focus/"))
+            (p.starts_with("common/national_focus/")
+                || continuous && p.starts_with("common/continuous_focus/"))
                 && p.ends_with(".txt")
         })
         .map(|p| (layers.layer_index(p).unwrap_or(0), p.to_owned()))
@@ -455,6 +469,28 @@ mod tests {
         super::parse(input, database, names)
             .map(|(definitions, _)| definitions)
             .map_err(|(_, error)| error)
+    }
+
+    #[test]
+    fn national_lookup_excludes_continuous_database() -> io::Result<()> {
+        let root =
+            std::env::temp_dir().join(format!("national-focus-names-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("common/national_focus"))?;
+        std::fs::create_dir_all(root.join("common/continuous_focus"))?;
+        std::fs::write(
+            root.join("common/national_focus/names.txt"),
+            b"focus_tree={focus={id=SYN_FOCUS text=SYN_NATIONAL}}",
+        )?;
+        std::fs::write(
+            root.join("common/continuous_focus/names.txt"),
+            b"continuous_focus_palette={focus={id=SYN_FOCUS text=SYN_CONTINUOUS}}",
+        )?;
+        let layers = ResolvedLayers::from_folders(&[(&root, &[])])?;
+        let (definitions, warnings) = read_national(&layers)?;
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(definitions["SYN_FOCUS"].localisation, "SYN_NATIONAL");
+        std::fs::remove_dir_all(root)?;
+        Ok(())
     }
 
     #[test]

@@ -576,6 +576,10 @@ impl<'a> ScriptedText<'a> {
         self.frame
     }
 
+    pub(crate) fn content(&self) -> &'a ScriptedContent {
+        self.content
+    }
+
     #[cfg(test)]
     pub(crate) fn set_synthetic_world(&self, world: crate::triggers::World<'a>) {
         assert!(self.world.set(Ok(world)).is_ok());
