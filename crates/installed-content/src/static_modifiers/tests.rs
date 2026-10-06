@@ -6,16 +6,35 @@ fn descriptions_cache_native_lookup_precedence_absence_and_refusals() {
     let descriptions = Descriptions::default();
     let mut names = KeyNames::default();
     names.effects.modifiers.insert(b"attack".to_vec());
-    assert!(descriptions.files.set(Ok((names, vec![
-        ("a.txt".into(), read_file(b"SYN={attack=0.1} RENAMED={key=other}", None)),
-        ("b.txt".into(), read_file(b"SYN={attack=0.2}", None)),
-    ]))).is_ok());
+    assert!(
+        descriptions
+            .files
+            .set(Ok((
+                names,
+                vec![
+                    (
+                        "a.txt".into(),
+                        read_file(b"SYN={attack=0.1} RENAMED={key=other}", None)
+                    ),
+                    ("b.txt".into(), read_file(b"SYN={attack=0.2}", None)),
+                ]
+            )))
+            .is_ok()
+    );
     let layers = ResolvedLayers::from_folders(&[]).unwrap();
     let (name, block) = descriptions.get(&layers, "SYN").unwrap();
     assert_eq!(name.as_deref(), Some("SYN"));
     assert_eq!(block.values[0].value, 20_000);
-    assert_eq!(descriptions.get(&layers, "missing").unwrap(), (None, modifiers::Modifiers::default()));
-    assert!(descriptions.get(&layers, "RENAMED").unwrap_err().contains("renames"));
+    assert_eq!(
+        descriptions.get(&layers, "missing").unwrap(),
+        (None, modifiers::Modifiers::default())
+    );
+    assert!(
+        descriptions
+            .get(&layers, "RENAMED")
+            .unwrap_err()
+            .contains("renames")
+    );
     assert_eq!(descriptions.get(&layers, "SYN").unwrap().1, block);
     assert_eq!(descriptions.values.borrow().len(), 3);
 }
@@ -24,15 +43,30 @@ fn descriptions_cache_native_lookup_precedence_absence_and_refusals() {
 fn description_registry_omits_unknown_values_and_refuses_uncertain_tokens() {
     let names = KeyNames::default();
     let registry = |key: &[u8]| modifiers::registered(key, Some(&names));
-    let file = read_file_with_registry(b"SYN={army_attack_factor=1 unknown=2 unknown_block={nested=3}}", Some(&names), &registry);
+    let file = read_file_with_registry(
+        b"SYN={army_attack_factor=1 unknown=2 unknown_block={nested=3}}",
+        Some(&names),
+        &registry,
+    );
     assert!(file.stop.is_none());
     let mut block = stored_block(file.definitions[0].value.items().unwrap()).unwrap();
     description_values(&mut block, &names).unwrap();
-    assert_eq!(block.values.iter().map(|value| value.name.as_str()).collect::<Vec<_>>(), ["army_attack_factor"]);
+    assert_eq!(
+        block
+            .values
+            .iter()
+            .map(|value| value.name.as_str())
+            .collect::<Vec<_>>(),
+        ["army_attack_factor"]
+    );
     let mut names = names;
     names.effects.modifiers_gap = Some("synthetic unread registry".into());
     let mut block = modifiers::values(&parser::parse(b"unknown=2").unwrap().items);
-    assert!(description_values(&mut block, &names).unwrap_err().contains("registry is unavailable"));
+    assert!(
+        description_values(&mut block, &names)
+            .unwrap_err()
+            .contains("registry is unavailable")
+    );
 }
 
 #[test]
