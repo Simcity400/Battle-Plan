@@ -11,7 +11,7 @@
 //! their own daily read date and never replace the screen's recorded +0xE4.
 
 use super::{
-    LoadContext, Product,
+    LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
     country_groups::HourSpan,
     country_history::{Identity, observe_identity, unique_by_slot},
     validate_tag,
@@ -19,7 +19,9 @@ use super::{
 use crate::{
     Source,
     catalogue::plain_text,
-    metadata::{TaggedCountry, link_slot, slot_read, tagged_countries, validate_campaign},
+    metadata::{
+        IdentityTrack, TaggedCountry, link_slot, slot_read, tagged_countries, validate_campaign,
+    },
 };
 use replay::{
     container::Replay,
@@ -39,10 +41,7 @@ use ts_rs::TS;
 
 pub struct AgencyComparison;
 
-const MAX_SCAN_ENTRIES: usize = 1_000_000;
-const MAX_SCAN_BYTES: usize = 128 * 1024 * 1024;
-/// Leaves room for the lease envelope inside the complete-response limit.
-const MAX_REPLY_BYTES: usize = 24 * 1024 * 1024;
+const CACHED_BRANCHES: usize = 2;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
@@ -73,18 +72,37 @@ pub struct AgencyComparisonParams {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AgencyUpgradeItem {
+    /// This read's array position, preserving repeated definitions and all levels
+    /// as Save140FCA0F0 writes the native +0x60/+0x6C entries.
+    pub ordinal: u32,
+    pub definition_pointer: String,
+    pub branch_pointer: String,
     /// CAgencyUpgrade+0x260 owns the branch; branch+8 and definition+8 are
-    /// separate lexical tokens (140618C40, 140FCA0F0). A token alone is ambiguous.
-    pub branch_token: String,
-    pub token: String,
+    /// separate lexical tokens (140615D50, 140618C40, 140FCA0F0). A token alone is ambiguous.
+    pub branch_token: Option<String>,
+    pub token: Option<String>,
+    /// Raw lexical IDs survive a missing recorded token-name dictionary.
+    pub branch_token_id: Option<u32>,
+    pub token_id: Option<u32>,
+    pub level: i32,
+    /// Capture authentication status; refused entries retain their raw values.
+    pub identity_status: u8,
+    pub identity_refusal: Option<String>,
     pub name: Option<String>,
+    pub content_reason: Option<String>,
     pub icon: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AgencyUpgrades {
-    pub count: Option<i32>,
+    pub read_hour: Option<i32>,
+    /// A failed or incomplete acquired-list read is distinct from absent capture.
+    pub unavailable: Option<String>,
+    /// Mathematical sum of max(0, signed level), unknown for an incomplete or
+    /// unauthenticated list. The nonnegative term comes from 140FC2B80; this
+    /// inventory sum omits its created gate, i32 wrapping, base and slot formula.
+    pub nonnegative_level_sum: Option<String>,
     pub items: Vec<AgencyUpgradeItem>,
 }
 
@@ -94,7 +112,9 @@ pub struct AgencyUpgrades {
 /// A follow-up capture wires that table here, with its content names and icons.
 fn upgrades_at_read(_row: &AgencyProjection) -> AgencyUpgrades {
     AgencyUpgrades {
-        count: None,
+        read_hour: None,
+        unavailable: None,
+        nonnegative_level_sum: None,
         items: Vec::new(),
     }
 }
@@ -223,7 +243,7 @@ struct RawEntry {
 struct Track {
     entries: Vec<RawEntry>,
     segments: Vec<HourSpan>,
-    last_identity: Option<(Identity, i32)>,
+    last_identity: IdentityTrack,
     last_value: Option<(Identity, i32)>,
     roster: Option<(Identity, i32, u32)>,
     rosters: Vec<AgencyRosterRun>,
@@ -235,8 +255,6 @@ struct ScannedAgencies {
     available: bool,
     observed: Vec<HourSpan>,
     operative_read_hours: Vec<i32>,
-    entries: usize,
-    bytes: usize,
     unresolved_rows: usize,
     untext_tags: usize,
     unsupported_rosters: BTreeMap<u8, usize>,
@@ -244,17 +262,10 @@ struct ScannedAgencies {
 }
 
 impl ScannedAgencies {
-    fn note_roster_read(&mut self, hour: i32) -> io::Result<()> {
+    fn note_roster_read(&mut self, hour: i32) {
         if self.operative_read_hours.last() != Some(&hour) {
             self.operative_read_hours.push(hour);
-            self.bytes += std::mem::size_of::<i32>();
-            if self.bytes > MAX_SCAN_BYTES {
-                return Err(io::Error::other(
-                    "Agency comparison history exceeds its memory budget; no countries were omitted.",
-                ));
-            }
         }
-        Ok(())
     }
 
     fn observe(
@@ -264,7 +275,7 @@ impl ScannedAgencies {
         identity: Identity,
         row: Option<&IntelligenceAgencyRow>,
         roster: Option<Option<u32>>,
-    ) -> io::Result<()> {
+    ) {
         // Avoid allocating the owned tag on every country-hour.
         let track = match self.tracks.get_mut(tag) {
             Some(track) => track,
@@ -276,13 +287,7 @@ impl ScannedAgencies {
             identity,
             hour,
         ) {
-            self.bytes += tag.len() + std::mem::size_of::<HourSpan>();
             track.roster = None;
-        }
-        if self.bytes > MAX_SCAN_BYTES {
-            return Err(io::Error::other(
-                "Agency comparison history exceeds its memory budget; no countries were omitted.",
-            ));
         }
         let previous_roster = track.roster;
         match roster {
@@ -301,22 +306,16 @@ impl ScannedAgencies {
             if follows {
                 track.rosters.last_mut().expect("previous roster").last_hour = hour;
             } else {
-                self.bytes += std::mem::size_of::<AgencyRosterRun>();
                 track.rosters.push(AgencyRosterRun {
                     first_hour: hour,
                     last_hour: hour,
                     count,
                 });
             }
-            if self.bytes > MAX_SCAN_BYTES {
-                return Err(io::Error::other(
-                    "Agency comparison history exceeds its memory budget; no countries were omitted.",
-                ));
-            }
         }
         let Some(row) = row else {
             track.last_value = None;
-            return Ok(());
+            return;
         };
         let follows = track
             .last_value
@@ -329,14 +328,7 @@ impl ScannedAgencies {
         if equal {
             track.entries.last_mut().expect("previous value").last_hour = hour;
         } else {
-            self.entries += 1;
             let row = AgencyProjection::from(row);
-            self.bytes += std::mem::size_of::<RawEntry>() + row.name.len();
-            if self.entries > MAX_SCAN_ENTRIES || self.bytes > MAX_SCAN_BYTES {
-                return Err(io::Error::other(
-                    "Agency comparison history exceeds its memory budget; no countries were omitted.",
-                ));
-            }
             track.entries.push(RawEntry {
                 first_hour: hour,
                 last_hour: hour,
@@ -345,7 +337,6 @@ impl ScannedAgencies {
             });
         }
         track.last_value = Some((identity, hour));
-        Ok(())
     }
 }
 
@@ -422,7 +413,7 @@ fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan
                 slot_read(&decoded.metrics, TableId::OperativeMemberships, frame.hour);
             let memberships = decoded.complete::<tables::OperativeMemberships>().ok();
             if roster_read && memberships.is_some() {
-                scanned.note_roster_read(frame.hour)?;
+                scanned.note_roster_read(frame.hour);
             }
             let (Ok(countries), Ok(links)) = (
                 decoded.complete::<tables::Countries>(),
@@ -480,7 +471,7 @@ fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan
                     (slot, country.id),
                     by_slot.rows.get(&slot).copied().flatten(),
                     count,
-                )?;
+                );
             }
         }
     }
@@ -555,7 +546,7 @@ fn scanned_branch(
     }
     let result = Arc::new(scan(&source.replay(), branch, cancelled)?);
     scans.entries.push_back((branch, Arc::clone(&result)));
-    while scans.entries.len() > 2 {
+    while scans.entries.len() > CACHED_BRANCHES {
         scans.entries.pop_front();
     }
     Ok(result)
@@ -599,7 +590,6 @@ fn requested_series(
         })
         .transpose()?;
     let mut result = Vec::new();
-    let mut bytes = 0;
     // GetAgency141A7B350 resolves the content default only for uncreated agencies.
     let default_name = std::cell::LazyCell::new(default);
     let mut defense_texts = HashMap::new();
@@ -616,7 +606,6 @@ fn requested_series(
             membership,
             entries: Vec::new(),
         };
-        bytes += measured(&series)?;
         let mut append = |entry: &&RawEntry, first_hour, last_hour| -> io::Result<()> {
             let item = AgencyEntry {
                 first_hour,
@@ -633,12 +622,6 @@ fn requested_series(
                     },
                 ),
             };
-            bytes += measured(&item)? + 1;
-            if bytes > MAX_REPLY_BYTES {
-                return Err(io::Error::other(
-                    "These countries' agency history exceeds one reply's budget; choose fewer countries or top N. No countries were omitted.",
-                ));
-            }
             series.entries.push(item);
             Ok(())
         };
@@ -661,7 +644,7 @@ fn requested_series(
 }
 
 fn measured(value: &impl Serialize) -> io::Result<usize> {
-    crate::transport::json_len(value, MAX_REPLY_BYTES).ok_or_else(|| {
+    crate::transport::json_len(value, MAX_PRODUCT_REPLY_BYTES).ok_or_else(|| {
         io::Error::other(
             "Agency comparison exceeds one complete reply's budget; no countries were omitted.",
         )
@@ -693,17 +676,14 @@ impl Product for AgencyComparison {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        // Each distinct country requires at least one retained scan entry. Bound
-        // request work by that existing history budget, not a country subset cap.
-        if params.tags.len() > MAX_SCAN_ENTRIES {
-            return Err("Invalid country selection");
-        }
         for tag in &params.tags {
             validate_tag(tag)?;
         }
-        if params.top.as_ref().is_some_and(|top| {
-            !params.tags.is_empty() || top.count == 0 || top.count as usize > MAX_SCAN_ENTRIES
-        }) {
+        if params
+            .top
+            .as_ref()
+            .is_some_and(|top| !params.tags.is_empty() || top.count == 0)
+        {
             return Err("Invalid top countries");
         }
         Ok(())
@@ -825,21 +805,13 @@ mod tests {
     fn agency_comparison_gaps_missing_rows_and_identity_changes_stay_missing() {
         let mut scanned = ScannedAgencies::default();
         let agency = row(1, 25_000);
-        scanned.note_roster_read(10).unwrap();
-        scanned
-            .observe(10, "SYN", (1, 1), Some(&agency), Some(Some(2)))
-            .unwrap();
-        scanned.observe(11, "SYN", (1, 1), None, None).unwrap();
-        scanned
-            .observe(12, "SYN", (1, 1), Some(&agency), None)
-            .unwrap();
+        scanned.note_roster_read(10);
+        scanned.observe(10, "SYN", (1, 1), Some(&agency), Some(Some(2)));
+        scanned.observe(11, "SYN", (1, 1), None, None);
+        scanned.observe(12, "SYN", (1, 1), Some(&agency), None);
         // Hour 13 is a gap. A later equal read cannot bridge it.
-        scanned
-            .observe(14, "SYN", (1, 1), Some(&agency), None)
-            .unwrap();
-        scanned
-            .observe(15, "SYN", (1, 2), Some(&agency), None)
-            .unwrap();
+        scanned.observe(14, "SYN", (1, 1), Some(&agency), None);
+        scanned.observe(15, "SYN", (1, 2), Some(&agency), None);
         let series = requested_series(
             &scanned,
             &params(),
@@ -900,7 +872,7 @@ mod tests {
         assert_eq!(value.maximum, 7);
         assert_eq!(value.defense_text.as_deref(), Some("Localised zero: 0.00"));
         assert_eq!(value.defense_value.as_deref(), Some("0.00"));
-        assert_eq!(value.upgrades.count, None);
+        assert_eq!(value.upgrades.nonnegative_level_sum, None);
         assert!(upgrades_unrecorded().unwrap().starts_with("Not recorded:"));
     }
 
@@ -913,13 +885,10 @@ mod tests {
             agency.admission_ceiling = hour / 24;
             let roster = (hour % 24 == 0).then_some(Some(2));
             if roster.is_some() {
-                scanned.note_roster_read(hour).unwrap();
+                scanned.note_roster_read(hour);
             }
-            scanned
-                .observe(hour, "SYN", (1, 1), Some(&agency), roster)
-                .unwrap();
+            scanned.observe(hour, "SYN", (1, 1), Some(&agency), roster);
         }
-        assert_eq!(scanned.entries, 1);
         let entries = &scanned.tracks["SYN"].entries;
         assert_eq!(entries.len(), 1);
         assert_eq!(
@@ -973,23 +942,16 @@ mod tests {
         };
         assert_eq!(reply.series.len(), 5000);
         assert_eq!(reply.defense_label.as_deref(), Some("Synthetic protection"));
-        assert!(measured(&reply).unwrap() < MAX_REPLY_BYTES);
+        assert!(measured(&reply).unwrap() < MAX_PRODUCT_REPLY_BYTES);
     }
 
     #[test]
-    fn agency_comparison_request_validation_is_bounded_and_selection_deduplicated() {
+    fn agency_comparison_request_accepts_two_tags_and_u32_max_top_and_deduplicates_selection() {
         let mut request = params();
-        request.tags = vec!["SYN".into(); MAX_SCAN_ENTRIES + 1];
-        assert_eq!(
-            AgencyComparison::validate(&request),
-            Err("Invalid country selection")
-        );
         request.tags = vec!["SYN".into(), "SYN".into()];
         assert!(AgencyComparison::validate(&request).is_ok());
         let mut scanned = ScannedAgencies::default();
-        scanned
-            .observe(1, "SYN", (1, 1), Some(&row(1, 0)), None)
-            .unwrap();
+        scanned.observe(1, "SYN", (1, 1), Some(&row(1, 0)), None);
         assert_eq!(
             requested_series(
                 &scanned,
@@ -1011,7 +973,9 @@ mod tests {
             Err("Invalid top countries")
         );
         request.tags.clear();
-        request.top.as_mut().unwrap().count = MAX_SCAN_ENTRIES as u32 + 1;
+        request.top.as_mut().unwrap().count = u32::MAX;
+        assert!(AgencyComparison::validate(&request).is_ok());
+        request.top.as_mut().unwrap().count = 0;
         assert_eq!(
             AgencyComparison::validate(&request),
             Err("Invalid top countries")
@@ -1021,11 +985,55 @@ mod tests {
     }
 
     #[test]
+    fn agency_comparison_refuses_the_shared_complete_reply_budget() {
+        let mut scanned = ScannedAgencies::default();
+        scanned.observe(1, "SYN", (1, 1), Some(&row(1, 0)), None);
+        let mut reply = AgencyComparisonReply {
+            branch_id: "1".into(),
+            available: true,
+            observed: vec![HourSpan {
+                first_hour: 1,
+                last_hour: 1,
+            }],
+            operative_read_hours: Vec::new(),
+            series: requested_series(
+                &scanned,
+                &params(),
+                || None,
+                |_| (Some("x".repeat(MAX_PRODUCT_REPLY_BYTES)), None),
+                &AtomicBool::new(false),
+            )
+            .unwrap(),
+            defense_label: None,
+            upgrades_unrecorded: upgrades_unrecorded(),
+            warnings: Vec::new(),
+        };
+        let length = crate::transport::json_len(&reply, usize::MAX).unwrap();
+        let text = reply.series[0].entries[0]
+            .value
+            .defense_text
+            .as_mut()
+            .unwrap();
+        text.truncate(text.len() - (length - MAX_PRODUCT_REPLY_BYTES));
+        assert_eq!(measured(&reply).unwrap(), MAX_PRODUCT_REPLY_BYTES);
+        reply.series[0].entries[0]
+            .value
+            .defense_text
+            .as_mut()
+            .unwrap()
+            .push('x');
+        let error = measured(&reply).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("Agency comparison exceeds one complete reply's budget")
+        );
+    }
+
+    #[test]
     fn agency_comparison_unused_default_name_is_not_resolved() {
         let mut scanned = ScannedAgencies::default();
-        scanned
-            .observe(1, "SYN", (1, 1), Some(&row(1, 0)), None)
-            .unwrap();
+        scanned.observe(1, "SYN", (1, 1), Some(&row(1, 0)), None);
         let series = requested_series(
             &scanned,
             &params(),
@@ -1047,15 +1055,13 @@ mod tests {
         for country in 1..=5000 {
             let mut agency = row(country, i64::from(country % 2) * 100_000);
             agency.created = 0;
-            scanned
-                .observe(
-                    1,
-                    &format!("SYN_{country}"),
-                    (country, country),
-                    Some(&agency),
-                    None,
-                )
-                .unwrap();
+            scanned.observe(
+                1,
+                &format!("SYN_{country}"),
+                (country, country),
+                Some(&agency),
+                None,
+            );
         }
         let default_calls = Cell::new(0);
         let defense_calls = Cell::new(0);
@@ -1097,30 +1103,26 @@ mod tests {
         let mut scanned = ScannedAgencies::default();
         for country in 1..=5000 {
             let agency = row(country, i64::from(country) * 100_000);
-            scanned
-                .observe(
-                    10,
-                    &format!("SYN_{country:04}"),
-                    (country, country),
-                    Some(&agency),
-                    None,
-                )
-                .unwrap();
-            scanned
-                .observe(
-                    11,
-                    &format!("SYN_{country:04}"),
-                    (country, country),
-                    Some(&agency),
-                    None,
-                )
-                .unwrap();
+            scanned.observe(
+                10,
+                &format!("SYN_{country:04}"),
+                (country, country),
+                Some(&agency),
+                None,
+            );
+            scanned.observe(
+                11,
+                &format!("SYN_{country:04}"),
+                (country, country),
+                Some(&agency),
+                None,
+            );
         }
         let cancelled = AtomicBool::new(false);
         let all =
             requested_series(&scanned, &params(), || None, |_| (None, None), &cancelled).unwrap();
         assert_eq!(all.len(), 5000);
-        assert!(measured(&all).unwrap() < MAX_REPLY_BYTES);
+        assert!(measured(&all).unwrap() < MAX_PRODUCT_REPLY_BYTES);
         assert!(
             all.iter()
                 .all(|series| series.entries.len() == 1 && series.entries[0].last_hour == 11)
@@ -1242,7 +1244,7 @@ mod tests {
         assert_eq!(first.entries[1].value.defense_raw, "0");
         assert_eq!(first.entries[1].value.defense_value, None);
         assert_eq!(reply.series[1].entries.len(), 1);
-        assert!(measured(&reply).unwrap() < MAX_REPLY_BYTES);
+        assert!(measured(&reply).unwrap() < MAX_PRODUCT_REPLY_BYTES);
     }
 
     #[test]

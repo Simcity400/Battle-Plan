@@ -2,7 +2,7 @@ import type { EspionageLogReply, EspionageOperation, EspionageOperationRun, Espi
 import { isOrderedSpans, isSpan, runAt, spansCovered } from '../../charts/series.ts';
 import type { LogRow } from '../../charts/log/logData';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
-import { object, int } from '../../dashboard/validation.ts';
+import { object, int, unsigned32, unsigned64 } from '../../dashboard/validation.ts';
 import { drawableIcon } from '../../dashboard/artwork.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { entryAt, readAt } from '../../dashboard/reads.ts';
@@ -15,6 +15,8 @@ const run = (v: unknown) => isSpan(v) && int(v.readHour) && v.readHour <= v.firs
   && (v.preparationRatio === null || (int(v.preparationRatio) && v.preparationRatio >= 0 && v.preparationRatio <= 100_000))
   && nullableInt(v.elapsedDays) && nullableInt(v.startHour) && nullableInt(v.currentPhase) && typeof v.terminal === 'boolean'
   && typeof v.autoCommence === 'boolean'
+  && nullableText(v.ownerTag) && nullableText(v.targetTag) && nullableText(v.typeKey)
+  && unsigned32(v.phaseCount) && typeof v.autoRepeat === 'boolean' && int(v.durationDays) && unsigned32(v.assignedSlots)
   && (v.operatives === null || (Array.isArray(v.operatives) && v.operatives.every(id => typeof id === 'string')));
 
 /** Types are content identities, not a fixed catalogue; bad art keeps its named placeholder. */
@@ -22,18 +24,25 @@ export function validateEspionageLogReply(data: unknown): EspionageLogReply {
   const reads = object(data) && Array.isArray(data.readHours) ? data.readHours : null;
   if (!object(data) || typeof data.branchId !== 'string' || !int(data.firstHour) || !int(data.lastHour) || data.firstHour > data.lastHour
     || !isOrderedSpans(data.available) || !reads || !reads.every((hour, i) => int(hour) && (!i || reads[i - 1] < hour))
+    || !isOrderedSpans(data.completionsAvailable) || !nullableText(data.completionsUnrecorded)
     || !Array.isArray(data.types) || !data.types.every(type) || new Set(data.types.map(item => item.key)).size !== data.types.length
     || !Array.isArray(data.operations) || !data.operations.every(op => object(op) && typeof op.id === 'string' && int(op.firstRead)
-      && nullableText(op.ownerTag) && nullableText(op.targetTag) && typeof op.typeKey === 'string'
-      && int(op.phaseCount) && op.phaseCount >= 0 && typeof op.autoRepeat === 'boolean' && int(op.durationDays)
-      && int(op.assignedSlots) && op.assignedSlots >= 0
+      && unsigned32(op.definitionToken)
       && nullableInt(op.startHour) && nullableInt(op.startKnownAt) && ((op.startHour === null) === (op.startKnownAt === null))
-      && isOrderedSpans(op.runs) && op.runs.length > 0 && op.runs.every(run) && op.runs[0].firstHour === op.firstRead
+      && isOrderedSpans(op.runs) && op.runs.every(run) && (!op.runs.length || op.runs[0].firstHour === op.firstRead)
       && (op.end === null || (object(op.end) && int(op.end.byHour) && int(op.end.lastSeen) && op.end.byHour >= op.end.lastSeen
-        && (op.end.outcome === null || (object(op.end.outcome) && typeof op.end.outcome.description === 'string'))
+        && nullableInt(op.end.completionHour) && (op.end.completionSequence === null || unsigned64(op.end.completionSequence))
+        && ((op.end.completionHour === null) === (op.end.completionSequence === null))
+        && (op.end.completionHour === null || op.end.completionHour <= op.end.byHour)
+        && nullableText(op.end.typeKey)
+        && (op.end.outcome === null || (object(op.end.outcome) && typeof op.end.outcome.bonus === 'boolean'
+          && typeof op.end.outcome.detected === 'boolean' && typeof op.end.outcome.recordedLanguage === 'string' && nullableText(op.end.outcome.description)
+          && nullableText(op.end.outcome.descriptionUnrecorded) && unsigned64(op.end.outcome.descriptionRequiredBytes)
+          && ((op.end.outcome.description === null) !== (op.end.outcome.descriptionUnrecorded === null))))
         && nullableText(op.end.outcomeUnrecorded) && ((op.end.outcome === null) !== (op.end.outcomeUnrecorded === null))
         && nullableText(op.end.ownerTag) && nullableText(op.end.targetTag)
-        && (op.end.reason === 'completed' || op.end.reason === 'disappeared'))))
+        && (op.end.reason === 'completed' || op.end.reason === 'disappeared')))
+      && (op.runs.length > 0 || (op.end !== null && op.end.completionHour !== null)))
     || new Set(data.operations.map(op => op.id)).size !== data.operations.length
     || !Array.isArray(data.warnings) || !data.warnings.every(warning => typeof warning === 'string') || !nullableText(data.unavailable)) {
     throw new Error('The espionage operations reply is malformed.');
@@ -42,7 +51,12 @@ export function validateEspionageLogReply(data: unknown): EspionageLogReply {
   const types = new Set(reply.types.map(item => item.key));
   for (const operation of reply.operations) {
     if (!spansCovered(operation.runs, reply.available)) throw new Error('The espionage operations reply crosses unobserved hours.');
-    if (!types.has(operation.typeKey)) throw new Error('The espionage operations reply names an unlisted operation type.');
+    if (operation.end && operation.end.completionHour !== null && !runAt(reply.completionsAvailable, operation.end.byHour)) {
+      throw new Error('The espionage operations reply has an unrecorded completion read.');
+    }
+    for (const run of [...operation.runs, ...(operation.end ? [operation.end] : [])]) {
+      if (run.typeKey !== null && !types.has(run.typeKey)) throw new Error('The espionage operations reply names an unlisted operation type.');
+    }
   }
   for (const item of reply.types) {
     const original = item.icon;
@@ -64,7 +78,8 @@ export interface OperationAt {
   operation: EspionageOperation;
   /** Null in a gap. `last` is identity/history only there, never a current measurement. */
   run: EspionageOperationRun | null;
-  last: EspionageOperationRun;
+  last: EspionageOperationRun | null;
+  typeKey: string | null;
   readHour: number | null;
   state: 'preparing' | 'running' | 'completed' | 'disappeared' | 'unread';
   startHour: number | null;
@@ -74,14 +89,15 @@ export interface OperationAt {
 export function operationAt(reply: EspionageLogReply, operation: EspionageOperation, hour: number): OperationAt | null {
   if (hour < operation.firstRead) return null;
   const last = entryAt(operation.runs, hour);
-  if (!last) return null;
   const end = operation.end && operation.end.byHour <= hour ? operation.end : null;
+  if (!last && !end) return null;
   const current = end ? runAt(operation.runs, end.lastSeen) : runAt(operation.runs, hour);
   const state = end ? end.reason === 'completed' ? 'completed' : 'disappeared'
-    : !current ? 'unread' : operation.durationDays === 0 ? 'preparing' : 'running';
+    : !current ? 'unread' : current.durationDays === 0 ? 'preparing' : 'running';
   const read = current ? readAt(reply.readHours, end ? Math.min(end.lastSeen, current.lastHour) : Math.min(hour, current.lastHour)) : null;
   return { operation, run: current, last, readHour: read, state,
-    ownerTag: end ? end.ownerTag : operation.ownerTag, targetTag: end ? end.targetTag : operation.targetTag,
+    ownerTag: end ? end.ownerTag : (current ?? last)?.ownerTag ?? null, targetTag: end ? end.targetTag : (current ?? last)?.targetTag ?? null,
+    typeKey: end ? end.typeKey : (current ?? last)?.typeKey ?? null,
     startHour: operation.startKnownAt !== null && operation.startKnownAt <= hour ? operation.startHour : null };
 }
 export interface OperationFilter {
@@ -98,14 +114,14 @@ export function operationRows(reply: EspionageLogReply, hour: number, filter: Op
   const rows: LogRow<OperationAt>[] = [];
   for (const operation of reply.operations) {
     const at = operationAt(reply, operation, hour);
-    if (!at || (types.size && !types.has(at.operation.typeKey))) continue;
+    if (!at || (types.size && (at.typeKey === null || !types.has(at.typeKey)))) continue;
     const end = operation.end && operation.end.byHour <= hour ? operation.end : null;
-    const date = end?.byHour ?? at.readHour ?? readAt(reply.readHours, at.last.lastHour) ?? at.last.readHour;
+    const date = end?.completionHour ?? end?.byHour ?? at.readHour ?? (at.last ? readAt(reply.readHours, at.last.lastHour) ?? at.last.readHour : operation.firstRead);
     const owner = at.ownerTag === null ? filter.includeUnknownCountries === true : filter.country(at.ownerTag, date);
     const target = at.targetTag === null ? filter.includeUnknownCountries === true : filter.country(at.targetTag, date);
     if ((filter.role === 'owner' && !owner) || (filter.role === 'target' && !target) || (filter.role === 'either' && !owner && !target)) continue;
     if (filter.from !== null && date < filter.from) continue;
-    rows.push({ key: `${operation.id}:${end?.byHour ?? 'active'}`, id: operation.id, hour: date, by: end !== null, item: at });
+    rows.push({ key: `${operation.id}:${end?.byHour ?? 'active'}`, id: operation.id, hour: date, by: end !== null && end.completionHour === null, item: at });
   }
   const ongoing = (row: LogRow<OperationAt>) => row.item.state === 'preparing' || row.item.state === 'running';
   return rows.sort((a, b) => {
@@ -142,22 +158,22 @@ export function operationWording(at: OperationAt): { action: string; afterTarget
 }
 export const preparationRatio = (at: OperationAt) => at.run?.preparationRatio == null ? null : at.run.preparationRatio / 100_000;
 /** Native elapsed-day result is supplied by the read, never the playhead. */
-export const executionRatio = (at: OperationAt) => at.run?.elapsedDays == null || at.operation.durationDays === 0 ? null : at.run.elapsedDays / at.operation.durationDays;
+export const executionRatio = (at: OperationAt) => at.run?.elapsedDays == null || at.run.durationDays === 0 ? null : at.run.elapsedDays / at.run.durationDays;
 export const operationProgress = (at: OperationAt) => at.state === 'preparing' ? preparationRatio(at) : at.state === 'running' ? executionRatio(at) : null;
-/** One outcome adapter, ready for the later capture; active rows have no outcome. */
+/** Active rows have no outcome. Stored descriptions retain their recorded language. */
 export function operationOutcome(at: OperationAt): string | null {
   if (at.state !== 'completed' && at.state !== 'disappeared') return null;
   const end = at.operation.end;
-  return end?.outcome?.description ?? end?.outcomeUnrecorded ?? 'Unknown outcome';
+  return end?.outcome?.description ?? end?.outcome?.descriptionUnrecorded ?? end?.outcomeUnrecorded ?? 'Unknown outcome';
 }
 export function operationJumpHours(at: OperationAt, shownHour: number, rowHour?: number): number[] {
-  const end = at.operation.end && at.operation.end.byHour <= shownHour ? at.operation.end.byHour : null;
+  const end = at.operation.end && at.operation.end.byHour <= shownHour ? (at.operation.end.completionHour ?? at.operation.end.byHour) : null;
   const hours = [at.startHour, end].filter((hour): hour is number => hour !== null);
   return [...new Set(hours.length ? hours : [rowHour ?? at.operation.firstRead])].sort((a, b) => a - b);
 }
 export function operationTooltip(reply: EspionageLogReply, row: LogRow<OperationAt>, name: (tag: string | null) => string): TooltipContent[] {
   const at = row.item;
-  const type = reply.types.find(type => type.key === at.operation.typeKey);
+  const type = reply.types.find(type => type.key === at.typeKey);
   const current = at.run;
   const rows: TooltipRow[] = [
     { label: 'Owner → target', value: `${name(at.ownerTag)} → ${name(at.targetTag)}` },
@@ -168,18 +184,23 @@ export function operationTooltip(reply: EspionageLogReply, row: LogRow<Operation
   const outcome = operationOutcome(at);
   if (outcome !== null) rows.push({ label: 'Outcome', value: outcome });
   const end = at.operation.end;
-  if (end && (at.state === 'completed' || at.state === 'disappeared')) rows.push({ label: at.state === 'completed' ? 'Completed' : 'Ended', value: `by ${formatDateTime(end.byHour)}` });
+  if (end && (at.state === 'completed' || at.state === 'disappeared')) {
+    rows.push({ label: at.state === 'completed' ? 'Completed' : 'Ended', value: end.completionHour === null ? `by ${formatDateTime(end.byHour)}` : formatDateTime(end.completionHour) });
+    if (end.outcome) rows.push({ label: 'Recorded description language', value: end.outcome.recordedLanguage },
+      { label: 'Bonus result', value: end.outcome.bonus ? 'Yes' : 'No' },
+      { label: 'Detected', value: end.outcome.detected ? 'Yes' : 'No' });
+  }
   if (current) {
     // P: 142259590 -> Fixed5ToString@1424B6200(...,0) truncates native percent.
-    if (at.state === 'running') rows.push({ label: 'Execution progress', value: current.elapsedDays === null ? 'Not recorded (native elapsed-day sentinel)' : `${current.elapsedDays} / ${at.operation.durationDays} days` });
-    rows.push({ label: 'Phases', value: current.currentPhase === null ? `${at.operation.phaseCount} selected phases; current phase not recorded`
-      : `Phase ${current.currentPhase + 1} of ${at.operation.phaseCount}; phase names not recorded` },
+    if (at.state === 'running') rows.push({ label: 'Execution progress', value: current.elapsedDays === null ? 'Not recorded (native elapsed-day sentinel)' : `${current.elapsedDays} / ${current.durationDays} days` });
+    rows.push({ label: 'Phases', value: current.currentPhase === null ? `${current.phaseCount} selected phases; current phase not recorded`
+      : `Phase ${current.currentPhase + 1} of ${current.phaseCount}; phase names not recorded` },
       { label: 'Overall civilian preparation', value: current.preparationRatio === null ? 'Not recorded' : `${Math.trunc(current.preparationRatio / 1000)}%` },
       { label: 'Equipment readiness', value: 'Not recorded' },
       { label: 'Automatic commencement', value: current.autoCommence ? 'Enabled' : 'Disabled' },
-      { label: 'Automatic repeat', value: at.operation.autoRepeat ? 'Enabled' : 'Disabled' },
+      { label: 'Automatic repeat', value: current.autoRepeat ? 'Enabled' : 'Disabled' },
       // P: 1413E9210 counts all +E0 slots, including the unassigned +EC slots.
-      { label: 'Operative slots (including unassigned)', value: String(at.operation.assignedSlots) });
+      { label: 'Operative slots (including unassigned)', value: String(current.assignedSlots) });
     if (current.operatives === null) rows.push({ label: 'Assigned operatives', value: 'Not recorded' });
     else {
       rows.push({ label: 'Assigned operatives', value: String(current.operatives.length) });
@@ -188,5 +209,7 @@ export function operationTooltip(reply: EspionageLogReply, row: LogRow<Operation
   } else rows.push({ label: 'Preparation, phases and assignments at this hour', value: 'Not recorded', tone: 'muted' });
   if (type?.iconMissing) rows.push({ label: type.iconMissing, tone: 'muted' });
   return [{ title: operationName(type), icon: type?.icon ?? undefined, rows,
-    note: at.readHour === null ? 'The current operation read is missing. Gaps stay gaps.' : `Values read ${formatDateTime(at.readHour)}. Operative names were not recorded.` }];
+    note: end && (at.state === 'completed' || at.state === 'disappeared')
+      ? `Ending read ${formatDateTime(end.byHour)}. ${at.readHour === null ? 'Earlier operation values not recorded.' : `Operation values read ${formatDateTime(at.readHour)}.`}`
+      : at.readHour === null ? 'The current operation read is missing. Gaps stay gaps.' : `Values read ${formatDateTime(at.readHour)}. Operative names were not recorded.` }];
 }

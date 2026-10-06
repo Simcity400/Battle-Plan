@@ -21,7 +21,7 @@ Readable older recordings keep unchanged field prefixes. Products count a named 
 | `catalogue.rs` | Content facts every product shares, read once per source, folders and game language: the localisation (the same parse country naming uses, from `content::localisation`; every text goes through the shared game localiser in `installed_content::localisation`; a refusal, such as a scripted expression or a control plain text cannot show, is kept apart from a missing key and noted by reason and key for the product warnings) and interface sprites, plus the texture decoding, within a budget, and PNG encoding every image reply uses. |
 | `triggers.rs` | The one trigger evaluator: raid, combat-tactic, scripted-localisation, equipment-graphics pool and adjacency-rule triggers decided from one recorded hour. Each key is dispatched as `CTrigger::LoadKey` does (`installed_content::trigger_keys`), each coded trigger checked against its class's accepted scopes first. Only the children LoadKey adds count: a key that names nothing adds none, `else`/`else_if` attach to the last `if` added, and `World::has_children` is the emptiness test every consumer reads. A key names a character by the content's character templates; scope keys resolve through `scope.rs`, and deeper links use the caller's `EventScopes` graph when supplied; flattened callers still refuse a link they cannot describe. Tag aliases resolve as `AliasResolve` does (`triggers/aliases.rs`). Script variable operands (`check_variable`, `has_variable`, `var:` keys, variable counts, country and state operands, arrays and tag alias variables) are evaluated as `CScopedVariable::Evaluate` does over the recorded `ScriptVariables` stores (`triggers/variables.rs`); unreproduced built-in game variables, random draws, unsupported temp writers and outside-context residual temps are refused by name. A combat scope's own triggers come from its caller (`Combat`). A caller without a country uses `Scopes::empty`, the default event scope: no carried objects, and THIS/ROOT/FROM/PREV all empty. Scope-masked triggers are false there; country-tag scopes resolve normally over the recorded World. A context trigger targeting an empty scope is false by its own mask, including an empty ROOT block. What the recording cannot answer is `Eval::Unknown` with its reason. |
 | `scope.rs` | Script scope targets resolved over one recorded hour (`RecordedScopes`), including the faction leader from `FactionMembers` order for triggers and scripted text, with `_CountriesForOriginalTags` derived from the branch (`scope/original_tags.rs`). |
-| `metadata.rs` | Branch ranges, gaps and the first readable country catalogue, and the helpers every product shares: frame checks, a tag's country this hour (`tagged_country`: found, absent, or unresolved when the links cannot tell which country holds it; `tagged_countries` gives every tag's in one pass), a raw link's canonical slot (`link_slot`) and which hours read a daily table (`slot_read`: its cadence slot hour, or a timed walk within its slot on a forced full hour; CountryIntel requires its own measured walk and is no evidence for its slot peers, as in the fresh-save oracle; a product dating values by their read uses it). |
+| `metadata.rs` | Branch ranges, gaps and the first readable country catalogue, and the helpers every product shares: frame checks, a tag's country this hour (`tagged_country`: found, absent, or unresolved when the links cannot tell which country holds it; `tagged_countries` gives every tag's in one pass), a raw link's canonical slot (`link_slot`), one consecutive-hour country identity check (`IdentityTrack`, used by segment histories through `country_history::observe_identity`) and which hours read a daily table (`slot_read`: its cadence slot hour, or a timed walk within its slot on a forced full hour; CountryIntel requires its own measured walk and is no evidence for its slot peers, as in the fresh-save oracle; a product dating values by their read uses it). |
 | [cryptology.rs](src/cryptology.rs) | Native cipher thresholds, full-decryption predicate and progress meter frames, shared with viewer raid tooltips. |
 | `products/` | One module per data product, registered once in `products/mod.rs`. Helpers products share sit beside them, such as `resources.rs` (recorded resources in the game's order, named and pictured through the content stack for every resource product). |
 | `read_runs.rs` | A daily table's keyed values as runs over the hours each read covers, with the spans where the table is known at all. A recorded zero is a run, told apart from a key the read did not list; a value read but not computable is a run with no amount (unknown, never zero or part of a sum). Products turn daily tables into runs here. |
@@ -115,24 +115,40 @@ The Experience widget reads [`country_experience.rs`](src/products/country_exper
 `war_casualties::scanned_branch(source, branch, cancelled)?.country_at(tag, hour)` is the shared casualties measure: known dealt/taken, optional exact unknown, read hour and lower-bound flag from the product cache; no sample or a gap returns `None`, and the cached scan's `has_gap()` flags wars that could be wholly missing.
 Equipment losses (one country's losses as cause, equipment type and design, each a running total: the Combat Log's reasons and recovered equipment for land, SunkShips, SunkConvoys and lend-lease sunk and sent, with air reported unknown; hours the game did not log the country's land losses are unknown, not zero; each cause lists the hours its record was not read, and lend-lease the exchanges that ended after their last read, whose totals are lower bounds from then; a Combat Log retention define below 1 makes land unknown by name; cause names the executable does not name come from the content's interface files). Daily values change only at their recorded read hours. Recorded gaps, failed blocks and the unread remainder of failed frames have explicit unknown coverage and unread spans. CombatLogState explains missing native land records and never selects capture; the product also checks division orders-group membership, since country-gate admission alone does not prove logging. A mixed census is Partial with the number of that country's divisions outside orders groups: the game kept losses of divisions in armies, not of those divisions. The native equipment writer also tests the runtime feature mask recorded by SimulationFeatures: a closed feature gate is NotLogged, missing writer inputs stay Unknown, and every captured amount is still counted. Combat Log observation checks the requested country's slice reads before accessing its sorted row ranges. The product selects the hourly DivisionCensus counts instead of Divisions. The collector accumulates every country's counts in its existing authenticated division core projection, preserving the writer's raw expeditionary or roster owner; aliases resolve through CountryLinks. Coverage is dated by each hourly census read, including equal successful reads; consecutive hours merge only for equal states and equal ungrouped counts, and an unavailable hour is Unknown. Missing country rows, unread counts or unresolved nonempty owners remain Unknown. Wire decoding and reconstruction of the selected tables remain part of the scan cost. The ignored release test `equipment_losses_observer_scale` measures observation of shared decoded observer frames; `equipment_losses_observer_scale_including_decode` keeps the same major-sized division workload in the wire recording but omits Divisions from the selected decode, and separately measures the Combat Log/SliceReads decode. Live detour cost remains separate. Its rules live beside [the product code](src/products/equipment_losses.rs).
 
-Special projects adds per-country project episodes, native prototype progress and localized completed-iteration counts, exact or bounded dates, and shared character names and portraits.
+Special projects adds per-country project episodes, native prototype progress and localized completed-iteration counts, exact or bounded dates, and shared character names and portraits. Gaps interrupt reads within an episode.
 
-The Decryption widget reads [`decryption.rs`](src/products/decryption.rs): sparse pair runs with same-hour thresholds, native progress, bonus states, each current attempt's observed start, dated breaks and capture coverage for every recorded pair independently of player status. Its [widget guide](../../ui/src/widgets/decryption/README.md) describes the display and missing-data rules. Gaps interrupt reads within an episode.
+The Decryption widget reads [`decryption.rs`](src/products/decryption.rs): sparse pair runs with same-hour thresholds, native progress, bonus states, each current attempt's observed start, dated breaks and capture coverage for every recorded pair independently of player status. Its [widget guide](../../ui/src/widgets/decryption/README.md) describes the display and missing-data rules. Warnings count affected pairs or countries once per reason and retain recorded amounts and states when tags, thresholds or progress are unknown. Replies refuse the shared complete-response byte budget.
 
 The Intel products [`espionage_log.rs`](src/products/espionage_log.rs) and
 [`agency_comparison.rs`](src/products/agency_comparison.rs) include every
-country. Operation episodes retain recorded launch dates, civilian preparation,
-read-time execution progress and phase indices, assignments and bounded endings; missing reads break
-runs. Completion does not identify an outcome because the game's result text,
-bonus and operative-detection operands are not recorded. Agency comparison
-uses the agency screen's stored active count and maximum, rather than its
-recruitment admission ceiling, and localises defence through the content's
-formatter. Acquired upgrades are **Not recorded**; `upgrades_at_read` is the
-single adapter for their future capture. Agency values compress independently
-of the roster counts and their shared daily read dates. Both products refuse oversized replies
-and share [`intelligence_content.rs`](src/products/intelligence_content.rs)
-for content names, artwork and agency text. Top-N selection and run clipping
-use [`ranking.rs`](src/ranking.rs), also used by Factories. Their UI rules live
+country. Operations are identified by their full handle and raw owner, target and
+definition token. Launch, repeat, phase/slot changes and missing country names
+remain dated changes within that episode; only a finished instance reopening or
+a different raw identity starts another. Missing reads break value runs, and a
+missing lexical name is a counted recording gap, distinct from a content miss.
+Completion does not identify an outcome on main: stored bonus, detection and
+result text were not captured. The outcome contract retains those independent
+results, exact completion dates/sequences, description lengths/refusals and
+completion-batch coverage for the capture adapter; main says **Not recorded**.
+Capture PR #336 must add the `OperationCompletions` consumer, matching owner and
+sequence and retaining completion-only operations; until then its coverage is
+empty with a **Not recorded** reason.
+Descriptions retain the recorded client language; non-UTF-8 bytes are refused
+by name without losing independent results. Raw bonus and detection flag bytes
+other than 0 or 1 refuse the outcome by field name and value, counted by reason.
+Agency comparison uses the agency screen's stored active count and maximum,
+rather than its recruitment admission ceiling, and localises defence through
+the content's formatter. A missing `AGENCY_DEFENSE_LEVEL` is refused by name
+and counted. Acquired upgrades remain **Not recorded** on main; their placeholder
+retains native array order, signed levels, raw pointer/token identities, named
+identity refusals, separate content reasons and the upgrade read date. Their
+inventory total is an exact decimal sum of nonnegative stored levels, not a
+native slot maximum. Agency values compress independently
+of roster counts and their shared daily reads. Both products refuse only the
+shared complete-response byte budget and share
+[`intelligence_content.rs`](src/products/intelligence_content.rs) for names,
+artwork and agency text. Top-N selection and run clipping use
+[`ranking.rs`](src/ranking.rs), also used by Factories. Their UI rules live
 in the [operation log](../../ui/src/widgets/espionage-log/README.md) and
 [agency table](../../ui/src/widgets/agency-comparison/README.md) guides.
 

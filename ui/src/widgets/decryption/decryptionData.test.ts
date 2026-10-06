@@ -38,8 +38,6 @@ test('payload checks raw signed values, native bytes, ordered runs, coverage and
     data => { data.pairs[0].runs.push(run(102, 103)); },
     data => { data.pairs.push(data.pairs[0]); },
     data => { data.pairs[0].runs[0].started!.hour = 101; },
-    data => { data.pairs[0].runs[0].started = null; },
-    data => { data.pairs[0].runs[0].started!.upperBound = false; },
     data => { data.coverage[0].firstHour = 101; },
     data => { data.pairs[0].runs[0].thresholdRaw = null; },
     data => { data.pairs[0].runs[0].stateFlags = 0x101; },
@@ -192,9 +190,9 @@ test('a second break displays its own date and jump target after bonus expiry', 
   const tip = decryptionTooltip(second, 'Mod decryptor', 'Renamed target', 800);
   assert.equal(tip.rows.at(-1)?.value, `Cipher broken ${observationDate(data.pairs[0].breaks[1], 125)}`);
   assert.equal(tip.rows[1].value, observationDate(second.run.started, 125));
-  for (const breaks of [data.pairs[0].breaks.slice(0, 1), [...data.pairs[0].breaks].reverse(),
-    [{ hour: 101, upperBound: false }, { hour: 111, upperBound: false }, { hour: 125, upperBound: false }],
-    [{ hour: 101, upperBound: false }, { hour: 125, upperBound: true }]]) {
+  for (const breaks of [[...data.pairs[0].breaks].reverse(),
+    [{ hour: 99, upperBound: false }], [{ hour: 131, upperBound: false }],
+    [{ hour: 101, upperBound: false }, { hour: 101, upperBound: true }]]) {
     assert.throws(() => validateDecryptionReply({ ...data, pairs: [{ ...data.pairs[0], breaks }] }), /malformed/);
   }
 });
@@ -234,52 +232,20 @@ test('Started belongs to the current attempt: paused zero persists, expiry and c
     assert.equal(decryptionTooltip(row, 'Recorded decryptor', 'Recorded target', 800).rows[1].value, observationDate(row.run.started, at));
   }
   assert.match(observationDate(raceRows(data, 114, 'progress')[0].run.started, 114), /^by /);
-  for (const index of [5, 6, 7, 8, 10]) {
-    const malformed = structuredClone(data);
-    malformed.pairs[0].runs[index].started = { hour: 101, upperBound: false };
-    assert.throws(() => validateDecryptionReply(malformed), /malformed/, `stale start at run ${index}`);
-  }
 });
 
-test('an idle first read only establishes an exact later start after complete absence or an observed end', () => {
-  const idle = (first: number, last: number, amount = '0') => ({ ...run(first, last, amount), stateFlags: 0, started: null });
-  const complete = (firstHour: number, lastHour: number) => ({ firstHour, lastHour, complete: true, reason: null });
-  const cases = [
-    { name: 'recording start', runs: [idle(100, 102)], coverage: [complete(100, 103)], upperBound: true },
-    { name: 'gap', runs: [run(100, 100), idle(102, 104)], coverage: [complete(100, 100), complete(102, 105)], upperBound: true },
-    { name: 'complete prior hour', runs: [idle(101, 103)], coverage: [complete(100, 104)], upperBound: false },
-    { name: 'partial prior hour', runs: [idle(101, 103)],
-      coverage: [{ firstHour: 100, lastHour: 100, complete: false, reason: 'Interrupted read' }, complete(101, 104)], upperBound: true },
-    { name: 'observed clear', runs: [run(100, 100), idle(101, 103)], coverage: [complete(100, 104)], upperBound: false },
-    { name: 'observed expiry', runs: [{ ...run(100, 100), stateFlags: 0x100, bonusDays: 1, broken: true }, idle(101, 103, '400000')],
-      coverage: [complete(100, 104)], upperBound: false },
-  ];
-  for (const scenario of cases) for (const scripted of [false, true]) {
-    const previous = scenario.runs.at(-1)!;
-    const startHour = previous.lastHour + 1;
-    const nextAmount = scripted ? (BigInt(previous.startAmountRaw) + 1n).toString() : previous.startAmountRaw;
-    const data = reply([...scenario.runs, { ...run(startHour, startHour, nextAmount), stateFlags: scripted ? 0 : 1 }]);
-    data.coverage = scenario.coverage;
-    data.pairs[0].runs.forEach((encoded, index) => { encoded.started = scenario.runs[index]?.started ?? null; });
-    const expected = { hour: startHour, upperBound: scenario.upperBound };
-    data.pairs[0].runs.at(-1)!.started = expected;
-    if (scenario.name === 'observed expiry') data.pairs[0].breaks = [{ hour: 100, upperBound: true }];
-    const label = `${scenario.name}, ${scripted ? 'scripted progress' : 'native start'}`;
-    validateDecryptionReply(data);
-    assert.deepEqual(raceRows(data, startHour, 'progress')[0].run.started, expected, label);
-    const wrong = structuredClone(data);
-    wrong.pairs[0].runs.at(-1)!.started!.upperBound = !scenario.upperBound;
-    assert.throws(() => validateDecryptionReply(wrong), /malformed/, label);
-  }
-});
-
-test('run validation rejects a hidden new start inside increasing post-expiry residual work', () => {
-  const data = reply([{ ...run(100, 100), stateFlags: 0x100, bonusDays: 1, broken: true },
-    { ...run(101, 125), stateFlags: 0, started: null, stepRawPerDay: '1' }]);
-  data.pairs[0].runs[1].started = null;
-  data.pairs[0].breaks = [{ hour: 100, upperBound: true }];
-  data.coverage[0].lastHour = 125;
-  assert.throws(() => validateDecryptionReply(data), /malformed/);
+test('episode dates and certainty come from the product without UI re-derivation', () => {
+  const data = reply([run(100, 100), { ...run(101, 101, '800000'), broken: true }]);
+  data.pairs[0].runs[0].started = { hour: 99, upperBound: false };
+  data.pairs[0].runs[1].started = { hour: 99, upperBound: false };
+  data.pairs[0].breaks = [{ hour: 101, upperBound: true }];
+  validateDecryptionReply(data);
+  const row = raceRows(data, 101, 'progress')[0];
+  assert.deepEqual(row.run.started, { hour: 99, upperBound: false });
+  assert.deepEqual(row.broken, { hour: 101, upperBound: true });
+  const tip = decryptionTooltip(row, 'Owner', 'Target', 800);
+  assert.equal(tip.rows[1].value, observationDate(row.run.started, row.hour));
+  assert.match(tip.rows.at(-1)!.value!, /Cipher broken by/);
 });
 
 test('a new break after unknown inputs or a recording gap is an upper-bound observation', () => {
@@ -466,7 +432,7 @@ test('5000-country sparse reply validates and windows; All persists and explicit
   assert.ok(range.end - range.start < 24);
   const widget = createWidget('decryption', 'main', 'decryption-test');
   assert.deepEqual(widget.countries, { kind: 'all' });
-  assert.equal(definition.countries.max, 256);
+  assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
   const template = defaultTemplate();
   template.widgets[0] = { ...widget, id: template.widgets[0].id };
   assert.deepEqual(parseTemplate(JSON.parse(JSON.stringify(template)))!.widgets[0].countries, { kind: 'all' });

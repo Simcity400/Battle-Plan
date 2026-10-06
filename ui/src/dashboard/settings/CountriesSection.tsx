@@ -33,17 +33,17 @@ export function CountriesSection({ widget, reference, runtime, limits, onChange 
     {mode === 'all' ? <p className="field-hint">Every country the recording names.</p>
       : widget.countries.kind === 'group'
         ? <GroupFields selection={widget.countries} reference={reference} runtime={runtime} limits={limits} onChange={onChange} />
-        : <CountryChips widget={widget} reference={reference} runtime={runtime} max={limits.max} all={limits.all} onChange={onChange} />}
+        : <CountryChips widget={widget} reference={reference} runtime={runtime} max={limits.max} onChange={onChange} />}
   </>;
 }
 
-function CountryChips({ widget, reference, runtime, max, all, onChange }: {
-  widget: WidgetSpec; reference: BoundTrack | undefined; runtime: WidgetRuntime; max: number; all?: boolean; onChange: (countries: CountrySelection) => void;
+function CountryChips({ widget, reference, runtime, max, onChange }: {
+  widget: WidgetSpec; reference: BoundTrack | undefined; runtime: WidgetRuntime; max: number; onChange: (countries: CountrySelection) => void;
 }) {
   const source = reference?.source;
   const tags = selectedTags(widget.countries, reference);
   const follows = widget.countries.kind === 'selected';
-  const setTags = (next: string[]) => onChange(next.length ? { kind: 'tags', tags: next } : { kind: all ? 'all' : 'selected' });
+  const setTags = (next: string[]) => onChange(next.length ? { kind: 'tags', tags: next } : { kind: 'selected' });
   const name = (tag: string) => source?.metadata.countries.find(country => country.tag === tag)?.name || tag;
   return <>
     <ul className="settings-countries" aria-label="Chosen countries">{tags.map(tag => <li key={tag} className="settings-country">

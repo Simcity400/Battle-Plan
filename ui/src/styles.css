@@ -30,7 +30,6 @@
   --positive-soft: color-mix(in srgb, var(--positive) 14%, transparent);
   --warning-soft: color-mix(in srgb, var(--warning) 14%, transparent);
   --meter-sweep: color-mix(in srgb, var(--text) 28%, transparent);
-  --badge-warning-background: color-mix(in srgb, var(--warning) 22%, transparent);
   --error-soft: color-mix(in srgb, var(--error) 14%, transparent);
   --edge: 0 0 #0000;
   /* Outlined controls, as T3 Code draws them: a hairline, a faint fill, a top highlight and a tiny drop. */

@@ -237,7 +237,7 @@ impl LinkTags {
 /// A tag's country hour by hour, as (canonical slot, country id): whether this
 /// hour goes on from the previous one, the same country one hour later. A gap,
 /// an hour without the country or another holder of the tag breaks it.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct IdentityTrack {
     last: Option<((u32, u32), i32)>,
 }

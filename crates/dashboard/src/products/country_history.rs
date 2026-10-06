@@ -2,7 +2,7 @@
 
 use super::country_groups::HourSpan;
 use super::country_measure::Measure;
-use crate::metadata::link_slot;
+use crate::metadata::{IdentityTrack, link_slot};
 use replay::rows::{CountryLinkRow, CountryRow};
 use std::collections::HashMap;
 
@@ -67,7 +67,7 @@ pub(crate) struct RecordedCountry {
     pub political_power: Arc<BalanceHistory>,
     pub command_power: Arc<BalanceHistory>,
     pub territory: Arc<Vec<NumericRun>>,
-    last_identity: Option<(Identity, i32)>,
+    last_identity: IdentityTrack,
 }
 
 impl RecordedCountry {
@@ -545,12 +545,11 @@ pub(crate) fn unique_by_slot<'a, T>(
 /// hours and a different native country under the tag always start a new one.
 pub(crate) fn observe_identity(
     segments: &mut Vec<HourSpan>,
-    last_identity: &mut Option<(Identity, i32)>,
+    last_identity: &mut IdentityTrack,
     identity: Identity,
     hour: i32,
 ) -> bool {
-    let contiguous =
-        last_identity.is_some_and(|(seen, at)| seen == identity && at.checked_add(1) == Some(hour));
+    let contiguous = last_identity.step(Some(identity), hour);
     if contiguous {
         segments.last_mut().expect("identity segment").last_hour = hour;
     } else {
@@ -559,7 +558,6 @@ pub(crate) fn observe_identity(
             last_hour: hour,
         });
     }
-    *last_identity = Some((identity, hour));
     contiguous
 }
 
@@ -715,7 +713,7 @@ mod tests {
     #[test]
     fn country_history_identity_segments_break_on_gaps_and_native_id_changes() {
         let mut segments = Vec::new();
-        let mut last = None;
+        let mut last = IdentityTrack::default();
         assert!(!observe_identity(&mut segments, &mut last, (7, 1), 10));
         assert!(observe_identity(&mut segments, &mut last, (7, 1), 11));
         assert!(!observe_identity(&mut segments, &mut last, (7, 1), 13));
@@ -728,6 +726,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             [(10, 11), (13, 13), (14, 14), (15, 15)]
         );
+        assert!(!last.step(None, 16));
+        assert!(!observe_identity(&mut segments, &mut last, (8, 2), 17));
+        assert!(observe_identity(&mut segments, &mut last, (8, 2), 18));
+        assert_eq!(segments.last().unwrap().first_hour, 17);
+        assert_eq!(segments.last().unwrap().last_hour, 18);
         assert!(!observe_identity(
             &mut segments,
             &mut last,

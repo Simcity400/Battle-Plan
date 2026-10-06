@@ -51,7 +51,7 @@ use super::{
 use crate::{
     Source,
     catalogue::{self, Catalogue},
-    metadata::{TaggedCountry, slot_read, tagged_countries, validate_campaign},
+    metadata::{IdentityTrack, TaggedCountry, slot_read, tagged_countries, validate_campaign},
 };
 use installed_content::buildings::Buildings;
 use replay::{
@@ -404,7 +404,7 @@ struct Track {
     runs: Vec<FactoryRun>,
     last: Option<(Identity, i32)>,
     segments: Vec<HourSpan>,
-    last_identity: Option<(Identity, i32)>,
+    last_identity: IdentityTrack,
 }
 
 /// Scans one branch once for every country.

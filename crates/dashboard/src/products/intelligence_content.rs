@@ -32,7 +32,13 @@ impl DefenseTemplate {
     fn load(catalogue: &Catalogue) -> Option<Self> {
         const KEY: &str = "AGENCY_DEFENSE_LEVEL";
         const MARKER: &str = "\u{e000}";
-        catalogue.localisation.get(KEY)?;
+        if catalogue.localisation.get(KEY).is_none() {
+            catalogue.refuse(
+                "required agency defence localisation key missing from the recorded content stack",
+                KEY,
+            );
+            return None;
+        }
         let text =
             catalogue.localised_with(KEY, &[("LEVEL", Argument::Text(MARKER))], View::Plain)?;
         let count = text.matches(MARKER).count();
@@ -64,7 +70,6 @@ impl DefenseTemplate {
 #[derive(Default)]
 struct ArtworkCache {
     entries: BTreeMap<String, (Artwork, Option<String>)>,
-    bytes: usize,
 }
 
 pub fn intelligence_content(
@@ -198,19 +203,8 @@ impl IntelligenceContent {
                 ))
             }
         };
-        let bytes = super::artwork::artwork_bytes(&artwork)
-            .saturating_add(token.len())
-            .saturating_add(reason.as_ref().map_or(0, |reason| reason.len() + 32));
-        if cached.bytes.saturating_add(bytes) > super::artwork::MAX_RETAINED_ARTWORK_BYTES {
-            let why = "operation artwork exceeds the shared retained artwork byte budget";
-            self.catalogue.refuse(why, token);
-            artwork.icon = None;
-            return (artwork, Some(format!("operation {token}: {why}")));
-        }
         let result = (artwork, reason);
-        // Cache only authored operation definitions, once each; raw unknown
-        // dictionary tokens cannot enlarge it across a campaign.
-        cached.bytes += bytes;
+        // Cache authored definitions once each; the product budgets its full reply.
         cached.entries.insert(token.to_owned(), result.clone());
         result
     }
@@ -416,6 +410,10 @@ mod tests {
         let content = IntelligenceContent::load(Arc::new(catalogue)).unwrap();
         assert_eq!(content.defense_label(), None);
         assert_eq!(content.defense_value("AGENCY_DEFENSE_LEVEL"), None);
-        assert!(content.catalogue.refusal_lines().is_empty());
+        let refusals = content.catalogue.refusal_lines();
+        assert_eq!(refusals.len(), 1);
+        assert!(refusals[0].contains("1 texts are not shown"));
+        assert!(refusals[0].contains("AGENCY_DEFENSE_LEVEL"));
+        assert!(refusals[0].contains("required agency defence localisation key missing"));
     }
 }

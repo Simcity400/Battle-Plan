@@ -7,6 +7,9 @@ import { validOption } from './options.ts';
 import type { OptionField } from './options';
 import { parseTemplate } from './storage.ts';
 import { selectedTags } from './countrySelection.ts';
+import { definition as decryption } from '../widgets/decryption/definition.ts';
+import { definition as espionage } from '../widgets/espionage-log/definition.ts';
+import { definition as agency } from '../widgets/agency-comparison/definition.ts';
 import '../widgets/definitions.ts';
 
 const spec = (extra: Partial<WidgetSpec> = {}): WidgetSpec => ({ id: 'w', kind: 'research', configVersion: 1, title: 'T', campaign: 'default',
@@ -68,4 +71,8 @@ test('a migration that throws or returns bad settings keeps the stored widget', 
 
 test('"all countries" is not mistaken for the dashboard country', () => {
   assert.deepEqual(selectedTags({ kind: 'all' }, undefined), []);
+});
+
+test('Intel country settings share the existing uncapped form', () => {
+  for (const definition of [decryption, espionage, agency]) assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
 });

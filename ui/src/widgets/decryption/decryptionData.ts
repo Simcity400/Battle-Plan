@@ -73,7 +73,6 @@ export function validateDecryptionReply(data: unknown): DecryptionReply {
   if (!data.coverage.every(run => object(run) && typeof run.complete === 'boolean'
     && (run.complete ? run.reason === null : typeof run.reason === 'string' && run.reason.length > 0))
     || !ordered(data.coverage as DecryptionCoverage[])) return invalid();
-  const coverage = data.coverage as DecryptionCoverage[];
   const keys = new Set<string>();
   for (const pair of data.pairs) {
     if (!object(pair) || !id(pair.ownerId) || !id(pair.targetId) || !Array.isArray(pair.runs) || !Array.isArray(pair.tagRuns) || !Array.isArray(pair.breaks)) return invalid();
@@ -93,8 +92,7 @@ export function validateDecryptionReply(data: unknown): DecryptionReply {
       // predicates at every recorded hour, without expanding a long campaign.
       if (lastAmount < -(1n << 63n) || lastAmount >= (1n << 63n) || lastBonus < -(1n << 31n) || lastBonus >= (1n << 31n)
         || brokenAt(encoded, encoded.firstHour) !== encoded.broken || brokenAt(encoded, encoded.lastHour) !== encoded.broken
-        || working(encoded, encoded.firstHour) !== working(encoded, encoded.lastHour)
-        || (encoded.started === null && elapsedDays(encoded, encoded.lastHour) > 0 && BigInt(encoded.stepRawPerDay) > 0n && lastAmount > 0n)) return invalid();
+        || working(encoded, encoded.firstHour) !== working(encoded, encoded.lastHour)) return invalid();
     }
     if (!ordered(pair.runs as DecryptionRun[])) return invalid();
     const runs = pair.runs as DecryptionRun[];
@@ -102,35 +100,10 @@ export function validateDecryptionReply(data: unknown): DecryptionReply {
       && (run.targetTag === null || tag(run.targetTag))) || !ordered(pair.tagRuns as DecryptionTagRun[])) return invalid();
     // Identity and state compress separately but describe exactly the same recorded hours.
     if (!sameHours(runs, pair.tagRuns as DecryptionTagRun[])) return invalid();
-    const bounded = (index: number) => runAt(coverage, runs[index].firstHour - 1)?.complete !== true;
-    const observation = (value: unknown, index: number, upperBound: boolean) => object(value) && hour(value.hour)
-      && value.hour === runs[index].firstHour && value.upperBound === upperBound;
-    // A zero-progress pause looks idle until complete absence or an observed end proves otherwise.
-    let nextBreak = 0, idleKnown = false;
-    for (let index = 0; index < runs.length; index++) {
-      const run = runs[index], previous = runs[index - 1];
-      const adjacent = previous?.lastHour === run.firstHour - 1;
-      const amount = amountAt(run, run.firstHour), active = run.stateFlags >>> 8;
-      let started: CipherObservation | null = null;
-      if (!adjacent) {
-        idleKnown = !bounded(index);
-        if (working(run, run.firstHour) || active !== 0) started = { hour: run.firstHour, upperBound: !idleKnown };
-      } else {
-        const previousAmount = amountAt(previous, previous.lastHour);
-        const ended = ((previous.stateFlags >>> 8) !== 0 && active === 0)
-          || (previousAmount > 0n && amount <= 0n && (run.stateFlags & 0xff) === 0 && active === 0);
-        if (ended) idleKnown = true;
-        started = ended ? null : previous.started;
-        if (started === null && ((run.stateFlags & 0xff) !== 0 || active !== 0 || (amount > 0n && amount > previousAmount))) {
-          started = { hour: run.firstHour, upperBound: !idleKnown };
-        }
-      }
-      if (!sameObservation(run.started, started)) return invalid();
-      if (run.broken !== true || (adjacent && previous.broken === true)) continue;
-      const upperBound = adjacent ? previous.broken !== false : bounded(index);
-      if (!observation(pair.breaks[nextBreak++], index, upperBound)) return invalid();
-    }
-    if (nextBreak !== pair.breaks.length) return invalid();
+    // The product owns episode detection and observation certainty. Validate
+    // dated payloads here without deriving those native decisions a second time.
+    if (!pair.breaks.every((value, index, all) => object(value) && hour(value.hour) && typeof value.upperBound === 'boolean'
+      && (index === 0 || (all[index - 1] as CipherObservation).hour < value.hour) && runAt(runs, value.hour))) return invalid();
   }
   // Pair observations must be inside recorded coverage, including a partial read.
   for (const pair of data.pairs as DecryptionPair[]) for (const run of pair.runs) {
@@ -143,9 +116,6 @@ export function validateDecryptionReply(data: unknown): DecryptionReply {
   }
   return data as unknown as DecryptionReply;
 }
-
-const sameObservation = (a: CipherObservation | null, b: CipherObservation | null) => a === null || b === null
-  ? a === b : a.hour === b.hour && a.upperBound === b.upperBound;
 
 /** Two independently compressed histories must have the same gaps. */
 function sameHours(a: readonly { firstHour: number; lastHour: number }[], b: readonly { firstHour: number; lastHour: number }[]): boolean {

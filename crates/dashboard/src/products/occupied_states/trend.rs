@@ -1,5 +1,6 @@
 //! Additional consumer of the occupation scan's already-decoded daily joins.
 use super::*;
+use crate::metadata::IdentityTrack;
 use crate::products::{
     country_groups::HourSpan,
     country_history::{Identity, observe_identity},
@@ -19,7 +20,7 @@ struct Total {
 #[derive(Default)]
 struct Track {
     segments: Vec<HourSpan>,
-    last_identity: Option<(Identity, i32)>,
+    last_identity: IdentityTrack,
     runs: Vec<OccupationTrendRun>,
     last: Option<(Identity, i32)>,
 }

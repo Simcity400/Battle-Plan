@@ -5,7 +5,7 @@ import { agencyRequestParams, agencyRows, agencyTooltip, operativesCell, upgrade
 import { sortRows } from '../../charts/table/logic.ts';
 
 const value = (created = true): AgencyValue => ({ created, name: created ? 'Recorded agency' : 'Agence par défaut', defenseRaw: '125000', defenseText: 'Defence level: 1.25', defenseValue: '1.25', activeCount: 3, maximum: 5,
-  upgrades: { count: null, items: [] } });
+  upgrades: { readHour: null, unavailable: null, nonnegativeLevelSum: null, items: [] } });
 const fixture = (): AgencyComparisonReply => ({ branchId: '1', available: true, defenseLabel: 'Defence level', observed: [{ firstHour: 10, lastHour: 20 }, { firstHour: 25, lastHour: 30 }],
   upgradesUnrecorded: 'Acquired upgrade levels were not recorded; elapsed work is a different field.', operativeReadHours: [10, 17, 25], warnings: [],
   series: [{ tag: 'CUSTOM', segments: [{ firstHour: 10, lastHour: 30 }], membership: null,
@@ -55,17 +55,98 @@ test('never-created agency keeps the content-localised name; upgrades are never 
   assert.equal(agencyTooltip(row, 'Country at this hour', null).subtitle, '');
 });
 
-test('agency upgrade identity retains its branch and a future recorded count hides the unrecorded reason', () => {
+test('agency upgrade identity retains its branch and a recorded level sum hides the unrecorded reason', () => {
   const reply = fixture();
   const agency = reply.series[0].entries[0].value;
-  agency.upgrades = { count: 2, items: [{ branchToken: 'mod_branch', token: 'mod_upgrade', name: null, icon: null }] };
+  agency.upgrades = { readHour: 10, unavailable: null, nonnegativeLevelSum: '2', items: [{ ordinal: 0, definitionPointer: '18446744073709551615', branchPointer: '9007199254740993', branchToken: 'mod_branch', token: 'mod_upgrade', branchTokenId: 0, tokenId: 0xffff_ffff, level: 2, identityStatus: 0, identityRefusal: null, name: null, contentReason: null, icon: null }] };
   validateAgencyComparisonReply(reply);
   const tooltip = agencyTooltip({ key: 'CUSTOM', tag: 'CUSTOM', hour: 10, value: agency, operativeRosterCount: null, operativeReadHour: null }, 'Country', reply.upgradesUnrecorded);
   assert.equal(tooltip.rows.some(row => row.label === reply.upgradesUnrecorded), false);
-  assert.equal(tooltip.rows.some(row => row.label === 'Unknown upgrade (mod_branch/mod_upgrade)'), true);
+  assert.equal(tooltip.rows.find(row => row.label === 'Unknown upgrade (mod_branch/mod_upgrade)')?.value, 'Level 2');
+  assert.equal(tooltip.rows.some(row => row.label === 'Agency-upgrade read'), true);
   const malformed = structuredClone(reply) as unknown as { series: { entries: { value: { upgrades: { items: { branchToken?: string }[] } } }[] }[] };
   delete malformed.series[0].entries[0].value.upgrades.items[0].branchToken;
   assert.throws(() => validateAgencyComparisonReply(malformed), /malformed/);
+});
+
+test('agency acquired levels preserve repeated definitions, signed levels and refused identities', () => {
+  const reply = fixture();
+  const agency = reply.series[0].entries[0].value;
+  const item = { ordinal: 0, definitionPointer: '9007199254740993', branchPointer: '9007199254740995',
+    branchToken: 'mod_branch', token: 'mod_upgrade', branchTokenId: 12, tokenId: 34,
+    level: 0, identityStatus: 0, identityRefusal: null, name: null, contentReason: null, icon: null };
+  agency.upgrades = { readHour: 10, unavailable: null, nonnegativeLevelSum: null, items: [item, { ...item, ordinal: 1, level: -3 },
+    { ...item, ordinal: 2, level: 7, branchToken: null, token: null, branchTokenId: null, tokenId: null,
+      identityStatus: 14, identityRefusal: 'agency upgrade definition pointer repeated in database branch membership' }] };
+  const checked = validateAgencyComparisonReply(reply);
+  const row = agencyRows(checked, 12, null)[0];
+  assert.equal(upgradesCell(row.value), 'Unknown');
+  const tooltip = agencyTooltip(row, 'Country', reply.upgradesUnrecorded);
+  assert.deepEqual(tooltip.rows.filter(row => row.value?.startsWith('Level ')).map(row => row.value), ['Level 0', 'Level -3', 'Level 7']);
+  assert.equal(tooltip.rows.some(row => row.label === agency.upgrades.items[2].identityRefusal), true);
+  assert.equal(tooltip.rows.some(row => row.label === reply.upgradesUnrecorded), false);
+  assert.equal(checked.series[0].entries[0].value.upgrades.items[0].definitionPointer, '9007199254740993');
+  const duplicateOrdinal = structuredClone(reply);
+  duplicateOrdinal.series[0].entries[0].value.upgrades.items[1].ordinal = 0;
+  assert.throws(() => validateAgencyComparisonReply(duplicateOrdinal), /malformed/);
+  const refusedCount = structuredClone(reply);
+  refusedCount.series[0].entries[0].value.upgrades.nonnegativeLevelSum = '4';
+  assert.throws(() => validateAgencyComparisonReply(refusedCount), /malformed/);
+  const undated = structuredClone(reply);
+  undated.series[0].entries[0].value.upgrades.readHour = null;
+  assert.throws(() => validateAgencyComparisonReply(undated), /malformed/);
+  const lateRead = structuredClone(reply);
+  lateRead.series[0].entries[0].value.upgrades.readHour = 11;
+  assert.throws(() => validateAgencyComparisonReply(lateRead), /malformed/);
+});
+
+test('a failed acquired-list read is unknown with its recording-gap reason', () => {
+  const reply = fixture();
+  const agency = reply.series[0].entries[0].value;
+  agency.upgrades.unavailable = 'AgencyUpgradeLevels read failed; acquired levels are unknown.';
+  const row = agencyRows(validateAgencyComparisonReply(reply), 12, null)[0];
+  assert.equal(upgradesCell(row.value), 'Unknown');
+  const tooltip = agencyTooltip(row, 'Country', reply.upgradesUnrecorded);
+  assert.equal(tooltip.rows.some(row => row.label === agency.upgrades.unavailable), true);
+  assert.equal(tooltip.rows.some(row => row.label === reply.upgradesUnrecorded), false);
+  const unavailableCount = structuredClone(reply);
+  unavailableCount.series[0].entries[0].value.upgrades.nonnegativeLevelSum = '0';
+  assert.throws(() => validateAgencyComparisonReply(unavailableCount), /malformed/);
+});
+
+test('agency level sums exceed signed totals and keep content refusals', () => {
+  const reply = fixture();
+  const agency = reply.series[0].entries[0].value;
+  const item = { ordinal: 0, definitionPointer: '1', branchPointer: '2', branchToken: 'mod_branch', token: 'mod_upgrade',
+    branchTokenId: 1, tokenId: 2, level: 0x7fff_ffff, identityStatus: 0, identityRefusal: null,
+    name: null, contentReason: 'agency upgrade mod_branch/mod_upgrade content definition unavailable', icon: null };
+  agency.upgrades = { readHour: 10, unavailable: null, nonnegativeLevelSum: '4294967294',
+    items: [item, { ...item, ordinal: 1 }, { ...item, ordinal: 2, level: -3, contentReason: null }] };
+  const row = agencyRows(validateAgencyComparisonReply(reply), 12, null)[0];
+  assert.equal(upgradesCell(row.value), '4,294,967,294');
+  const tooltip = agencyTooltip(row, 'Country', reply.upgradesUnrecorded);
+  assert.equal(tooltip.rows.some(row => row.label === item.contentReason), true);
+  assert.match(tooltip.note ?? '', /inventory total/);
+  for (const invalid of [-1, 4, '-1', '1.5', '', '0', '4294967293', '4294967295']) {
+    const malformed = structuredClone(reply) as unknown as { series: { entries: { value: { upgrades: { nonnegativeLevelSum: unknown } } }[] }[] };
+    malformed.series[0].entries[0].value.upgrades.nonnegativeLevelSum = invalid;
+    assert.throws(() => validateAgencyComparisonReply(malformed), /malformed/);
+  }
+  const noContentReason = structuredClone(reply) as unknown as { series: { entries: { value: { upgrades: { items: { contentReason?: string | null }[] } } }[] }[] };
+  delete noContentReason.series[0].entries[0].value.upgrades.items[0].contentReason;
+  assert.throws(() => validateAgencyComparisonReply(noContentReason), /malformed/);
+});
+
+test('a recorded nonpositive acquired list has an exact zero sum', () => {
+  const reply = fixture();
+  const agency = reply.series[0].entries[0].value;
+  const item = { ordinal: 0, definitionPointer: '1', branchPointer: '2', branchToken: 'mod_branch', token: 'mod_upgrade',
+    branchTokenId: 1, tokenId: 2, level: 0, identityStatus: 0, identityRefusal: null, name: null, contentReason: null, icon: null };
+  agency.upgrades = { readHour: 10, unavailable: null, nonnegativeLevelSum: '0', items: [item, { ...item, ordinal: 1, level: -3 }] };
+  const row = agencyRows(validateAgencyComparisonReply(reply), 12, null)[0];
+  assert.equal(upgradesCell(row.value), '0');
+  agency.upgrades.nonnegativeLevelSum = '1';
+  assert.throws(() => validateAgencyComparisonReply(reply), /malformed/);
 });
 
 test('agency products retain all 5000 countries and backend top membership, with exact sort', () => {

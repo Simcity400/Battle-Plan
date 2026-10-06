@@ -1,6 +1,6 @@
 //! Sparse hourly cipher races. Missing operands stay unknown; observations never
 //! cross a gap. The game's unrecorded date is replaced by a dated observation.
-use super::{LoadContext, Product, recorded_rows};
+use super::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, recorded_rows};
 use crate::{Source, catalogue::Refusals, cryptology, metadata};
 use replay::{
     container::Replay,
@@ -228,6 +228,7 @@ impl Product for Decryption {
             cancelled,
         )?;
         reply.warnings.extend(warnings);
+        check_reply_budget(&reply)?;
         Ok(reply)
     }
 }
@@ -322,7 +323,7 @@ impl Scan {
                 let reason = "Cryptology country link or country is not recorded";
                 self.refusals.note(
                     reason,
-                    format!("{} → {} at {hour}", row.owner_country, row.target_country),
+                    format!("{} → {}", row.owner_country, row.target_country),
                 );
                 incomplete = Some(reason.into());
                 continue;
@@ -357,7 +358,7 @@ impl Scan {
             }) {
                 self.refusals.note(
                     "progress unknown: native signed division overflow",
-                    format!("country {} → country {} at {hour}", key.0, key.1),
+                    format!("country {} → country {}", key.0, key.1),
                 );
             }
             self.observe(
@@ -536,12 +537,22 @@ pub fn scan(
             scan.frame(decoded, defines)?;
         }
     }
-    Ok(DecryptionReply {
+    let reply = DecryptionReply {
         branch_id: branch.to_string(),
         pairs: scan.pairs.into_values().map(|state| state.pair).collect(),
         coverage: scan.coverage,
-        warnings: scan.refusals.lines("cipher observations"),
-    })
+        warnings: scan.refusals.diagnostic_lines("cipher entries affected"),
+    };
+    check_reply_budget(&reply)?;
+    Ok(reply)
+}
+
+fn check_reply_budget(reply: &DecryptionReply) -> io::Result<()> {
+    crate::transport::json_len(reply, MAX_PRODUCT_REPLY_BYTES)
+        .map(|_| ())
+        .ok_or_else(|| {
+            io::Error::other("Decryption history exceeds the complete-response byte budget")
+        })
 }
 
 #[cfg(test)]

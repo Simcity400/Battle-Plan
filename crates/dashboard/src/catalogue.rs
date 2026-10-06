@@ -142,7 +142,7 @@ pub fn plain_text(text: &str) -> Result<String, String> {
     Ok(clean)
 }
 
-/// Texts not shown, by reason, with what each names.
+/// Issues by reason, with what each names.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Refusals(BTreeMap<String, BTreeSet<String>>);
 
@@ -157,11 +157,16 @@ impl Refusals {
 
     /// One warning per reason, naming every `what` it affects.
     pub fn lines(&self, what: &str) -> Vec<String> {
+        self.diagnostic_lines(&format!("{what} not shown"))
+    }
+
+    /// Counted issues without implying that the affected values were omitted.
+    pub fn diagnostic_lines(&self, what: &str) -> Vec<String> {
         self.0
             .iter()
             .map(|(reason, identities)| {
                 format!(
-                    "{} {what} not shown: {reason}; {}",
+                    "{} {what}: {reason}; {}",
                     identities.len(),
                     identities.iter().cloned().collect::<Vec<_>>().join(", ")
                 )
@@ -870,6 +875,10 @@ pub(crate) mod tests {
         assert_eq!(
             refusals.lines("names are"),
             ["2 names are not shown: why; A, B"]
+        );
+        assert_eq!(
+            refusals.diagnostic_lines("retained values affected"),
+            ["2 retained values affected: why; A, B"]
         );
     }
 

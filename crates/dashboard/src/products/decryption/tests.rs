@@ -85,6 +85,18 @@ const DEFINES: cryptology::Defines = cryptology::Defines {
     upgrade: 300_000,
 };
 
+fn scan_frames(
+    frames: Vec<DecodedFrame>,
+    defines: Result<cryptology::Defines, &str>,
+) -> DecryptionReply {
+    let replay = Replay::from_records(
+        b"analytics-test".to_vec(),
+        &[crate::test_fixtures::records(1, frames)],
+    )
+    .unwrap();
+    scan(&replay, 1, defines, &AtomicBool::new(false)).unwrap()
+}
+
 #[test]
 fn unrepresentable_tags_keep_cipher_values_and_report_country_ids() {
     for tag in [vec![0xff, b'|'], vec![b'A', 0], vec![]] {
@@ -95,17 +107,111 @@ fn unrepresentable_tags_keep_cipher_values_and_report_country_ids() {
             panic!("complete country fixture")
         };
         countries[1].tag = tag;
-        let mut scan = Scan::default();
-        scan.frame(&input, Ok(DEFINES)).unwrap();
-        let pair = &scan.pairs[&(1, 2)].pair;
+        let reply = scan_frames(vec![input], Ok(DEFINES));
+        let pair = &reply.pairs[0];
         assert_eq!(pair.tag_runs[0].target_tag, None);
         assert_eq!(pair.runs[0].start_amount_raw, "400000");
         assert_eq!(progress(&pair.runs[0]), Some(50));
-        assert!(scan.coverage[0].complete);
-        let warnings = scan.refusals.lines("cipher observations");
-        assert!(warnings[0].contains("country 2, tag bytes"));
-        assert!(warnings[0].contains("cipher data retained"));
+        assert!(reply.coverage[0].complete);
+        assert!(reply.warnings[0].contains("country 2, tag bytes"));
+        assert!(reply.warnings[0].contains("cipher data retained"));
+        assert!(!reply.warnings[0].contains("not shown"));
     }
+}
+
+#[test]
+fn missing_country_links_count_the_pair_once_without_hourly_warnings() {
+    let mut frames = Vec::new();
+    for hour in [100, 101] {
+        let mut input = frame(hour, 2, 400_000, 1);
+        let TableView::Complete(TableRows::Cryptology(rows)) =
+            &mut *input.tables[TableId::Cryptology.index()]
+        else {
+            panic!("complete cipher fixture")
+        };
+        rows[0].target_country = 99;
+        frames.push(input);
+    }
+    let reply = scan_frames(frames, Ok(DEFINES));
+    assert!(reply.pairs.is_empty());
+    assert_eq!(
+        reply.warnings,
+        ["1 cipher entries affected: Cryptology country link or country is not recorded; 1 → 99"]
+    );
+}
+
+#[test]
+fn missing_thresholds_retain_amounts_and_count_the_target_once() {
+    let mut frames = Vec::new();
+    for hour in [100, 101] {
+        let mut input = frame(hour, 2, 400_000, 1);
+        *input.tables[TableId::RaidIntelInputs.index()] = TableView::Unavailable {
+            reason: "missing target operands".into(),
+        };
+        frames.push(input);
+    }
+    let reply = scan_frames(frames, Ok(DEFINES));
+    let pair = &reply.pairs[0];
+    assert_eq!(pair.runs[0].last_hour, 101);
+    assert_eq!(pair.runs[0].start_amount_raw, "400000");
+    assert_eq!(pair.runs[0].threshold_raw, None);
+    assert_eq!(
+        reply.warnings,
+        [
+            "1 cipher entries affected: progress unknown: target RaidIntelInputs was not recorded at this hour; country 2"
+        ]
+    );
+}
+
+#[test]
+fn signed_division_overflow_retains_amounts_and_counts_the_pair_once() {
+    // cipher_row_bind@141A0EC20 wraps the fixed5 product before signed
+    // division: this numerator is i64::MIN and the threshold is -1.
+    let reply = scan_frames(
+        [100, 101]
+            .into_iter()
+            .map(|hour| frame(hour, 2, 1 << 58, 1))
+            .collect(),
+        Ok(cryptology::Defines {
+            base: -1,
+            upgrade: 0,
+        }),
+    );
+    let pair = &reply.pairs[0];
+    assert_eq!(pair.runs[0].last_hour, 101);
+    assert_eq!(pair.runs[0].amount_at(100), Some(1 << 58));
+    assert_eq!(progress(&pair.runs[0]), None);
+    assert_eq!(
+        reply.warnings,
+        [
+            "1 cipher entries affected: progress unknown: native signed division overflow; country 1 → country 2"
+        ]
+    );
+}
+
+#[test]
+fn complete_reply_refuses_only_past_the_shared_byte_budget() {
+    let replay = Replay::from_records(
+        b"analytics-test".to_vec(),
+        &[crate::test_fixtures::records(
+            1,
+            vec![frame(100, 2, 400_000, 1)],
+        )],
+    )
+    .unwrap();
+    let cancelled = AtomicBool::new(false);
+    let reply = scan(&replay, 1, Err(""), &cancelled).unwrap();
+    let fixed_bytes = crate::transport::json_len(&reply, MAX_PRODUCT_REPLY_BYTES).unwrap();
+    // The reason appears in the unknown threshold and its counted warning.
+    let mut reason = "x".repeat((MAX_PRODUCT_REPLY_BYTES - fixed_bytes) / 2);
+    scan(&replay, 1, Err(&reason), &cancelled).unwrap();
+    reason.push('x');
+    assert_eq!(
+        scan(&replay, 1, Err(&reason), &cancelled)
+            .unwrap_err()
+            .to_string(),
+        "Decryption history exceeds the complete-response byte budget"
+    );
 }
 
 #[test]
@@ -325,7 +431,8 @@ fn native_division_overflow_is_named_and_counted() {
     .unwrap();
     assert_eq!(progress(&scan.pairs[&(1, 2)].pair.runs[0]), None);
     assert!(
-        scan.refusals.lines("cipher observations")[0].contains("native signed division overflow")
+        scan.refusals.diagnostic_lines("cipher entries affected")[0]
+            .contains("native signed division overflow")
     );
 }
 

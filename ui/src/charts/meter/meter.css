@@ -2,6 +2,6 @@
 .progress-meter i { display:block; height:100%; border-radius:inherit; background:var(--accent); }
 .progress-meter.is-done i { background:var(--positive); }
 .progress-meter.is-idle i { background:var(--muted); }
-.progress-meter.is-live i { background-image:linear-gradient(90deg,transparent 0 40%,var(--meter-sweep) 50%,transparent 60% 100%); background-size:200% 100%; animation:progress-meter-sweep var(--meter-sweep-duration) linear infinite; }
+.progress-meter.is-live.has-sweep i { background-image:linear-gradient(90deg,transparent 0 40%,var(--meter-sweep) 50%,transparent 60% 100%); background-size:200% 100%; animation:progress-meter-sweep var(--meter-sweep-duration) linear infinite; }
 @keyframes progress-meter-sweep { from { background-position:200% 0; } to { background-position:-200% 0; } }
-:root[data-motion='reduced'] .progress-meter.is-live i { animation:none; background-image:none; }
+:root[data-motion='reduced'] .progress-meter.is-live.has-sweep i { animation:none; background-image:none; }

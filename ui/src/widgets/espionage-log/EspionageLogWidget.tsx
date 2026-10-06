@@ -75,16 +75,16 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   if (grouped && groups.error) return <WidgetState kind="error" message={`Country groups are unavailable: ${groups.error}`} onRetry={groups.retry} />;
   if (!data || (grouped && !groups.data)) return <WidgetState kind="loading" label="Loading espionage operations…" />;
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
-  if (data.unavailable) return <WidgetState kind="unavailable" message={data.unavailable} />;
+  if (data.unavailable && !data.completionsAvailable.length) return <WidgetState kind="unavailable" message={data.unavailable} />;
   if (hour == null) return <WidgetState kind="unavailable" message="The chosen moment is outside this campaign branch." />;
-  if (!data.available.length) return <WidgetState kind="unavailable" message="Espionage operations are not in this recording." />;
-  if (!runAt(data.available, hour) && !rows.length) return <WidgetState kind="unavailable" message="Operations were not recorded at this hour. Gaps stay gaps." />;
+  if (!data.available.length && !data.completionsAvailable.length) return <WidgetState kind="unavailable" message="Espionage operations are not in this recording." />;
+  if (!runAt(data.available, hour) && !runAt(data.completionsAvailable, hour) && !rows.length) return <WidgetState kind="unavailable" message="Operations were not recorded at this hour. Gaps stay gaps." />;
 
   const chosen = contentSet(types);
   const toggle = (value: string) => { const next = toggleContentSet(types, value, 16); if (next !== null) setOption?.('types', next); };
   const renderRow = (row: LogRow<OperationAt>) => {
     const at = row.item;
-    const type = byType.get(at.operation.typeKey);
+    const type = at.typeKey === null ? undefined : byType.get(at.typeKey);
     const owner = labels(row, at.ownerTag);
     const target = labels(row, at.targetTag);
     const meter = drawsMeter(at, live);
@@ -114,7 +114,7 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
     </div>}
     <LogList key={`${track.source.id}:${track.branch.id}`} rows={rows} label="Espionage operations" density={log.density} months={log.months}
       animate={log.animate && live} columns={row => drawsMeter(row.item, live) ? METER_COLUMNS : COLUMNS} renderRow={renderRow}
-      describe={row => `${labels(row, row.item.ownerTag).name}${operationWording(row.item).action}${operationName(byType.get(row.item.operation.typeKey))} against ${labels(row, row.item.targetTag).name}${operationWording(row.item).afterTarget}. ${operationState(row.item)}.`}
+      describe={row => `${labels(row, row.item.ownerTag).name}${operationWording(row.item).action}${operationName(row.item.typeKey === null ? undefined : byType.get(row.item.typeKey))} against ${labels(row, row.item.targetTag).name}${operationWording(row.item).afterTarget}. ${operationState(row.item)}.`}
       tooltip={row => operationTooltip(data, row, tag => labels(row, tag).name)}
       menu={row => operationJumpHours(row.item, hour, row.hour).map(at => jumpItem(runtime, track.id, at))}
       empty="No espionage operations match these countries and settings by this moment." onVisible={setVisible} />

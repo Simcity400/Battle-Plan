@@ -9,12 +9,15 @@
 //! incomplete tables, gaps and identity changes never become zero.
 
 use super::{
-    LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, country_groups::HourSpan, validate_tag,
+    LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, country_groups::HourSpan,
+    country_history::observe_identity, validate_tag,
 };
 use crate::{
     Source,
     catalogue::{self, Catalogue},
-    metadata::{TaggedCountry, link_slot, slot_read, tagged_countries, validate_campaign},
+    metadata::{
+        IdentityTrack, TaggedCountry, link_slot, slot_read, tagged_countries, validate_campaign,
+    },
 };
 use engine::raid_tooltip_operands::{NUCLEAR_BOMB_TOKEN, THERMONUCLEAR_BOMB_TOKEN};
 use replay::{
@@ -133,7 +136,7 @@ struct Track {
     runs: Vec<NukeRun>,
     segments: Vec<HourSpan>,
     last: Option<((u32, u32), i32)>,
-    last_identity: Option<((u32, u32), i32)>,
+    last_identity: IdentityTrack,
 }
 
 pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<ScannedNukes> {
@@ -238,28 +241,19 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 }
                 let track = tracks.get_mut(tag).expect("inserted above");
                 let identity = (slot, country.id);
-                let same_identity = track.last_identity.is_some_and(|(seen, hour)| {
-                    seen == identity && hour.checked_add(1) == Some(frame.hour)
-                });
-                if same_identity {
-                    track
-                        .segments
-                        .last_mut()
-                        .expect("previous identity")
-                        .last_hour = frame.hour;
-                } else {
+                if !observe_identity(
+                    &mut track.segments,
+                    &mut track.last_identity,
+                    identity,
+                    frame.hour,
+                ) {
                     segment_count += 1;
                     if segment_count > MAX_RUNS {
                         return Err(io::Error::other(
                             "The nuclear country identity history exceeds its memory budget",
                         ));
                     }
-                    track.segments.push(HourSpan {
-                        first_hour: frame.hour,
-                        last_hour: frame.hour,
-                    });
                 }
-                track.last_identity = Some((identity, frame.hour));
                 if rows.is_none() {
                     continue;
                 }

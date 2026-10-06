@@ -2196,7 +2196,27 @@ readHour: number,
 /**
  * Native resource-meter ratio, fixed5; not equipment readiness.
  */
-preparationRatio: number | null,
+preparationRatio: number | null, ownerTag: string | null, targetTag: string | null,
+/**
+ * Null when this read did not record the definition token's name.
+ */
+typeKey: string | null,
+/**
+ * Selected definitions, not completed phases (1413EB710).
+ */
+phaseCount: number,
+/**
+ * Manager 14118B110 tests +0x41 after completion.
+ */
+autoRepeat: boolean,
+/**
+ * Launch writes duration and start on the same instance (1413EAD80).
+ */
+durationDays: number,
+/**
+ * All +0xE0 slots, including unassigned ones (1413E9210/141BD1CD0).
+ */
+assignedSlots: number,
 /**
  * 1413EC160 signed day result at this read; native -1 stays unknown.
  */
@@ -2214,27 +2234,40 @@ autoCommence: boolean, startHour: number | null,
  */
 operatives: Array<string> | null, };
 export type EspionageEndReason = "completed" | "disappeared";
-export type EspionageOutcome = { description: string, };
-export type EspionageOperationEnd = { byHour: number, lastSeen: number, reason: EspionageEndReason, outcome: EspionageOutcome | null, outcomeUnrecorded: string | null, ownerTag: string | null, targetTag: string | null, };
+export type EspionageOutcome = {
+/**
+ * Stored independent trials, +C0/+C1 (1413EE390), never success/failure.
+ */
+bonus: boolean, detected: boolean,
+/**
+ * Language of the stored +0xA0 text, not the viewer's display language.
+ */
+recordedLanguage: string, description: string | null, descriptionUnrecorded: string | null,
+/**
+ * Exact native byte length, including when capture refused the text.
+ */
+descriptionRequiredBytes: string, };
+export type EspionageOperationEnd = { byHour: number, lastSeen: number,
+/**
+ * Exact hook date/sequence when supplied by OperationCompletions; snapshot
+ * terminal reads establish only by_hour.
+ */
+completionHour: number | null, completionSequence: string | null, typeKey: string | null, reason: EspionageEndReason, outcome: EspionageOutcome | null, outcomeUnrecorded: string | null, ownerTag: string | null, targetTag: string | null, };
 export type EspionageOperation = {
 /**
  * Full native handle and episode's first read. Auto-repeat creates a fresh
  * identity (14118B110 -> 141A13EA0 -> 141189390 -> 142209A50).
  */
-id: string, firstRead: number, startHour: number | null, startKnownAt: number | null, ownerTag: string | null, targetTag: string | null, typeKey: string,
+id: string, firstRead: number, startHour: number | null, startKnownAt: number | null,
 /**
- * Selected definitions, not completed phases (1413EB710).
+ * Raw lexical identity; the name, countries and mutable values belong to reads.
  */
-phaseCount: number,
+definitionToken: number, runs: Array<EspionageOperationRun>, end: EspionageOperationEnd | null, };
+export type EspionageLogReply = { branchId: string, firstHour: number, lastHour: number, available: Array<HourSpan>, readHours: Array<number>,
 /**
- * Manager 14118B110 tests +0x41 after completion to repeat the operation.
+ * Completion batches are independent of the daily instance census.
  */
-autoRepeat: boolean, durationDays: number,
-/**
- * All +0xE0 slots, including unassigned ones (1413E9210/141BD1CD0).
- */
-assignedSlots: number, runs: Array<EspionageOperationRun>, end: EspionageOperationEnd | null, };
-export type EspionageLogReply = { branchId: string, firstHour: number, lastHour: number, available: Array<HourSpan>, readHours: Array<number>, types: Array<EspionageOperationType>, operations: Array<EspionageOperation>, warnings: Array<string>, unavailable: string | null, };
+completionsAvailable: Array<HourSpan>, completionsUnrecorded: string | null, types: Array<EspionageOperationType>, operations: Array<EspionageOperation>, warnings: Array<string>, unavailable: string | null, };
 export type AgencyComparisonParams = { branchId: string,
 /**
  * Empty means all countries; tags are never restricted by human status.
@@ -2244,11 +2277,34 @@ export type AgencyRankField = "defense" | "active" | "maximum";
 export type AgencyTop = { count: number, field: AgencyRankField, };
 export type AgencyUpgradeItem = {
 /**
- * CAgencyUpgrade+0x260 owns the branch; branch+8 and definition+8 are
- * separate lexical tokens (140618C40, 140FCA0F0). A token alone is ambiguous.
+ * This read's array position, preserving repeated definitions and all levels
+ * as Save140FCA0F0 writes the native +0x60/+0x6C entries.
  */
-branchToken: string, token: string, name: string | null, icon: string | null, };
-export type AgencyUpgrades = { count: number | null, items: Array<AgencyUpgradeItem>, };
+ordinal: number, definitionPointer: string, branchPointer: string,
+/**
+ * CAgencyUpgrade+0x260 owns the branch; branch+8 and definition+8 are
+ * separate lexical tokens (140615D50, 140618C40, 140FCA0F0). A token alone is ambiguous.
+ */
+branchToken: string | null, token: string | null,
+/**
+ * Raw lexical IDs survive a missing recorded token-name dictionary.
+ */
+branchTokenId: number | null, tokenId: number | null, level: number,
+/**
+ * Capture authentication status; refused entries retain their raw values.
+ */
+identityStatus: number, identityRefusal: string | null, name: string | null, contentReason: string | null, icon: string | null, };
+export type AgencyUpgrades = { readHour: number | null,
+/**
+ * A failed or incomplete acquired-list read is distinct from absent capture.
+ */
+unavailable: string | null,
+/**
+ * Mathematical sum of max(0, signed level), unknown for an incomplete or
+ * unauthenticated list. The nonnegative term comes from 140FC2B80; this
+ * inventory sum omits its created gate, i32 wrapping, base and slot formula.
+ */
+nonnegativeLevelSum: string | null, items: Array<AgencyUpgradeItem>, };
 export type AgencyValue = { created: boolean,
 /**
  * Created names are literal recorded bytes, including an empty name.

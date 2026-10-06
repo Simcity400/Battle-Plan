@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn counted_reports_keep_their_source_kind() {
     let read = read(
-        b"warning=yes unsupported=yes",
+        b"warning=yes unsupported=yes\nwarning=no unsupported=no",
         Mode::KeepMark,
         Top::File(()),
         None,
@@ -11,13 +11,13 @@ fn counted_reports_keep_their_source_kind() {
             if field.keyword_is("warning") {
                 Shape::Reported {
                     kind: crate::DiagnosticKind::Misread,
-                    report: "refused is only wording".into(),
+                    report: "synthetic reader diagnostic".into(),
                     read: Box::new(Shape::One),
                 }
             } else {
                 Shape::Reported {
                     kind: crate::DiagnosticKind::Unsupported,
-                    report: "no severity word".into(),
+                    report: "synthetic reader diagnostic".into(),
                     read: Box::new(Shape::One),
                 }
             }
@@ -32,6 +32,17 @@ fn counted_reports_keep_their_source_kind() {
             crate::DiagnosticKind::Misread,
             crate::DiagnosticKind::Unsupported
         ]
+    );
+    assert!(
+        read.misreads
+            .iter()
+            .all(|note| note.count == Some(2) && note.line == 1)
+    );
+    assert_eq!(read.item_misreads.len(), 4);
+    assert!(
+        read.item_misreads
+            .iter()
+            .all(|notes| notes.len() == 1 && notes[0].count == Some(1))
     );
 }
 
