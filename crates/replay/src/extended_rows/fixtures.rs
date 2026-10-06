@@ -885,7 +885,60 @@ fixture!(AirSortieModifierMetadataRow, |_key| {}, {flags: u32, feature_selector:
 fixture!(NavalMineLevelRow, |key| {country: (key >> 32) as u32, region: key as u32}, {raw_mines: i64});
 fixture!(AirNavalPatrolCombatRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {province: u32, region: u32});
 fixture!(AirNavalPatrolHistoryRow, |key| {country: (key >> 64) as u32, region: (key >> 32) as u32, index: key as u32}, {enemy_ships_sunk_raw: i64, our_fighters_lost_raw: i64});
-fixture!(DivisionMovementRow, |key| {division: key as u64}, {source: u32, target: u32, numerator: i64, retreat: u8, strategic_redeployment: u8, naval_transfer: u8, combat_count: u32, path_total: u32, path: Vec<u32>, alternate_total: u32, alternate_path: Vec<u32>, combat_role: u8, combat_province: u32, map_entity: u8});
+fn strategic_action_fixture(tick: usize) -> StrategicRedeploymentInputs {
+    match tick % 7 {
+        0 => StrategicRedeploymentInputs {
+            country_modifier: i64::MIN,
+            ..Default::default()
+        },
+        1 => StrategicRedeploymentInputs::default(),
+        2 => StrategicRedeploymentInputs {
+            state_modifier: Some(i64::MAX),
+            ..Default::default()
+        },
+        3 => StrategicRedeploymentInputs {
+            state_modifier: Some(0),
+            ..Default::default()
+        },
+        _ => StrategicRedeploymentInputs {
+            country_modifier: 0,
+            state_modifier: Some(0),
+            friendly_state_modifier: Some(match tick % 7 {
+                4 => 0,
+                5 => i64::MIN,
+                _ => i64::MAX,
+            }),
+        },
+    }
+}
+
+impl Fixture for DivisionMovementRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        let reached = !tick.is_multiple_of(8);
+        Self {
+            division: key as u64,
+            source: u32::sample(tick),
+            target: if reached { 0 } else { u32::sample(tick) },
+            numerator: i64::sample(tick),
+            retreat: if reached { 0 } else { u8::sample(tick) },
+            strategic_redeployment: if reached { u8::MAX } else { 0 },
+            naval_transfer: u8::sample(tick),
+            combat_count: u32::sample(tick),
+            path_total: if reached { 2 } else { u32::sample(tick) },
+            path: vec![u32::sample(tick), u32::sample(tick + 1)],
+            alternate_total: u32::sample(tick),
+            alternate_path: Vec::<u32>::sample(tick),
+            combat_role: u8::sample(tick),
+            combat_province: u32::sample(tick),
+            map_entity: u8::sample(tick),
+            strategic_action: if reached {
+                StrategicAction::Available(strategic_action_fixture(tick))
+            } else {
+                StrategicAction::Unreached
+            },
+        }
+    }
+}
 sample_struct!(DivisionAcclimatization {
     category: u32,
     weight: i64
@@ -2640,4 +2693,137 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<RelationOpinionRow>(TableId::RelationOpinions);
     check_table::<RelationTupleRow>(TableId::RelationTuples);
     check_table::<CountryIntelRow>(TableId::CountryIntel);
+}
+
+#[test]
+fn strategic_action_codec_round_trips_snapshots_and_modifier_only_delta() {
+    check_table::<DivisionMovementRow>(TableId::DivisionMovement);
+    let previous = DivisionMovementRow::fixture(u64::MAX as u128, 4);
+    let mut next = previous.clone();
+    next.strategic_action = StrategicAction::Available(StrategicRedeploymentInputs {
+        friendly_state_modifier: Some(i64::MIN),
+        ..strategic_action_fixture(4)
+    });
+    let delta = next.delta(Some(&previous)).unwrap().unwrap();
+    assert_eq!(delta.mask, 1 << 14);
+    let mut bytes = Vec::new();
+    encode_delta(TableId::DivisionMovement, &delta, 0, &mut bytes).unwrap();
+    let mut input = Decoder::new(&bytes);
+    let decoded = decode_delta(TableId::DivisionMovement, 0, &mut input).unwrap();
+    input.finish().unwrap();
+    assert_eq!(decoded.apply(Some(previous)).unwrap(), next);
+    next.strategic_action = StrategicAction::Withheld(StrategicActionFailure::CurrentState);
+    round_trip(&next);
+    assert!(next.delta(Some(&next)).unwrap().is_none());
+}
+
+#[test]
+fn strategic_action_codec_preserves_skips_and_per_row_refusals() {
+    let row = DivisionMovementRow::fixture(9, 4);
+    for tick in 0..7 {
+        let inputs = strategic_action_fixture(tick);
+        assert_eq!(inputs.blocked(), matches!(tick, 0 | 2 | 5 | 6));
+        round_trip(&DivisionMovementRow {
+            strategic_action: StrategicAction::Available(inputs),
+            ..row.clone()
+        });
+    }
+    for reason in [
+        StrategicActionFailure::Owner,
+        StrategicActionFailure::CountryModifier,
+        StrategicActionFailure::CurrentState,
+        StrategicActionFailure::StateModifier,
+        StrategicActionFailure::Friendly,
+        StrategicActionFailure::FriendlyStateModifier,
+    ] {
+        round_trip(&DivisionMovementRow {
+            strategic_action: StrategicAction::Withheld(reason),
+            ..row.clone()
+        });
+    }
+    assert!(
+        encode_row(
+            &DivisionMovementRow {
+                strategic_action: StrategicAction::Unreached,
+                ..row.clone()
+            },
+            0,
+            &mut Vec::new()
+        )
+        .is_err()
+    );
+    for skipped in [
+        DivisionMovementRow {
+            path_total: u32::MAX,
+            ..row.clone()
+        },
+        DivisionMovementRow {
+            target: 3,
+            ..row.clone()
+        },
+        DivisionMovementRow {
+            retreat: 1,
+            ..row.clone()
+        },
+        DivisionMovementRow {
+            strategic_redeployment: 0,
+            ..row.clone()
+        },
+    ] {
+        assert!(encode_row(&skipped, 0, &mut Vec::new()).is_err());
+        round_trip(&DivisionMovementRow {
+            strategic_action: StrategicAction::Unreached,
+            ..skipped
+        });
+    }
+    let mut bytes = Vec::new();
+    crate::value::Value::encode(&row.strategic_action, &mut bytes).unwrap();
+    for (offset, bad_tag) in [(0, 3), (9, 2), (18, 2)] {
+        let mut malformed = bytes.clone();
+        malformed[offset] = bad_tag;
+        assert!(
+            <StrategicAction as crate::value::Value>::decode(&mut Decoder::new(&malformed))
+                .is_err()
+        );
+    }
+    assert!(<StrategicAction as crate::value::Value>::decode(&mut Decoder::new(&[2, 6])).is_err());
+}
+
+#[test]
+fn strategic_action_codec_measures_incremental_payload_bytes() {
+    let absent = StrategicAction::Unreached;
+    assert_eq!(absent.field().encoded_bytes().unwrap(), 5);
+    assert_eq!(
+        StrategicAction::Withheld(StrategicActionFailure::Owner)
+            .field()
+            .encoded_bytes()
+            .unwrap(),
+        6
+    );
+    let base = DivisionMovementRow::fixture(9, 4);
+    let baseline = DivisionMovementRow {
+        strategic_redeployment: 0,
+        strategic_action: absent,
+        ..base.clone()
+    };
+    let baseline_bytes = round_trip(&baseline);
+    assert_eq!(baseline_bytes, 63);
+    assert!(baseline.delta(Some(&baseline)).unwrap().is_none());
+    for (tick, expected) in [
+        (0, 15),
+        (1, 15),
+        (2, 23),
+        (3, 23),
+        (4, 31),
+        (5, 31),
+        (6, 31),
+    ] {
+        let status = StrategicAction::Available(strategic_action_fixture(tick));
+        assert_eq!(status.field().encoded_bytes().unwrap(), expected);
+        let row = DivisionMovementRow {
+            strategic_action: status,
+            ..base.clone()
+        };
+        assert_eq!(round_trip(&row) - baseline_bytes, expected - 5);
+    }
 }

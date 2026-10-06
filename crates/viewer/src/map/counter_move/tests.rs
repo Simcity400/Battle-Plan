@@ -733,3 +733,32 @@ fn a_division_moves_to_its_settled_point_and_a_snapped_one_stands() {
     assert!(snapped.motion.is_none());
     assert_eq!(snapped.at(), [110.0, 0.0, 1.0]);
 }
+
+#[test]
+fn counter_action_route_idle_uses_native_signed_counts() {
+    use replay::{
+        frame::{DecodedFrame, Metrics, TableView},
+        rows::{DivisionMovementRow, TableId, TableRows},
+    };
+    let mut frame = DecodedFrame {
+        branch: 1,
+        hour: 0,
+        tables: std::array::from_fn(|_| {
+            TableView::Unavailable {
+                reason: "not needed".into(),
+            }
+            .into()
+        }),
+        metrics: Metrics::default(),
+    };
+    *frame.tables[TableId::DivisionMovement.index()] =
+        TableView::Complete(TableRows::DivisionMovement(vec![DivisionMovementRow {
+            division: 7,
+            path_total: u32::MAX,
+            combat_count: u32::MAX,
+            ..Default::default()
+        }]));
+    let etas = crate::map::division_eta::Etas::default();
+    let routes = DivisionRoutes::read(&frame, &etas, None, &|_| None).unwrap();
+    assert!(routes.by_division[&7].idle);
+}

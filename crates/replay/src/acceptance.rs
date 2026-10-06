@@ -1701,3 +1701,63 @@ fn parallel_budget() -> usize {
     })
     .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |cores| cores.get()))
 }
+
+#[test]
+fn strategic_action_acceptance_refreshes_operand_only_changes_and_rejects_missing() {
+    let make = |hour, inputs| DecodedFrame {
+        branch: 1,
+        hour,
+        metrics: Metrics::default(),
+        tables: std::array::from_fn(|index| {
+            if index == TableId::DivisionMovement.index() {
+                TableView::Complete(TableRows::DivisionMovement(vec![
+                    crate::rows::DivisionMovementRow {
+                        division: DIVISION_A,
+                        path_total: 1,
+                        path: vec![7],
+                        strategic_redeployment: 1,
+                        strategic_action: inputs,
+                        ..Default::default()
+                    },
+                ]))
+                .into()
+            } else {
+                TableView::Unavailable {
+                    reason: "fixture has no sample".into(),
+                }
+                .into()
+            }
+        }),
+    };
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    for (hour, value) in [0, i64::MIN, i64::MAX, 0].into_iter().enumerate() {
+        let inputs =
+            crate::rows::StrategicAction::Available(crate::rows::StrategicRedeploymentInputs {
+                state_modifier: Some(0),
+                friendly_state_modifier: Some(value),
+                ..Default::default()
+            });
+        let frame = make(hour as i32, inputs);
+        let encoded = encoder.encode(frame, hour == 0).unwrap();
+        let decoded = decoder.apply(&encoded).unwrap();
+        assert_eq!(
+            decoded.complete::<tables::DivisionMovement>().unwrap()[0].strategic_action,
+            inputs
+        );
+    }
+    let withheld = crate::rows::StrategicAction::Withheld(
+        crate::rows::StrategicActionFailure::CountryModifier,
+    );
+    let encoded = encoder.encode(make(4, withheld), false).unwrap();
+    let decoded = decoder.apply(&encoded).unwrap();
+    assert_eq!(
+        decoded.complete::<tables::DivisionMovement>().unwrap()[0].strategic_action,
+        withheld
+    );
+    assert!(
+        encoder
+            .encode(make(5, crate::rows::StrategicAction::Unreached), false)
+            .is_err()
+    );
+}

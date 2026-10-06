@@ -173,6 +173,21 @@ mod tests {
     }
 
     #[test]
+    fn strategic_action_key_mismatch_keeps_current_movement_available() {
+        let mut input = inputs();
+        apply(
+            &mut input,
+            &Ok(mismatched(
+                modifier_keys::DISABLE_STRATEGIC_REDEPLOYMENT as usize,
+            )),
+        )
+        .unwrap();
+        assert!(untouched(&input, TableId::DivisionMovement));
+        assert!(untouched(&input, TableId::Divisions));
+        assert!(replay::fixed_layout::STRATEGIC_ACTION.tables.is_empty());
+    }
+
+    #[test]
     fn a_used_key_mismatch_refuses_every_key_family_and_survives_encoding() {
         let report = mismatched(modifier_keys::ARMY_SPEED_FACTOR as usize);
         let mut input = inputs();
@@ -182,7 +197,6 @@ mod tests {
             "army_speed_factor (0x2b): definition token spells a different script name",
         );
         for table in [
-            TableId::DivisionMovement,
             TableId::Countries,
             TableId::ModifierDefinitions,
             TableId::LexicalTokens,

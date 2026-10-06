@@ -66,6 +66,7 @@ pub(super) fn child(
             scale: 1.0,
             frame: 0,
             rotation: 0.0,
+            centered: false,
             order: u32::MAX,
         });
     };
@@ -120,6 +121,7 @@ pub(super) fn child(
         scale,
         frame: frame.max(0) as u32,
         rotation,
+        centered: element.icon().is_some_and(|icon| icon.center_position),
         order,
     })
 }
@@ -291,6 +293,7 @@ pub(super) fn land_counter(
         attrition: child(land, Icon, "attrition", LAND_WINDOW, missing)?,
         digin: child(land, Icon, "onmap_digin_icon", LAND_WINDOW, missing)?,
         training: child(land, Icon, "onmap_training_icon", LAND_WINDOW, missing)?,
+        action: child(land, Icon, "onmap_action_icon", LAND_WINDOW, missing)?,
         no_orders: child(land, Icon, "no_orders", LAND_WINDOW, missing)?,
         defending_area: child(land, Icon, "defending_area", LAND_WINDOW, missing)?,
         invalid_orders: child(land, Icon, "invalid_orders", LAND_WINDOW, missing)?,
@@ -324,6 +327,37 @@ pub(super) fn column_layout(guis: &native::Guis) -> io::Result<ColumnLayout> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn counter_action_land_child_loads_its_authored_sprite() {
+        let windows = gui_windows::NativeWindows::read(
+            br#"guiTypes={containerWindowType={name=unit_counter_navy}
+                containerWindowType={name=naval_combat_mapicon}
+                containerWindowType={name=unit_counter size={width=81 height=29}
+                iconType={name=onmap_action_icon spriteType=GFX_synthetic_actions
+                    position={x=57 y=9}}}}"#,
+            [1920, 1080],
+        )
+        .unwrap();
+        let layouts = Layouts::read(&windows);
+        assert!(layouts.sprite_names().contains(&"GFX_synthetic_actions"));
+    }
+
+    #[test]
+    fn counter_action_centred_child_keeps_the_land_layout() {
+        let gui = native::read(
+            br#"guiTypes={containerWindowType={name=unit_counter
+            iconType={name=onmap_action_icon spriteType=GFX_synthetic_actions
+                centerPosition=yes}}}"#,
+        );
+        let guis = native::Guis {
+            files: vec![(MAPICONS_GUI.into(), gui)],
+        };
+        let layout = land_counter(&guis, &mut Vec::new()).unwrap();
+        let content = ActionContent::load(&layout.action, LAND_WINDOW, None);
+        let why = content.frame(Ok(8), true, false).unwrap_err();
+        assert!(why.contains("unit_counter.onmap_action_icon") && why.contains("centerPosition"));
+    }
 
     #[test]
     fn counter_layout_refusals_are_independent_and_do_not_abort_loading() {

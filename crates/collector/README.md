@@ -206,6 +206,11 @@ The ETA cadence contribution to recorded `Metrics.pool_bytes` retains its logica
 
 The five-hour allowance follows the native counter cache TTL seed (`140be98e0`) and hourly expiry (`140bf0300`). **This does not reproduce the native cache history or its pathfinding estimate.** The viewer derives stored-route ETA from the latest operands and current movement/progress and shared hourly map data; rows are zero to four completed hours old between refreshes. Do not source these operands from daily tables. The fresh-save oracle checks every row's moving census, provenance and route-bounded spans, and counts carried rows separately; a carried row's route is witnessed, so a span failure there is a missed change.
 
+DivisionMovement samples strategic-action operands only on the reached branch.
+The movement projection preserves per-row query refusals and modifier-only
+changes. A refused query leaves movement and other divisions available.
+See the [shared reader contract](../engine/README.md#strategic-action-operands).
+
 ## Reducing capture cost without changing data
 
 **Reduce guarded calls, not just bytes.** `engine::Memory::copy` is an in-process, SEH-guarded copy. `copy_records` and `copy_scattered_prefetched<N>` gather multiple spans inside one guarded frame, avoiding repeated guard overhead. Divide per-table calls by row count to find repeated per-object work. Use a `const RecordLayout` for fixed-shape fields (`DIVISION_SEED_FIELDS` and `UNIT_ORDER_LAYOUT` are examples), scatter reads for independent fields, and `read_slice` for contiguous arrays. Batch predictable pointer enumeration; retain individual reads for unpredictable pointer chases. Preserve fault scope and ordering when batching.

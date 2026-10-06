@@ -129,3 +129,46 @@ removal agreement remain unverified until the coordinated capture.
 [cstate/border_conflicts.rs](src/cstate/border_conflicts.rs) reads the active-state conflict tree from `1409CDA70`, preserving ordered attacker/defender signed country references (`1413D69B0`/`1413D69C0`) and rejecting malformed sizes, links and border-class identities. Inactive states read no tree detail. The shared [MSVC set walker](src/msvc_tree_node.rs) also serves the province conflict set; its traversal validates the declared size without reserving from it, and bounds successor cycles. [carmy.rs](src/carmy.rs) augments its authenticated status packet only for demanded full class0 handles, copying the stored defense/soft/hard attack cache spans read by `140C6E140` and memoing shared stat pointers within the hour. [ctechnology_status.rs](src/ctechnology_status.rs) reads only demanded controllers' signed stored land-doctrine level, with its existing vtable/backlink guard. `1403EC730` reads that cache; `140EC1B40` writes it and reset `140EC4610` can leave it stale, so saved research cannot reconstruct it. Selected faults withhold their owning table. Synthetic tests cover guards, signed extremes, inactive skips and memo reuse; live cache/tree agreement remains unverified.
 
 [sweather_per_province.rs](src/sweather_per_province.rs) gathers stored temperature and raw mud with snow in the existing bounded exact-field batches. Numeric temperature and content-defined thermal classification both need the full signed fixed5 word (140DEBC90, 140F04F70); display mud combines raw and custom mud and cannot replace the raw byte. [cweather_manager.rs](src/cweather_manager.rs) reads the two hourly simulation-suspension bytes together. Synthetic tests cover full-width values, each short field, authentication and batch counts; live capture and fresh-save agreement remain unverified.
+
+## Strategic-action operands
+
+[carmy/strategic_action.rs](src/carmy/strategic_action.rs) is the shared native
+reader for the current hourly action and the ETA rail operands.
+Unit_GetActionCode@140BEF850 reaches it only for authenticated class-zero armies
+with signed route count > 0, null target, clear retreat and nonzero strategic
+byte. The unit counter's onmap_action_icon is bound at +0xE0 by 1418C70C0;
+140C79B70 false selects code 6, true code 11, and 140BEF9F0 maps code+1.
+Own detailed plates show the child; full-intel members compare at 1418C632E.
+GUI child, sprite, placement and frame support come from the recorded stack.
+
+140C79B70 first reads owner-country key 0x1EA at CCountry+0x5B8. Owner is the
+signed-positive expeditionary reference CUnit+0x1DC, else roster +0x1D8.
+Only country zero reaches current province +0x1F0 -> state CProvince+0xC0.
+Only a present state reaches the roster's key 0x1EA via 1409CC140: country
+override hash +0x8D0, stride 0xD0, accumulator +0x20, else state base +0x558.
+Only state zero reaches 1406F3A90(owner, controller +0xCC, 1, 0); only friendly
+reaches roster-state key 0x1EB. Any reached nonzero effective value blocks rail.
+The numeric passive getter follows 140551820's exact halving probes
+(140551850..877), feature eligibility before raw reads and flags+0x60 bit 4
+clamp to [0,100000]. No raw census or unused capacity/suffix read is needed.
+Country writers are 1406CE2A0/1406D61D0; state writer is 1409D3470; the strategic
+byte setter is 140C7FA70.
+
+The hourly row stores Unreached, Available(three effective modifiers), or
+Withheld(a query reason). State/friendly skips follow nested option absence,
+without separate booleans. A demanded fault affects only that row's ladder
+glyph. The playback-only fixed-layout family has no withheld tables; a key
+layout failure refuses only the two ladder actions by name and count.
+A strategic query failure still permits only codes 6/11, so a fully visible
+member outside that pair proves the mixed frame even when the query is refused.
+ETA maps the same reader onto MovementRailInputs, retaining its acquisition
+memo and cadence. It does not supply current glyph operands from carried ETA.
+
+CCountry::Write@14070C580 omits +0x5B8 and CState::Serialize@1409D4040 omits
++0x558/+0x8D0. These operands and query failures therefore have a named oracle
+limitation. CArmy::Serialize@140C80E00 -> CUnit::Serialize@140BF7010 saves route,
+target and strategic truth, which remain exact comparisons.
+Synthetic fixtures cover skipped reads, per-row failures, ownership, state
+overrides/base, friendly gates, clamp/feature rules, shared ETA projection and
+codec/drawing. Live pixels, getter values, fresh-save/smoke and game-thread cost
+remain unverified.

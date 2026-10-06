@@ -4277,3 +4277,65 @@ fn the_boundary_witness_reports_changes_without_certifying_an_equal_instant() {
     );
     assert!(differences(&report).is_empty());
 }
+
+#[test]
+fn strategic_action_oracle_names_unsaved_operands_and_keeps_saved_differences() {
+    let (mut frame, mut saved, _, _) = division_fixture();
+    let id = *saved.divisions.keys().next().unwrap();
+    let presentation = &mut saved.divisions.get_mut(&id).unwrap().presentation;
+    presentation.path = vec![9, 8];
+    presentation.support_attack = None;
+    presentation.full_path.clear();
+    presentation.previous = Some(7);
+    presentation.movement_progress = None;
+    presentation.strategic_redeployment = true;
+    let row = replay::rows::DivisionMovementRow {
+        division: id,
+        source: 7,
+        path_total: 2,
+        path: vec![9, 8],
+        strategic_redeployment: 1,
+        strategic_action: replay::rows::StrategicAction::Withheld(
+            replay::rows::StrategicActionFailure::CountryModifier,
+        ),
+        ..Default::default()
+    };
+    *frame.tables[TableId::DivisionMovement.index()] =
+        TableView::Complete(TableRows::DivisionMovement(vec![row]));
+    let mut report = Report::default();
+    compare_division_movement(&frame, &saved, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.scalar_checks, 6);
+    assert!(report.limitations.iter().any(|(reason, subjects)| {
+        reason.contains("strategic-action")
+            && subjects
+                .iter()
+                .any(|subject| subject == "DivisionMovement.strategic_action")
+    }));
+    let mut mismatched = saved.clone();
+    let presentation = &mut mismatched.divisions.get_mut(&id).unwrap().presentation;
+    presentation.path.reverse();
+    presentation.support_attack = Some(3);
+    presentation.strategic_redeployment = false;
+    let mut report = Report::default();
+    compare_division_movement(&frame, &mismatched, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|difference| difference.contains("path/total"))
+    );
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|difference| difference.contains("target"))
+    );
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|difference| difference.contains("strategic_redeployment"))
+    );
+}

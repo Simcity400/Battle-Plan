@@ -5986,3 +5986,103 @@ fn eta_route_staging_uses_the_admitted_arena_capacity() {
     assert_eq!(packet.route.as_ptr(), route_pointer);
     assert_eq!(packet.route.capacity(), route_capacity);
 }
+
+#[test]
+fn strategic_action_owned_movement_matches_direct_and_withholds_only_the_glyph() {
+    use crate::{cstate, cunit, modifier_definition, modifier_keys as keys};
+    const STATE: usize = 0x1a000;
+    const BUCKET: usize = 0x1b000;
+    const VALUES: usize = 0x1c000;
+    const DEFINITIONS: usize = 0x21000;
+    let mut memory = shared_geometry_fixture();
+    p64(&mut memory.bytes, A1 + cunit::MOVEMENT_TARGET, 0);
+    p32(&mut memory.bytes, A1 + cunit::EXPEDITIONARY_OWNER, 2);
+    memory.bytes[A1 + cunit::RETREAT] = 0;
+    memory.bytes[A1 + cunit::STRATEGIC_REDEPLOYMENT] = 1;
+    p64(&mut memory.bytes, P1 + cprovince::STATE, STATE as u64);
+    p64(&mut memory.bytes, STATE, cstate::VTABLE_RVA as u64);
+    p32(&mut memory.bytes, STATE + cstate::CONTROLLER, 2);
+    p64(
+        &mut memory.bytes,
+        STATE + cstate::COUNTRY_MODIFIERS,
+        BUCKET as u64,
+    );
+    array(&mut memory.bytes, STATE + cstate::BASE_MODIFIERS, VALUES, 2);
+    p32(
+        &mut memory.bytes,
+        VALUES,
+        keys::DISABLE_STRATEGIC_REDEPLOYMENT,
+    );
+    p32(
+        &mut memory.bytes,
+        VALUES + 16,
+        keys::DISABLE_STRATEGIC_REDEPLOYMENT_FOR_CONTROLLER,
+    );
+    p64(&mut memory.bytes, VALUES + 24, 17);
+    memory.globals.insert(
+        modifier_definition::TABLE_RVA,
+        (DEFINITIONS as u64).to_le_bytes().to_vec(),
+    );
+    memory.globals.insert(
+        DEFINITIONS,
+        vec![
+            0;
+            (keys::DISABLE_STRATEGIC_REDEPLOYMENT_FOR_CONTROLLER as usize + 1)
+                * modifier_definition::STRIDE
+        ],
+    );
+    let sources = presentation_source();
+    let run = |fault| {
+        let observed = ScalarBatchMemory::new(&memory);
+        observed.fault.set(fault);
+        let mut expected = [super::MovementRow::default(); 1];
+        let mut actual = expected;
+        let mut expected_paths = [0; 2];
+        let mut actual_paths = expected_paths;
+        let direct = super::walk_movement(
+            &observed,
+            0,
+            GS,
+            &sources,
+            Outcome::Rows { len: 1 },
+            &mut expected,
+            &mut expected_paths,
+        );
+        let owned = owned_movement_fixture_run(&observed, &sources, &mut actual, &mut actual_paths);
+        assert_eq!(
+            (direct, expected, expected_paths),
+            (owned, actual, actual_paths)
+        );
+        (owned.outcome, actual[0])
+    };
+    let (outcome, row) = run(None);
+    assert_eq!(outcome, Outcome::Rows { len: 1 });
+    assert_eq!(
+        row.strategic_action,
+        super::StrategicAction::Available(super::StrategicRedeploymentInputs {
+            country_modifier: 0,
+            state_modifier: Some(0),
+            friendly_state_modifier: Some(17),
+        })
+    );
+    assert_eq!(run(Some(VALUES + 24)).0, Outcome::Rows { len: 1 });
+    let (_, withheld) = run(Some(VALUES + 24));
+    assert_eq!(
+        withheld.strategic_action,
+        super::StrategicAction::Withheld(super::StrategicActionFailure::FriendlyStateModifier)
+    );
+    assert_eq!(
+        (
+            withheld.source,
+            withheld.target,
+            withheld.path_total,
+            withheld.strategic_redeployment
+        ),
+        (
+            row.source,
+            row.target,
+            row.path_total,
+            row.strategic_redeployment
+        )
+    );
+}

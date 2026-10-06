@@ -261,6 +261,17 @@ pub fn capture_movement_inputs(
             let retreat = movement_seed_value(seed.retreat)?;
             let strategic_redeployment = movement_seed_value(seed.strategic_redeployment)?;
             let entity = movement_seed_value(seed.map_entity)?;
+            let strategic_action = strategic_action::capture(
+                memory,
+                base,
+                game_state,
+                seed.pointer,
+                route.count,
+                target_pointer,
+                retreat,
+                strategic_redeployment,
+                Some(seed),
+            );
             packet.units.push(MovementRow {
                 division: seed.division,
                 source,
@@ -268,6 +279,7 @@ pub fn capture_movement_inputs(
                 numerator,
                 retreat,
                 strategic_redeployment,
+                strategic_action,
                 naval_transfer: u8::from(transfer),
                 combat_count: combat.count,
                 combat_role,
@@ -520,13 +532,24 @@ fn walk_movement_internal(
                         presentation_field::<u64>(memory, p, combat_layout::PROVINCE)? as usize,
                     )?;
             }
-            let target =
-                province_id(presentation_field::<u64>(memory, at, MOVEMENT_TARGET)? as usize)?;
+            let target_pointer = presentation_field::<u64>(memory, at, MOVEMENT_TARGET)? as usize;
+            let target = province_id(target_pointer)?;
             let transfer = presentation_field::<u64>(memory, at, NAVAL_TRANSFER_MEMBERSHIP)? != 0;
             let source_province =
                 province_id(presentation_field::<u64>(memory, at, MOVEMENT_SOURCE)? as usize)?;
             let (_priority, retreat, strategic_redeployment) = movement_scalar_tail(memory, at)?;
             let entity = presentation_field::<u64>(memory, at, cunit::MAP_ENTITY)?;
+            let strategic_action = strategic_action::capture(
+                memory,
+                base,
+                game_state,
+                at,
+                route.count,
+                target_pointer,
+                retreat,
+                strategic_redeployment,
+                None,
+            );
             output[len] = MovementRow {
                 division: source.division,
                 source: source_province,
@@ -534,6 +557,7 @@ fn walk_movement_internal(
                 numerator,
                 retreat,
                 strategic_redeployment,
+                strategic_action,
                 naval_transfer: u8::from(transfer),
                 combat_count: combat.count,
                 combat_role,

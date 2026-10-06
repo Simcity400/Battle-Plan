@@ -55,6 +55,12 @@ NavalModifierBreakdowns captures only accumulator/key trees reached by live nava
 
 `DivisionEtaInputs` publishes a complete moving-division table each hour, including carried rows. Its per-row `sample_hour` is the latest full operand read; consumers use `DivisionEtaInputsRow::valid_at` before deriving. A seek needs no earlier witness state. This owner-approved five-hour operand cadence is an exception inside the hourly table, not a new table cadence. See the [collector limitation](../collector/README.md) and [viewer fidelity limits](../viewer/README.md#fidelity-limits).
 
+DivisionMovement.strategic_action stores an unreached status, three effective
+modifier operands with nested skips, or a per-row withheld query reason.
+Its fixed-layout family withholds no tables; the viewer admits ladder glyphs
+separately. See the [row codec](src/extended_rows/movement.rs) and
+[shared reader contract](../engine/README.md#strategic-action-operands).
+
 RaidSpeedInputs' `transport_speeds` are the one reader of variant stat 0x3e besides VariantStats, a documented exception to one reader per stored value: VariantStats is daily, while the game reads the stat every hour a raid flies and its writers are not proven daily-only.
 
 RaidEquipment's save writes only the entries and nukes; the oracle compares each total exactly with its archetype's saved entries summed by `VariantDefinitions.archetype_token`, and states a limitation only where the total, a contributing entry or their sum reaches the clamp bound `L` (`±0x53E2D620FB40` raw, about 9.2e8 units), which `AddVariantQuantity` applies to a total and an entry separately. The one case it cannot see is a clamp that later unwound: adding ¾L to two variants of one archetype and removing one leaves a native total of ¼L below the entries' ¾L with nothing at the bound. That needs a pool that once held at least L of one archetype, and would surface as a reported difference.

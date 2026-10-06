@@ -42,6 +42,17 @@ pub const MOVEMENT: Family = Family {
     tables: &[TableId::DivisionEtaInputs],
 };
 
+/// Current-hour class-0 counter action operands, `140C79B70`.
+pub const STRATEGIC_ACTION: Family = Family {
+    name: "division strategic action",
+    keys: &[
+        keys::DISABLE_STRATEGIC_REDEPLOYMENT,
+        keys::DISABLE_STRATEGIC_REDEPLOYMENT_FOR_CONTROLLER,
+    ],
+    tokens: &[],
+    tables: &[],
+};
+
 pub const NAVAL_TRANSFER: Family = Family {
     name: "naval transfer speed",
     keys: &[keys::NAVAL_SPEED_FACTOR, keys::NAVAL_MINES_EFFECT_REDUCTION],
@@ -369,6 +380,7 @@ pub const ORACLE_INFRASTRUCTURE: Family = Family {
 
 pub const FAMILIES: &[Family] = &[
     MOVEMENT,
+    STRATEGIC_ACTION,
     NAVAL_TRANSFER,
     LAND_COMBAT_DIVISIONS,
     DIVISION_STATUS,
@@ -479,6 +491,38 @@ mod tests {
                     .collect(),
             ));
         frame
+    }
+
+    #[test]
+    fn strategic_action_fixed_layout_checks_only_its_two_native_keys() {
+        assert!(STRATEGIC_ACTION.tables.is_empty());
+        assert_eq!(STRATEGIC_ACTION.keys.len(), 2);
+        let mut frame = fixture();
+        let TableView::Complete(TableRows::ModifierDefinitions(rows)) =
+            &mut *frame.tables[TableId::ModifierDefinitions.index()]
+        else {
+            panic!("definitions");
+        };
+        rows.iter_mut()
+            .find(|row| row.index == keys::ARMY_SPEED_FACTOR)
+            .unwrap()
+            .token = 0;
+        assert!(validate_recording(&frame, MOVEMENT).is_err());
+        assert_eq!(validate_recording(&frame, STRATEGIC_ACTION), Ok(()));
+        for key in STRATEGIC_ACTION.keys {
+            let mut malformed = fixture();
+            let TableView::Complete(TableRows::ModifierDefinitions(rows)) =
+                &mut *malformed.tables[TableId::ModifierDefinitions.index()]
+            else {
+                panic!("definitions");
+            };
+            rows.iter_mut().find(|row| row.index == *key).unwrap().token = 0;
+            assert!(
+                validate_recording(&malformed, STRATEGIC_ACTION)
+                    .unwrap_err()
+                    .contains("division strategic action refused")
+            );
+        }
     }
 
     #[test]

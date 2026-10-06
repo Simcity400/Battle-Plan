@@ -513,6 +513,7 @@ impl Captured {
                         && r.numerator == previous.numerator
                         && r.retreat == previous.retreat
                         && r.strategic_redeployment == previous.strategic_redeployment
+                        && r.strategic_action == previous.strategic_action
                         && r.naval_transfer == previous.naval_transfer
                         && r.combat_count == previous.combat_count
                         && r.path_total == previous.path_total
@@ -531,6 +532,7 @@ impl Captured {
                     numerator: r.numerator,
                     retreat: r.retreat,
                     strategic_redeployment: r.strategic_redeployment,
+                    strategic_action: r.strategic_action,
                     naval_transfer: r.naval_transfer,
                     combat_count: r.combat_count,
                     path_total: r.path_total,
@@ -775,6 +777,12 @@ mod tests {
             path_start: 0,
             path_len: 3,
             path_total: 300,
+            strategic_redeployment: 1,
+            strategic_action: carmy::StrategicAction::Available(carmy::StrategicRedeploymentInputs {
+                country_modifier: i64::MIN,
+                state_modifier: None,
+                friendly_state_modifier: None,
+            }),
             alternate_start: 3,
             alternate_len: 1,
             alternate_total: 1,
@@ -844,6 +852,39 @@ mod tests {
             bans,
             TableInput::Sampled(TableView::Unavailable { .. })
         ));
+        assert_eq!(
+            m[0].strategic_action,
+            carmy::StrategicAction::Available(carmy::StrategicRedeploymentInputs {
+                country_modifier: i64::MIN,
+                ..Default::default()
+            })
+        );
+        capture.movement.rows[0].strategic_action =
+            carmy::StrategicAction::Available(carmy::StrategicRedeploymentInputs {
+                country_modifier: i64::MAX,
+                ..Default::default()
+            });
+        let [movement, status, _] = capture.table_inputs(Some(&mut projection));
+        let TableInput::ComparedChanges { indices, rows, .. } = movement else {
+            panic!("current modifier-only change must publish movement");
+        };
+        assert_eq!(indices, [0]);
+        assert_eq!(TableView::Complete(rows), capture.tables()[0]);
+        assert!(matches!(status, TableInput::ComparedEqual(_)));
+        capture.movement.rows[0].strategic_action =
+            carmy::StrategicAction::Withheld(carmy::StrategicActionFailure::CountryModifier);
+        let [movement, status, _] = capture.table_inputs(Some(&mut projection));
+        let TableInput::ComparedChanges { indices, rows, .. } = movement else {
+            panic!("a refused query must publish the movement row");
+        };
+        assert_eq!(indices, [0]);
+        assert_eq!(TableView::Complete(rows), capture.tables()[0]);
+        assert!(matches!(status, TableInput::ComparedEqual(_)));
+        capture.movement.rows[0].strategic_action =
+            carmy::StrategicAction::Available(carmy::StrategicRedeploymentInputs {
+                country_modifier: i64::MIN,
+                ..Default::default()
+            });
         // A path-only mutation and an independently changing status must both
         // defeat reuse, without changing their keys or arena spans.
         capture.paths.first[3] ^= 1;

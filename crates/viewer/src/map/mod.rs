@@ -16,6 +16,7 @@ mod border_shader;
 pub mod borders;
 pub mod camera;
 // counters
+mod counter_action;
 pub mod counter_eta;
 pub mod counter_groups;
 pub mod counter_inputs;
