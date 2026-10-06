@@ -655,7 +655,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     }
                     EventObject::Character(_)
                     | EventObject::UnitLeader(_)
-                    | EventObject::Province(_) => {
+                    | EventObject::Province(_)
+                    | EventObject::CountryState { .. }
+                    | EventObject::IndustrialOrganisation(_) => {
                         return Err(format!(
                             "saved effect target {}: projected {target:?} lacks CSavedEventTarget vf9 liveness for the state +0x08 / country +0x0C probe (14052FA10/1405302E0/14052BE50); core target projection plumbing pending",
                             String::from_utf8_lossy(name)

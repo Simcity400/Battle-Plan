@@ -764,7 +764,11 @@ impl Renderer<'_, '_, '_> {
             Roster::Subjects => {
                 let caller = country()?;
                 let mut out = Vec::new();
-                for &raw in &world.appearance(caller)?.subjects {
+                for &raw in world
+                    .appearance(caller)?
+                    .subjects
+                    .require("CountryAppearance.subjects")?
+                {
                     // CDiplomacyStatus+0x170, 14039D560.
                     if raw <= 0 {
                         continue;

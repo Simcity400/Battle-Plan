@@ -203,7 +203,11 @@ impl Evaluator<'_, '_> {
                 if let Some(found) = self.collection_path(intermediate, target, tail)? {
                     return Ok(Some(found));
                 }
-                for &raw in &world.appearance(country)?.subjects {
+                for &raw in world
+                    .appearance(country)?
+                    .subjects
+                    .require("CountryAppearance.subjects")?
+                {
                     targets.push(Scope::Country(if raw == 0 { 0 } else { slot(raw as u32)? })); // CDiplomacyStatus+0x170.
                 }
             }
