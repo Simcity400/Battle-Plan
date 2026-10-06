@@ -1,6 +1,6 @@
 //! GUI effect handles selected by [`super::native_gui`]. Runtime loads the resolved source
-//! through the shared shader compiler. The native program and sampler data below provide
-//! independent offline test oracles.
+//! through the shared shader compiler. The native program models below provide independent
+//! offline test oracles, and `synthetic` invented effects for other modules' tests.
 //!
 //! - A sprite's state picks a technique by name: `CSpriteType::initialize_animations@14222B5F0`
 //!   `engine_shader_effect_lookup@1423F4EC0` into `CSpriteType+0x150`, `+0x154`, `+0x158` and
@@ -786,124 +786,77 @@ pub fn resolve(
     })
 }
 
-/// The game's own effects as the shipped files declare them, for other modules' tests.
+/// Invented effects for other modules' tests: the modelled techniques of each program family
+/// under sampler rows of the tests' own choosing. Between them they declare every slot, only the
+/// first two or only the first, both filters, linear mips, a level-of-detail bias, and clamped,
+/// mirrored, wrapped, bordered and once-mirrored addressing.
 #[cfg(test)]
-pub mod shipped {
+pub mod synthetic {
     use super::*;
 
-    const fn sampler(
-        u: Address,
-        v: Address,
-        filter: Filter,
-        mip: Filter,
-        lod_bias: f32,
-    ) -> Sampler {
+    /// A row filtering both ways with `filter`, addressing both axes with `address`, unbiased.
+    fn row(address: Address, filter: Filter, mip: Filter) -> Sampler {
         Sampler {
-            u,
-            v,
+            u: address,
+            v: address,
             mag: filter,
             min: filter,
             mip,
-            lod_bias,
+            lod_bias: 0.0,
         }
     }
 
-    /// `gfx/FX/buttonstate.lua`: `MapTexture` (Index 0) linear and clamped with a -0.8 bias,
-    /// the masking texture (Index 5) point and clamped.
+    /// The button-state techniques with a row on every slot: slot 0 sharpened by a negative bias,
+    /// the mask's slot 5 point-sampled.
     pub fn buttonstate() -> Effect {
-        let clamp = sampler(
-            Address::Clamp,
-            Address::Clamp,
-            Filter::Linear,
-            Filter::Point,
-            0.0,
-        );
-        let wrap = sampler(
-            Address::Wrap,
-            Address::Wrap,
-            Filter::Linear,
-            Filter::Point,
-            0.0,
-        );
         Effect {
-            file: "gfx/FX/buttonstate.lua".into(),
+            file: "gfx/FX/fixture_button.lua".into(),
             compiled: None,
             techniques: super::buttonstate(false),
             samplers: [
                 Some(Sampler {
-                    lod_bias: -0.8,
-                    ..clamp
+                    lod_bias: -0.375,
+                    ..row(Address::Clamp, Filter::Linear, Filter::Point)
                 }),
-                Some(clamp),
-                Some(wrap),
-                Some(clamp),
-                Some(wrap),
-                Some(sampler(
-                    Address::Clamp,
-                    Address::Clamp,
-                    Filter::Point,
-                    Filter::Point,
-                    0.0,
-                )),
+                Some(row(Address::Mirror, Filter::Linear, Filter::Point)),
+                Some(row(Address::Wrap, Filter::Point, Filter::Point)),
+                Some(row(Address::Border, Filter::Linear, Filter::Point)),
+                Some(row(Address::MirrorOnce, Filter::Point, Filter::Point)),
+                Some(row(Address::Clamp, Filter::Point, Filter::Point)),
             ],
         }
     }
 
-    /// `gfx/FX/progress.lua`: both textures point-sampled and wrapped.
+    /// The plain progress techniques with point rows on its two textures' slots only.
     pub fn progress() -> Effect {
-        let wrap = sampler(
-            Address::Wrap,
-            Address::Wrap,
-            Filter::Point,
-            Filter::Point,
-            0.0,
-        );
+        let point = row(Address::Clamp, Filter::Point, Filter::Point);
         Effect {
-            file: "gfx/FX/progress.lua".into(),
+            file: "gfx/FX/fixture_bar.lua".into(),
             compiled: None,
             techniques: super::progress(ProgressProgram::Plain, true),
-            samplers: [Some(wrap), Some(wrap), None, None, None, None],
+            samplers: [Some(point), Some(point), None, None, None, None],
         }
     }
 
-    /// `gfx/FX/text.lua`: `SimpleTexture` linear, linear mips, wrapped.
-    /// `gfx/FX/circularprogressbar.shader`: `TextureOne` (Index 0) and `TextureTwo` (Index 1)
-    /// linear and wrapped, no mip filter.
+    /// The circular progress technique with linear rows on its two textures' slots only.
     pub fn circular() -> Effect {
-        let wrap = sampler(
-            Address::Wrap,
-            Address::Wrap,
-            Filter::Linear,
-            Filter::Point,
-            0.0,
-        );
+        let linear = row(Address::Mirror, Filter::Linear, Filter::Point);
         Effect {
+            file: "gfx/FX/fixture_ring.shader".into(),
             compiled: None,
-            file: "gfx/FX/circularprogressbar.shader".into(),
             techniques: vec![("CircularProgressBar", Pixel::Circular, Blend::Alpha)],
-            samplers: [Some(wrap), Some(wrap), None, None, None, None],
+            samplers: [Some(linear), Some(linear), None, None, None, None],
         }
     }
 
+    /// The text technique with one row, blending mip levels, on the glyph slot alone.
     pub fn text() -> Effect {
+        let glyphs = row(Address::Clamp, Filter::Linear, Filter::Linear);
         Effect {
-            file: "gfx/FX/text.lua".into(),
+            file: "gfx/FX/fixture_glyphs.lua".into(),
             compiled: None,
             techniques: vec![("Text", Pixel::Text, Blend::Alpha)],
-            samplers: [
-                Some(sampler(
-                    Address::Wrap,
-                    Address::Wrap,
-                    Filter::Linear,
-                    Filter::Linear,
-                    0.0,
-                )),
-                None,
-                None,
-                None,
-                None,
-                None,
-            ],
+            samplers: [Some(glyphs), None, None, None, None, None],
         }
     }
 }

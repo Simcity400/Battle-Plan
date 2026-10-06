@@ -452,42 +452,42 @@ Effect Raw { VertexShader = V PixelShader = Raw }
     }
 }
 
-/// The sprite constants `CSpriteType::draw@14222D5A0` binds to `b0` of both stages, as
-/// `buttonstate.fxh` declares them: `Time` at byte 96, `AnimationTime` at 100.
-const SPRITE_CONSTANTS: &str = "ConstantBuffer( 0, 0 ) { float4x4 WorldViewProjectionMatrix;\nfloat4 Color;\nfloat2 Offset;\nfloat2 NextOffset;\nfloat Time;\nfloat AnimationTime;\n};\n";
+/// An invented constant buffer `b2` for both stages: the restart at byte 64 and the clock at 68,
+/// between bytes the programs read directly (the restart and `Shift` from 72).
+const CLOCK_CONSTANTS: &str = "ConstantBuffer( 2, 7 ) { float4x4 Transform;\nfloat Restart;\nfloat Clock;\nfloat2 Shift;\nfloat4 Tint;\n};\n";
 
 /// Each compiled program answers for itself how long it changes after its restart: not at all
-/// without `Time` (`AnimationTime` alone is fixed); until its saturating function of
-/// `Time - AnimationTime` saturates (on the way down too, through `smoothstep`, and through a
-/// local variable, a loop and a branch that does not read the clock; a `step` going down only
-/// past its edge); never for `Time` read otherwise, in either stage, as a moment rather than a
+/// without the clock (the restart alone is fixed); until its saturating function of the clock less
+/// the restart saturates (on the way down too, through `smoothstep`, and through a local
+/// variable, a loop and a branch that does not read the clock; a `step` going down only past its
+/// edge); never for the clock read otherwise, in either stage, as a moment rather than a
 /// duration, or deciding a `discard`.
 #[test]
 #[ignore = "requires a shader compiler"]
 fn compiled_programs_answer_how_long_they_change() {
     let source = format!(
         r#"
-VertexStruct VS_INPUT {{ float3 vPosition : POSITION;
-float2 vTexCoord : TEXCOORD0;
+VertexStruct CORNER_IN {{ float3 at : POSITION;
+float2 uv : TEXCOORD0;
 }};
-VertexStruct VS_OUTPUT {{ float4 vPosition : PDX_POSITION;
-float2 vTexCoord : TEXCOORD0;
+VertexStruct CORNER_OUT {{ float4 at : PDX_POSITION;
+float2 uv : TEXCOORD0;
 }};
-{SPRITE_CONSTANTS}
+{CLOCK_CONSTANTS}
 VertexShader = {{
-MainCode Plain [[ VS_OUTPUT main(const VS_INPUT v) {{ VS_OUTPUT Out; Out.vPosition = mul(WorldViewProjectionMatrix, float4(v.vPosition.xyz, 1)); Out.vTexCoord = v.vTexCoord + Offset; return Out; }} ]]
-MainCode Wobble [[ VS_OUTPUT main(const VS_INPUT v) {{ VS_OUTPUT Out; Out.vPosition = mul(WorldViewProjectionMatrix, float4(v.vPosition.xyz + sin(Time), 1)); Out.vTexCoord = v.vTexCoord; return Out; }} ]]
+MainCode Plain [[ CORNER_OUT main(const CORNER_IN i) {{ CORNER_OUT o; o.at = mul(Transform, float4(i.at, 1)); o.uv = i.uv + Shift; return o; }} ]]
+MainCode Wobble [[ CORNER_OUT main(const CORNER_IN i) {{ CORNER_OUT o; o.at = mul(Transform, float4(i.at.x + cos(Clock), i.at.yz, 1)); o.uv = i.uv; return o; }} ]]
 }}
 PixelShader = {{
-MainCode Still [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ return Color * AnimationTime; }} ]]
-MainCode Shade [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ float t = 0.9 - saturate((Time - AnimationTime) * 4); t *= t; return Color * (0.81 - t); }} ]]
-MainCode Fade [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ return Color * (1 - smoothstep(0.0, 2.0, Time - AnimationTime)); }} ]]
-MainCode Looped [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ float4 c = Color; float s = saturate((Time - AnimationTime) * 16); for (int i = 0; i < 3; ++i) {{ if (v.vTexCoord.x > 0.5) c.rgb *= s; }} return c; }} ]]
-MainCode Pulse [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ return Color * sin(Time); }} ]]
-MainCode Moment [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ return Color * saturate(Time * 4); }} ]]
-MainCode Gate [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ if (Time - AnimationTime > 0.5) discard; return Color; }} ]]
-MainCode Drop [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ return Color * step(0.0, AnimationTime - Time); }} ]]
-MainCode Rise [[ float4 main(VS_OUTPUT v) : PDX_COLOR {{ return Color * step(0.5, Time - AnimationTime); }} ]]
+MainCode Still [[ float4 main(CORNER_OUT i) : PDX_COLOR {{ return Tint * Restart; }} ]]
+MainCode Shade [[ float4 main(CORNER_OUT i) : PDX_COLOR {{ float e = saturate((Clock - Restart) * 8); e = e * e * (3 - 2 * e); return Tint * (1 - e); }} ]]
+MainCode Fade [[ float4 main(CORNER_OUT i) : PDX_COLOR {{ return Tint * (1 - smoothstep(0.0, 3.0, Clock - Restart)); }} ]]
+MainCode Looped [[ float4 main(CORNER_OUT i) : PDX_COLOR {{ float4 c = Tint; float s = saturate((Clock - Restart) * 32); for (int n = 0; n < 2; ++n) {{ if (i.uv.y < 0.25) c.rgb *= s; }} return c; }} ]]
+MainCode Pulse [[ float4 main(CORNER_OUT i) : PDX_COLOR {{ return Tint * cos(Clock); }} ]]
+MainCode Moment [[ float4 main(CORNER_OUT i) : PDX_COLOR {{ return Tint * saturate(Clock * 2); }} ]]
+MainCode Gate [[ float4 main(CORNER_OUT i) : PDX_COLOR {{ if (Clock - Restart > 1.5) discard; return Tint; }} ]]
+MainCode Drop [[ float4 main(CORNER_OUT i) : PDX_COLOR {{ return Tint * step(-0.25, Restart - Clock); }} ]]
+MainCode Rise [[ float4 main(CORNER_OUT i) : PDX_COLOR {{ return Tint * step(0.75, Clock - Restart); }} ]]
 }}
 Effect Still {{ VertexShader = Plain PixelShader = Still }}
 Effect Shade {{ VertexShader = Plain PixelShader = Shade }}
@@ -515,16 +515,16 @@ Effect Rise {{ VertexShader = Plain PixelShader = Rise }}
         compiler
             .compile(&program, program.technique(name).unwrap(), &[])
             .unwrap()
-            .settles(0, 96, 100)
+            .settles(2, 68, 64)
     };
     assert_eq!(settles("Still"), Some(0.0));
-    assert_eq!(settles("Shade"), Some(0.25));
-    assert_eq!(settles("Fade"), Some(2.0));
-    assert_eq!(settles("Looped"), Some(1.0 / 16.0));
-    // `step` is `x >= edge`: 1 at the restart going down, 0 only after it; going up, final at
+    assert_eq!(settles("Shade"), Some(0.125));
+    assert_eq!(settles("Fade"), Some(3.0));
+    assert_eq!(settles("Looped"), Some(1.0 / 32.0));
+    // `step` is `x >= edge`: going down, 1 at its edge and 0 only past it; going up, final at
     // its edge.
-    assert_eq!(settles("Drop"), Some(0.0_f32.next_up()));
-    assert_eq!(settles("Rise"), Some(0.5));
+    assert_eq!(settles("Drop"), Some(0.25_f32.next_up()));
+    assert_eq!(settles("Rise"), Some(0.75));
     for name in ["Pulse", "Moment", "Gate", "Wobble"] {
         assert_eq!(settles(name), None, "{name}");
     }

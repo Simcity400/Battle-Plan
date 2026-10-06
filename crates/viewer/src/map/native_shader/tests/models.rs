@@ -327,7 +327,7 @@ fn compare_installed_native_models() {
     assert_eq!(failures, 0, "see the per-effect pixel report");
 }
 
-fn sampler(s: &installed_content::gui::native::shader::program::Sampler) -> model::Sampler {
+pub(super) fn sampler(s: &installed_content::gui::native::shader::program::Sampler) -> model::Sampler {
     use installed_content::gui::native::shader::{Address, program::Filter};
     let address = |a| match a {
         Address::Wrap => model::Address::Wrap,

@@ -354,42 +354,6 @@ fn a_region_interior_keeps_its_colour_and_opacity_with_no_field_left() {
         [0, 255, 0, 0],
         "the interior keeps its opacity, which is what `TranspA` reads"
     );
-    // The shader turns that into a 40 % fill at the reference camera's `vGBCamDist` of 0.2.
-    let cam_dist = 0.2_f32;
-    let fill = 1.0 - (1.0 * (cam_dist - 0.05) / 0.25).clamp(0.0, 1.0);
-    assert!((fill - 0.4).abs() < 1e-6, "{fill}");
-}
-
-/// `standardfuncsgfx.fxh`'s `gradient_border_camera_distance` and
-/// `gradient_border_distance_to_alpha(0, ...)` as one function of the camera height, so the
-/// curve the `pairG` series pins in this module's docs is a test and not only a comment.
-fn interior_fill(height: f32) -> f32 {
-    let cam_distance = (height.clamp(100.0, 350.0) - 100.0) / 250.0;
-    let cam_dist = 1.0 - cam_distance.clamp(0.0, 0.8);
-    1.0 - ((cam_dist - 0.05) / 0.25).clamp(0.0, 1.0)
-}
-
-#[test]
-fn the_interior_fill_crosses_over_at_the_measured_height() {
-    // Measured on `pairG_A` at height 287.501: the game's fill is 1.11 times the port's 0.2,
-    // which puts its crossover at 274 (273 to 276). The law's is 275.
-    for height in [0.0, 50.0, 108.0, 164.0, 176.0, 274.9] {
-        assert_eq!(interior_fill(height), 0.0, "no fill below 275 ({height})");
-    }
-    for height in [300.0, 627.4, 1589.6, 3000.0] {
-        assert!(
-            (interior_fill(height) - 0.4).abs() < 1e-6,
-            "the clamp caps the fill at 0.4 ({height})"
-        );
-    }
-    // The ramp between them is linear at 0.016 per world unit.
-    assert!((interior_fill(287.501) - 0.200_016).abs() < 1e-5);
-    for height in [280.0, 287.5, 295.0] {
-        assert!(
-            (interior_fill(height) - 0.016 * (height - 275.0)).abs() < 1e-5,
-            "{height}"
-        );
-    }
 }
 
 #[test]

@@ -174,12 +174,21 @@ fn clip(mut q: sprites::Quad, size: [f32; 2]) -> sprites::Quad {
     }
     q
 }
+/// `part` drawn by the model of `effect`'s `technique` instead of its installed program, with the
+/// samplers that program declares.
 fn model_part(mut part: gui::Part, effect: model::Effect, technique: &str) -> gui::Part {
     let model::Technique::Run { pixel, blend } = effect.technique(technique) else {
         panic!("model technique")
     };
-    part.shading.compiled = None;
-    part.shading.program = Some((pixel, blend, effect.samplers));
+    let installed = part.shading.compiled.take().expect("an installed program");
+    let samplers = std::array::from_fn(|slot| {
+        installed
+            .asset
+            .source
+            .sampler(slot as u32)
+            .map(models::sampler)
+    });
+    part.shading.program = Some((pixel, blend, samplers));
     part
 }
 
@@ -210,7 +219,7 @@ fn compiled_parts_fan_animation_and_text_bake() {
         );
         let actual = render_part(&device, &queue, &p, &images);
         let batch = gui::oracle_part(
-            &model_part(p, model::shipped::circular(), "CircularProgressBar"),
+            &model_part(p, model::synthetic::circular(), "CircularProgressBar"),
             &sheets(),
         );
         let oracles: Vec<_> = batch
@@ -279,7 +288,7 @@ fn compiled_parts_fan_animation_and_text_bake() {
                 button.clone(),
                 technique,
             );
-            let model = model::shipped::buttonstate();
+            let model = model::synthetic::buttonstate();
             let q = gui::oracle_part(&model_part(ordinary, model, technique), &sheets())
                 .quads
                 .remove(0);
@@ -415,7 +424,7 @@ fn compiled_parts_fan_animation_and_text_bake() {
         let mut add = |kind, blend| {
             let p = part(kind, text.clone(), "Text");
             for q in
-                gui::oracle_part(&model_part(p, model::shipped::text(), "Text"), &sheets()).quads
+                gui::oracle_part(&model_part(p, model::synthetic::text(), "Text"), &sheets()).quads
             {
                 let view = &views[q.texture];
                 oracles.push(sprites::oracle::Oracle::with_format(
@@ -514,7 +523,7 @@ fn compiled_parts_fan_animation_and_text_bake() {
             "Up",
         );
         let q = gui::oracle_part(
-            &model_part(p, model::shipped::buttonstate(), "Up"),
+            &model_part(p, model::synthetic::buttonstate(), "Up"),
             &sheets(),
         )
         .quads
