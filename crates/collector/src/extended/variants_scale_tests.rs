@@ -130,7 +130,11 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
         .map(|index| {
             let seed = mix(index as u64);
             // Every 97th variant crosses the 32-entry module batch.
-            let modules = if index.is_multiple_of(97) { 40 } else { seed as usize % 9 };
+            let modules = if index.is_multiple_of(97) {
+                40
+            } else {
+                seed as usize % 9
+            };
             (modules, (seed >> 8) as usize % 5)
         })
         .collect();
@@ -177,9 +181,17 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
     for &equipment in &types {
         writer.u64(equipment + cequipment_type::ARCHETYPE, equipment as u64);
     }
-    let modules = definitions(&mut writer, MODULES, cequipment_module::VTABLE_RVA, "module");
+    let modules = definitions(
+        &mut writer,
+        MODULES,
+        cequipment_module::VTABLE_RVA,
+        "module",
+    );
     for (index, &module) in modules.iter().enumerate() {
-        writer.put(module + cequipment_module::ACTIVE, &[u8::from(!index.is_multiple_of(11))]);
+        writer.put(
+            module + cequipment_module::ACTIVE,
+            &[u8::from(!index.is_multiple_of(11))],
+        );
     }
     let upgrades = definitions(
         &mut writer,
@@ -188,7 +200,11 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
         "upgrade",
     );
     let pointers = writer.alloc(variants * 8);
-    writer.array(game_state + cgame_state::EQUIPMENT_VARIANTS, pointers, variants as u32);
+    writer.array(
+        game_state + cgame_state::EQUIPMENT_VARIANTS,
+        pointers,
+        variants as u32,
+    );
     // Variants live apart in a shuffled order, like heap objects.
     let objects = writer.alloc(variants * VARIANT);
     let step = (7_919..)
@@ -212,13 +228,26 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
         writer.u32(variant + cequipment_variant::EQUIPMENT_TOKEN, token);
         let country = (index / per_country.max(1)) as u32 + 1;
         writer.u32(variant + cequipment_variant::CREATOR_LINK, country);
-        writer.u32(variant + cequipment_variant::ORIGIN_LINK, country ^ (seed as u32 & 1));
+        writer.u32(
+            variant + cequipment_variant::ORIGIN_LINK,
+            country ^ (seed as u32 & 1),
+        );
         writer.put(
             variant + cequipment_variant::APPEND_VARIANT_NAME,
             &[(seed >> 8) as u8 & 1],
         );
-        let display = format!("Design {index}{}", if seed.is_multiple_of(5) { " Mk. II long" } else { "" });
-        writer.string(variant + cequipment_variant::DISPLAY_NAME, display.as_bytes());
+        let display = format!(
+            "Design {index}{}",
+            if seed.is_multiple_of(5) {
+                " Mk. II long"
+            } else {
+                ""
+            }
+        );
+        writer.string(
+            variant + cequipment_variant::DISPLAY_NAME,
+            display.as_bytes(),
+        );
         writer.string(
             variant + cequipment_variant::VARIANT_NAME,
             format!("v{}", seed % 100).as_bytes(),
@@ -228,13 +257,25 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
             explicit_entity(index).as_bytes(),
         );
         let (active, kind, icon) = icon(index);
-        writer.put(variant + cequipment_variant::ICON_OVERRIDE_ACTIVE, &[active]);
+        writer.put(
+            variant + cequipment_variant::ICON_OVERRIDE_ACTIVE,
+            &[active],
+        );
         writer.u32(variant + cequipment_variant::ICON_OVERRIDE_KIND, kind);
-        writer.string(variant + cequipment_variant::ICON_OVERRIDE_TOKEN, icon.as_bytes());
+        writer.string(
+            variant + cequipment_variant::ICON_OVERRIDE_TOKEN,
+            icon.as_bytes(),
+        );
         writer.u64(variant + cequipment_variant::DEFINITION, equipment as u64);
         writer.u64(variant + cequipment_variant::CLASSIFIER_FLAGS, mix(seed));
-        writer.u32(variant + cequipment_variant::MISSION_MASK, (seed >> 32) as u32);
-        writer.put(variant + cequipment_variant::OBSOLETE, &[(seed >> 16) as u8 & 1]);
+        writer.u32(
+            variant + cequipment_variant::MISSION_MASK,
+            (seed >> 32) as u32,
+        );
+        writer.put(
+            variant + cequipment_variant::OBSOLETE,
+            &[(seed >> 16) as u8 & 1],
+        );
         for (slot, offset) in [
             cequipment_variant::MAP_RANGE_STAT,
             cequipment_variant::STAT_2F,
@@ -278,7 +319,10 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
                 at + equipment_upgrade_entry::DEFINITION,
                 upgrades[draw as usize % UPGRADES] as u64,
             );
-            writer.put(at + equipment_upgrade_entry::LEVEL_STORAGE, &[(draw >> 20) as u8]);
+            writer.put(
+                at + equipment_upgrade_entry::LEVEL_STORAGE,
+                &[(draw >> 20) as u8],
+            );
         }
     }
     Space {
@@ -297,7 +341,12 @@ fn gcd(mut a: usize, mut b: usize) -> usize {
 
 fn capacities(variants: usize) -> Capacities {
     let mut capacities = Capacities::default();
-    for (slot, rows) in [(3, variants), (4, variants * 8), (5, variants), (6, variants * 4)] {
+    for (slot, rows) in [
+        (3, variants),
+        (4, variants * 8),
+        (5, variants),
+        (6, variants * 4),
+    ] {
         capacities.rows[slot] = capacities.rows[slot].max(rows);
     }
     capacities.definition_bytes = capacities.definition_bytes.max(variants * 32);
@@ -322,7 +371,11 @@ fn capture(memory: &impl Memory, space: &Space, variants: usize) -> ([TableView;
 
 /// FNV-1a over every field both formats hold, in row order.
 fn digest(views: &[TableView; 4]) -> u64 {
-    fn rows<S: TableSchema>(text: &mut String, view: &TableView, fields: impl Fn(&S::Row) -> String) {
+    fn rows<S: TableSchema>(
+        text: &mut String,
+        view: &TableView,
+        fields: impl Fn(&S::Row) -> String,
+    ) {
         match view {
             TableView::Complete(rows) => {
                 for row in rows.rows::<S>().unwrap() {
@@ -377,7 +430,11 @@ fn scaled_variant_rows_match_the_recorded_digests() {
     ] {
         let space = space(countries, 16);
         let (views, _) = capture(&space.memory(), &space, countries * 16);
-        assert!(views.iter().all(|view| matches!(view, TableView::Complete(_))));
+        assert!(
+            views
+                .iter()
+                .all(|view| matches!(view, TableView::Complete(_)))
+        );
         assert_eq!(digest(&views), golden, "{countries} countries");
         let TableView::Complete(definitions) = &views[0] else {
             unreachable!()
@@ -386,7 +443,11 @@ fn scaled_variant_rows_match_the_recorded_digests() {
         assert_eq!(definitions.len(), countries * 16);
         for row in definitions {
             let index = (row.id >> 32) as usize - 1;
-            assert_eq!(row.explicit_entity, explicit_entity(index).as_bytes(), "variant {index}");
+            assert_eq!(
+                row.explicit_entity,
+                explicit_entity(index).as_bytes(),
+                "variant {index}"
+            );
             let (active, kind, icon) = icon(index);
             assert_eq!(
                 (row.icon_active, row.icon_kind, row.icon.as_slice()),
@@ -418,7 +479,11 @@ fn variants_walk_bench() {
             let reads = read_accounting::Capture::new();
             let (views, elapsed) = capture(&memory, &space, variants);
             samples.push(elapsed);
-            assert!(views.iter().all(|view| matches!(view, TableView::Complete(_))));
+            assert!(
+                views
+                    .iter()
+                    .all(|view| matches!(view, TableView::Complete(_)))
+            );
             calls = reads
                 .finish()
                 .iter()

@@ -2378,7 +2378,11 @@ fn character_family_read_cost_stays_at_its_measured_shape() {
     // unit leader's state scatter its four-byte exile country (+0xED4).
     assert_eq!(
         (memory.guards.get(), memory.spans.get(), memory.bytes.get()),
-        (588 + 3, 1204 + 9 + 32 + 3, 16_872 + 39 + 32 * (12 + 4) + 3 * 4)
+        (
+            588 + 3,
+            1204 + 9 + 32 + 3,
+            16_872 + 39 + 32 * (12 + 4) + 3 * 4
+        )
     );
 }
 

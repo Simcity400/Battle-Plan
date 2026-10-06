@@ -167,9 +167,7 @@ fn record(
     );
     bytes[at + sair_wing_combat_data::COPIED_FLAG] = copied;
     match first {
-        Some((data, count)) => {
-            header(bytes, at + sair_wing_combat_data::FIRST_DAMAGE, data, count)
-        }
+        Some((data, count)) => header(bytes, at + sair_wing_combat_data::FIRST_DAMAGE, data, count),
         None => header(bytes, at + sair_wing_combat_data::FIRST_DAMAGE, 0, 0),
     }
     match second {
@@ -206,7 +204,19 @@ pub(crate) struct Split {
 fn collect_typed(memory: &impl Memory, history_cap: usize, damage_cap: usize) -> Split {
     use engine::cair_region_combat_data;
     let capacities = Capacities {
-        rows: [8192, 2048, 4096, history_cap, damage_cap, 1024, 2048, 4096, 1024, 64, 0],
+        rows: [
+            8192,
+            2048,
+            4096,
+            history_cap,
+            damage_cap,
+            1024,
+            2048,
+            4096,
+            1024,
+            64,
+            0,
+        ],
         ace_names: 65_536,
         wings: 8192,
         sorties: Default::default(),
@@ -245,7 +255,19 @@ fn collect_split(
         damage_limit: damage_cap,
     };
     let capacities = Capacities {
-        rows: [8192, 2048, 4096, history_cap, damage_cap, 1024, 2048, 4096, 1024, 64, 0],
+        rows: [
+            8192,
+            2048,
+            4096,
+            history_cap,
+            damage_cap,
+            1024,
+            2048,
+            4096,
+            1024,
+            64,
+            0,
+        ],
         ace_names: 65_536,
         wings: 8192,
         sorties: Default::default(),

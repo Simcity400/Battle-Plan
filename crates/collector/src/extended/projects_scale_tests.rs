@@ -10,8 +10,8 @@ use super::projects_test_kit as kit;
 use super::*;
 use engine::{
     ccountry, msvc_string, nproject_breakthrough_node as node, nproject_cprogram_status as status,
-    nproject_cprototype_project_state as prototype, nproject_csimple_project_state as simple,
-    nproject_cproject_state_machine as machine, nproject_sproject_context as context,
+    nproject_cproject_state_machine as machine, nproject_cprototype_project_state as prototype,
+    nproject_csimple_project_state as simple, nproject_sproject_context as context,
     nproject_sproject_history as history,
 };
 
@@ -132,7 +132,11 @@ fn slots(countries: u32) -> Vec<Slot> {
         } else {
             // Every seventh country's id differs from its slot, and its
             // projects name it by the slot, so owner aliases are resolved.
-            let id = if slot.is_multiple_of(7) { 70_000 + slot } else { slot };
+            let id = if slot.is_multiple_of(7) {
+                70_000 + slot
+            } else {
+                slot
+            };
             let owner = if slot.is_multiple_of(7) { slot } else { id };
             slots.push(Slot::Country { id, owner });
             previous = slot;
@@ -198,7 +202,10 @@ pub(super) fn space(countries: u32, projects: u32) -> Space {
                     + 16 * 8
             })
             .sum::<usize>();
-    let machine_count = plans.iter().map(|plan| plan.projects as usize).sum::<usize>();
+    let machine_count = plans
+        .iter()
+        .map(|plan| plan.projects as usize)
+        .sum::<usize>();
     let mut writer = Writer {
         bytes: vec![0xa5; size],
         used: 0,
@@ -239,7 +246,10 @@ pub(super) fn space(countries: u32, projects: u32) -> Space {
         let state = writer.alloc(status::SIZE);
         writer.u64(object + ccountry::PROGRAM_STATUS, state as u64);
         writer.vtable(state, status::VTABLE_RVA);
-        writer.vtable(state + status::SECONDARY_VTABLE, status::SECONDARY_VTABLE_RVA);
+        writer.vtable(
+            state + status::SECONDARY_VTABLE,
+            status::SECONDARY_VTABLE_RVA,
+        );
         writer.u32(state + status::OWNER, plan.id);
         write_pool(&mut writer, state, plan);
         program_id = write_programs(&mut writer, state, plan, program_id);
@@ -262,7 +272,11 @@ fn write_pool(writer: &mut Writer, state: usize, plan: &Plan) {
     writer.u64(state + status::PROJECT_POOL, pool as u64);
     writer.vtable(pool, nproject_cproject_pool::VTABLE_RVA);
     let first = writer.alloc(plan.projects as usize * nproject_cproject::POOL_STRIDE);
-    writer.array(pool + nproject_cproject_pool::PROJECTS, first, plan.projects);
+    writer.array(
+        pool + nproject_cproject_pool::PROJECTS,
+        first,
+        plan.projects,
+    );
     let states = [
         machine::PROTOTYPE_STATE,
         machine::SIMPLE_STATE_1,
@@ -288,7 +302,10 @@ fn write_pool(writer: &mut Writer, state: usize, plan: &Plan) {
             mix(seed),
         );
         writer.u8(project + nproject_cproject::STARTED, (seed >> 40) as u8 & 1);
-        writer.u8(project + nproject_cproject::COMPLETED, (seed >> 41) as u8 & 1);
+        writer.u8(
+            project + nproject_cproject::COMPLETED,
+            (seed >> 41) as u8 & 1,
+        );
         let state_machine = writer.alloc_machine();
         writer.u64(
             project + nproject_cproject::STATE_MACHINE,
@@ -300,7 +317,10 @@ fn write_pool(writer: &mut Writer, state: usize, plan: &Plan) {
             state_machine + machine::CURRENT_STATE,
             (state_machine + current) as u64,
         );
-        writer.u8(state_machine + machine::NOT_COMPLETED, (seed >> 46) as u8 & 1);
+        writer.u8(
+            state_machine + machine::NOT_COMPLETED,
+            (seed >> 46) as u8 & 1,
+        );
         for (ordinal, offset) in states.into_iter().enumerate() {
             let at = state_machine + offset;
             let draw = mix(seed ^ ordinal as u64);
@@ -391,12 +411,18 @@ fn write_programs(writer: &mut Writer, state: usize, plan: &Plan, mut id: u32) -
             writer.u32(program + owner, plan.id);
             writer.u32(program + province, seed as u32 % 13_000);
         }
-        writer.u64(program + nproject_cprogram::SCIENTIST_REFERENCE_TYPE, mix(seed));
+        writer.u64(
+            program + nproject_cprogram::SCIENTIST_REFERENCE_TYPE,
+            mix(seed),
+        );
         writer.u32(
             program + nproject_cprogram::UNREAD_PROTOTYPE_REWARDS,
             (seed >> 32) as u32 % 4,
         );
-        writer.u8(program + nproject_cprogram::ACTIVE_FLAG, (seed >> 8) as u8 & 1);
+        writer.u8(
+            program + nproject_cprogram::ACTIVE_FLAG,
+            (seed >> 8) as u8 & 1,
+        );
         writer.u32(
             program + nproject_cprogram::ACTIVE_PROJECT_HANDLE,
             (seed >> 12) as u32 % 60,
@@ -471,12 +497,7 @@ fn write_tree(writer: &mut Writer, state: usize, plan: &Plan) {
 
 fn capacities(countries: usize) -> Capacities {
     let mut capacities = Capacities::default();
-    let rows = [
-        countries * 2,
-        countries * 128,
-        countries * 8,
-        countries * 8,
-    ];
+    let rows = [countries * 2, countries * 128, countries * 8, countries * 8];
     for (capacity, rows) in capacities.rows.iter_mut().zip(rows) {
         *capacity = (*capacity).max(rows);
     }
@@ -485,7 +506,11 @@ fn capacities(countries: usize) -> Capacities {
     capacities
 }
 
-fn copy(memory: &impl Memory, game_state: usize, capacities: &Capacities) -> (Captured, ProjectsJob) {
+fn copy(
+    memory: &impl Memory,
+    game_state: usize,
+    capacities: &Capacities,
+) -> (Captured, ProjectsJob) {
     let mut job = ProjectsJob::new();
     let context = ProjectsCopyContext {
         base: kit::BASE,
@@ -681,13 +706,19 @@ fn fault_sites(space: &Space) -> Vec<Site> {
         site("project flags", project + nproject_cproject::STARTED),
         site("machine vtable", state_machine),
         site("machine phase", current + simple::PHASE_PROGRESS),
-        site("machine last state", state_machine + machine::SIMPLE_STATE_3),
+        site(
+            "machine last state",
+            state_machine + machine::SIMPLE_STATE_3,
+        ),
         site("breakthrough root", root),
         site("breakthrough sentinel", header + node::IS_NIL),
         site("history entry", history + history::DATE),
         site("program pointer array", programs),
         site("links array", links + 201 * 4),
-        site("unrecorded machine byte", state_machine + machine::SIMPLE_STATE_1 + 0x20),
+        site(
+            "unrecorded machine byte",
+            state_machine + machine::SIMPLE_STATE_1 + 0x20,
+        ),
         Site {
             label: "owner past a failed census",
             fault: stop,

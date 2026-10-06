@@ -838,8 +838,14 @@ fn registrations_at_5000_countries_are_complete_and_gathered_64_air_objects_at_a
 
     let memory = Counted::new(&scale.world);
     let mut rows = vec![cair_regional_mission::Row::default(); expected.len()];
-    let walk = cair_regional_mission::walk(&memory, BASE, scale.world.game_state, &wings, &mut rows);
-    assert_eq!(walk, Outcome::Rows { len: expected.len() });
+    let walk =
+        cair_regional_mission::walk(&memory, BASE, scale.world.game_state, &wings, &mut rows);
+    assert_eq!(
+        walk,
+        Outcome::Rows {
+            len: expected.len()
+        }
+    );
     assert_eq!(rows, expected);
     // The roster's slot pointers and identities per 64 slots, then the
     // headers of 64 country air objects per gather: one for each 64 objects.
@@ -900,7 +906,13 @@ fn registrations_at_5000_countries_are_complete_and_gathered_64_air_objects_at_a
         (&missing, "registered mission missing from AirWings"),
     ] {
         assert_eq!(
-            cair_regional_mission::walk(&scale.world, BASE, scale.world.game_state, wings, &mut rows),
+            cair_regional_mission::walk(
+                &scale.world,
+                BASE,
+                scale.world.game_state,
+                wings,
+                &mut rows
+            ),
             Outcome::Unavailable { reason }
         );
     }
@@ -980,7 +992,10 @@ fn mission_tables_grow_from_the_defaults_to_5000_countries() {
         panic!("truncated witnesses expected");
     };
     assert_eq!(
-        (rows.rows::<tables::AirReferenceWitnesses>().unwrap(), *missing),
+        (
+            rows.rows::<tables::AirReferenceWitnesses>().unwrap(),
+            *missing
+        ),
         (
             &witness_rows(&witnesses[..probes])[..],
             (witnesses.len() - probes) as u32
@@ -1053,7 +1068,10 @@ fn mission_tables_grow_from_the_defaults_to_5000_countries() {
 fn base_witnesses_at_scale_read_each_distinct_handle_once() {
     let mut scale = Scale::new();
     let expected = scale.witnesses();
-    let resolved = expected.iter().filter(|(_, base, ..)| base.is_some()).count();
+    let resolved = expected
+        .iter()
+        .filter(|(_, base, ..)| base.is_some())
+        .count();
     assert!(resolved > 2_500 && expected.len() - resolved > 100);
     // Shared pool bases, shared and unregistered transfer bases.
     let registered = scale.registered_wings().count();
@@ -1277,7 +1295,11 @@ fn mine_levels_at_scale_are_one_row_per_pair_in_key_order() {
     assert!(layers > 1_500 && expected.len() < layers, "{layers}");
     assert!(expected.iter().any(|row| row.raw_mines == 0));
     // Overrides fly for country 3 outside its own regions.
-    let own: BTreeSet<u32> = scale.registered[0].regions.iter().map(|&(r, _)| r).collect();
+    let own: BTreeSet<u32> = scale.registered[0]
+        .regions
+        .iter()
+        .map(|&(r, _)| r)
+        .collect();
     assert_eq!(scale.registered[0].slot, 3);
     assert!(
         expected

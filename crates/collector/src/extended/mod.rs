@@ -137,7 +137,6 @@ macro_rules! spool_inputs {
 
 macro_rules! packs {
     ($($pack:ident),+ $(,)?) => {
-        $(pub mod $pack;)+
         pub const PACK_NAMES: &[&str] = &[$(stringify!($pack)),+];
         pub const N: usize = 0 $(+ $pack::N)+;
         pub const TABLES: [TableId; N] = {
@@ -374,6 +373,72 @@ macro_rules! packs {
 }
 pub(crate) mod air_reference_witness;
 pub(crate) mod air_sorties;
+
+pub mod active_abilities;
+pub mod air;
+pub mod air_histories;
+pub mod air_relations;
+pub mod army_icon_inputs;
+pub mod character_inputs;
+pub mod character_portraits;
+pub mod characters;
+pub mod combat_details;
+pub mod combat_log;
+pub mod combat_progress;
+pub mod construction;
+pub mod construction_ic;
+pub mod country_appearance;
+pub mod country_counters;
+pub mod country_factories;
+pub mod country_stability;
+pub mod country_tactic_unlocks;
+pub mod division_counts;
+pub mod division_eta_inputs;
+pub mod division_presentation;
+pub mod division_templates;
+pub mod economy;
+pub mod equipment_destruction;
+pub mod faction_theatres;
+pub mod fog;
+pub mod governance;
+pub mod group_counters;
+pub mod hired_advisors;
+pub mod industrial_organisations;
+pub mod intel;
+pub mod leader_paths;
+pub mod leader_portraits;
+pub mod lexical;
+pub mod line_output;
+pub mod logistics;
+pub mod map_facilities;
+pub mod map_names;
+pub mod model_inputs;
+pub mod modifier_definitions;
+pub mod naval_bases;
+pub mod naval_combat_sources;
+pub mod naval_counters;
+pub mod naval_details;
+pub mod naval_history;
+pub mod naval_mission_inputs;
+pub mod naval_result_details;
+pub mod new_divisions;
+pub mod plans;
+pub mod production;
+pub mod projects;
+pub mod province_unit_order;
+pub mod raid_launch_inputs;
+pub mod raid_state_inputs;
+pub mod raid_target_statuses;
+pub mod railway_guns;
+pub mod saved_event_targets;
+pub mod session;
+pub mod ship_models;
+pub mod slice_reads;
+pub mod state_flags;
+pub mod supply_trains;
+pub mod visibility;
+pub mod weather;
+
 packs!(
     air,
     air_relations,

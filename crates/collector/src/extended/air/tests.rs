@@ -28,8 +28,7 @@ fn patrol_combats_keep_order_filter_regions_and_list_the_regions() {
     let mut scratch = [0; 6];
     let count = patrols(&mut scratch);
     let mut rows = vec![rows::AirNavalPatrolCombatRow::default(); 4];
-    let (outcome, (first, len)) =
-        patrol_combats(&mut scratch, count, &mut rows, walk).unwrap();
+    let (outcome, (first, len)) = patrol_combats(&mut scratch, count, &mut rows, walk).unwrap();
     assert_eq!(outcome, Outcome::Rows { len: 3 });
     let row = |country, ordinal, province, region| rows::AirNavalPatrolCombatRow {
         country,
@@ -37,7 +36,10 @@ fn patrol_combats_keep_order_filter_regions_and_list_the_regions() {
         province,
         region,
     };
-    assert_eq!(rows[..3], [row(1, 0, 11, 9), row(1, 1, 12, 5), row(2, 0, 20, 5)]);
+    assert_eq!(
+        rows[..3],
+        [row(1, 0, 11, 9), row(1, 1, 12, 5), row(2, 0, 20, 5)]
+    );
     assert_eq!(scratch[first..first + len], [5, 9]);
 }
 
@@ -165,8 +167,7 @@ fn equipment_capture_preserves_full_handles_order_and_exact_capacity() {
         .copy_from_slice(&(cequipment_variant_pool::VTABLE_RVA as u64).to_le_bytes());
     bytes[pool + cequipment_variant_pool::ITEMS..pool + cequipment_variant_pool::ITEMS + 8]
         .copy_from_slice(&(ENTRIES as u64).to_le_bytes());
-    bytes[pool + cequipment_variant_pool::CAPACITY
-        ..pool + cequipment_variant_pool::CAPACITY + 4]
+    bytes[pool + cequipment_variant_pool::CAPACITY..pool + cequipment_variant_pool::CAPACITY + 4]
         .copy_from_slice(&2_i32.to_le_bytes());
     bytes[pool + cequipment_variant_pool::COUNT..pool + cequipment_variant_pool::COUNT + 4]
         .copy_from_slice(&2_i32.to_le_bytes());
@@ -513,7 +514,19 @@ fn wing_daily_private_fields_and_capacities_do_not_gate_hourly_equipment() {
             assert_eq!((job.required_memberships, job.membership_ticks), (0, 0));
         }
         let mut captured = Captured::with_capacities(&Capacities {
-            rows: [3, 0, if cumulative { 2 } else { 0 }, 0, 0, 0, 0, 4096, 1024, 64, 0],
+            rows: [
+                3,
+                0,
+                if cumulative { 2 } else { 0 },
+                0,
+                0,
+                0,
+                0,
+                4096,
+                1024,
+                64,
+                0,
+            ],
             ace_names: 0,
             wings: 8192,
             sorties: Default::default(),
@@ -634,7 +647,9 @@ fn wing_truncation_matrix_matches_direct_with_same_caps() {
     let memory = kit::memory(&bytes);
     for (equipment, cumulative) in [(0, 0), (1, 1), (2, 1), (3, 2), (4, 3), (8192, 4096)] {
         let capacity = Capacities {
-            rows: [equipment, 2048, cumulative, 8192, 16384, 1024, 2048, 4096, 1024, 64, 0],
+            rows: [
+                equipment, 2048, cumulative, 8192, 16384, 1024, 2048, 4096, 1024, 64, 0,
+            ],
             ace_names: 65536,
             wings: 8192,
             sorties: Default::default(),
@@ -1450,14 +1465,7 @@ fn air_bases_link_index_matches_linear_collisions_faults_and_full_capacity() {
                     resolve_link(&mut actual, &memory, &links, &mut seen, &mut index, 4, raw);
                 assert_eq!(
                     result,
-                    linear_air_link(
-                        &mut expected,
-                        &reference,
-                        &links,
-                        &mut linear_seen,
-                        4,
-                        raw
-                    ),
+                    linear_air_link(&mut expected, &reference, &links, &mut linear_seen, 4, raw),
                     "index {index_len}, seen capacity {capacity}, raw {raw}"
                 );
                 results.push(result);
@@ -1533,14 +1541,7 @@ fn air_bases_link_index_preserves_local_and_raw_pool_failures() {
             for raw in [0, 1, 1, 3, u32::MAX] {
                 assert_eq!(
                     resolve_link(&mut actual, &memory, &links, &mut seen, &mut index, 3, raw),
-                    linear_air_link(
-                        &mut expected,
-                        &reference,
-                        &links,
-                        &mut linear_seen,
-                        3,
-                        raw
-                    )
+                    linear_air_link(&mut expected, &reference, &links, &mut linear_seen, 3, raw)
                 );
                 assert!(actual.logs_equal(&expected));
                 assert_eq!(actual.fault, expected.fault);
@@ -1600,8 +1601,7 @@ fn air_bases_link_index_validates_hints_and_resets_between_passes() {
     // The other bucket is cold despite the populated seen list. Faults
     // and invalid slots leave it empty; a successful observation fills it.
     assert_eq!(job.seen_link_index[0], usize::MAX);
-    for (value, expected, calls) in [(None, None, 3), (Some(8), None, 4), (Some(3), Some(3), 5)]
-    {
+    for (value, expected, calls) in [(None, None, 3), (Some(8), None, 4), (Some(3), Some(3), 5)] {
         memory.value.set(value);
         assert_eq!(
             resolve_link(
@@ -1781,7 +1781,12 @@ fn air_bases_census_grows_once_to_five_thousand_countries() {
     };
     let mut bytes = vec![0; CONTAINERS + COUNTRIES as usize * 0x100];
     header(&mut bytes, GAME + cgame_state::COUNTRIES, TABLE, COUNTRIES);
-    header(&mut bytes, GAME + cgame_state::COUNTRY_LINKS, LINKS, COUNTRIES);
+    header(
+        &mut bytes,
+        GAME + cgame_state::COUNTRY_LINKS,
+        LINKS,
+        COUNTRIES,
+    );
     put64(
         &mut bytes,
         GAME + cgame_state::STRATEGIC_AIR_MANAGER,

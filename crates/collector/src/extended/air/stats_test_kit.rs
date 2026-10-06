@@ -45,8 +45,7 @@ fn history(
     seed: i64,
 ) {
     use engine::{
-        cloop_history, cloop_history::air_stats, loop_history_record_fields,
-        loop_history_window,
+        cloop_history, cloop_history::air_stats, loop_history_record_fields, loop_history_window,
     };
     p64(bytes, history, (BASE + cloop_history::VTABLE_RVA) as u64);
     p32(

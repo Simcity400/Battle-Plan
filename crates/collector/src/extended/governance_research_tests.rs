@@ -748,7 +748,11 @@ fn research_part_failure_publishes_reason_or_cadence_skip() {
 
 /// Country IDs of the research rows a capture produced.
 fn owners(captured: &Captured) -> Vec<u32> {
-    let mut owners: Vec<_> = research(captured).inputs.iter().map(|r| r.slot.country).collect();
+    let mut owners: Vec<_> = research(captured)
+        .inputs
+        .iter()
+        .map(|r| r.slot.country)
+        .collect();
     owners.dedup();
     owners
 }
@@ -803,8 +807,16 @@ fn off_full_hours_read_only_the_slice_and_label_rows_with_the_hour() {
     let slice = research(&slice_capture(&world, 3, &mut fingerprints));
     let only = |rows: &Research| {
         (
-            rows.inputs.iter().filter(|r| r.slot.country == 3).copied().collect::<Vec<_>>(),
-            rows.modifiers.iter().filter(|r| r.country == 3).copied().collect::<Vec<_>>(),
+            rows.inputs
+                .iter()
+                .filter(|r| r.slot.country == 3)
+                .copied()
+                .collect::<Vec<_>>(),
+            rows.modifiers
+                .iter()
+                .filter(|r| r.country == 3)
+                .copied()
+                .collect::<Vec<_>>(),
         )
     };
     assert_eq!(only(&slice), only(&full));
@@ -821,12 +833,18 @@ fn a_changed_assignment_is_read_early_but_daily_progress_waits_for_the_slice() {
     assert!(owners(&slice_capture(&world, 5, &mut fingerprints)).is_empty());
     // Daily progress moves: no early read.
     let technology = SECOND.origin + TECH;
-    world.put(technology + engine::ctechnology::LIVE_PROGRESS, 260_000_i64.to_le_bytes());
+    world.put(
+        technology + engine::ctechnology::LIVE_PROGRESS,
+        260_000_i64.to_le_bytes(),
+    );
     let captured = slice_capture(&world, 6, &mut fingerprints);
     assert!(owners(&captured).is_empty());
     assert_eq!(captured.research_selection().early_count, 0);
     // A new slot speed (written on assignment) reads country 3 now, in full.
-    world.put(SECOND.origin + SLOT + engine::cresearch_slot::RESEARCH_SPEED, 95_000_i64.to_le_bytes());
+    world.put(
+        SECOND.origin + SLOT + engine::cresearch_slot::RESEARCH_SPEED,
+        95_000_i64.to_le_bytes(),
+    );
     let captured = slice_capture(&world, 7, &mut fingerprints);
     assert_eq!(owners(&captured), [3]);
     let selection = captured.research_selection();

@@ -476,7 +476,9 @@ pub(crate) fn direct_with(
 ) -> Split {
     collect_typed(
         memory,
-        [8192, bases, 4096, 8192, 16384, aces, 2048, 4096, 1024, 64, 0],
+        [
+            8192, bases, 4096, 8192, 16384, aces, 2048, 4096, 1024, 64, 0,
+        ],
         names,
         bases.max(2),
         wings,
@@ -492,7 +494,9 @@ pub(crate) fn split_with(
 ) -> (Split, AirBasesCopyReport, AirBasesJob) {
     collect_split(
         memory,
-        [8192, bases, 4096, 8192, 16384, aces, 2048, 4096, 1024, 64, 0],
+        [
+            8192, bases, 4096, 8192, 16384, aces, 2048, 4096, 1024, 64, 0,
+        ],
         names,
         bases.max(2),
         wings,

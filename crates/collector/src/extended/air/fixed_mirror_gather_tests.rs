@@ -186,8 +186,8 @@ fn stats_gather_preserves_scalar_capacity_admission_and_growth() {
     };
     for spans in 0..=10 {
         for capacity in [
-            0, 31, 32, 39, 40, 47, 48, 55, 56, 127, 128, 135, 136, 143, 144, 151, 152, 191,
-            192, 193,
+            0, 31, 32, 39, 40, 47, 48, 55, 56, 127, 128, 135, 136, 143, 144, 151, 152, 191, 192,
+            193,
         ] {
             for prefill in [false, true] {
                 let actual_memory = TraceMemory::new(&bytes, 0..0);

@@ -105,13 +105,12 @@ fn parts(cap: [usize; 5]) -> (Captured, super::super::fog::Captured) {
         sorties: Default::default(),
         scores: Default::default(),
     });
-    let mut fog =
-        super::super::fog::Captured::with_capacities(&super::super::fog::Capacities {
-            rows: [0, 0, 0, 0, 0, cap[3], 0],
-            radar_provinces: 0,
-            area_provinces: 0,
-            wings: cap[4],
-        });
+    let mut fog = super::super::fog::Captured::with_capacities(&super::super::fog::Capacities {
+        rows: [0, 0, 0, 0, 0, cap[3], 0],
+        radar_provinces: 0,
+        area_provinces: 0,
+        wings: cap[4],
+    });
     air.bases_raw_mode = true;
     fog.registrations_raw_mode = true;
     (air, fog)

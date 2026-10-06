@@ -141,7 +141,11 @@ impl Populated {
             m.vtable(object, ccountry_characters::VTABLE_RVA);
             m.u64(object + ccountry_characters::OWNER, country as u64);
             m.array(object + ccountry_characters::ACTIVE_CHARACTERS, records, 1);
-            m.array(object + ccountry_characters::RETIRED_CHARACTERS, records + 0x10, 1);
+            m.array(
+                object + ccountry_characters::RETIRED_CHARACTERS,
+                records + 0x10,
+                1,
+            );
             m.u64(records, active as u64);
             m.u64(records + 0x10, retired as u64);
             let id = slot as u32 * 2;
@@ -152,11 +156,24 @@ impl Populated {
             // The active character's roles, one trait each.
             let (leader_node, advisor_node) = (b + 0x1330, b + 0x1390);
             let (leader, advisor, scientist) = (b + 0x1440, b + 0x14a0, b + 0x1580);
-            m.map(active, ccharacter::LEADER_MAP_HEAD, b + 0x1300, Some(leader_node));
-            m.map(active, ccharacter::ADVISOR_MAP_HEAD, b + 0x1360, Some(advisor_node));
+            m.map(
+                active,
+                ccharacter::LEADER_MAP_HEAD,
+                b + 0x1300,
+                Some(leader_node),
+            );
+            m.map(
+                active,
+                ccharacter::ADVISOR_MAP_HEAD,
+                b + 0x1360,
+                Some(advisor_node),
+            );
             m.u64(leader_node + character_leader_node::IDEOLOGY, 5);
             m.u64(leader_node + character_leader_node::LEADER, leader as u64);
-            m.u64(advisor_node + character_advisor_node::ADVISOR, advisor as u64);
+            m.u64(
+                advisor_node + character_advisor_node::ADVISOR,
+                advisor as u64,
+            );
             m.vtable(leader, ccountry_leader::VTABLE_RVA);
             m.u64(leader + ccountry_leader::CHARACTER, active as u64);
             m.array(leader + ccountry_leader::TRAITS, b + 0x15c0, 1);
@@ -213,14 +230,15 @@ fn check(countries: usize) {
     assert_eq!(
         captured.outcomes(),
         [
-            Outcome::Rows {
-                len: 3 * countries
-            },
+            Outcome::Rows { len: 3 * countries },
             Outcome::Rows { len: countries }
         ]
     );
     let tables = captured.tables();
-    assert_eq!((rows(&tables[0]), rows(&tables[1])), (3 * countries, countries));
+    assert_eq!(
+        (rows(&tables[0]), rows(&tables[1])),
+        (3 * countries, countries)
+    );
     let mut records = hired_advisors::Capacities::default();
     records.raise_for_character_records(demand.active_characters, demand.retired_characters);
     let mut hired = hired_advisors::Captured::with_capacities(&records);
@@ -267,8 +285,5 @@ fn five_thousand_countries_are_read_whole_from_their_live_demand() {
     let world = Populated::new(5_000);
     let mut captured = Captured::with_capacities(&Capacities::default());
     captured.capture(&world, BASE, STATE, 0, false);
-    assert!(matches!(
-        captured.outcomes()[0],
-        Outcome::Truncated { .. }
-    ));
+    assert!(matches!(captured.outcomes()[0], Outcome::Truncated { .. }));
 }

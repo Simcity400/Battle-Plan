@@ -179,7 +179,8 @@ impl World {
                 + sweather_per_province::TEMPERATURE;
             let raw = i64::from_le_bytes(self.bytes[offset..offset + 8].try_into().unwrap());
             // +/-1..2 degrees and full fixed5 fractions, selected deterministically.
-            let step = ((slot * 131 % 200_000 + 1) as i64) * if slot.is_multiple_of(2) { 1 } else { -1 };
+            let step =
+                ((slot * 131 % 200_000 + 1) as i64) * if slot.is_multiple_of(2) { 1 } else { -1 };
             self.bytes[offset..offset + 8].copy_from_slice(&raw.wrapping_add(step).to_le_bytes());
         }
         count

@@ -161,7 +161,8 @@ fn naval_tree_live_demand_survives_production_loan_restore_and_growth() {
     let memory = live_shape();
     let mut capacities = crate::extended::Capacities::default();
     let mut captured = crate::extended::Captured::with_capacities(&capacities);
-    let countries = std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries =
+        std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     let mut work = BreakdownWork::default();
     let mut first_demand = [0; 5];
     for hour in 0..2 {
@@ -260,7 +261,8 @@ fn naval_tree_later_demand_rise_grows_all_arenas_after_a_full_capture() {
     }
     let mut capacities = crate::extended::Capacities::default();
     let mut captured = crate::extended::Captured::with_capacities(&capacities);
-    let countries = std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+    let countries =
+        std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     let capture_hour = |captured: &mut crate::extended::Captured, memory: &LiveShape| {
         captured.reset();
         let mut request = captured.take_ordinary_request(&countries, IMAGE, STATE);
