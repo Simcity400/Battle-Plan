@@ -19,7 +19,7 @@ fn owned_goal_references_preserve_order_empty_and_missing_payloads() {
         }} BBB={} CCC={diplomacy={}}}",
     )
     .unwrap();
-    let handle = |id| (id << 32) | 4713;
+    let handle = |id: u64| (id << 32) | 4713;
     assert_eq!(
         pack.owned_goals[b"AAA".as_slice()],
         [handle(8), handle(7), handle(9), 0]

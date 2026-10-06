@@ -36,7 +36,7 @@ fn descriptions_cache_native_lookup_precedence_absence_and_refusals() {
             .contains("renames")
     );
     assert_eq!(descriptions.get(&layers, "SYN").unwrap().1, block);
-    assert_eq!(descriptions.values.borrow().len(), 3);
+    assert_eq!(descriptions.values.lock().unwrap().len(), 3);
 }
 
 #[test]
