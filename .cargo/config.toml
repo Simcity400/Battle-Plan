@@ -5,27 +5,24 @@ rustc-wrapper = "sccache"
 [env]
 SCCACHE_DIR = { value = "C:\\sccache_cache", force = true }
 
-# Keep incremental compilation off, as build-slot does with CARGO_INCREMENTAL=0.
-# This avoids per-worktree incremental caches and lets sccache cache workspace crates.
+# Incremental compilation stays on (Cargo's default for dev and test), so rebuilds after small
+# edits are fast; sccache still caches third-party dependencies.
 [profile.dev]
 debug = 0
-incremental = false
 
 [profile.test]
 debug = 0
-incremental = false
 
-# The replay crate's 2,000-hour fault acceptance test takes about 121 s unoptimised and
-# about 16 s optimised; optimising replay keeps the full test suite short.
+# Tests leave replay unoptimised: test binaries of the crates above it wait for its library, which
+# builds in about 22 s unoptimised and 206 s at opt-level 2, and its 2,000-hour fault acceptance test
+# still finishes in under a minute. Dev builds keep replay optimised for interactive loading.
 [profile.dev.package.replay]
 opt-level = 2
 
-[profile.test.package.replay]
-opt-level = 2
-
-# The collector and engine scale tests run up to 5,000 countries in the default suite:
-# unoptimised they take about 150 s and 70 s, optimised about 15 s and 6 s. Engine is
-# optimised in dev as well, like replay, so dev and test share engine and replay.
+# The engine and collector scale tests run up to 5,000 countries in the default suite.
+# Engine takes about 70 s unoptimised and 6 s optimised; dev optimises it too, so dev and
+# test share it. Collector uses opt-level 1: its test binary builds in about 200 s instead of
+# 330 s and its tests finish in under a minute; unoptimised, one test overflows its stack.
 [profile.dev.package.engine]
 opt-level = 2
 
@@ -33,7 +30,7 @@ opt-level = 2
 opt-level = 2
 
 [profile.test.package.collector]
-opt-level = 2
+opt-level = 1
 
 # Dashboard cold loads parse the verified content catalogue and compact replay
 # projections. Keep those CPU paths representative during interactive UI work.
