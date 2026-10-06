@@ -455,7 +455,14 @@ function Invoke-FullSmoke {
         $dirty=Run-Tool $git @('status','--porcelain','--untracked-files=no') 'source-status' 30
         if (-not [string]::IsNullOrWhiteSpace($dirty)) { throw 'Commit the smoke candidate before running the full check.' }
         $report.source_clean=$true
-        $format=[int][regex]::Match([IO.File]::ReadAllText((Join-Path $repo 'crates\replay\src\lib.rs')),'FORMAT_VERSION: u16 = (\d+);').Groups[1].Value
+        $formatMatch=[regex]::Match([IO.File]::ReadAllText((Join-Path $repo 'crates\replay\src\lib.rs')),'FORMAT_VERSION: u16 = (?:(\d+)|rows::compatibility::(\w+));')
+        $formatText=$formatMatch.Groups[1].Value
+        if ($formatMatch.Groups[2].Success) {
+            $formatName=[regex]::Escape($formatMatch.Groups[2].Value)
+            $formatCatalog=[IO.File]::ReadAllText((Join-Path $repo 'crates\replay\src\rows\compatibility.rs'))
+            $formatText=[regex]::Match($formatCatalog,"const ${formatName}: u16 = (\d+);").Groups[1].Value
+        }
+        $format=[int]$formatText
         if ($format -lt 1) { throw 'FORMAT_VERSION not found in crates/replay/src/lib.rs.' }
         $null=Get-Command cargo -ErrorAction Stop
         $powershell=(Get-Command powershell -ErrorAction Stop).Source
