@@ -47,3 +47,10 @@ Combat hovers reject transparent text and follow graphical attach order
 use the normal show delay (`1402A2810`, `1402A4080`). Naval header skills use
 recorded component values and retained definitions (`141DF4270`, `140AD9010`);
 trait hovers are refused by name and counted until timed traits are recorded.
+
+Unseen combat icons retain established frames. Without history, the owner ruling
+(2026-10-06) draws the land frame child's authored initial value (`CIconType+0x134`,
+`142358490`, `142358910`, `142358760`); naval uses the binding's explicit frame 1
+(`1418E42A0`), which overrides its button's authored value. Each fallback counts a
+named client-pool limitation with its history reason (`icon_frames.rs`), including
+a pending index; it never establishes history.

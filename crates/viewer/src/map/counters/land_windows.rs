@@ -102,12 +102,19 @@ fn update(
     instance.hide(root, c.air)?;
     instance.show(root, c.progress)?;
     instance.set_text(root, c.progress, &placed.text, resources)?;
-    if let Some(frame) = marker.frame {
-        instance.show(root, c.frame)?;
-        instance.set_frame(root, c.frame, frame.wrapping_add(1) as i32)?;
-    } else {
-        instance.hide(root, c.frame)?;
-    }
+    let frame = match marker.frame {
+        Some(frame) => frame.wrapping_add(1) as i32,
+        None => {
+            // CIconType+0x134: constructor@142358490, token 0xFC reader@142358910,
+            // factory@142358760. Owner ruling 2026-10-06 uses the authored initial frame.
+            let native::Fields::Icon(icon) = &c.frame.fields else {
+                return Err("mapicon_land_combat_frame is not a standard icon".into());
+            };
+            icon.frame
+        }
+    };
+    instance.show(root, c.frame)?;
+    instance.set_frame(root, c.frame, frame)?;
     if let Some(tint) = marker.tint {
         instance.show(root, c.background)?;
         instance.control(root, c.background)?.color = Some(tint);
@@ -293,6 +300,75 @@ mod tests {
         instance.gui_show(&root, &root).unwrap();
         let layout = instance.layout(&root, &resources, None).unwrap().unwrap();
         assert!(naval_markers::background_footprint(&root, &layout).is_none());
+    }
+
+    #[test]
+    fn unseen_frame_draws_authored_initial_or_last_seen_frame_with_native_children() {
+        let mut resources = fixture();
+        resources.add_sprite("GFX_synthetic_frame", [20, 10], 2);
+        for authored in [1, 2] {
+            let mut root = window("Main_14");
+            let child = root
+                .children
+                .iter_mut()
+                .find(|child| child.name == b"mapicon_land_combat_frame")
+                .unwrap();
+            let native::Fields::Icon(icon) = &mut child.fields else {
+                panic!("frame icon");
+            };
+            icon.sprite = b"GFX_synthetic_frame".to_vec();
+            icon.frame = authored;
+            let c = controls(&root).unwrap();
+            let mut instance = Instance::construct(&root, [800, 600], &resources).unwrap();
+            instance.gui_show(&root, &root).unwrap();
+            let mut placed = placed();
+            placed.marker.seen = false;
+            placed.marker.progress = None;
+            placed.marker.tint = Some([1.0; 4]);
+            placed.text = "?".into();
+            let mut previous = BTreeMap::new();
+            // Returning to unknown history must reset a frame this viewer's slot held.
+            for history in [None, Some(1), None, Some(0)] {
+                placed.marker.frame = history;
+                update(
+                    &mut instance,
+                    &root,
+                    &placed,
+                    previous.entry(0u32),
+                    &resources,
+                )
+                .unwrap();
+                let layout = instance.layout(&root, &resources, None).unwrap().unwrap();
+                let frame = layout
+                    .parts
+                    .iter()
+                    .find(|part| part.path == c.frame.path)
+                    .expect("unseen frame child is drawn");
+                let PartKind::Sprite { uv, offsets, .. } = &frame.kind else {
+                    panic!("frame sprite");
+                };
+                assert_eq!(
+                    offsets[0] / uv[2],
+                    history.map_or((authored - 1) as f32, |v| v as f32)
+                );
+                assert_eq!(
+                    instance.control(&root, c.background).unwrap().color,
+                    Some([1.0; 4])
+                );
+                assert!(
+                    layout
+                        .parts
+                        .iter()
+                        .any(|part| part.path == c.background.path)
+                );
+                assert!(layout.parts.iter().any(|part| part.path == c.progress.path));
+                assert!(!layout.parts.iter().any(|part| {
+                    part.path == c.direction.path
+                        || part.path == c.air.path
+                        || part.path == c.bombardment.path
+                }));
+            }
+        }
     }
 
     #[test]

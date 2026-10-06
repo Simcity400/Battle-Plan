@@ -1,7 +1,7 @@
 //! Political-map province location tooltip (140DEBC90), without unit selection.
 mod border;
 pub(super) mod clock;
-mod units;
+pub(super) mod units;
 mod weather;
 pub(crate) use units::assets as unit_assets;
 
@@ -27,7 +27,7 @@ pub struct Content {
     neighbors: Result<BTreeMap<u32, Vec<u32>>, String>,
     temperature: Result<installed_content::weather::TemperatureRanges, String>,
     clock: Result<clock::Defines, String>,
-    units: Result<units::Content, String>,
+    pub(super) units: Result<units::Content, String>,
     border: Result<border::Defines, String>,
 }
 

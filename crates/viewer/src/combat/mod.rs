@@ -1,11 +1,11 @@
 //! Game-authored land and naval combat windows, shared by playback and PNG export.
 mod assets;
 mod battle_name;
-mod binding;
+pub(crate) mod binding;
 mod border_marker;
 mod commander_tooltips;
 mod defines;
-mod details;
+pub(crate) mod details;
 mod division_icons;
 mod division_tooltips;
 pub(crate) mod engaged;

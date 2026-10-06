@@ -914,7 +914,7 @@ fn mismatch_counts_stay_exact_while_only_the_first_five_are_kept() {
     );
 }
 
-/// Owner option B for naval icons: `1418E3E30` sets the icon's frame only
+/// `1418E3E30` sets the icon's frame only
 /// while `any_side_engaged@1413CD880` holds, so an unengaged combat's icon
 /// keeps the frame of its last engaged hour, which the index carries. C1
 /// shares vision with the attacker (2) at the load, so combat 0 is engaged

@@ -14,6 +14,8 @@
 //! reconstructed here. On a cache miss 140BED3A0 finds a new path, which need not be the stored
 //! route; its cache also retains the original result until 140BF0300 expires it. Native counter
 //! parity therefore needs both path selection and client cache history, not just fresh operands.
+//! Fresh sample H showed 38 h natively and 30 h here: UI cache history is unrecorded, and
+//! 140BED280 → 140BED3A0 searches a route rather than using 140BECF90's stored route.
 //!
 //! Both sites do the same arithmetic: [`engine::cunit::eta_hours`] (`14047BDE0`), narrowed to i32,
 //! shown only when positive, split into `hours / 24` days and `hours % 24` hours.
@@ -27,13 +29,11 @@ pub struct Arrival {
     pub days: i32,
     /// The game's `hours % 24`.
     pub hours: i32,
-    /// The recorded hour plus the whole hours remaining, a projected arrival.
-    pub hour: i32,
 }
 
 /// What `remaining` fixed5 hours arrive at, or `None` where the game writes no line at all: a
 /// route already run out, and any negative or sentinel duration.
-pub fn arrival(recorded_hour: i32, remaining: i64) -> Option<Arrival> {
+pub fn arrival(remaining: i64) -> Option<Arrival> {
     let total = eta_hours(remaining) as i32;
     if total < 1 {
         return None;
@@ -41,7 +41,6 @@ pub fn arrival(recorded_hour: i32, remaining: i64) -> Option<Arrival> {
     Some(Arrival {
         days: total / 24,
         hours: total % 24,
-        hour: recorded_hour.saturating_add(total),
     })
 }
 
@@ -49,16 +48,13 @@ pub fn arrival(recorded_hour: i32, remaining: i64) -> Option<Arrival> {
 /// `UNIT_MOVING_DAYS_HOURS`, with the `_NONPLAYER` pair for a stack the viewing
 /// country does not own, localised with the integer arguments `HOURS`, and
 /// `DAYS` for the days keys, as 1418C00D0 passes them (Localisation_FormatValue
-/// 1402E2E60, LocalizeWithTwoIntegers 1406BABB0), and the colour codes
-/// stripped. `at` is [`Arrival::hour`] already written as a date, appended as
-/// the viewer's projected arrival. A key the content lacks is its own bytes
-/// (142230940). The error names the key and why the line is refused: text the
-/// localiser cannot produce, or a control the hover does not draw.
+/// 1402E2E60, LocalizeWithTwoIntegers 1406BABB0). A key the content lacks is
+/// its own bytes (142230940). The counter builder validates the resulting
+/// native colour controls and inline artwork through its shared text reader.
 pub fn sentence(
     localisation: &installed_content::localisation::Localisation,
     arrival: &Arrival,
     ours: bool,
-    at: &str,
 ) -> Result<String, String> {
     use installed_content::localisation::Argument;
     let key = match (arrival.days == 0, ours) {
@@ -74,15 +70,9 @@ pub fn sentence(
     } else {
         &[days, hours]
     };
-    let text = localisation
+    localisation
         .localise_with(key.as_bytes(), arguments)
-        .map_err(|refusal| refusal.to_string())?;
-    if let Some(control) = super::text::unsupported_control(&text) {
-        return Err(format!(
-            "localisation {key} holds {control}, which the hover does not draw"
-        ));
-    }
-    Ok(format!("{} ({at})", super::text::strip_color_codes(&text)))
+        .map_err(|refusal| refusal.to_string())
 }
 
 crate::combat::text::tooltip_keys! {
@@ -97,38 +87,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_duration_ceilings_to_whole_hours_and_lands_on_an_hour() {
+    fn a_duration_ceilings_to_whole_hours() {
         // 4.43806 h, the RENDERING.md 7.3 worked example, ceilings to 5.
-        assert_eq!(
-            arrival(60_832_632, 443_806),
-            Some(Arrival {
-                days: 0,
-                hours: 5,
-                hour: 60_832_637
-            })
-        );
+        assert_eq!(arrival(443_806), Some(Arrival { days: 0, hours: 5 }));
         // Exact hours do not ceiling past themselves.
-        assert_eq!(arrival(100, 100_000).unwrap().hours, 1);
-        assert_eq!(arrival(100, 100_001).unwrap().hours, 2);
+        assert_eq!(arrival(100_000).unwrap().hours, 1);
+        assert_eq!(arrival(100_001).unwrap().hours, 2);
     }
 
     #[test]
     fn days_and_hours_split_as_the_game_splits_them() {
-        let arrival = arrival(0, 2_900_000).expect("29 h remaining");
-        assert_eq!((arrival.days, arrival.hours, arrival.hour), (1, 5, 29));
+        let arrival = arrival(2_900_000).expect("29 h remaining");
+        assert_eq!((arrival.days, arrival.hours), (1, 5));
     }
 
     #[test]
     fn nothing_is_shown_for_an_arrived_or_negative_duration() {
         // 0 is arrived or no route; a negative remaining is the progress subtraction.
-        assert_eq!(arrival(100, 0), None);
-        assert_eq!(arrival(100, -1), None);
-        assert_eq!(arrival(100, -100_000), None);
+        assert_eq!(arrival(0), None);
+        assert_eq!(arrival(-1), None);
+        assert_eq!(arrival(-100_000), None);
         // Any part of an hour still ceilings to one, so it is shown.
-        assert_eq!(arrival(100, 1).unwrap().hours, 1);
+        assert_eq!(arrival(1).unwrap().hours, 1);
         // 4294967295 is the engine's zero-denominator sentinel: a duration like any
         // other here, and the game words it the same way.
-        assert_eq!(arrival(100, 4_294_967_295).unwrap().days, 1789);
+        assert_eq!(arrival(4_294_967_295).unwrap().days, 1789);
     }
 
     #[test]
@@ -146,29 +129,21 @@ mod tests {
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
         .collect();
-        let one = Arrival {
-            days: 0,
-            hours: 5,
-            hour: 7,
-        };
+        let one = Arrival { days: 0, hours: 5 };
         assert_eq!(
-            sentence(&localisation, &one, true, "1936-09-30  01:00").as_deref(),
-            Ok("Arrives at its destination in 5 hour(s). (1936-09-30  01:00)")
+            sentence(&localisation, &one, true).as_deref(),
+            Ok("Arrives at its destination in \u{11}Y5\u{11}! \u{11}Yhour(s)\u{11}!.")
         );
-        let two = Arrival {
-            days: 1,
-            hours: 5,
-            hour: 7,
-        };
+        let two = Arrival { days: 1, hours: 5 };
         // `$OTHER$` is no argument and no key: the localiser writes nothing.
         assert_eq!(
-            sentence(&localisation, &two, false, "d").as_deref(),
-            Ok("Next province in 1 day(s) and 5 h, . (d)")
+            sentence(&localisation, &two, false).as_deref(),
+            Ok("Next province in \u{11}Y1\u{11}! \u{11}Yday(s)\u{11}! and 5 h, .")
         );
         // A key the content lacks is drawn as its bytes (142230940).
         assert_eq!(
-            sentence(&localisation, &one, false, "d").as_deref(),
-            Ok("UNIT_MOVING_HOURS_NONPLAYER (d)")
+            sentence(&localisation, &one, false).as_deref(),
+            Ok("UNIT_MOVING_HOURS_NONPLAYER")
         );
         let icon: installed_content::localisation::Localisation = [(
             "UNIT_MOVING_DAYS_HOURS".to_owned(),
@@ -176,9 +151,6 @@ mod tests {
         )]
         .into_iter()
         .collect();
-        assert_eq!(
-            sentence(&icon, &two, true, "d"),
-            Err("localisation UNIT_MOVING_DAYS_HOURS holds the icon 0x13 \"time\" (an authored `£`), which the hover does not draw".into())
-        );
+        assert_eq!(sentence(&icon, &two, true), Ok("\u{13}time 1".into()));
     }
 }

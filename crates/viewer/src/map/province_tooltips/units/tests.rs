@@ -1,5 +1,9 @@
 use super::*;
-use replay::rows::{LexicalTokenRow, TemplateSubunit};
+use crate::map::{test_frame, test_put as put};
+use replay::rows::{
+    ArmyIconInputRow, ClockRow, DivisionRow, LexicalTokenRow, ProvinceUnitOrderRow, TableRows,
+    TemplateSubunit,
+};
 
 fn unit(owner: u32, rank: u8, template_id: u32, intel: u16) -> Unit {
     Unit {
@@ -41,8 +45,13 @@ fn loc() -> Localisation {
 fn first_input_fake_template_applies_to_every_known_unit_and_249_is_omitted() {
     let units = vec![unit(2, 0, 1, 249), unit(1, 3, 9, 255), unit(3, 1, 7, 250)];
     let fallback = 44 << 32 | 7;
-    assert_eq!(group_templates(units, false, fallback), [(fallback, 2)]);
-    assert!(group_templates(vec![unit(2, 0, 1, 249)], false, fallback).is_empty());
+    let prepared = group_templates(units, false, fallback);
+    assert_eq!(prepared.groups, [(fallback, 2)]);
+    assert!(
+        group_templates(vec![unit(2, 0, 1, 249)], false, fallback)
+            .groups
+            .is_empty()
+    );
 }
 
 #[test]
@@ -61,8 +70,158 @@ fn groups_use_native_rank_country_and_numeric_template_id_descending() {
         0,
     );
     assert_eq!(
-        groups,
+        groups.groups,
         [(1, 1), (9, 1), (3, 1), (4, 1), (2, 2), (5, 1)].map(|(id, count)| ((id << 32) | 7, count))
+    );
+}
+
+fn frame() -> DecodedFrame {
+    let mut frame = test_frame(60_000_000);
+    put(
+        &mut frame,
+        TableRows::Divisions(
+            [(1, 11, 1), (2, 22, 9), (3, 22, 1)]
+                .into_iter()
+                .map(|(id, roster_owner, template)| DivisionRow {
+                    id,
+                    roster_owner,
+                    template: template << 32 | 7,
+                    province: 100,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    put(
+        &mut frame,
+        TableRows::ArmyIconInputs(vec![ArmyIconInputRow {
+            division: 3,
+            alternate_template: 44 << 32 | 7,
+            ..Default::default()
+        }]),
+    );
+    put(
+        &mut frame,
+        TableRows::ProvinceUnitOrder(vec![ProvinceUnitOrderRow {
+            province: 100,
+            mixed: vec![3, 900, 2, 1],
+            ..Default::default()
+        }]),
+    );
+    put(
+        &mut frame,
+        TableRows::DivisionTemplateIcons(
+            [(1, 1, 2), (9, 2, 3)]
+                .into_iter()
+                .map(|(id, token, count)| DivisionTemplateIconRow {
+                    template: id << 32 | 7,
+                    country: 11,
+                    subunits: vec![TemplateSubunit {
+                        token,
+                        local: 0,
+                        count,
+                    }],
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    put(
+        &mut frame,
+        TableRows::LexicalTokens(vec![
+            LexicalTokenRow {
+                token: 1,
+                literal: b"Foot".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 2,
+                literal: b"Horse".to_vec(),
+            },
+        ]),
+    );
+    put(&mut frame, TableRows::Clock(vec![ClockRow::default()]));
+    frame
+}
+
+#[test]
+fn counter_members_use_the_shared_summary_without_other_province_units() {
+    let frame = frame();
+    let content = content();
+    let links = BTreeMap::from([(11, 1), (22, 2)]);
+    let canonical = |raw| links.get(&raw).copied();
+    let vision = Vision::sharing(1, [2]);
+    let loc = loc();
+    let prepared = prepare_members(&frame, &[2], &canonical, &vision).unwrap();
+    assert_eq!(
+        summary_prepared(&content, &frame, &prepared, &canonical, &vision, &loc, true).unwrap(),
+        "3\u{13}unit_Horse_icon_small|2 "
+    );
+    let prepared = prepare_members(&frame, &[1, 3], &canonical, &vision).unwrap();
+    assert_eq!(
+        summary_prepared(
+            &content,
+            &frame,
+            &prepared,
+            &canonical,
+            &vision,
+            &loc,
+            false,
+        )
+        .unwrap(),
+        "4\u{13}unit_Foot_icon_small|1 "
+    );
+    let province = summary(&content, &frame, 100, &links, &vision, &loc, false).unwrap();
+    let prepared = prepare_members(&frame, &[3, 2, 1], &canonical, &vision).unwrap();
+    assert_eq!(
+        province,
+        summary_prepared(
+            &content,
+            &frame,
+            &prepared,
+            &canonical,
+            &vision,
+            &loc,
+            false,
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        province,
+        "4\u{13}unit_Foot_icon_small|1    3\u{13}unit_Horse_icon_small|1 "
+    );
+}
+
+#[test]
+fn shared_preparation_keeps_hidden_first_input_disclosure_before_sorting() {
+    let frame = frame();
+    let links = BTreeMap::from([(11, 1), (22, 2)]);
+    let canonical = |raw| links.get(&raw).copied();
+    let vision = Vision::sharing(1, []).with_truncated_unit_intel([(2, 2), (3, 1)]);
+    let prepared = prepare_members(&frame, &[3, 1, 2], &canonical, &vision).unwrap();
+    assert!(!prepared.disclosed);
+    assert_eq!(prepared.groups, [(44 << 32 | 7, 2)]);
+    let prepared = prepare_members(&frame, &[1, 3, 2], &canonical, &vision).unwrap();
+    assert!(prepared.disclosed);
+    assert_eq!(prepared.groups, [(1 << 32 | 7, 1), (9 << 32 | 7, 1)]);
+}
+
+#[test]
+fn exact_counter_members_refuse_missing_inputs_without_a_province_label() {
+    let frame = frame();
+    let links = BTreeMap::from([(11, 1), (22, 2)]);
+    let canonical = |raw| links.get(&raw).copied();
+    let vision = Vision::sharing(1, []).with_truncated_unit_intel([(2, 2)]);
+    assert_eq!(
+        prepare_members(&frame, &[1, 900], &canonical, &vision).unwrap_err(),
+        "Divisions member 900 is absent"
+    );
+    assert_eq!(
+        prepare_members(&frame, &[1, 3], &canonical, &vision).unwrap_err(),
+        "division 3 unit intel (1416068C0) unavailable"
+    );
+    assert_eq!(
+        prepare_members(&frame, &[1], &|_| None, &vision).unwrap_err(),
+        "country 11 has no CountryLinks row"
     );
 }
 

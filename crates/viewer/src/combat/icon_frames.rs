@@ -26,6 +26,15 @@
 //! [`IconFold`] folds that per hour; the engaged index carries it over the
 //! recording ([`crate::engaged_index::kept_frames`]), so a seek shows the
 //! same kept frame.
+//!
+//! When history establishes no frame, the owner ruling (2026-10-06) uses the
+//! child's content-authored initial frame, with a named limitation. For land,
+//! CIconType+0x134 defaults to 1 (142358490), accepts token 0xFC (142358910),
+//! and is applied by the object factory (142358760). It is a presentation
+//! fallback, not an observation of the recording client's pool slot. The
+//! limitation keeps the history state's reason, including a pending index.
+//! Naval instead binds a button at +0x5E0 and sets frame 1 explicitly
+//! (1418E42A0), overriding that button's authored frame.
 
 use crate::{
     combat::engaged::{Continuity, Engaged},
@@ -36,6 +45,12 @@ use std::{collections::BTreeMap, io};
 
 /// The limitation every frame carried from an earlier hour reports.
 pub(crate) const CARRIED: &str = "frame carried from the last seen hour, assuming the camera kept the icon alive (the camera and the icon pool are not recorded; 14127BFC0 and 14127C6B0 erase a province's combat icons when it leaves the view)";
+
+/// The limitation for an unseen land icon drawn at its authored initial frame.
+pub(crate) const LAND_NO_HISTORY: &str = "frame index not from history (client icon pool, CLandCombatMapIcon+0x5D8 -> CIcon+0xE8 -> drawable+0x44)";
+
+/// The limitation for an unseen naval icon drawn at its native binding's initial frame.
+pub(crate) const NAVAL_NO_HISTORY: &str = "frame index not from history (client icon pool, CNavalCombatMapIcon+0x5E0 -> CButtonStandard+0xF0 -> drawable+0x44)";
 
 /// What an unseen combat icon's frame is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,23 +70,18 @@ pub(crate) enum Kept {
 }
 
 impl Kept {
-    /// Why the frame is withheld; `None` for a carried frame.
-    pub(crate) fn withheld(self) -> Option<&'static str> {
-        match self {
-            Self::Frame(_) => None,
-            Self::Fresh => Some(
-                "frame withheld: a new icon instance with no seen hour takes a pooled icon (140B63880 via 140B63D40 or 140B63DB0) whose frame its last user set; Release (1418B0D10 or 1418E3C70, then 14162D030) does not reset it, and the pool is not recorded",
-            ),
-            Self::Unobserved => Some(
-                "frame withheld: the icon predates the branch's first folded hour or follows hours the index could not read, so its last seen frame is not recorded",
-            ),
-            Self::Undecided => Some(
-                "frame withheld: an hour of this icon's life could not decide whether the viewer saw the combat, the frame that hour set, or whether the icon lived on",
-            ),
-            Self::Unindexed => Some(
-                "frame withheld: the icon history index does not cover this hour for this viewing country (pending, another viewer, a dump or an export)",
-            ),
-        }
+    /// The carried-frame assumption or why the initial-frame fallback is needed.
+    pub(crate) fn limitation(self, initial: &str) -> String {
+        let reason = match self {
+            Self::Frame(_) => return CARRIED.to_owned(),
+            Self::Fresh => "live instance has no seen hour",
+            Self::Unobserved => "instance predates observed history or follows unread hours",
+            Self::Undecided => "an icon hour could not decide visibility, frame or continuity",
+            Self::Unindexed => {
+                "engaged index does not cover this viewer/hour (index pending or absent)"
+            }
+        };
+        format!("{initial}: {reason}")
     }
 }
 
@@ -214,6 +224,35 @@ impl IconFold {
 mod tests {
     use super::*;
 
+    #[test]
+    fn initial_frame_limitations_keep_each_history_states_reason() {
+        for (kept, reason) in [
+            (Kept::Fresh, "live instance has no seen hour"),
+            (
+                Kept::Unobserved,
+                "instance predates observed history or follows unread hours",
+            ),
+            (
+                Kept::Undecided,
+                "an icon hour could not decide visibility, frame or continuity",
+            ),
+            (
+                Kept::Unindexed,
+                "engaged index does not cover this viewer/hour (index pending or absent)",
+            ),
+        ] {
+            assert_eq!(
+                kept.limitation(LAND_NO_HISTORY),
+                format!("{LAND_NO_HISTORY}: {reason}")
+            );
+            assert_eq!(
+                kept.limitation(NAVAL_NO_HISTORY),
+                format!("{NAVAL_NO_HISTORY}: {reason}")
+            );
+        }
+        assert_eq!(Kept::Frame(1).limitation(LAND_NO_HISTORY), CARRIED);
+    }
+
     /// (combat, alive, seen, frame).
     type Row = (u64, Option<bool>, Option<bool>, Option<u32>);
 
@@ -228,7 +267,7 @@ mod tests {
     }
 
     /// Seen then unseen keeps the seen frame; a new instance, a side
-    /// emptied and refilled, and a joined branch each withhold it.
+    /// emptied and refilled, and a joined branch each require the authored fallback.
     #[test]
     fn an_unseen_icon_keeps_its_instance_last_seen_frame() {
         let mut fold = IconFold::default();
@@ -279,7 +318,7 @@ mod tests {
             Continuity::Next,
         );
         assert_eq!(live[&1], Kept::Fresh);
-        // An undecided hour withholds until the next seen one.
+        // An undecided hour needs the authored fallback until the next seen one.
         let live = step(&mut fold, &[(1, Some(true), None, None)], Continuity::Next);
         assert_eq!(live[&1], Kept::Undecided);
         let live = step(&mut fold, &[(1, None, Some(false), None)], Continuity::Next);

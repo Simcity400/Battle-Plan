@@ -517,6 +517,7 @@ pub struct Viewer {
     land_marker_tooltips: crate::combat::land_marker_tooltips::Cache,
     naval_marker_tooltips: crate::combat::naval_marker_tooltips::Cache,
     province_tooltips: map::province_tooltips::Cache,
+    counter_tooltips: map::counter_tooltips::Cache,
     tooltip_refused: BTreeMap<String, usize>,
     // counters
     counter_report: CounterReport,
@@ -847,6 +848,7 @@ impl Viewer {
             land_marker_tooltips: Default::default(),
             naval_marker_tooltips: Default::default(),
             province_tooltips: Default::default(),
+            counter_tooltips: Default::default(),
             tooltip_refused: Default::default(),
             // counters
             counter_report: CounterReport::default(),
@@ -957,6 +959,7 @@ impl Viewer {
         self.land_marker_tooltips = Default::default();
         self.naval_marker_tooltips = Default::default();
         self.province_tooltips = Default::default();
+        self.counter_tooltips = Default::default();
         self.tooltip_refused.clear();
         self.source = None;
         self.source_decoder = None;
@@ -1378,6 +1381,7 @@ impl Viewer {
         self.land_marker_tooltips = Default::default();
         self.naval_marker_tooltips = Default::default();
         self.province_tooltips = Default::default();
+        self.counter_tooltips = Default::default();
         self.tooltip_refused.clear();
         self.source = None;
         self.source_decoder = None;
@@ -1754,25 +1758,21 @@ impl Viewer {
         }
         if let Some(hit) = self
             .counter_report
-            .arrivals
+            .land_hovers
             .iter()
             .rev()
             .find(|hit| hit.contains(point))
-            && let Some(arrival) =
-                map::counter_eta::arrival(document.playback.hour(), hit.remaining)
+            && let crate::playback::Current::Frame(frame) = document.playback.current()
         {
-            let mut text = map::raids::tooltips::Tooltip::default();
-            text.title = map::counter_eta::sentence(
-                &document.names.localisation,
-                &arrival,
-                hit.ours,
-                &date(arrival.hour),
-            )
-            .unwrap_or_else(|reason| {
-                text.refused.insert(format!("arrival line: {reason}"), 1);
-                format!("Arrival line refused: {reason}.")
-            });
-            return Some((Arc::new(text), hit.rect, None));
+            let vision = self.overlay_tables.as_ref()?.3.vision();
+            let text = self.counter_tooltips.request(
+                &document.content,
+                frame,
+                hit,
+                vision,
+                self.counter_view.settings.nato,
+            );
+            return Some((text, hit.rect, None));
         }
         let crate::playback::Current::Frame(frame) = document.playback.current() else {
             return None;

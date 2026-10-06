@@ -24,6 +24,7 @@ pub mod counter_move;
 pub mod counter_order;
 pub mod counter_portraits;
 pub mod counter_status;
+pub mod counter_tooltips;
 pub mod counters;
 pub mod country_index;
 // borders: the demilitarised-zone bucket bank
@@ -145,4 +146,27 @@ fn test_tga_rgba8(width: u16, height: u16) -> Vec<u8> {
     tga[16] = 32;
     tga[17] = 8;
     tga
+}
+
+#[cfg(test)]
+pub(super) fn test_frame(hour: i32) -> replay::frame::DecodedFrame {
+    use replay::frame::{DecodedFrame, Metrics, TableView};
+
+    DecodedFrame {
+        branch: 1,
+        hour,
+        tables: std::array::from_fn(|_| {
+            TableView::Unavailable {
+                reason: "unused".into(),
+            }
+            .into()
+        }),
+        metrics: Metrics::default(),
+    }
+}
+
+#[cfg(test)]
+pub(super) fn test_put(frame: &mut replay::frame::DecodedFrame, rows: replay::rows::TableRows) {
+    let index = rows.table().index();
+    frame.tables[index] = replay::frame::TableView::Complete(rows).into();
 }

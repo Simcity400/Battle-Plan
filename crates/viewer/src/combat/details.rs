@@ -157,7 +157,7 @@ fn fraction(value: i64, maximum: i64) -> f32 {
 }
 /// Why a division's name cannot be rendered.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Unnamed {
+pub(crate) enum Unnamed {
     CustomNotText,
     /// The name holds a control the native text layout does not draw ([`displayable`]).
     Control(String),
@@ -189,7 +189,10 @@ impl std::fmt::Display for Unnamed {
 /// where the capture records one (with +0xA9 clear, or set and a null
 /// group), else the selected historical name of a type-zero member from the
 /// content's name groups.
-fn division_name(row: &LandCombatDivisionRow, names: &Database) -> Result<String, Unnamed> {
+pub(crate) fn division_name(
+    row: &LandCombatDivisionRow,
+    names: &Database,
+) -> Result<String, Unnamed> {
     if !row.name_custom.is_empty() {
         return std::str::from_utf8(&row.name_custom)
             .map(str::to_owned)

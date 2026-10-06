@@ -1,4 +1,4 @@
-//! Province composition: 140C6AC80 -> 140C634C0, with count ranges from
+//! Unit composition: 140C6AC80 -> 140C634C0, with count ranges from
 //! 14141BFA0 -> 141417870. The optional selected-unit/detail outputs are absent.
 
 use std::{cmp::Reverse, collections::BTreeMap, io};
@@ -22,12 +22,8 @@ pub(crate) fn assets(subunits: &SubUnits) -> (crate::map::native_gui::Assets, Ve
     let mut refused = Vec::new();
     for spelling in subunits.registered() {
         let result = (|| {
-            let name = std::str::from_utf8(spelling).map_err(|_| {
-                format!(
-                    "province composition sub-unit {:?} name is not UTF-8",
-                    spelling
-                )
-            })?;
+            let name = std::str::from_utf8(spelling)
+                .map_err(|_| format!("sub-unit {:?} name is not UTF-8", spelling))?;
             let category = subunits.category(spelling)?;
             let prefix = if category & 0x80004003C1 != 0 {
                 "ship_"
@@ -38,7 +34,7 @@ pub(crate) fn assets(subunits: &SubUnits) -> (crate::map::native_gui::Assets, Ve
         })();
         match result {
             Ok(text) => assets.add_text(&text),
-            Err(reason) => refused.push(format!("Province hover: {reason} (1 subunit_icon).")),
+            Err(reason) => refused.push(format!("Unit composition: {reason} (1 subunit_icon).")),
         }
     }
     (assets, refused)
@@ -99,6 +95,12 @@ struct Unit {
     intel: u16,
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct PreparedMembers {
+    pub disclosed: bool,
+    pub groups: Vec<(u64, i32)>,
+}
+
 /// Pure text from a recorded hour. CountryIntel keeps its actual daily sample;
 /// no hourly freshness is asserted by reading that carried table.
 pub fn summary(
@@ -124,28 +126,117 @@ pub fn summary(
     let land: Vec<_> = order
         .mixed
         .iter()
-        .filter_map(|unit| {
-            divisions
-                .binary_search_by_key(unit, |r| r.id)
-                .ok()
-                .map(|i| &divisions[i])
-        })
+        .copied()
+        .filter(|unit| divisions.binary_search_by_key(unit, |r| r.id).is_ok())
         .collect();
-    let Some(&first) = land.first() else {
+    let canonical = |raw| links.get(&raw).copied();
+    let prepared = prepare_members(frame, &land, &canonical, vision)?;
+    summary_prepared(content, frame, &prepared, &canonical, vision, loc, nato)
+}
+
+pub(crate) fn summary_prepared(
+    content: &Content,
+    frame: &DecodedFrame,
+    prepared: &PreparedMembers,
+    links: &dyn Fn(u32) -> Option<u32>,
+    vision: &Vision,
+    loc: &Localisation,
+    nato: bool,
+) -> Result<String, String> {
+    if prepared.groups.is_empty() {
         return Ok(String::new());
+    }
+    let templates = frame
+        .complete::<tables::DivisionTemplateIcons>()
+        .map_err(|e| e.to_string())?;
+    let clock = frame
+        .complete::<tables::Clock>()
+        .map_err(|e| e.to_string())?
+        .first()
+        .ok_or("unit composition Clock row is absent")?;
+    let tokens = TokenNames::new(frame).map_err(|e| e.to_string())?;
+    let mut entries = Vec::new();
+    let mut indices = BTreeMap::new();
+    for &(handle, count) in &prepared.groups {
+        let template = templates
+            .binary_search_by_key(&handle, |r| r.template)
+            .map(|i| &templates[i])
+            .map_err(|_| format!("DivisionTemplateIcons template {handle} is absent"))?;
+        if template.model_unreadable != 0 {
+            return Err(format!("template {handle} unit composition was unreadable"));
+        }
+        let country = u32::try_from(template.country)
+            .ok()
+            .and_then(links)
+            .ok_or_else(|| {
+                format!(
+                    "template {handle} country {} is unresolved",
+                    template.country
+                )
+            })?;
+        let intel = if !vision.fog()
+            || vision
+                .shares_vision_proven(country)
+                .map_err(|e| e.describe())?
+        {
+            100_000
+        } else {
+            let rows = frame
+                .complete::<tables::CountryIntel>()
+                .map_err(|e| e.to_string())?;
+            let raw = rows
+                .iter()
+                .find(|r| {
+                    r.target_index == country && links(r.owner_country) == Some(vision.ours())
+                })
+                .map_or(0, |r| r.army);
+            ratio(raw, content.defines.denominator)
+        };
+        aggregate(
+            content,
+            template,
+            count,
+            tokens,
+            country,
+            intel,
+            clock.seed,
+            frame.hour,
+            &mut entries,
+            &mut indices,
+        )?;
+    }
+    format_entries(&entries, loc, nato)
+}
+
+/// Template headers and composition use the same first input and ordered groups.
+pub(crate) fn prepare_members(
+    frame: &DecodedFrame,
+    members: &[u64],
+    links: &dyn Fn(u32) -> Option<u32>,
+    vision: &Vision,
+) -> Result<PreparedMembers, String> {
+    let Some(first) = members.first() else {
+        return Ok(PreparedMembers::default());
     };
-    let canonical = |raw| {
-        links
-            .get(&raw)
-            .copied()
-            .ok_or_else(|| format!("province composition country {raw} has no CountryLinks row"))
+    let divisions = frame
+        .complete::<tables::Divisions>()
+        .map_err(|e| e.to_string())?;
+    let division = |handle| {
+        divisions
+            .binary_search_by_key(handle, |r| r.id)
+            .map(|i| &divisions[i])
+            .map_err(|_| format!("Divisions member {handle} is absent"))
     };
+    let first = division(first)?;
+    let canonical =
+        |raw| links(raw).ok_or_else(|| format!("country {raw} has no CountryLinks row"));
     // 140C6AC80 tests FIRST INPUT's roster owner before sorting, even if hidden.
     let disclosed = vision
         .shares_vision_proven(canonical(first.roster_owner)?)
         .map_err(|e| e.describe())?;
-    let mut units = Vec::with_capacity(land.len());
-    for division in land {
+    let mut units = Vec::with_capacity(members.len());
+    for member in members {
+        let division = division(member)?;
         let owner = canonical(division.roster_owner)?;
         let rank = if owner == vision.ours() {
             3
@@ -165,7 +256,7 @@ pub fn summary(
                 .land_byte_known(division.id, owner, division.province)
                 .ok_or_else(|| {
                     format!(
-                        "division {} province composition unit intel (1416068C0) unavailable",
+                        "division {} unit intel (1416068C0) unavailable",
                         division.id
                     )
                 })?,
@@ -187,91 +278,28 @@ pub fn summary(
             icon.alternate_template
         }
     };
-    let groups = group_templates(units, disclosed, fallback);
-    if groups.is_empty() {
-        return Ok(String::new());
-    }
-    let templates = frame
-        .complete::<tables::DivisionTemplateIcons>()
-        .map_err(|e| e.to_string())?;
-    let clock = frame
-        .complete::<tables::Clock>()
-        .map_err(|e| e.to_string())?
-        .first()
-        .ok_or("province composition Clock row is absent")?;
-    let tokens = TokenNames::new(frame).map_err(|e| e.to_string())?;
-    let mut entries = Vec::new();
-    let mut indices = BTreeMap::new();
-    for (handle, count) in groups {
-        let template = templates
-            .binary_search_by_key(&handle, |r| r.template)
-            .map(|i| &templates[i])
-            .map_err(|_| format!("DivisionTemplateIcons template {handle} is absent"))?;
-        if template.model_unreadable != 0 {
-            return Err(format!(
-                "template {handle} province composition was unreadable"
-            ));
-        }
-        let country = u32::try_from(template.country)
-            .ok()
-            .and_then(|raw| links.get(&raw))
-            .copied()
-            .ok_or_else(|| {
-                format!(
-                    "template {handle} country {} is unresolved",
-                    template.country
-                )
-            })?;
-        let intel = if !vision.fog()
-            || vision
-                .shares_vision_proven(country)
-                .map_err(|e| e.describe())?
-        {
-            100_000
-        } else {
-            let rows = frame
-                .complete::<tables::CountryIntel>()
-                .map_err(|e| e.to_string())?;
-            let raw = rows
-                .iter()
-                .find(|r| {
-                    r.target_index == country && links.get(&r.owner_country) == Some(&vision.ours())
-                })
-                .map_or(0, |r| r.army);
-            ratio(raw, content.defines.denominator)
-        };
-        aggregate(
-            content,
-            template,
-            count,
-            tokens,
-            country,
-            intel,
-            clock.seed,
-            frame.hour,
-            &mut entries,
-            &mut indices,
-        )?;
-    }
-    format_entries(&entries, loc, nato)
+    Ok(group_templates(units, disclosed, fallback))
 }
 
-fn group_templates(mut units: Vec<Unit>, disclosed: bool, fallback: u64) -> Vec<(u64, i32)> {
+fn group_templates(mut units: Vec<Unit>, disclosed: bool, fallback: u64) -> PreparedMembers {
     // 140C5DAC0/140C5C900: descending rank, slot, template +0xC numeric ID.
     // Equal keys have the same actual template, so tie permutations cannot
     // change the grouped template order or multiplicity (140C6AC80).
     units.sort_by_key(|unit| Reverse((unit.rank, unit.owner, (unit.template >> 32) as u32)));
-    let mut groups = Vec::<(u64, i32)>::new();
+    let mut prepared = PreparedMembers {
+        disclosed,
+        ..Default::default()
+    };
     let mut positions = BTreeMap::new();
     for unit in units.into_iter().filter(|u| u.intel >= 250) {
         let template = if disclosed { unit.template } else { fallback };
         let i = *positions.entry(template).or_insert_with(|| {
-            groups.push((template, 0));
-            groups.len() - 1
+            prepared.groups.push((template, 0));
+            prepared.groups.len() - 1
         });
-        groups[i].1 = groups[i].1.wrapping_add(1);
+        prepared.groups[i].1 = prepared.groups[i].1.wrapping_add(1);
     }
-    groups
+    prepared
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -308,17 +336,15 @@ fn aggregate(
                 SubUnit::Index(index) => index,
                 SubUnit::Unknown => {
                     return Err(format!(
-                        "province composition sub-unit {spelling} is absent from content"
+                        "unit composition sub-unit {spelling} is absent from content"
                     ));
                 }
                 SubUnit::Uncertain(reason) => {
-                    return Err(format!(
-                        "province composition sub-unit {spelling}: {reason}"
-                    ));
+                    return Err(format!("unit composition sub-unit {spelling}: {reason}"));
                 }
             };
             let name = content.subunits.name(index).ok_or_else(|| {
-                format!("province composition sub-unit index {index} has no name")
+                format!("unit composition sub-unit index {index} has no name")
             })??;
             (index, name, content.subunits.category(name.as_bytes())?)
         };

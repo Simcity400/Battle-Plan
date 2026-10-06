@@ -442,7 +442,10 @@ fn native_stack_kind_uses_viewer_animation_and_native_neighbor_ordinal() {
 fn routes_mark_which_stack_kinds_are_native() {
     use replay::{
         frame::{DecodedFrame, Metrics, TableView},
-        rows::{DivisionMovementRow, DivisionRow, TableId, TableRows},
+        rows::{
+            DivisionEtaInputsRow, DivisionMovementRow, DivisionRow, TableId, TableRows,
+            WeatherRegionRow,
+        },
     };
     let mut frame = DecodedFrame {
         branch: 1,
@@ -490,11 +493,32 @@ fn routes_mark_which_stack_kinds_are_native() {
         ]));
     let map = MovementMap::from_parts(&[(1, LAND, land(&[2])), (2, LAND, land(&[1]))]);
     let anchor = |id: u32| Some([id as f32, 0.0, 0.0]);
-    let etas = crate::map::division_eta::Etas::default();
+    for rows in [
+        TableRows::DivisionEtaInputs(vec![DivisionEtaInputsRow {
+            division: 1,
+            ..Default::default()
+        }]),
+        TableRows::Provinces(vec![]),
+        TableRows::States(vec![]),
+        TableRows::WeatherProvinces(vec![]),
+        TableRows::WeatherRegions(vec![WeatherRegionRow::default()]),
+    ] {
+        let index = rows.table().index();
+        *frame.tables[index] = TableView::Complete(rows);
+    }
+    let timing = crate::map::division_eta::MovementContent {
+        map: MovementMap::from_parts(&[]),
+        defines: Default::default(),
+    };
+    let etas = crate::map::division_eta::Etas::read(&frame, Some(&timing)).unwrap();
+    // An empty recorded route derives zero; the other members have no ETA operands.
+    assert_eq!(etas.get(1), Some((0, 0)));
+    assert_eq!(etas.get(2), None);
     let kinds = |map: Option<&MovementMap>| {
         let routes = DivisionRoutes::read(&frame, &etas, map, &anchor).unwrap();
         [1, 2, 3, 4].map(|id| {
             let route = &routes.by_division[&id];
+            assert_eq!(route.eta, if id == 1 { Some((0, 0)) } else { None });
             (route.stack_kind, route.kind_resolved)
         })
     };
