@@ -477,40 +477,48 @@ impl Content {
         Ok(())
     }
 
-    /// Every pool limit predicate the lookup refuses, with the file and
-    /// the bucket and equipment key its pool is under: a lookup that meets
-    /// the pool fails.
+    /// Every pool limit predicate the lookup refuses, with its file, bucket,
+    /// equipment, authored pool ordinal and limit-tree child path. Each `[n]`
+    /// is a 1-based sibling position, including supported predicates.
     pub fn refusals(&self) -> Vec<(&str, String)> {
-        fn walk<'a>(limits: &'a [Limit], out: &mut Vec<&'a str>) {
-            for limit in limits {
-                match limit {
-                    Limit::Unsupported(name) => out.push(name),
-                    Limit::All(inner) | Limit::Any(inner) | Limit::Not(inner) => walk(inner, out),
-                    Limit::Dlc(_) => {}
-                }
+        fn walk<'a>(limits: &'a [Limit], path: &str, out: &mut Vec<(&'a str, String)>) {
+            for (index, limit) in limits.iter().enumerate() {
+                let (name, inner) = match limit {
+                    Limit::Unsupported(name) => {
+                        out.push((name, format!("{path}{name}[{}]", index + 1)));
+                        continue;
+                    }
+                    Limit::All(inner) => ("AND", inner),
+                    Limit::Any(inner) => ("OR", inner),
+                    Limit::Not(inner) => ("NOT", inner),
+                    Limit::Dlc(_) => continue,
+                };
+                walk(inner, &format!("{path}{name}[{}] > ", index + 1), out);
             }
         }
         let mut refusals = Vec::new();
         for (bucket, definitions) in &self.buckets {
             for (equipment, pools) in definitions {
-                for pool in pools {
+                for (index, pool) in pools.iter().enumerate() {
+                    let subject = format!(
+                        "{bucket:?} pool {} of {} for {equipment}",
+                        index + 1,
+                        pools.len()
+                    );
                     let limits = match Limit::parse(&pool.limit) {
                         Ok(limits) => limits,
                         Err(error) => {
-                            refusals.push((
-                                pool.file.as_str(),
-                                format!("{bucket:?} pool for {equipment}: {error}"),
-                            ));
+                            refusals.push((pool.file.as_str(), format!("{subject}: {error}")));
                             continue;
                         }
                     };
                     let mut names = Vec::new();
-                    walk(&limits, &mut names);
-                    for name in names {
+                    walk(&limits, "", &mut names);
+                    for (name, path) in names {
                         refusals.push((
                             pool.file.as_str(),
                             format!(
-                                "{bucket:?} pool for {equipment}: unsupported empty-scope predicate {name}"
+                                "{subject}, limit {path}: unsupported empty-scope predicate {name}"
                             ),
                         ));
                     }
@@ -843,14 +851,15 @@ mod tests {
         );
         // Each refused predicate, nested ones included, is named with its file.
         let nested = content(
-            b"default = { tank = { pool = { limit = { OR = { tag = GER has_dlc = a } } models = { x } } } }",
+            b"default = { tank = { pool = { limit = { has_dlc = a OR = { has_dlc = b \
+                AND = { NOT = { has_dlc = c tag = GER } } } } models = { x } } } }",
         )
         .unwrap();
         assert_eq!(
             nested.refusals(),
             [(
                 "graphic_db/a.txt",
-                "Default pool for tank: unsupported empty-scope predicate tag".to_owned()
+                "Default pool 1 of 1 for tank, limit OR[2] > AND[2] > NOT[1] > tag[2]: unsupported empty-scope predicate tag".to_owned()
             )]
         );
         assert!(
@@ -858,6 +867,72 @@ mod tests {
                 .unwrap()
                 .refusals()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn refusals_identify_each_pool_and_repeated_predicate() {
+        let pools = content(
+            br#"
+            default = { plane = {
+                pool = { icons = { first } limit = { OR = {
+                    AAA = { has_cosmetic_tag = costume }
+                    AAA = { has_cosmetic_tag = costume }
+                } } }
+                pool = { icons = { second } limit = { OR = {
+                    AAA = { has_cosmetic_tag = costume }
+                    AAA = { has_cosmetic_tag = costume }
+                } } }
+            } }
+        "#,
+        )
+        .unwrap();
+        let refusals = pools.refusals();
+        assert_eq!(refusals.len(), 4);
+        let distinct: BTreeSet<_> = refusals.iter().map(|(_, message)| message).collect();
+        assert_eq!(distinct.len(), 4);
+        for ((file, message), (pool, child)) in
+            refusals.iter().zip([(1, 1), (1, 2), (2, 1), (2, 2)])
+        {
+            assert_eq!(*file, "graphic_db/a.txt");
+            assert_eq!(
+                message,
+                &format!(
+                    "Default pool {pool} of 2 for plane, limit OR[1] > AAA[{child}]: unsupported empty-scope predicate AAA"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn limit_parse_failure_refusals_identify_the_pool() {
+        let mut pools = content(
+            b"default = { plane = { \
+                pool = { icons = { first } limit = { tag = AAA } } \
+                pool = { icons = { second } limit = { tag = AAA } } } }",
+        )
+        .unwrap();
+        for pool in pools
+            .buckets
+            .get_mut(&Bucket::Default)
+            .unwrap()
+            .get_mut("plane")
+            .unwrap()
+        {
+            pool.limit[0].key = None;
+        }
+        assert_eq!(
+            pools.refusals(),
+            [
+                (
+                    "graphic_db/a.txt",
+                    "Default pool 1 of 2 for plane: unnamed equipment graphics entry".to_owned()
+                ),
+                (
+                    "graphic_db/a.txt",
+                    "Default pool 2 of 2 for plane: unnamed equipment graphics entry".to_owned()
+                )
+            ]
         );
     }
 
