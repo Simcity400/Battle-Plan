@@ -629,6 +629,7 @@ fn unlock_mio_fixture() -> (Fixture, Folder) {
                 name: b"syn_carrier".to_vec(),
                 value_raw: 0x6000_0006,
             }],
+            ..Default::default()
         }],
     );
     (fixture, folder)

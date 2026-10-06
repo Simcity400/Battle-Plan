@@ -116,6 +116,7 @@ fn purchase_contract_uses_seller_roster_and_native_quantity_pool() {
                     value_raw: 249_999,
                 },
             ],
+            ..Default::default()
         }]));
     for (fields, expected, refusal) in [
         ("civilian_factories=-1.25", "-2/", None),
@@ -360,6 +361,7 @@ fn civil_war_heading_and_selected_party_follow_separate_native_operands() {
                 name: b"syn_group".to_vec(),
                 value_raw: 3_000_000,
             }],
+            ..Default::default()
         }]));
     for (body, country, expected, refusal) in [
         (
@@ -502,6 +504,7 @@ fn faction_influence_environment_keeps_links_and_scales_to_5000_countries() {
                     name: b"syn_amount".to_vec(),
                     value_raw: -12_500,
                 }],
+                ..Default::default()
             }]));
         for (body, country, expected) in [
             (

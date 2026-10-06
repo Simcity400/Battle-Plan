@@ -233,6 +233,7 @@ fn unit_fixture() -> Fixture {
                 name: b"syn_amount".to_vec(),
                 value_raw: 25_000,
             }],
+            ..Default::default()
         });
     }
     fixture
