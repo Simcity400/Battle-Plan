@@ -3,7 +3,7 @@ use super::*;
 pub(in crate::effect_description) struct CharacterContent {
     pub(super) catalogue: Result<installed_content::characters::Characters, String>,
     pub(super) unit_leaders: Result<installed_content::unit_leader::Leaders<String>, String>,
-    pub(super) special_projects: Result<installed_content::special_projects::Catalog, String>,
+    pub(in crate::effect_description) special_projects: Result<installed_content::special_projects::Catalog, String>,
     pub(super) scientist_traits: Result<installed_content::scientist_traits::ScientistTraits, String>,
     pub(super) factions: Result<installed_content::faction_templates::Catalog, String>,
     pub(in crate::effect_description) notes: Vec<String>,

@@ -172,11 +172,17 @@ fn iterator_kind(class: u64) -> Option<IteratorKind> {
             },
             matches!(class, 0x142753C88 | 0x142753D78 | 0x142753AB0 | 0x142754038),
         ),
-        0x1427971A8 | 0x1427970B8 | 0x1427975D8 | 0x1427974E8 => (
+        0x1427971A8 | 0x1427970B8 => (
             Roster::Missing(
-                "CCountry ordered division pointers +0x290/count +0x29C and CEventScope unit +0x70 are unavailable (14143D4A0); ProvinceUnitOrder already records CProvince+0xE0",
+                "CCountry ordered division pointers +0x290/count +0x29C are not recorded (14143D4A0); UNIT identity and ProvinceUnitOrder are available",
             ),
-            matches!(class, 0x1427970B8 | 0x1427974E8),
+            class == 0x1427970B8,
+        ),
+        0x1427975D8 | 0x1427974E8 => (
+            Roster::Missing(
+                "state division iteration is not ported (14143D4A0); UNIT identity and ProvinceUnitOrder are recorded",
+            ),
+            class == 0x1427974E8,
         ),
         0x14272F680 | 0x14272F590 => (Roster::IndustrialOrganisations, class == 0x14272F590),
         _ => return None,
@@ -333,7 +339,7 @@ impl Renderer<'_, '_, '_> {
                     .world()?
                     .slot(row.owner)
                     .ok_or("CountryLinks lacks industrial organisation owner")?;
-                let name = self.organisation_label(reference)?;
+                let name = self.organisation_name(reference)?;
                 let flag = format!("\u{12}{}", self.tag(country)?);
                 self.localised(
                     b"EFFECT_CONTEXT_MIO",
@@ -345,6 +351,22 @@ impl Renderer<'_, '_, '_> {
                     false,
                 )? // 141382590.
             }
+            Scope::Project { owner, id } => {
+                if self.context.localisation.get("EFFECT_CONTEXT_SPECIAL_PROJECT").is_none() {
+                    return Err("native carrier localisation key EFFECT_CONTEXT_SPECIAL_PROJECT is not defined (141382590)".into());
+                }
+                let country = self.context.world()?.slot(owner)
+                    .ok_or("CountryLinks lacks project owner")?;
+                let name = self.project_name(owner, id)?;
+                let flag = format!("\u{12}{}", self.tag(country)?);
+                self.localised(
+                    b"EFFECT_CONTEXT_SPECIAL_PROJECT",
+                    &[("SPECIAL_PROJECT", Argument::Text(&name)), ("FLAG", Argument::Text(&flag))],
+                    selected, false,
+                )? // 141382590 -> 140FCDDF0.
+            }
+            // 141382590 has no raid/unit header arm; still walk the children.
+            Scope::Raid(_) | Scope::Unit(_) => String::new(),
             _ => return Err("context header kind is not ported (141382590)".into()),
         };
         Ok(Some((selected, header)))
@@ -952,7 +974,7 @@ impl Renderer<'_, '_, '_> {
             Scope::State(id) => self.state_name(id)?,
             Scope::Character(0) => String::new(),
             Scope::Character(id) => self.character_label(id)?,
-            Scope::IndustrialOrganisation(reference) => self.organisation_label(reference)?, // 14139AD50 -> 140DA44C0.
+            Scope::IndustrialOrganisation(reference) => self.organisation_name(reference)?, // 14139AD50 -> 140DA44C0.
             Scope::Leader(id) => {
                 let leader = self
                     .context
@@ -1044,7 +1066,7 @@ impl Renderer<'_, '_, '_> {
             .decided()
     }
 
-    fn organisation_label(&self, reference: u64) -> Result<String, String> {
+    pub(super) fn organisation_name(&self, reference: u64) -> Result<String, String> {
         let world = self.context.world()?;
         let row = world.industrial_organisation(reference)?;
         let name = if row.name.is_empty() {

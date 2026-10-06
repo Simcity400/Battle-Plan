@@ -137,6 +137,9 @@ fn event_scopes(scopes: Scopes) -> EventScopes {
         Scope::Leader(reference) => EventObject::UnitLeader(reference),
         Scope::Character(id) => EventObject::Character(id),
         Scope::IndustrialOrganisation(reference) => EventObject::IndustrialOrganisation(reference),
+        Scope::Project { owner, id } => EventObject::Project { owner, id },
+        Scope::Raid(reference) => EventObject::Raid(reference),
+        Scope::Unit(reference) => EventObject::Unit(reference),
         Scope::Combat => unreachable!("a raid condition is never checked in a combat scope"),
     };
     let unknown = |scope| EventScope {

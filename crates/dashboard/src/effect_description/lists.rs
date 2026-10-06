@@ -398,6 +398,9 @@ impl Renderer<'_, '_, '_> {
             Scope::IndustrialOrganisation(id) => {
                 crate::scripted_text::EventObject::IndustrialOrganisation(id)
             }
+            Scope::Project { owner, id } => crate::scripted_text::EventObject::Project { owner, id },
+            Scope::Raid(id) => crate::scripted_text::EventObject::Raid(id),
+            Scope::Unit(id) => crate::scripted_text::EventObject::Unit(id),
             Scope::Combat => return Err("array combat scope is unavailable (140537A10)".into()),
         };
         let cursor = scopes.cursor.ok_or("scope loop needs a graph cursor")?;

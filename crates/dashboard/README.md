@@ -187,6 +187,18 @@ shared porting entry points. It ports the reached
 country/state leaves, numeric fixed5 values, faction and doctrine descriptions,
 targeted decisions and timed ideas, with the native conditional/context/state-list
 builders. Own lines use three spaces per level; `IndentNonEmptyLines` uses one.
+The shared evaluator and event graph carry projects (pool owner/local ID), full
+raid references and full UNIT references alongside MIOs. Native `sp:` and `mio:`
+selectors join the recorded project pool and ordered organisation roster; a
+missing object clears THIS, while a countryless caller keeps THIS (`14146BB30`).
+ROOT/FROM/PREV copies keep the existing graph links and seeds. Project and MIO
+names use their native fresh localisation environments; raid names join instance,
+target and type content lazily. These joins keep the tables' recorded freshness.
+UNIT naming refuses the unrecorded `CNameGroupMember` display cache instead of
+refreshing it from combat naming operands. Persisted object targets missing full
+references and project/raid/MIO variable-store reads remain named refusals. Native
+description-target projection omits PROJECT (`14052DE40`); saved RAID context
+selection retains caller THIS, even though its variable reader resolves RAID.
 `modifier_description_with` exposes raw `FormatDescription` text; `modifier_list_with`
 adds the native scoped expansion. `ModifierListOptions` maps requested precision,
 outer colour, include/exclude category masks, numeric-line separator, fixed5 scale,

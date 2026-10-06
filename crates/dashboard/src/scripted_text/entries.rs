@@ -503,7 +503,7 @@ impl<'a> ScriptedText<'a> {
         }
     }
 
-    fn province_victory_point_name(&self, id: u32) -> Result<String, String> {
+    pub(crate) fn province_victory_point_name(&self, id: u32) -> Result<String, String> {
         let (provinces, gap) = rows::<tables::Provinces>(self.frame);
         let province = provinces
             .iter()
@@ -555,14 +555,14 @@ impl<'a> ScriptedText<'a> {
         Ok(String::new())
     }
 
-    pub(super) fn province_terrain(&self, id: u32) -> Result<i32, String> {
+    pub(crate) fn province_terrain(&self, id: u32) -> Result<i32, String> {
         self.environment()?.terrain.as_ref().and_then(|map| map.terrain(id))
             .map(|terrain| terrain.index)
             .ok_or_else(|| format!("Terrain of province {id}: the recorded-content province template is unavailable (141A83F00)"))
     }
 
-    /// Terrain GetName (141A857D0) localises its CGameItem id.
-    pub(super) fn terrain_name(&self, ordinal: i32) -> Result<String, String> {
+    /// CGameItem::id_copy@140616BC0, also used by raid target naming (140FD1D50).
+    pub(crate) fn terrain_id_name(&self, ordinal: i32) -> Result<String, String> {
         // Null CTerrainType has an empty id (140AC6860 -> 1414297D0).
         if ordinal == 0 {
             return Ok(String::new());
@@ -571,13 +571,13 @@ impl<'a> ScriptedText<'a> {
         let names = environment.terrain_names.as_ref().map_err(Clone::clone)?;
         let name = ordinal.checked_sub(1).and_then(|at| usize::try_from(at).ok()).and_then(|at| names.get(at))
             .ok_or_else(|| format!("Terrain.GetName: native terrain ordinal {ordinal} has no recorded-content category"))?;
-        let id = self
-            .localisation
-            .localise(name)
-            .map_err(|e| e.to_string())?;
-        self.localisation
-            .localise(id.as_bytes())
-            .map_err(|e| e.to_string())
+        self.localisation.localise(name).map_err(|e| e.to_string())
+    }
+
+    /// Terrain GetName@141A857D0 localises the already localised CGameItem id.
+    pub(super) fn terrain_name(&self, ordinal: i32) -> Result<String, String> {
+        let id = self.terrain_id_name(ordinal)?;
+        self.localisation.localise(id.as_bytes()).map_err(|e| e.to_string())
     }
 }
 
@@ -661,6 +661,9 @@ fn entry_scopes(scopes: &ExpansionScopes, at: usize, bare: bool) -> Scopes {
         EventObject::UnitLeader(reference) => Scope::Leader(reference),
         EventObject::Character(id) => Scope::Character(id),
         EventObject::IndustrialOrganisation(id) => Scope::IndustrialOrganisation(id),
+        EventObject::Project { owner, id } => Scope::Project { owner, id },
+        EventObject::Raid(id) => Scope::Raid(id),
+        EventObject::Unit(id) => Scope::Unit(id),
     };
     let current = scopes.scope(at);
     let this = scope(current.this);

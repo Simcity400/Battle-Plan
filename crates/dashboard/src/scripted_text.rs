@@ -97,6 +97,12 @@ pub enum EventObject {
     Character(u32),
     /// SetIndustrialOrganisation@14052E720 clears other carried objects.
     IndustrialOrganisation(u64),
+    /// SetProject@14052EBE0 copies project+8 to scope+0x90.
+    Project { owner: u32, id: u32 },
+    /// SetRaidInstance@14052E960 copies raid+8 to scope+0x88.
+    Raid(u64),
+    /// SetUnit@14052EDA0 copies unit+0x18 to scope+0x70.
+    Unit(u64),
 }
 
 /// One CEventScope as text reads it: its object and its links.
@@ -1369,7 +1375,10 @@ impl<'a> ScriptedText<'a> {
                     "{name}: province {id} is a text object, not a native event-scope target (141A81250)"
                 ));
             }
-            EventObject::IndustrialOrganisation(_) => Object::State(None), // No +8/+50/+A8 (141A81250).
+            EventObject::IndustrialOrganisation(_)
+            | EventObject::Project { .. }
+            | EventObject::Raid(_)
+            | EventObject::Unit(_) => Object::State(None), // No +8/+50/+A8 (141A81250).
         })
     }
 
@@ -1427,7 +1436,10 @@ impl<'a> ScriptedText<'a> {
                 EventObject::State(_)
                 | EventObject::Character(_)
                 | EventObject::UnitLeader(_)
-                | EventObject::IndustrialOrganisation(_),
+                | EventObject::IndustrialOrganisation(_)
+                | EventObject::Project { .. }
+                | EventObject::Raid(_)
+                | EventObject::Unit(_),
             ) => {
                 return Ok(None);
             }

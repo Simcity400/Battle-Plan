@@ -17,6 +17,9 @@ pub(super) fn object(value: EventObject) -> Scope {
         EventObject::UnitLeader(id) => Scope::Leader(id),
         EventObject::Character(id) => Scope::Character(id),
         EventObject::IndustrialOrganisation(id) => Scope::IndustrialOrganisation(id),
+        EventObject::Project { owner, id } => Scope::Project { owner, id },
+        EventObject::Raid(id) => Scope::Raid(id),
+        EventObject::Unit(id) => Scope::Unit(id),
     }
 }
 
@@ -28,6 +31,9 @@ fn event_object(value: Scope) -> Result<EventObject, String> {
         Scope::Leader(id) => EventObject::UnitLeader(id),
         Scope::Character(id) => EventObject::Character(id),
         Scope::IndustrialOrganisation(id) => EventObject::IndustrialOrganisation(id),
+        Scope::Project { owner, id } => EventObject::Project { owner, id },
+        Scope::Raid(id) => EventObject::Raid(id),
+        Scope::Unit(id) => EventObject::Unit(id),
         Scope::Combat => return Err("combat scope graph needs its caller's combat context".into()),
     })
 }
@@ -198,7 +204,11 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             .ok_or("description target needs caller scope graph")?
             .borrow_mut();
         let owner = terminal(&graph, at, true)?;
-        let target = graph.scopes[at].this;
+        // 14052DE40 projects UNIT/RAID, but has no PROJECT+0x90 arm.
+        let target = match graph.scopes[at].this {
+            EventObject::Project { .. } => EventObject::State(super::NULL_STATE),
+            target => target,
+        };
         let rows = graph.tooltip_targets.entry(owner).or_default();
         match rows.iter_mut().find(|(key, _)| key == name) {
             Some((_, value)) => *value = target,
@@ -252,7 +262,13 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         } else {
             event_tooltip_target(&graph, at, name)?
         };
-        Ok(target.map(object))
+        Ok(target.map(|target| match (reader, target) {
+            // 14146BB30 and 1410CFF00 have no saved RAID context/text setter;
+            // text also has no saved UNIT setter. Keep the caller's object.
+            (Reader::Context | Reader::Text, EventObject::Raid(_))
+            | (Reader::Text, EventObject::Unit(_)) => scopes.this,
+            (_, target) => object(target),
+        }))
     }
 
     pub(super) fn local_saved_exists(&self, name: &[u8], scopes: Scopes) -> Result<bool, String> {
@@ -274,7 +290,9 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 EventObject::State(id) | EventObject::Province(id) | EventObject::Character(id) => {
                     id > 0
                 }
-                EventObject::UnitLeader(id) | EventObject::IndustrialOrganisation(id) => id != 0,
+                EventObject::UnitLeader(id) | EventObject::IndustrialOrganisation(id)
+                | EventObject::Raid(id) | EventObject::Unit(id) => id != 0,
+                EventObject::Project { id, .. } => id != 0,
             }))
     }
 

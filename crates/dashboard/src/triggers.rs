@@ -23,6 +23,7 @@ use installed_content::parser::Item;
 use replay::Hour;
 
 mod aliases;
+mod carriers;
 mod coded;
 mod collections;
 mod eval;
@@ -155,6 +156,13 @@ pub enum Scope {
     Character(u32),
     /// Full industrial-organisation reference (CEventScope+0x78, 14052E720).
     IndustrialOrganisation(u64),
+    /// Project reference (+0x90, SetProject 14052EBE0), disambiguated by
+    /// its recorded pool owner because Projects keys local ids per country.
+    Project { owner: u32, id: u32 },
+    /// Full raid-instance reference (+0x88, SetRaidInstance 14052E960).
+    Raid(u64),
+    /// Full CUnit reference (+0x70, SetUnit 14052EDA0), not a unit leader.
+    Unit(u64),
     /// A combat side's scope: its first primary country with the combat
     /// ([`Combat`]).
     Combat,

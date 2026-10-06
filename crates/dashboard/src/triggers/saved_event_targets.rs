@@ -18,6 +18,19 @@ impl Reader {
             Self::Text => ("scripted-text object", "1410CFF00"),
             Self::CountrySelector => unreachable!("country selector has no unsupported target"),
         };
+        let reference = match kind {
+            "unit" => Some("CSavedEventTarget+0x38"),
+            "industrial_organisation" => Some("CSavedEventTarget+0x40"),
+            "raid_instance" => Some("CSavedEventTarget+0x50"),
+            "project" => Some("CSavedEventTarget+0x58"),
+            _ => None,
+        };
+        if let Some(reference) = reference {
+            return format!(
+                "saved event target {}: {kind} {use_} needs the full {reference} reference; GlobalSavedEventTargets records liveness only ({address})",
+                String::from_utf8_lossy(name)
+            );
+        }
         format!(
             "saved event target {}: {kind} {use_} is not reproduced ({address})",
             String::from_utf8_lossy(name)

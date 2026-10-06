@@ -564,6 +564,15 @@ fn event_scopes_keep_the_raid_links_leaders_and_target_variables() {
         nested.scopes[0].this,
         EventObject::IndustrialOrganisation(organisation)
     );
+    for (scope, object) in [
+        (Scope::Project { owner: 100, id: 9 }, EventObject::Project { owner: 100, id: 9 }),
+        (Scope::Raid(7 << 32 | 84), EventObject::Raid(7 << 32 | 84)),
+        (Scope::Unit(8 << 32 | 55), EventObject::Unit(8 << 32 | 55)),
+    ] {
+        let nested = event_scopes(Scopes { this: scope, ..raid });
+        assert_eq!(nested.scopes[0].this, object);
+        assert_eq!(nested.scopes[0].root, Link::Scope(1));
+    }
 }
 
 #[test]

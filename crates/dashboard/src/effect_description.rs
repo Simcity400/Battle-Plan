@@ -8,6 +8,13 @@
 //!   sharing `evaluator` for scoped variables. State zero stays zero.
 //! - `Renderer::{current_country, country_name, tag, state_name}` resolve names;
 //!   `state_name` uses GetStateName (1409CC380).
+//! - `Scope` / `EventObject` carry `Project { owner, id }`, `Raid(u64)` and
+//!   `Unit(u64)`; `Evaluator::{enter_scope, with_this, event_scopes}` keeps their
+//!   graph links (14146BB30/1405296C0). `sp:` and `mio:` use that selector path.
+//! - `World::{project(owner, id), raid(reference), unit(reference)}` joins those
+//!   recorded identities. `Renderer::{project_name(owner, id), raid_name(reference),
+//!   unit_name(reference), organisation_name(reference)}` returns native names
+//!   or a named missing-input error (140FCDDF0/140FD6260/140C72F00/140DA44C0).
 //! - `Content::{buildings, resources, max_railway_level}` supplies cached declared
 //!   building labels (1414A4470), resource frames (140BBD150), and NSupply's
 //!   MAX_RAILWAY_LEVEL (14037A240), read once per stack by `CachedContent`.
@@ -73,6 +80,7 @@ mod modifiers;
 mod numeric;
 mod politics;
 mod scopes;
+mod scope_names;
 mod states;
 mod technology;
 #[cfg(test)]
@@ -218,6 +226,8 @@ pub struct CachedContent {
     buildings: Option<installed_content::buildings::Buildings>,
     resources: Option<Vec<installed_content::resources::Resource>>,
     max_railway_level: Option<i32>,
+    /// Only a raid name needs the raid database; keep it lazy per content stack.
+    raids: std::sync::OnceLock<Result<installed_content::raids::Catalog, String>>,
     equipment: Option<installed_content::equipment::Database>,
     autonomy_states: Option<installed_content::autonomy::AutonomyStates>,
     gaps: BTreeMap<&'static str, String>,
@@ -374,6 +384,7 @@ impl CachedContent {
             buildings,
             resources,
             max_railway_level,
+            raids: std::sync::OnceLock::new(),
             equipment,
             autonomy_states,
             gaps,
@@ -845,6 +856,18 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     // 14052DE40 clears both members before storing a state;
                     // its nonzero state is live, while country +0x0C stays zero.
                     EventObject::Country(_) | EventObject::State(_) => {
+                        return Ok(Some(EffectSavedTarget::Graph(target)));
+                    }
+                    EventObject::Project { owner, id } => {
+                        self.context.world()?.project(owner, id)?;
+                        return Ok(Some(EffectSavedTarget::Graph(target)));
+                    }
+                    EventObject::Raid(reference) => {
+                        self.context.world()?.raid(reference)?;
+                        return Ok(Some(EffectSavedTarget::Graph(target)));
+                    }
+                    EventObject::Unit(reference) => {
+                        self.context.world()?.unit(reference)?;
                         return Ok(Some(EffectSavedTarget::Graph(target)));
                     }
                     EventObject::Character(_)
