@@ -22,6 +22,8 @@ test('ordered span admission preserves adjacency and gaps and refuses overlap or
   assert.equal(isOrderedSpans([{ firstHour: 20, lastHour: 10 }]), false);
   assert.equal(isOrderedSpans([{ firstHour: 10, lastHour: 20.5 }]), false);
   assert.equal(isOrderedSpans(new Array(1)), false);
+  assert.equal(isOrderedSpans([null]), false);
+  assert.equal(isOrderedSpans({}), false);
   assert.equal(isOrderedSpans(null), false);
 });
 

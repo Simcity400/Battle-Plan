@@ -10,9 +10,6 @@ import type { BreakdownLine, FixedRun, FormulaBreakdown, ModifierBreakdown, Stab
 
 export type Measure = 'stability' | 'warSupport';
 
-/** Most countries one widget draws. */
-export const MAX_COUNTRIES = 16;
-
 /** A fraction in fixed point (100000 = 100%) as plotting percent. */
 export function percentRuns(runs: readonly FixedRun[], decimals: number): Run[] {
   return runs.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour, value: fixedNumber(run.valueRaw, decimals) * 100, breakBefore: run.startsSegment }));

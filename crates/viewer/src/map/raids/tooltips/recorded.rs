@@ -262,57 +262,24 @@ impl Context<'_, '_> {
             },
         )
     }
+    fn target_localisation(&self, key: &str) -> Result<Option<String>> {
+        if self.loc.get(key).is_none() {
+            return Ok(None);
+        }
+        localise(self.loc, key, &[]).map(Some)
+    }
     fn victory_point(&self, province: u32) -> Result<Option<String>> {
-        // ResolveVictoryPointLocalization@140E68E30 is used directly here,
-        // without the map label's province-override rung.
-        let row = self
-            .world
-            .frame()
-            .complete::<tables::Provinces>()
-            .map_err(|e| e.to_string())?
-            .iter()
-            .find(|row| row.id == province)
-            .ok_or("target province is absent")?;
-        let owner = self
-            .world
-            .frame()
-            .complete::<tables::States>()
-            .map_err(|e| e.to_string())?
-            .iter()
-            .find(|s| s.id == row.state)
-            .and_then(|s| self.world.slot(s.owner));
-        let tag = owner
-            .map(|slot| {
-                self.countries
-                    .operands(slot)
-                    .ok_or_else(|| format!("state owner {slot} has no naming operands"))?
-                    .as_ref()
-                    .map(|o| o.tag.as_str())
-                    .map_err(Clone::clone)
-            })
-            .transpose()?;
-        crate::map::labels::victory_point_keys(tag, province)
-            .into_iter()
-            .find(|key| self.loc.get(key).is_some())
-            .map(|key| localise(self.loc, &key, &[]))
-            .transpose()
-            .map(|value| value.filter(|s| !s.is_empty()))
+        installed_content::raids::target::victory_point(self.world.frame(), province, |key| {
+            self.target_localisation(key)
+        })
     }
     fn location(&self, scope: &RaidScope) -> Result<String> {
-        let province = if scope.province != 0 {
-            scope.province
-        } else {
-            scope.leader_province
-        };
-        if province != 0
-            && let Some(name) = self.victory_point(province)?
-        {
-            return Ok(name);
-        }
-        match intel::target_state(self.world, scope)? {
-            Some(state) => self.state_name(state),
-            None => Ok("no_target_name".into()), // literal at 14296C780, 140FD1BB0.
-        }
+        installed_content::raids::target::location(
+            self.world.frame(),
+            scope,
+            |key| self.target_localisation(key),
+            |state| self.state_name(state),
+        )
     }
     fn target_name(&self, scope: &RaidScope, kind: Option<&RaidType>) -> Result<String> {
         let location = self.location(scope)?;

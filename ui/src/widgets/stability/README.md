@@ -20,6 +20,11 @@ A start or end next to an unrecorded hour, at the branch's first or last hour, a
 
 ## Hover
 
+Multi-country tooltips use shared viewport fitting, counting rows that do not fit
+and preserving the complete read-out. They keep the chart's existing sampled
+country names. Country choices use the shared selector without a smaller
+widget-specific limit; the single-country breakdown keeps its approved layout.
+
 One country: the date, then **Stability** and **War support** each with its signed parts and a bold **Total**, one decimal, green or red by sign (mock-up politics-1). Values carried from an earlier day say which day they were read; the breakdown, character names included, is as recorded at that read. Several countries: one line per country with its two values (a † marks values carried from an earlier read, dated in one note); choosing one country shows the breakdown. A breakdown that fails to load is asked for again a few times, with growing delays, and whenever its day is hovered anew, including after the pointer leaves the chart and comes back. With the keyboard, while focus is in the widget, the breakdown of the moment shown loads once playback rests and every line is announced, with the read it comes from; the current values say when they were carried from an earlier read. Values at the line ends are each line's last sample drawn, never past the recorded hours, and only as many labels as fit are drawn. A country without a recorded map colour stays grey, even with adjusted colours.
 
 ## Drill-down

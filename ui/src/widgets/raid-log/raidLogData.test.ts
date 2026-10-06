@@ -3,6 +3,15 @@ import test from 'node:test';
 import { syntheticRaidRun, syntheticRaids } from '../../dashboard/raids.fixtures.ts';
 import { raidDescription, raidLogRows, raidLogTypes, raidPreparation, raidStatus, raidTooltip } from './raidLogData.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
+import { resolveCountries } from '../../dashboard/groups.ts';
+import { definition } from './definition.ts';
+
+test('raid log country choices retain every one of 5000 recorded tags', () => {
+  const tags = Array.from({ length: 5000 }, (_, index) => `MOD ${index}`);
+  const resolved = resolveCountries({ kind: 'tags', tags }, [], undefined, 100, definition.countries.max);
+  assert.deepEqual(resolved.tags, tags);
+  assert.equal(resolved.dropped, 0);
+});
 
 test('raid log dates each observation and never backfills a later outcome or preparation across a gap', () => {
   const data = syntheticRaids();
@@ -10,11 +19,11 @@ test('raid log dates each observation and never backfills a later outcome or pre
   const earlier = raidLogRows(data, 101, [], () => true, null)[0];
   assert.equal(earlier.hour, 100);
   assert.equal(earlier.by, true);
-  assert.match(raidStatus(earlier.item), /preparation/);
-  assert.doesNotMatch(raidStatus(earlier.item), /success/);
+  assert.match(raidStatus(data, earlier.item), /preparation/);
+  assert.doesNotMatch(raidStatus(data, earlier.item), /success/);
   const gap = raidLogRows(data, 102, [], () => true, null)[0];
-  assert.match(raidStatus(gap.item), /Last observed:.*not recorded at this time/);
-  assert.equal(raidPreparation(gap.item), 'Preparation not known');
+  assert.match(raidStatus(data, gap.item), /Last observed:.*not recorded at this time/);
+  assert.equal(raidPreparation(data, gap.item), 'Preparation not known');
   const later = raidLogRows(data, 105, ['mod/sky_raid'], () => true, null)[0];
   assert.match(raidDescription(data, later.item, 'New country name', 'Mod victim'), /Mod victim.*Sky raid from a mod.*Modded success/);
   assert.equal(later.hour, 103);
@@ -24,14 +33,14 @@ test('raid log dates each observation and never backfills a later outcome or pre
 test('hourly preparation and launch witnesses update values without rekeying or redating the log', () => {
   const data = syntheticRaids();
   data.episodes[0].runs = [syntheticRaidRun(100), syntheticRaidRun(101, 105, { launched: true, iconMissing: 'Changed icon refusal' })];
-  data.episodes[0].preparation = [[100, 1139], [101, 1140], [103, 1142], [104, 1143], [105, 1144]];
+  data.episodes[0].preparation = [[100, 101, 1139, 1], [103, 105, 1142, 1]];
   const first = raidLogRows(data, 100, [], () => true, null)[0];
   const prepared = raidLogRows(data, 101, [], () => true, null)[0];
   assert.equal(prepared.key, first.key);
   assert.equal(prepared.hour, 100);
-  assert.equal(raidPreparation(prepared.item), '1,140 h prepared');
-  assert.doesNotMatch(raidStatus(prepared.item), /No result|None/);
-  assert.equal(raidPreparation(raidLogRows(data, 102, [], () => true, null)[0].item), 'Preparation not known');
+  assert.equal(raidPreparation(data, prepared.item), '1,140 h prepared');
+  assert.doesNotMatch(raidStatus(data, prepared.item), /No result|None/);
+  assert.equal(raidPreparation(data, raidLogRows(data, 102, [], () => true, null)[0].item), 'Preparation not known');
   const tooltip = raidTooltip(data, prepared.item, 'Raider', 'Victim');
   assert.equal(tooltip.rows.find(row => row.label === 'Preparation read')?.value, formatDateTime(101));
   data.readHours = [100];
@@ -63,17 +72,42 @@ test('an unchanged post-gap observation keeps the episode row date and key witho
   assert.equal(resumed.hour, first.hour);
   assert.equal(resumed.key, first.key);
   assert.equal(gap.item.current, null);
-  assert.equal(raidPreparation(gap.item), 'Preparation not known');
-  assert.equal(raidPreparation(resumed.item), '8 h prepared');
+  assert.equal(raidPreparation(data, gap.item), 'Preparation not known');
+  assert.equal(raidPreparation(data, resumed.item), '8 h prepared');
   assert.equal(raidTooltip(data, resumed.item, 'Raider', 'Victim').rows.find(row => row.label === 'Last read')?.value, formatDateTime(103));
 });
 
 test('ended raid text uses the outcome and omits preparation', () => {
   const data = syntheticRaids();
   const row = raidLogRows(data, 104, [], () => true, null)[0];
-  assert.match(raidStatus(row.item), /Modded success/);
-  assert.equal(raidPreparation(row.item), null);
+  assert.match(raidStatus(data, row.item), /Modded success/);
+  assert.equal(raidPreparation(data, row.item), null);
   assert.equal(raidTooltip(data, row.item, 'Raider', 'Victim').rows.some(row => row.label === 'Hours prepared'), false);
+});
+
+test('raid text takes preparation, ended and no-outcome meanings from the product', () => {
+  const data = syntheticRaids({ phasePreparing: 17, phaseEnded: 29, outcomeNone: 41 });
+  data.episodes[0].runs[0].phase = data.phasePreparing;
+  data.episodes[0].runs[0].outcome = data.outcomeNone;
+  data.episodes[0].runs[1].phase = data.phaseEnded;
+  const preparing = raidLogRows(data, 101, [], () => true, null)[0].item;
+  assert.equal(raidPreparation(data, preparing), '8 h prepared');
+  assert.doesNotMatch(raidStatus(data, preparing), /No result/);
+  assert.match(raidDescription(data, preparing, 'Raider', 'Victim'), /8 h prepared/);
+  assert.equal(raidTooltip(data, preparing, 'Raider', 'Victim').rows.find(row => row.label === 'Hours prepared')?.value, '8');
+  const ended = raidLogRows(data, 104, [], () => true, null)[0].item;
+  assert.match(raidStatus(data, ended), /Modded success/);
+  assert.equal(raidPreparation(data, ended), null);
+  data.episodes[0].runs[1].outcome = data.outcomeNone;
+  assert.equal(raidStatus(data, ended), 'Modded ended');
+});
+
+test('raid country membership uses the read that supplied the row facts', () => {
+  const data = syntheticRaids();
+  const hours: number[] = [];
+  const rows = raidLogRows(data, 105, [], (_tag, hour) => { hours.push(hour); return true; }, null);
+  assert.equal(rows[0].hour, 103);
+  assert.deepEqual(hours, [103]);
 });
 
 test('raid category and range filters retain the campaign semantics', () => {

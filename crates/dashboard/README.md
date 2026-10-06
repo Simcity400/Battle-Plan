@@ -113,6 +113,15 @@ between these read-derived means and the game's unrecorded cached group means.
 
 The Experience widget reads [`country_experience.rs`](src/products/country_experience.rs): banked army, navy and air experience at each read, and their net change from a read one day earlier in the same unbroken country stretch. Its [widget guide](../../ui/src/widgets/experience/README.md) describes the display and missing-data rules. Multi-country line products share selection validation in `products/mod.rs`.
 
+Political and Command power use [country_measure.rs](src/products/country_measure.rs);
+Stability and War support use [country_stability.rs](src/products/country_stability.rs).
+Stability selections and both products' histories size from the recording.
+CountryMeasure uses the shared country-selection validator. Complete replies use
+the shared serialized-byte budget, refusing with `MeasureReplyTooLarge` or
+`StabilityReplyTooLarge` instead of omitting countries or runs. Cache eviction
+retains every series needed by the current request, including requests larger
+than the cache's usual retention size.
+
 `war-casualties` answers chosen countries, all sampled countries (empty tags without top), or any user-selected top N with dealt, taken and deduplicated unknown totals at daily and readable-stretch boundaries. Ranking always uses dealt plus known taken; unknown losses affect display only. The two most recently used complete branch scans are shared across selections, and packed runs and columnar replies keep exact totals, implicit daily confirmations and lower-bound start hours for relations lost in a recording gap. Full ranking windows are cached, and label snapshots are collected in the same decode only when their naming inputs change. It retains ended and disappeared relations; evidence and missing-data rules live in [the product](src/products/war_casualties.rs) and [Casualties](../../ui/src/widgets/casualties/README.md). Selections and scans have no chosen cap. Complete replies are counted with `transport::json_len` and refused beyond `products::MAX_PRODUCT_REPLY_BYTES`, never truncated.
 
 `war_casualties::scanned_branch(source, branch, cancelled)?.country_at(tag, hour)` is the shared casualties measure: known dealt/taken, optional exact unknown, read hour and lower-bound flag from the product cache; no sample or a gap returns `None`, and the cached scan's `has_gap()` flags wars that could be wholly missing.
@@ -158,10 +167,19 @@ in the [operation log](../../ui/src/widgets/espionage-log/README.md) and
 Nuclear arsenal reads [country_nukes.rs](src/products/country_nukes.rs): every
 country's whole stockpile as the native top bar displays it, with native type
 ordinals named through recorded tokens and content. The queued-drop `ready`
-counter is a different quantity. [Raids](src/products/raids.rs) shares one cached
-branch scan between the [Raid log](../../ui/src/widgets/raid-log/README.md) and
+counter is a different quantity. Country selections and scans size from the
+recording; exact serialized reply bytes are the only product size bound, with a
+named refusal instead of omitted countries or runs.
+[Raids](src/products/raids.rs) shares one cached branch scan between the
+[Raid log](../../ui/src/widgets/raid-log/README.md) and
 [Raid tally](../../ui/src/widgets/raid-tally/README.md), preserving observed dates,
-target controllers, phase/outcome localization and bounded observed totals.
+target controllers, phase/outcome localization and observed totals. Preparation
+uses exact linear runs over consecutive successful hourly reads; every encoded
+hour retains that supplying read, and missing reads split the runs. Consumers
+receive native phase/outcome IDs from the product. The complete JSON replies
+refuse oversized histories as `RaidReplyTooLarge` or `NuclearReplyTooLarge`.
+[Raid target resolution](../installed-content/README.md#map-movement-and-raids) is shared
+with map hovers.
 
 ## Service
 

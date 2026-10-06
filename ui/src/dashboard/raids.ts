@@ -1,6 +1,6 @@
-import type { RaidEpisode, RaidRun, RaidsReply, RaidTypeInfo } from '../generated/dashboard';
+import type { RaidEpisode, RaidPreparationRun, RaidRun, RaidsReply, RaidTypeInfo } from '../generated/dashboard';
 import { drawableIcon } from './artwork.ts';
-import { validSpans } from './spans.ts';
+import { isOrderedSpans } from '../charts/series.ts';
 
 /** Both raid widgets and the picker use the same product and content identities. */
 export const RAIDS_AVAILABILITY = { product: 'raids', params: { view: 'catalogue', tags: [], top: null } } as const;
@@ -8,27 +8,28 @@ const integer = (value: unknown) => Number.isSafeInteger(value);
 const text = (value: unknown) => value === null || typeof value === 'string';
 const optionalInteger = (value: unknown) => value === null || integer(value);
 const optionalBoolean = (value: unknown) => value === null || typeof value === 'boolean';
+const preparationRuns = (runs: unknown): runs is RaidPreparationRun[] => Array.isArray(runs) && runs.every((run, index) =>
+  Array.isArray(run) && run.length === 4 && run.every(integer) && run[0] <= run[1]
+  && integer(run[2] + (run[1] - run[0]) * run[3]) && (index === 0 || runs[index - 1][1] < run[0]));
 
 export function validateRaidsReply(value: unknown): RaidsReply {
   const reply = value as RaidsReply;
   const ok = reply && typeof reply.branchId === 'string' && optionalBoolean(reply.available) && text(reply.unavailable)
+    && [reply.phasePreparing, reply.phaseEnded, reply.outcomeNone].every(integer)
     && Array.isArray(reply.types) && reply.types.every(type => typeof type.token === 'string' && text(type.name) && text(type.missing))
     && new Set(reply.types.map(type => type.token)).size === reply.types.length
     && Array.isArray(reply.artwork) && reply.artwork.every(art => typeof art.key === 'string' && text(art.image) && text(art.missing))
     && new Set(reply.artwork.map(art => art.key)).size === reply.artwork.length
     && Array.isArray(reply.readHours) && reply.readHours.every(integer) && reply.readHours.every((hour, index) => !index || reply.readHours[index - 1] < hour)
-    && validSpans(reply.unobserved) && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
+    && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
     && Array.isArray(reply.episodes) && reply.episodes.every(episode => typeof episode.id === 'string'
-      && episode.start && integer(episode.start.hour) && validSpans(episode.runs)
-      && Array.isArray(episode.preparation) && episode.preparation.every((read, index) => Array.isArray(read) && read.length === 2
-        && read.every(integer) && (index === 0 || episode.preparation[index - 1][0] < read[0]))
-      && episode.runs.every(run => integer(run.readHour) && run.readHour <= run.firstHour
-        && [run.raider, run.victim, run.type, run.targetName, run.phaseName, run.outcomeName, run.icon, run.iconMissing].every(text)
+      && episode.start && integer(episode.start.hour) && isOrderedSpans(episode.runs) && preparationRuns(episode.preparation)
+      && episode.runs.every(run => [run.raider, run.victim, run.type, run.targetName, run.phaseName, run.outcomeName, run.icon, run.iconMissing].every(text)
         && [run.province, run.state].every(optionalInteger) && [run.phase, run.outcome].every(integer)
         && [run.launched, run.succeeded].every(optionalBoolean)))
     && new Set(reply.episodes.map(episode => episode.id)).size === reply.episodes.length
-    && Array.isArray(reply.series) && reply.series.every(series => typeof series.tag === 'string' && validSpans(series.runs) && validSpans(series.segments)
-      && (series.membership === null || validSpans(series.membership))
+    && Array.isArray(reply.series) && reply.series.every(series => typeof series.tag === 'string' && isOrderedSpans(series.runs) && isOrderedSpans(series.segments)
+      && (series.membership === null || isOrderedSpans(series.membership))
       && series.runs.every(run => integer(run.readHour) && run.readHour <= run.firstHour && integer(run.launched) && integer(run.succeeded)
         && run.launched >= 0 && run.succeeded >= 0))
     && new Set(reply.series.map(series => series.tag)).size === reply.series.length;
@@ -56,14 +57,17 @@ export interface RaidAt { episode: RaidEpisode; latest: RaidRun; current: RaidRu
 
 /** The raid's own last observation, even when other countries missed that read. */
 export function raidReadAt(episode: RaidEpisode, hour: number): { readHour: number; hours: number } | null {
-  const reads = episode.preparation;
-  let found: { readHour: number; hours: number } | null = null;
-  for (let low = 0, high = reads.length - 1; low <= high;) {
+  const runs = episode.preparation;
+  const at = Math.floor(hour);
+  let found: RaidPreparationRun | null = null;
+  for (let low = 0, high = runs.length - 1; low <= high;) {
     const middle = (low + high) >> 1;
-    if (reads[middle][0] <= hour) { found = { readHour: reads[middle][0], hours: reads[middle][1] }; low = middle + 1; }
+    if (runs[middle][0] <= at) { found = runs[middle]; low = middle + 1; }
     else high = middle - 1;
   }
-  return found;
+  if (!found) return null;
+  const readHour = Math.min(at, found[1]);
+  return { readHour, hours: found[2] + (readHour - found[0]) * found[3] };
 }
 
 /** Preparation belongs to its exact read, never an earlier hour across a gap. */

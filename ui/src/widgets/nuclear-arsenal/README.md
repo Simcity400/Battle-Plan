@@ -4,6 +4,11 @@ Reads `country-nukes`, a cached branch scan of every country's hourly `Nukes` ro
 
 Race is the default, with types segmented and named through the recorded lexical dictionary and content-stack localisation. Lines show each country's total. One country by nuke type uses the shared stack. Top 10 ranks every country's nonzero recorded value, only while Countries records its existence; chosen existing countries keep their recorded zero. A proven empty read shows **No nuclear weapons yet.** An unknown or missing read says no stockpile was recorded. Chosen countries and smart groups use the same shared selection. A complete contiguous country array proves its total even when another country records more types; absent type rows never become zero in the type mix. An unnamed native ordinal retains its counted amount as **Unknown type N**, with the product's counted warning. Gaps and holes in the country's native array keep totals unknown. Names and flags in tooltips are read at the hovered hour. Right-click uses shared Jump to.
 
-The shared country-race kit supplies Style A rendering, palette colours, exact held lines, ringed end dots, end labels and hour-specific labels. Race amounts snap to recorded values while country positions move. End labels are on by default; the corner date is off. Both are settings, alongside playback and value axes. The optional one-country mix chooses the first selected country or the leading member of a group at the shown moment.
+The shared country-race kit supplies Style A rendering, palette colours, smooth monotone lines, easing bars, ringed end dots and end labels, through the same path as Factories, Equipment produced and Fuel. Labels and tooltips retain exact recorded amounts and supplying read dates; unknown totals and gaps stop easing. End labels are on by default; the corner date is off. Both are settings, alongside playback and value axes. The optional one-country mix chooses the first selected country or the leading member of a group at the shown moment. Country choices use the shared selector without a smaller widget-specific limit.
 
 Browser appearance and live-game counter comparisons remain unverified by this no-game implementation task.
+
+Drawn names and flags use the existing sampled `useCountryLooks` path: one grid
+hour per country, bounded by its recorded stretch and identity. Pending looks may
+retain the prior sample within that segment; completed missing reads use the
+shared fallback. Tooltips request country labels at the hovered hour.

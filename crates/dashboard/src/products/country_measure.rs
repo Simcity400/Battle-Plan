@@ -5,8 +5,8 @@
 //! P: AddPoliticalPower 140B98130 writes CPoliticalStatus+0xE0;
 //! AddCommandPower 1406C3320 writes CCountry+0x1F0.
 
-use super::{LoadContext, Product, validate_countries};
-use crate::Source;
+use super::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, validate_countries};
+use crate::{Source, transport::json_len};
 use serde::{Deserialize, Serialize};
 use std::{io, sync::atomic::AtomicBool};
 use ts_rs::TS;
@@ -156,7 +156,7 @@ impl Product for CountryMeasure {
                 }
             })
             .collect();
-        Ok(MeasureReply {
+        checked_reply(MeasureReply {
             branch_id: params.branch_id.clone(),
             measure: params.measure,
             decimals: MEASURE_DECIMALS,
@@ -164,6 +164,17 @@ impl Product for CountryMeasure {
             warnings,
         })
     }
+}
+
+/// Refuses, by name, a complete reply larger than the transport budget; no
+/// country or run is ever dropped to fit.
+fn checked_reply(reply: MeasureReply) -> io::Result<MeasureReply> {
+    if json_len(&reply, MAX_PRODUCT_REPLY_BYTES).is_none() {
+        return Err(io::Error::other(
+            "MeasureReplyTooLarge: the complete country balance reply exceeds the transport budget; no countries or runs were omitted",
+        ));
+    }
+    Ok(reply)
 }
 
 #[cfg(test)]

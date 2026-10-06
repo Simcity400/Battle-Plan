@@ -11,12 +11,14 @@ export interface CountryRaceEntry {
   tag: string; value: number; label: string; stretch: number | string | null;
   /** Hatching included in an unsplit total, clamped inside its positive count. */
   hatched?: number;
+  /** A secondary amount drawn inside the total, without adding to it. */
+  inset?: number;
   parts?: readonly { id: string; value: number; hatched?: number; hatchInside?: boolean; color?: string }[];
 }
 export interface CountryRaceLine {
   tag: string; runs: readonly Run[];
-  /** Distinguishes several measures of the same country. */
-  id?: string;
+  /** Distinguishes several measures of the same country; tag remains its opaque identity. */
+  id?: string; measure?: string;
   /** Fixed measure looks bypass country names and colours (for a level and ceiling). */
   color?: string; area?: boolean; dash?: readonly number[]; endDot?: boolean; muted?: boolean;
   /** Exact recorded text, independent of the plotting number. */
@@ -40,6 +42,7 @@ export function countryRaceItems(entries: readonly CountryRaceEntry[], colours: 
   return entries.map(entry => ({ key: entry.tag, value: entry.value, label: entry.label,
     // Null prevents amount easing; the race still eases rows to their ranks.
     stretch: exact ? null : entry.stretch,
+    ...(entry.inset !== undefined ? { inset: { value: entry.inset, color: country(entry.tag) } } : {}),
     segments: entry.parts?.map(part => {
       const hatched = part.hatchInside ? insideHatch(part.value, part.hatched ?? 0) : part.hatched;
       return { id: part.id, value: part.value - (part.hatchInside ? hatched ?? 0 : 0), ...(hatched !== undefined ? { hatched } : {}),
@@ -63,7 +66,7 @@ export function countryRaceEnds(lines: readonly CountryRaceLine[], from: number,
     if (hour === null) return [];
     const run = runAt(line.runs, hour);
     return run ? [{ id: line.id ?? line.tag, color: line.color ?? colour(line.tag, hour), value: run.value,
-      text: line.endLabel?.(hour, name(line.tag, hour)) ?? `${name(line.tag, hour)} ${format(run.value)}`,
+      text: line.endLabel?.(hour, name(line.tag, hour)) ?? `${name(line.tag, hour)}${line.measure ? ` · ${line.measure}` : ''} ${format(run.value)}`,
       ...(line.muted !== undefined ? { muted: line.muted } : {}) }] : [];
   });
 }

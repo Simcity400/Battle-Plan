@@ -71,14 +71,14 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
   const renderRow = (row: LogRow<RaidAt>) => {
     const type = raidType(data.types, row.item.latest);
     const icon = raidIcon(data, row.item.latest);
-    const preparation = raidPreparation(row.item);
+    const preparation = raidPreparation(data, row.item);
     const { raider, victim } = labels(row);
     return <>
       <span className={`log-art${icon ? '' : ' is-missing'}`} aria-hidden="true">{icon ? <img src={icon} alt="" /> : '?'}</span>
       <span className="log-text">
         {raider.flag && <img className="log-flag" src={raider.flag} alt="" />}<b>{raider.name}</b> targets{' '}
         {victim.flag && <img className="log-flag" src={victim.flag} alt="" />}<b>{victim.name}</b> at {raidPlace(row.item.latest)}
-        {' · '}{raidStatus(row.item)}
+        {' · '}{raidStatus(data, row.item)}
         {preparation && <>{' · '}{preparation}</>}
       </span>
       <span className="log-tag">{raidTypeName(type)}</span>

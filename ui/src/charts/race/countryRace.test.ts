@@ -114,6 +114,17 @@ test('each line has its own end hour, capped at the playhead and visible range',
   assert.deepEqual([...lineLabelHours(lines, 200, 240, 205)], [['late', 205]]);
 });
 
+test('country secondary measures keep their own endpoints and opaque identities', () => {
+  const lines = [{ tag: 'MOD A', id: JSON.stringify(['MOD A', 'primary']), measure: 'primary',
+    runs: [{ firstHour: 1, lastHour: 8, value: 10 }] },
+  { tag: 'MOD A', id: JSON.stringify(['MOD A', 'secondary']), measure: 'secondary', runs: [{ firstHour: 1, lastHour: 4, value: 3 }] }];
+  const ends = countryRaceEnds(lines, 1, 8, null, (_tag, hour) => `Country at ${hour}`, () => 'country-colour', String);
+  assert.deepEqual(ends.map(end => [end.id, end.text]), [[lines[0].id, 'Country at 8 · primary 10'], [lines[1].id, 'Country at 4 · secondary 3']]);
+  assert.deepEqual(linesAt(4, lines), ['MOD A']);
+  const entries = countryRaceItems([{ tag: 'MOD A', value: 10, label: '10 / 3', stretch: 1, inset: 3 }], new Map(), () => 'country', 'missing', false);
+  assert.deepEqual(entries[0].inset, { value: 3, color: 'country' });
+});
+
 test('line tooltips use the hovered hour for country names and flags, omitting missing countries', () => {
   const lines = [{ tag: 'a', runs: [{ firstHour: 1, lastHour: 10, value: 2 }] }, { tag: 'b', runs: [{ firstHour: 1, lastHour: 4, value: 3 }] }];
   const labelAt = (hour: number) => (tag: string) => ({ name: `${tag} at ${hour}`, ...(hour < 5 ? { flag: 'early-flag' } : {}) });

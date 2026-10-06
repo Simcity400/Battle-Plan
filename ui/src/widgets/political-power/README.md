@@ -4,7 +4,7 @@ Each country's political power balance over time, one line per country, with the
 
 ## Data
 
-- **Product `country-measure`** with `measure: 'politicalPower'` (`crates/dashboard/src/products/country_measure.rs`): `{branchId, measure, tags ≤ 16}` → each country's balance as runs of the exact recorded fixed-point integer (`Countries.political_power_raw`, `decimals` places), and its net drops.
+- **Product `country-measure`** with `measure: 'politicalPower'` (`crates/dashboard/src/products/country_measure.rs`): `{branchId, measure, tags}` → each country's balance as runs of the exact recorded fixed-point integer (`Countries.political_power_raw`, `decimals` places), and its net drops.
   - Runs break at a gap, a missing value (never zero) and a change of country identity.
   - A drop is a fall between two consecutive recorded hours of the same country, never across a gap.
 - **Product `country-styles`**: each country's engine-built name and recorded map colour. It is read once per 30 game days during playback.
@@ -29,7 +29,7 @@ A group counted at each hour draws a country only while it belongs, with join (+
 - **Time:** Live, Whole campaign, Pinned or Date range. While following playback the chart can grow to now (default), show the whole campaign with the playhead (stopping there unless **Show after the playhead** is on), or show a recent window.
 - **Options:** spend ticks, area fill, names at line ends.
 - **Axes:** value axis from/to, log scale.
-- **Countries:** up to 16, or a group.
+- **Countries:** chosen countries, or a group.
 
 ## Not recorded
 

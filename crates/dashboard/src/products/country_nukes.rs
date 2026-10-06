@@ -37,8 +37,6 @@ use std::{
 use ts_rs::TS;
 
 pub struct CountryNukes;
-pub const MAX_COUNTRIES: usize = 30;
-const MAX_RUNS: usize = 2_000_000;
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -149,8 +147,6 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
     ];
     let mut scanned = ScannedNukes::default();
     let mut tracks = BTreeMap::<String, Track>::new();
-    let mut run_count = 0usize;
-    let mut segment_count = 0usize;
     for block in replay.index.iter().filter(|block| block.branch == branch) {
         if cancelled.load(Ordering::Acquire) {
             return Err(cancelled_error());
@@ -188,11 +184,6 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
             let read = slot_read(&decoded.metrics, TableId::Nukes, decoded.hour);
             if read && rows.is_some() {
                 scanned.read_hours.push(frame.hour);
-                if scanned.read_hours.len() > MAX_RUNS {
-                    return Err(io::Error::other(
-                        "The nuclear read history exceeds its memory budget",
-                    ));
-                }
             }
             let (Ok(countries), Ok(links)) = (
                 decoded.complete::<tables::Countries>(),
@@ -241,19 +232,12 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 }
                 let track = tracks.get_mut(tag).expect("inserted above");
                 let identity = (slot, country.id);
-                if !observe_identity(
+                observe_identity(
                     &mut track.segments,
                     &mut track.last_identity,
                     identity,
                     frame.hour,
-                ) {
-                    segment_count += 1;
-                    if segment_count > MAX_RUNS {
-                        return Err(io::Error::other(
-                            "The nuclear country identity history exceeds its memory budget",
-                        ));
-                    }
-                }
+                );
                 if rows.is_none() {
                     continue;
                 }
@@ -300,12 +284,6 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                         run.last_hour = frame.hour;
                     }
                     _ => {
-                        run_count += 1;
-                        if run_count > MAX_RUNS {
-                            return Err(io::Error::other(
-                                "The nuclear stockpile history exceeds its memory budget",
-                            ));
-                        }
                         track.runs.push(NukeRun {
                             first_hour: frame.hour,
                             last_hour: frame.hour,
@@ -386,18 +364,26 @@ pub fn requested_series(
         None => params.tags.iter().map(String::as_str).collect(),
     };
     let mut series = Vec::new();
-    // Size the borrowed request before copying long histories; conservative JSON
-    // worst case includes escaped tags, all counts, spans and field punctuation.
-    let mut bytes = scanned
-        .read_hours
-        .len()
-        .saturating_add(scanned.empty_read_hours.len())
-        .saturating_mul(12);
-    if bytes > MAX_PRODUCT_REPLY_BYTES {
-        return Err(io::Error::other(
-            "The nuclear read dates are too large for one response",
-        ));
+    // Measure the serialized selection before copying histories. Only the
+    // complete reply's transport budget bounds a recording's country/run count.
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct SeriesMeasure<'a> {
+        tag: &'a str,
+        runs: &'a [NukeRun],
+        segments: &'a [HourSpan],
+        membership: Option<&'a [HourSpan]>,
     }
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct RunMeasure<'a> {
+        first_hour: i32,
+        last_hour: i32,
+        starts_segment: bool,
+        counts: &'a [NukeCount],
+        total: Option<i32>,
+    }
+    let mut bytes = 2usize;
     for tag in &tags {
         if cancelled.load(Ordering::Acquire) {
             return Err(cancelled_error());
@@ -406,37 +392,51 @@ pub fn requested_series(
             continue;
         };
         let spans = membership.as_ref().and_then(|top| top.get(*tag));
-        bytes = bytes.saturating_add(
-            tag.len() * 6
-                + 128
-                + scanned
-                    .segments
-                    .get(*tag)
-                    .map_or(0, |spans| spans.len() * 64),
-        );
-        let mut size_piece = |run: &NukeRun, _: i32, _: i32| {
-            bytes = bytes.saturating_add(160 + run.counts.len() * 64);
-            Ok(())
+        let measure = SeriesMeasure {
+            tag,
+            runs: if spans.is_some() { &[] } else { runs },
+            segments: scanned.segments.get(*tag).map_or(&[][..], Vec::as_slice),
+            membership: spans.map(Vec::as_slice),
         };
-        match spans {
-            Some(spans) => crate::ranking::for_each_piece(
+        if bytes > 2 {
+            bytes = bytes.saturating_add(1);
+        }
+        bytes = bytes.saturating_add(
+            crate::transport::json_len(&measure, MAX_PRODUCT_REPLY_BYTES)
+                .ok_or_else(reply_too_large)?,
+        );
+        if let Some(spans) = spans {
+            let mut first_piece = true;
+            crate::ranking::for_each_piece(
                 runs,
                 spans,
                 |run| (run.first_hour, run.last_hour),
                 cancelled,
-                size_piece,
-            )?,
-            None => {
-                for run in runs {
-                    size_piece(run, run.first_hour, run.last_hour)?;
-                }
-            }
+                |run, first_hour, last_hour| {
+                    let piece = RunMeasure {
+                        first_hour,
+                        last_hour,
+                        starts_segment: run.starts_segment && first_hour == run.first_hour,
+                        counts: &run.counts,
+                        total: run.total,
+                    };
+                    if !first_piece {
+                        bytes = bytes.saturating_add(1);
+                    }
+                    first_piece = false;
+                    bytes = bytes.saturating_add(
+                        crate::transport::json_len(&piece, MAX_PRODUCT_REPLY_BYTES)
+                            .ok_or_else(reply_too_large)?,
+                    );
+                    if bytes > MAX_PRODUCT_REPLY_BYTES {
+                        return Err(reply_too_large());
+                    }
+                    Ok(())
+                },
+            )?;
         }
-        bytes = bytes.saturating_add(spans.map_or(0, |spans| spans.len() * 64));
         if bytes > MAX_PRODUCT_REPLY_BYTES {
-            return Err(io::Error::other(
-                "The nuclear stockpile history is too large for one response; choose fewer countries or a smaller top group",
-            ));
+            return Err(reply_too_large());
         }
     }
     for tag in tags {
@@ -473,6 +473,12 @@ pub fn requested_series(
         });
     }
     Ok(series)
+}
+
+fn reply_too_large() -> io::Error {
+    io::Error::other(
+        "NuclearReplyTooLarge: the complete nuclear stockpile reply exceeds the transport budget; no countries or runs were omitted",
+    )
 }
 
 #[derive(Default)]
@@ -524,15 +530,13 @@ impl Product for CountryNukes {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        if params.tags.len() > MAX_COUNTRIES {
-            return Err("Invalid country selection");
-        }
         for tag in &params.tags {
             validate_tag(tag)?;
         }
-        if params.top.is_some_and(|count| {
-            count == 0 || count as usize > MAX_COUNTRIES || !params.tags.is_empty()
-        }) {
+        if params
+            .top
+            .is_some_and(|count| count == 0 || !params.tags.is_empty())
+        {
             return Err("Invalid top countries");
         }
         Ok(())
@@ -602,9 +606,7 @@ impl Product for CountryNukes {
             warnings,
         };
         if crate::transport::json_len(&reply, MAX_PRODUCT_REPLY_BYTES).is_none() {
-            return Err(io::Error::other(
-                "The complete nuclear stockpile reply is too large for one response",
-            ));
+            return Err(reply_too_large());
         }
         Ok(reply)
     }

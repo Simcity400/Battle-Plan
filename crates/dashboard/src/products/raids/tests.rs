@@ -107,7 +107,7 @@ fn raids_native_transitions_count_observed_launch_once_and_native_success_only()
     );
     assert_eq!(
         result.episodes[0].preparation[0],
-        RaidPreparationRead(100, 37)
+        RaidPreparationRun(100, 104, 37, 0)
     );
 }
 
@@ -143,7 +143,7 @@ fn raids_nonzero_recorded_flight_distance_proves_between_read_launch_by_the_read
     let result = scan.finish();
     assert_eq!(result.series["GER"].last().unwrap().launched, 3);
     assert_eq!(result.series["GER"].last().unwrap().succeeded, 2);
-    assert_eq!(result.episodes[0].runs[1].read_hour, 101);
+    assert_eq!(result.episodes[0].runs[1].first_hour, 101);
     assert_eq!(result.episodes[0].runs[1].launched, Some(true));
     assert_eq!(
         result.episodes[1].runs[1].launched,
@@ -199,13 +199,7 @@ fn raids_missing_country_rows_and_unread_hours_never_become_zero_or_bridge_gaps(
             .collect::<Vec<_>>(),
         [(100, 100, 1), (105, 105, 1)]
     );
-    assert_eq!(
-        result.unobserved,
-        [HourSpan {
-            first_hour: 101,
-            last_hour: 104
-        }]
-    );
+    assert_eq!(result.read_hours, [100, 105]);
     assert_eq!(
         result.episodes[1].start.hour, 105,
         "a complete absence ends an episode; a gap never invents an exact date"
@@ -283,7 +277,7 @@ fn raids_target_controller_uses_native_scope_priority_including_captive_leader()
                 ..Default::default()
             }
         ),
-        Ok(None)
+        Ok(Some(u32::MAX))
     );
     assert_eq!(
         target_country(
@@ -365,8 +359,19 @@ fn raids_five_thousand_countries_all_enter_scan_and_reply_budget_includes_metada
     let series = selected_series(&result, &params, &AtomicBool::new(false)).unwrap();
     assert_eq!(series.len(), 1, "zero countries do not pad a ranking");
     assert!(series.iter().any(|s| s.tag == winner));
+    let all = tally_params(result.series.keys().cloned().collect(), None);
+    assert!(Raids::validate(&all).is_ok());
+    assert_eq!(
+        selected_series(&result, &all, &AtomicBool::new(false))
+            .unwrap()
+            .len(),
+        5_000
+    );
     let mut reply = RaidsReply {
         branch_id: "1".into(),
+        phase_preparing: native::PHASE_PREPARING,
+        phase_ended: native::PHASE_ENDED,
+        outcome_none: native::OUTCOME_NONE,
         available: Some(true),
         unavailable: None,
         types: vec![],
@@ -374,7 +379,6 @@ fn raids_five_thousand_countries_all_enter_scan_and_reply_budget_includes_metada
         episodes: vec![],
         series,
         read_hours: result.read_hours,
-        unobserved: vec![],
         warnings: vec![],
     };
     measure_reply(&reply, &[]).unwrap();
@@ -919,15 +923,15 @@ fn tally_params(tags: Vec<String>, top: Option<RaidTop>) -> RaidsParams {
 }
 
 #[test]
-fn raids_round2_preparation_reads_are_compact_and_do_not_split_or_redate_runs() {
+fn raids_preparation_runs_bound_growth_and_preserve_each_read_without_splitting_facts() {
     let mut scan = Scan::new();
-    let mut observed = frame(100, (1..=200).map(|id| raid(id, 2, 0)).collect());
+    let mut observed = frame(100, vec![raid(1, 2, 0), raid(2, 2, 0)]);
     for hour in 100..1_100 {
         observed.hour = hour;
         *observed.tables[TableId::Raids.index()] = TableView::Complete(TableRows::Raids(
-            (1..=200)
+            (1..=2)
                 .map(|id| RaidRow {
-                    preparation_hours: hour - 100,
+                    preparation_hours: if id == 1 { 37 } else { hour - 100 },
                     ..raid(id, 2, 0)
                 })
                 .collect(),
@@ -935,23 +939,41 @@ fn raids_round2_preparation_reads_are_compact_and_do_not_split_or_redate_runs() 
         scan.observe(&observed, None).unwrap();
     }
     let result = scan.finish();
-    assert_eq!(result.episodes.len(), 200);
+    assert_eq!(result.episodes.len(), 2);
     for episode in &result.episodes {
         assert_eq!(episode.runs.len(), 1);
         assert_eq!(
-            (
-                episode.runs[0].first_hour,
-                episode.runs[0].last_hour,
-                episode.runs[0].read_hour
-            ),
-            (100, 1_099, 100)
+            (episode.runs[0].first_hour, episode.runs[0].last_hour),
+            (100, 1_099)
         );
-        assert_eq!(episode.preparation.len(), 1_000);
-        assert_eq!(episode.preparation[0], RaidPreparationRead(100, 0));
-        assert_eq!(episode.preparation[999], RaidPreparationRead(1_099, 999));
+        assert_eq!(episode.preparation.len(), 1);
+    }
+    assert_eq!(
+        result.episodes[0].preparation[0],
+        RaidPreparationRun(100, 1_099, 37, 0)
+    );
+    assert_eq!(
+        result.episodes[1].preparation[0],
+        RaidPreparationRun(100, 1_099, 0, 1)
+    );
+    for hour in 100..1_100 {
+        for (index, episode) in result.episodes.iter().enumerate() {
+            let run = &episode.preparation[0];
+            assert_eq!(
+                i64::from(run.2) + i64::from(hour - run.0) * run.3,
+                if index == 0 {
+                    37
+                } else {
+                    i64::from(hour - 100)
+                }
+            );
+        }
     }
     let reply = RaidsReply {
         branch_id: "1".into(),
+        phase_preparing: native::PHASE_PREPARING,
+        phase_ended: native::PHASE_ENDED,
+        outcome_none: native::OUTCOME_NONE,
         available: Some(true),
         unavailable: None,
         types: vec![],
@@ -959,19 +981,17 @@ fn raids_round2_preparation_reads_are_compact_and_do_not_split_or_redate_runs() 
         episodes: vec![],
         series: vec![],
         read_hours: result.read_hours.clone(),
-        unobserved: vec![],
         warnings: vec![],
     };
     measure_reply(&reply, &result.episodes).unwrap();
-    assert!(json_len(&result.episodes, MAX_PRODUCT_REPLY_BYTES).unwrap() < 3 * 1024 * 1024);
     assert_eq!(
-        serde_json::to_string(&RaidPreparationRead(100, 37)).unwrap(),
-        "[100,37]"
+        serde_json::to_string(&RaidPreparationRun(100, 1_099, 37, 0)).unwrap(),
+        "[100,1099,37,0]"
     );
 }
 
 #[test]
-fn raids_round2_preparation_has_exact_reads_and_gaps_without_interpolation() {
+fn raids_preparation_has_exact_runs_and_gaps_without_interpolation() {
     let mut scan = Scan::new();
     scan.observe(&frame(100, vec![raid(1, 2, 0)]), None)
         .unwrap();
@@ -985,7 +1005,10 @@ fn raids_round2_preparation_has_exact_reads_and_gaps_without_interpolation() {
     let result = scan.finish();
     assert_eq!(
         result.episodes[0].preparation,
-        [RaidPreparationRead(100, 37), RaidPreparationRead(103, 37)]
+        [
+            RaidPreparationRun(100, 100, 37, 0),
+            RaidPreparationRun(103, 103, 37, 0)
+        ]
     );
     assert_eq!(
         result.episodes[0]
@@ -998,7 +1021,49 @@ fn raids_round2_preparation_has_exact_reads_and_gaps_without_interpolation() {
 }
 
 #[test]
-fn raids_round2_top_leaves_zero_and_absent_countries_out_but_chosen_zero_survives() {
+fn raids_preparation_slope_changes_and_signed_extremes_preserve_exact_reads() {
+    let values = [37, 38, 39, 37, 37, 37, i32::MIN, i32::MAX, 0];
+    let mut scan = Scan::new();
+    for (offset, hours) in values.into_iter().enumerate() {
+        scan.observe(
+            &frame(
+                100 + offset as i32,
+                vec![RaidRow {
+                    preparation_hours: hours,
+                    ..raid(1, 2, 0)
+                }],
+            ),
+            None,
+        )
+        .unwrap();
+    }
+    let result = scan.finish();
+    let preparation = &result.episodes[0].preparation;
+    assert_eq!(
+        preparation,
+        &[
+            RaidPreparationRun(100, 102, 37, 1),
+            RaidPreparationRun(103, 105, 37, 0),
+            RaidPreparationRun(106, 107, i32::MIN, 4_294_967_295),
+            RaidPreparationRun(108, 108, 0, 0),
+        ]
+    );
+    assert_eq!(result.episodes[0].runs.len(), 1);
+    for (offset, hours) in values.into_iter().enumerate() {
+        let hour = 100 + offset as i32;
+        let run = preparation
+            .iter()
+            .find(|run| run.0 <= hour && hour <= run.1)
+            .unwrap();
+        assert_eq!(
+            i64::from(run.2) + i64::from(hour - run.0) * run.3,
+            i64::from(hours)
+        );
+    }
+}
+
+#[test]
+fn raids_top_leaves_zero_and_absent_countries_out_but_chosen_zero_survives() {
     let mut scan = Scan::new();
     scan.observe(&frame(100, vec![]), None).unwrap();
     scan.observe(&frame(101, vec![raid(1, 4, 0)]), None)
@@ -1008,13 +1073,6 @@ fn raids_round2_top_leaves_zero_and_absent_countries_out_but_chosen_zero_survive
     scan.observe(&absent, None).unwrap();
     let result = scan.finish();
     assert_eq!(result.read_hours, [100, 101]);
-    assert_eq!(
-        result.unobserved,
-        [HourSpan {
-            first_hour: 102,
-            last_hour: 102
-        }]
-    );
     let top = selected_series(
         &result,
         &tally_params(
@@ -1063,7 +1121,34 @@ fn raids_round2_top_leaves_zero_and_absent_countries_out_but_chosen_zero_survive
 }
 
 #[test]
-fn raids_round2_partial_parent_or_identity_reads_are_unknown_for_an_empty_race() {
+fn raids_both_ranking_preserves_success_without_a_proven_launch() {
+    let mut scan = Scan::new();
+    scan.observe(
+        &frame(
+            100,
+            vec![raid(1, native::PHASE_ENDED, native::OUTCOME_SUCCESS)],
+        ),
+        None,
+    )
+    .unwrap();
+    let result = scan.finish();
+    let params = |metric| tally_params(vec![], Some(RaidTop { count: 1, metric }));
+    let cancelled = AtomicBool::new(false);
+    assert!(
+        selected_series(&result, &params(RaidMetric::Launched), &cancelled)
+            .unwrap()
+            .is_empty()
+    );
+    let both = selected_series(&result, &params(RaidMetric::Both), &cancelled).unwrap();
+    assert_eq!(both.len(), 1);
+    assert_eq!(
+        (both[0].runs[0].launched, both[0].runs[0].succeeded),
+        (0, 1)
+    );
+}
+
+#[test]
+fn raids_partial_parent_or_identity_reads_are_unknown_for_an_empty_race() {
     let mut scan = Scan::new();
     scan.observe(&frame(100, vec![]), None).unwrap();
     let mut missing_parent = frame(101, vec![]);
@@ -1081,19 +1166,12 @@ fn raids_round2_partial_parent_or_identity_reads_are_unknown_for_an_empty_race()
     scan.observe(&unread, None).unwrap();
     let result = scan.finish();
     assert_eq!(result.read_hours, [100]);
-    assert_eq!(
-        result.unobserved,
-        [HourSpan {
-            first_hour: 101,
-            last_hour: 103
-        }]
-    );
     assert_eq!(result.series["GER"].len(), 1);
     assert_eq!(result.series["GER"][0].last_hour, 100);
 }
 
 #[test]
-fn raids_round2_same_native_handle_is_counted_once_across_complete_absences() {
+fn raids_same_native_handle_is_counted_once_across_complete_absences() {
     let mut scan = Scan::new();
     scan.observe(&frame(100, vec![raid(1, 4, 0)]), None)
         .unwrap();
@@ -1219,14 +1297,14 @@ fn raids_link_tags_keep_balance_reads_and_follow_identity_changes_without_bridgi
     }
     let result = scan.finish();
     assert_eq!(result.read_hours, [100, 101, 102, 103, 106]);
-    assert_eq!(
-        result.unobserved,
-        [HourSpan {
-            first_hour: 104,
-            last_hour: 105,
-        }]
-    );
     assert_eq!(result.episodes.len(), 1);
+    assert_eq!(
+        result.episodes[0].preparation,
+        [
+            RaidPreparationRun(100, 103, 37, 0),
+            RaidPreparationRun(106, 106, 37, 0),
+        ]
+    );
     assert_eq!(
         result.episodes[0]
             .runs
@@ -1255,10 +1333,30 @@ fn raids_link_tags_keep_balance_reads_and_follow_identity_changes_without_bridgi
         [(102, 103, 0), (106, 106, 0)],
         "a tag change does not re-count the same native raid handle"
     );
+    assert_eq!(
+        result.segments["GER"],
+        [HourSpan {
+            first_hour: 100,
+            last_hour: 101,
+        }]
+    );
+    assert_eq!(
+        result.segments["NEW"],
+        [
+            HourSpan {
+                first_hour: 102,
+                last_hour: 103,
+            },
+            HourSpan {
+                first_hour: 106,
+                last_hour: 106,
+            },
+        ]
+    );
 }
 
 #[test]
-fn raids_round2_ended_victim_freezes_at_first_phase_five_read_including_unknown() {
+fn raids_ended_victim_freezes_at_first_phase_five_read_including_unknown() {
     let mut scan = Scan::new();
     scan.observe(
         &changed_controller(frame(100, vec![raid(1, 4, 0)]), 22),
@@ -1300,7 +1398,7 @@ fn raids_round2_ended_victim_freezes_at_first_phase_five_read_including_unknown(
 }
 
 #[test]
-fn raids_round2_log_artwork_is_lazy_unique_and_limited_to_used_episode_keys() {
+fn raids_log_artwork_is_lazy_unique_and_limited_to_used_episode_keys() {
     let (_scratch, content) = mod_content();
     assert!(content.icons.lock().unwrap().is_empty());
     let mut scan = Scan::new();
@@ -1335,41 +1433,39 @@ fn raids_round2_log_artwork_is_lazy_unique_and_limited_to_used_episode_keys() {
 }
 
 #[test]
-fn raids_round2_selection_and_complete_reply_use_shared_limits() {
-    let maximum = tally_params(
-        (0..MAX_COUNTRIES)
+fn raids_selection_sizes_from_the_recording_and_reply_refuses_the_transport_budget() {
+    let all_countries = tally_params(
+        (0..5_000)
             .map(|i| String::from_utf8(crate::test_fixtures::scale_tag(i as u32)).unwrap())
             .collect(),
         None,
     );
-    assert!(Raids::validate(&maximum).is_ok());
-    let mut too_many = maximum;
-    too_many.tags.push("MOD".into());
-    assert_eq!(Raids::validate(&too_many), Err("Too many countries"));
-    for count in [0, MAX_COUNTRIES as u32 + 1] {
-        assert_eq!(
-            Raids::validate(&tally_params(
-                vec![],
-                Some(RaidTop {
-                    count,
-                    metric: RaidMetric::Launched
-                })
-            )),
-            Err("Invalid top countries")
-        );
-    }
+    assert!(Raids::validate(&all_countries).is_ok());
+    assert_eq!(
+        Raids::validate(&tally_params(
+            vec![],
+            Some(RaidTop {
+                count: 0,
+                metric: RaidMetric::Launched
+            })
+        )),
+        Err("Invalid top countries")
+    );
     assert!(
         Raids::validate(&tally_params(
             vec![],
             Some(RaidTop {
-                count: MAX_COUNTRIES as u32,
+                count: u32::MAX,
                 metric: RaidMetric::Launched
             })
         ))
         .is_ok()
     );
-    let reply = RaidsReply {
+    let mut reply = RaidsReply {
         branch_id: "1".into(),
+        phase_preparing: native::PHASE_PREPARING,
+        phase_ended: native::PHASE_ENDED,
+        outcome_none: native::OUTCOME_NONE,
         available: Some(true),
         unavailable: None,
         types: vec![],
@@ -1377,11 +1473,21 @@ fn raids_round2_selection_and_complete_reply_use_shared_limits() {
         episodes: vec![],
         series: vec![],
         read_hours: vec![],
-        unobserved: vec![],
-        warnings: vec!["x".repeat(MAX_PRODUCT_REPLY_BYTES)],
+        warnings: vec![String::new()],
     };
+    let envelope = json_len(&reply, MAX_PRODUCT_REPLY_BYTES).unwrap();
+    reply.warnings[0] = "x".repeat(MAX_PRODUCT_REPLY_BYTES - envelope);
+    assert_eq!(
+        json_len(&reply, MAX_PRODUCT_REPLY_BYTES),
+        Some(MAX_PRODUCT_REPLY_BYTES)
+    );
+    measure_reply(&reply, &[]).unwrap();
+    reply.warnings[0].push('x');
     assert!(
-        measure_reply(&reply, &[]).is_err(),
+        measure_reply(&reply, &[])
+            .unwrap_err()
+            .to_string()
+            .starts_with("RaidReplyTooLarge:"),
         "complete product body refuses at the shared 24 MiB reserve"
     );
     assert!(
@@ -1390,4 +1496,80 @@ fn raids_round2_selection_and_complete_reply_use_shared_limits() {
             .get("exact")
             .is_none()
     );
+}
+
+#[test]
+fn raids_target_names_use_original_tags_and_empty_qualified_names_mask_bare_keys() {
+    let (_scratch, mut content) = mod_content();
+    let cat = Arc::get_mut(&mut content.catalogue).unwrap();
+    let mut entries: Vec<_> = cat
+        .localisation
+        .iter()
+        .map(|(key, text)| (key.to_owned(), text.to_owned()))
+        .collect();
+    entries.extend([
+        ("original/mod_VICTORY_POINTS_101".into(), "".into()),
+        (
+            "other/mod_VICTORY_POINTS_101".into(),
+            "Original target".into(),
+        ),
+        ("GER_VICTORY_POINTS_101".into(), "Wrong current tag".into()),
+        ("controls/mod_VICTORY_POINTS_101".into(), "§Y§!".into()),
+        ("VICTORY_POINTS_101".into(), "Wrong bare retry".into()),
+    ]);
+    let mut localisation: installed_content::localisation::Localisation = entries.into_iter().collect();
+    localisation.language = "english".into();
+    cat.localisation = Arc::new(localisation);
+    let mut observed = frame(100, vec![raid(1, 2, 0)]);
+    let scope = RaidScope {
+        province: 101,
+        ..Default::default()
+    };
+    *observed.tables[TableId::CountryAppearance.index()] =
+        TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
+            country: 9001,
+            name_tag: b"original/mod".to_vec(),
+            ..Default::default()
+        }]));
+    assert_eq!(
+        target_name(&observed, &scope, &content).as_deref(),
+        Ok("Recorded state")
+    );
+    if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *observed.tables[TableId::CountryAppearance.index()]
+    {
+        rows[0].name_tag = b"other/mod".to_vec();
+    }
+    assert_eq!(
+        target_name(&observed, &scope, &content).as_deref(),
+        Ok("Original target")
+    );
+    if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *observed.tables[TableId::CountryAppearance.index()]
+    {
+        rows[0].name_tag = b"controls/mod".to_vec();
+    }
+    assert_eq!(
+        target_name(&observed, &scope, &content).as_deref(),
+        Ok(""),
+        "native emptiness is checked before presentation strips controls"
+    );
+    if let TableView::Complete(TableRows::RaidTargets(rows)) =
+        &mut *observed.tables[TableId::RaidTargets.index()]
+    {
+        rows[0].scope = scope;
+    }
+    if let TableView::Complete(TableRows::States(rows)) =
+        &mut *observed.tables[TableId::States.index()]
+    {
+        rows[0].owner = 0;
+    }
+    let mut scan = Scan::new();
+    scan.observe(&observed, Some(&content)).unwrap();
+    let result = scan.finish();
+    assert!(result.episodes[0].runs[0].target_name.is_none());
+    assert!(result.warnings.iter().any(|line| {
+        line.contains("reserved owner original tag is not recorded")
+            && line.contains("1 raid facts")
+    }));
 }

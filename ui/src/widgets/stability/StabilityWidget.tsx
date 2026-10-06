@@ -16,7 +16,9 @@ import { extentOf, lineEndHour } from '../../charts/series';
 import type { Run } from '../../charts/series';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
-import { useChartTokens } from '../../charts/useChartTokens';
+import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
+import { CHART_LAYOUT } from '../../charts/tokens';
+import { fitTooltip } from '../../charts/tooltip';
 import type { TooltipRow } from '../../charts/tooltip';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
@@ -42,7 +44,7 @@ import { validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply';
 import type { IdeaHistoryReply } from '../../generated/dashboard';
 import { validatePartyHistoryReply } from '../ruling-party/partyData';
 import { validateFocusReply } from '../national-focus/focusData';
-import { breakdownRows, formatPercent, linesPerMeasure, MAX_COUNTRIES, percentRuns, rawAt, zoomRange } from './stabilityData';
+import { breakdownRows, formatPercent, linesPerMeasure, percentRuns, rawAt, zoomRange } from './stabilityData';
 import type { Measure } from './stabilityData';
 import './stability.css';
 
@@ -68,6 +70,7 @@ const MEASURES: readonly { key: Measure; label: string; dash?: readonly number[]
 export default function StabilityWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const tokens = useChartTokens();
+  const viewport = useViewportHeight();
   const options = resolveOptions(STABILITY_OPTIONS, widget.options);
   const shown = MEASURES.filter(measure => options[measure.key] !== false);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -75,7 +78,7 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
   const lastHour = track?.branch.lastHour ?? 0;
   const groups = useCountryGroups(runtime, track, active && widget.countries.kind === 'group');
   const fallback = defaultCountryTag(track);
-  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, MAX_COUNTRIES), [widget.countries, fallback, groups.data, lastHour]);
+  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, Number.MAX_SAFE_INTEGER), [widget.countries, fallback, groups.data, lastHour]);
   const request = track && resolved.tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-stability',
     params: { branchId: track.branch.id, tags: resolved.tags, hour: null } } : null;
   const { data, error, retry } = useProduct<CountryStabilityReply>(runtime.client, request, active, validateStabilityReply);
@@ -227,11 +230,10 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
       ...(uncoloured.length ? [`No map colour was recorded for ${uncoloured.join(', ')}; shown in grey.`] : []),
       ...(breakdown.data?.warnings ?? []), ...(breakdown.error ? [`The breakdown could not be loaded: ${breakdown.error}`] : []),
       ...markerNotes,
-      ...(partsRequest ? [...(parts.data?.warnings ?? []), ...(parts.error ? [`The parts could not be loaded: ${parts.error}`] : [])] : []),
-      ...(resolved.dropped ? [`${resolved.dropped} more countries are left out; this widget draws at most ${resolved.tags.length}.`] : [])];
+      ...(partsRequest ? [...(parts.data?.warnings ?? []), ...(parts.error ? [`The parts could not be loaded: ${parts.error}`] : [])] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, styles.data, styles.error, series, groups.data, breakdown.data, breakdown.error, resolved.dropped, resolved.tags.length, markerNotes, partsRequest != null, parts.data, parts.error, onDiagnostics]);
+  }, [data, styles.data, styles.error, series, groups.data, breakdown.data, breakdown.error, markerNotes, partsRequest != null, parts.data, parts.error, onDiagnostics]);
   const menu = useContextMenu('Chart actions');
   const head = playhead ?? extent[1];
   // With the keyboard: while focus is in the widget, the breakdown of the read behind
@@ -328,8 +330,8 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
         hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: zoom ? null : 0, yMax: zoom ? null : 100, log: false }} fitValues={zoom ? zoomRange : undefined}
-        padding={{ right: options.endLabels ? 150 : 14 }} layers={layers} active={active && !(drill.breakdown && options.drill !== 'popout')}
-        revision={`${head}:${data.branchId}:${series.length}:${shown.length}:${breakdown.data ? breakdownFor?.readHour ?? 'empty' : breakdown.error ? 'failed' : 'none'}`}
+        padding={{ right: options.endLabels ? CHART_LAYOUT.countryEndLabels : CHART_LAYOUT.right }} layers={layers} active={active && !(drill.breakdown && options.drill !== 'popout')}
+        revision={`${head}:${data.branchId}:${series.length}:${shown.length}:${viewport}:${breakdown.data ? breakdownFor?.readHour ?? 'empty' : breakdown.error ? 'failed' : 'none'}`}
         formatValue={value => `${Number.isInteger(value) ? value : value.toFixed(1)}%`}
         badges={badges.length ? badges : undefined}
         tooltip={(hour, _frame, hovered) => {
@@ -382,7 +384,7 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
             ];
             return { title: dayLabel(hour), rows, note: notes.length ? notes.join(' ') : undefined };
           }
-          // One row per country with both values, so sixteen countries fit the window.
+          // One row per country with both values; shared fitting keeps the full read-out.
           const carried: number[] = [];
           for (const item of series) {
             const values = shown.map(measure => {
@@ -401,7 +403,7 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
           const note = [`${shown.map(measure => `${measure.dash ? 'WS' : 'S'}: ${measure.label.toLowerCase()}`).join(', ')}.`,
             ...(carried.length ? [first === last ? `† As read at ${formatDateTime(first)}.` : `† As read earlier, between ${formatDateTime(first)} and ${formatDateTime(last)}.`] : []),
             'Choose one country to see what makes up its values.'];
-          return { title: dayLabel(hour), rows, note: note.join(' ') };
+          return fitTooltip([{ title: dayLabel(hour), rows, note: note.join(' ') }], viewport);
         }}
         overlay={(ctx, frame, chartTokens) => {
           if (!options.endLabels) return;

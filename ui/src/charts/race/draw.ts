@@ -4,9 +4,11 @@
 import { font } from '../draw.ts';
 import type { ChartTokens } from '../tokens';
 import type { RaceLayout, RaceRow } from './race';
-import { barExtent, barParts, drawnWidths, raceTicks, rowCentre, valueX } from './race.ts';
+import { barExtent, barParts, drawnWidths, raceTicks, rowCentre, rowExtent, valueX } from './race.ts';
 
 const crisp = (value: number) => Math.round(value) + 0.5;
+const INSET_SHARE = .5;
+const OUTER_ALPHA = .35;
 /** The rounded tip, as style A draws it. */
 export const TIP_RADIUS = 4;
 /** Room between a bar's tip and its value label. */
@@ -89,6 +91,7 @@ export function drawRaceBar(ctx: CanvasRenderingContext2D, layout: RaceLayout, t
     const end = x(side > 0 ? extent.high : extent.low);
     if (Math.abs(end - base) < 0.01) continue;
     ctx.save();
+    if (row.item.inset) ctx.globalAlpha *= OUTER_ALPHA;
     barPath(ctx, base, top, end - base, layout.thickness);
     ctx.clip();
     for (const part of parts.filter(item => (side > 0 ? item.high > 0 : item.low < 0))) {
@@ -106,7 +109,18 @@ export function drawRaceBar(ctx: CanvasRenderingContext2D, layout: RaceLayout, t
     }
     ctx.restore();
   }
-  return x(extent.high);
+  if (row.item.inset && row.inset !== undefined && row.inset !== 0) {
+    const height = layout.thickness * INSET_SHARE;
+    ctx.save();
+    barPath(ctx, base, centre - height / 2, x(row.inset) - base, height);
+    ctx.fillStyle = row.item.inset.color;
+    ctx.fill();
+    ctx.strokeStyle = tokens.surface;
+    ctx.lineWidth = tokens.lineWidth.grid;
+    ctx.stroke();
+    ctx.restore();
+  }
+  return x(rowExtent(row).high);
 }
 
 /** The moment shown as a large, faint date in the plot's lower right corner, under

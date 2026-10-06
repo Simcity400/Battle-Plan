@@ -1,12 +1,11 @@
 import type { CountryRaceEntry } from '../../charts/race/countryRace';
 import { shownRuns } from '../../charts/race/lines.ts';
-import { runAt, runIndexAt, stretchStarts } from '../../charts/series.ts';
+import { isOrderedSpans, runAt, runIndexAt, stretchStarts } from '../../charts/series.ts';
 import type { Run, Span } from '../../charts/series';
 import type { TooltipContent } from '../../charts/tooltip';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { readAt } from '../../dashboard/reads.ts';
-import { validSpans } from '../../dashboard/spans.ts';
 import type { CountryNukesReply, NukeRun, NukesParams } from '../../generated/dashboard';
 
 const integer = (value: unknown) => Number.isSafeInteger(value);
@@ -23,7 +22,7 @@ export function validateNukesReply(data: unknown): CountryNukesReply {
       && (type.token === null || typeof type.token === 'string') && (type.name === null || typeof type.name === 'string'))
     && new Set(reply.series.map(series => series.tag)).size === reply.series.length
     && reply.series.every(series => typeof series.tag === 'string' && Array.isArray(series.runs) && Array.isArray(series.segments)
-      && validSpans(series.segments) && (series.membership === null || validSpans(series.membership))
+      && isOrderedSpans(series.segments) && (series.membership === null || isOrderedSpans(series.membership))
       && series.runs.every((run, index) => integer(run.firstHour) && integer(run.lastHour) && run.firstHour <= run.lastHour
         && typeof run.startsSegment === 'boolean' && (run.total === null || integer(run.total))
         && (index === 0 || series.runs[index - 1].lastHour < run.firstHour) && Array.isArray(run.counts)
@@ -48,7 +47,9 @@ export function nuclearReadNote(model: NuclearModel, hour: number): string {
 
 export function nuclearModel(reply: CountryNukesReply) {
   return { reply, tags: reply.series.map(series => series.tag),
-    series: new Map(reply.series.map(series => [series.tag, { ...series, starts: stretchStarts(series.runs) }])),
+    series: new Map(reply.series.map(series => [series.tag, { ...series,
+      starts: stretchStarts(series.runs.map((run, index) => ({ ...run, breakBefore: run.total === null || series.runs[index - 1]?.total === null }))),
+    }])),
     parts: reply.types.map(type => ({ id: String(type.ordinal), label: nukeTypeName(type) })),
   };
 }

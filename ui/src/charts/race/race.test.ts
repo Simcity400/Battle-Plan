@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { barExtent, barLength, barParts, barRectangle, fitRows, keyedEntry, MIN_SLOT, MORE_LINE, moreLineY, moreText, paintOrder, partTotal, RACE_AXIS, raceLayout, raceMax, raceMoving, raceText, rankItems, rowAt, rowCentre, stepRace, MAX_THICKNESS, RACE_LEAVE_MS } from './race.ts';
 import type { RaceItem, RaceRow, RaceState } from './race';
+import { drawRaceBar } from './draw.ts';
+import { tokensFromValues } from '../tokens.ts';
 
 const item = (key: string, value: number, stretch: number | null = 0, hatched = 0): RaceItem =>
   ({ key, value, label: String(value), stretch, segments: [{ id: 'total', value, hatched, color: '#123456' }] });
@@ -48,6 +50,41 @@ test('a bar jumps across a gap or a change of country, and without motion everyt
   let still = stepRace(null, [item('a', 10), item('b', 5)], 0, 16, 0);
   still = stepRace(still, [item('b', 20), item('a', 12)], 16, 16, 0);
   assert.deepEqual(still.rows.map(row => [row.key, row.y, width(still, row.key)]), [['b', 0, 20], ['a', 1, 12]]);
+});
+
+test('inner measures ease independently without increasing the total and keep overflow in the axis', () => {
+  const nested = (total: number, inner: number, stretch = 1) => ({ ...item('a', total, stretch), inset: { value: inner, color: 'country' } });
+  let state = stepRace(null, [nested(10, 2)], 0, 16, 100);
+  assert.equal(barLength(state.items[0]), 10);
+  state = stepRace(state, [nested(20, 8)], 16, 16, 100);
+  assert.ok(width(state, 'a') > 10 && width(state, 'a') < 20);
+  assert.ok(state.rows[0].inset! > 2 && state.rows[0].inset! < 8);
+  assert.equal(raceMoving(state), true);
+  state = stepRace(state, [nested(3, 12, 2)], 32, 16, 100);
+  assert.equal(width(state, 'a'), 3);
+  assert.equal(state.rows[0].inset, 12);
+  assert.equal(barLength(state.items[0]), 12);
+  assert.ok(state.max >= 12 * 1.06);
+  const rectangle = barRectangle(state.rows[0], raceLayout(500, 200, 1, 60, 30), 0, state.max);
+  assert.ok(rectangle.right > rectangle.left);
+  state = stepRace(state, [nested(3, 12, 2)], 48, 16, 0);
+  assert.equal(raceMoving(state), false);
+});
+
+test('shared race drawing keeps the inner measure thinner and draws success-only overflow', () => {
+  const layout = raceLayout(500, 200, 1, 60, 30);
+  const state = stepRace(null, [{ ...item('a', 0), inset: { value: 15, color: 'country' } }], 0, 16, 0);
+  const points: number[][] = [];
+  const fills: string[] = [];
+  const context = { fillStyle: '', strokeStyle: '', lineWidth: 1, globalAlpha: 1,
+    save() {}, restore() {}, beginPath() {}, closePath() {}, clip() {}, stroke() {},
+    moveTo(x: number, y: number) { points.push([x, y]); }, lineTo(x: number, y: number) { points.push([x, y]); },
+    arcTo(x: number, y: number) { points.push([x, y]); }, fillRect() {}, fill() { fills.push(context.fillStyle); },
+  };
+  const tip = drawRaceBar(context as unknown as CanvasRenderingContext2D, layout, tokensFromValues(() => '#000000', 'sans-serif'), state.rows[0], 0, state.max);
+  assert.deepEqual(fills, ['country']);
+  assert.equal(tip, Math.max(...points.map(point => point[0])));
+  assert.equal(Math.max(...points.map(point => point[1])) - Math.min(...points.map(point => point[1])), layout.thickness / 2);
 });
 
 test('when a bar jumps, the scale takes it in at once, so neither the bar nor its value is cut off', () => {

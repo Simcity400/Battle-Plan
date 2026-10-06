@@ -3,20 +3,19 @@ import type { OptionField } from '../../dashboard/options';
 import { RAIDS_AVAILABILITY } from '../../dashboard/raids.ts';
 import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, TOP_COUNTRIES } from '../../charts/race/options.ts';
 
-export const MAX_COUNTRIES = 30;
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'race',
     choices: [{ value: 'race', label: 'Race' }, { value: 'lines', label: 'Lines over time' }] },
-  { key: 'metric', section: 'options', label: 'Count', kind: 'choice', default: 'launched',
-    choices: [{ value: 'launched', label: 'Observed launches' }, { value: 'succeeded', label: 'Observed successes' }] },
+  { key: 'metric', section: 'options', label: 'Count', kind: 'choice', default: 'both',
+    choices: [{ value: 'both', label: 'Both' }, { value: 'launched', label: 'Launched' }, { value: 'succeeded', label: 'Succeeded' }] },
   DATE_OVERLAY_OPTION,
   { key: 'endLabels', section: 'options', label: 'Names at line ends', kind: 'toggle', default: true, visibleWhen: options => options.view === 'lines' },
   ...RACE_TIME_OPTIONS, ...RACE_AXIS_OPTIONS,
 ];
 export const definition = {
   kind: 'raid-tally', version: 1, title: 'Raid tally', icon: 'target',
-  description: 'Raids observed launched or succeeded, per country, as a race or lines over time.',
+  description: 'Raids observed launched and succeeded, per country, as a race or lines over time.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
-  minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 }, countries: { max: MAX_COUNTRIES, ranked: true },
+  minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 }, countries: { max: Number.MAX_SAFE_INTEGER, ranked: true },
   defaultCountries: TOP_COUNTRIES, availability: RAIDS_AVAILABILITY, options: OPTIONS,
 } as const satisfies WidgetMeta;

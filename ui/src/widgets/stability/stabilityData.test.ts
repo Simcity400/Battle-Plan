@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { BreakdownLine, StabilityBreakdown } from '../../generated/dashboard';
 import { breakdownRows, formatPercent, lineName, linesPerMeasure, percentRuns, rawAt, zoomRange } from './stabilityData.ts';
+import { resolveCountries } from '../../dashboard/groups.ts';
+import { definition } from './definition.ts';
 
 const line = (position: number, kind: string, valueRaw: string, extra: Partial<BreakdownLine> = {}): BreakdownLine => ({
   line: position, kind, identity: '', identityId: 0, secondaryRaw: '0', valueRaw, text: null, label: null, group: null, groupKind: null, ...extra });
@@ -26,6 +28,13 @@ const GER: StabilityBreakdown = {
       lines: [line(43, 'static', '5000', { identity: 'pride_of_the_fleet_country', label: 'Has Pride of The Fleet' })] },
   ],
 };
+
+test('stability and war support offer every chosen country without a widget limit', () => {
+  const tags = Array.from({ length: 5000 }, (_, index) => `MOD ${index}`);
+  const resolved = resolveCountries({ kind: 'tags', tags }, [], undefined, 100, definition.countries.max);
+  assert.deepEqual(resolved.tags, tags);
+  assert.equal(resolved.dropped, 0);
+});
 
 test('values are exact percent with two decimals, signed for parts', () => {
   assert.equal(formatPercent('96000', 5), '96.0%');

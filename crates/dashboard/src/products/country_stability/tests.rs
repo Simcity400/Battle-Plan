@@ -520,3 +520,141 @@ fn stability_breakdown_index_preserves_first_tag_match_and_link_validation() {
     assert!(reply.series[0].breakdown.is_none());
     assert!(reply.warnings.is_empty());
 }
+
+#[test]
+fn stability_full_selection_answers_five_thousand_countries_on_each_branch() {
+    use super::{CountryStability, CountryStabilityParams};
+    use crate::products::{LoadContext, Product};
+    use crate::test_fixtures::{scale_frame, scale_tag};
+    let frame = |branch| {
+        let mut frame = scale_frame(branch, 100, 5_000);
+        *frame.tables[TableId::CountryStabilityInputs.index()] =
+            TableView::Complete(TableRows::CountryStabilityInputs(
+                (0..5_000)
+                    .map(|index| replay::rows::CountryStabilityInputRow {
+                        country: 100_000 + index,
+                        stability_raw: 50_000 + i64::from(index),
+                        ..stability_inputs()
+                    })
+                    .collect(),
+            ));
+        *frame.tables[TableId::CountryCommandPower.index()] =
+            TableView::Complete(TableRows::CountryCommandPower(
+                (0..5_000)
+                    .map(|index| replay::rows::CountryCommandPowerRow {
+                        canonical_slot: index,
+                        ..launch(400_000)
+                    })
+                    .collect(),
+            ));
+        *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(
+            (0..5_000)
+                .map(|index| replay::rows::SliceReadRow {
+                    table: TableId::CountryStabilityInputs.index() as u32,
+                    owner: 100_000 + index,
+                    sample_hour: 100,
+                })
+                .collect(),
+        ));
+        frame
+    };
+    let replay = Arc::new(
+        Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(1, vec![frame(1)]), records(2, vec![frame(2)])],
+        )
+        .unwrap(),
+    );
+    let cancelled = AtomicBool::new(false);
+    let source = crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: "stability-scale".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        replay,
+        &cancelled,
+    )
+    .unwrap();
+    let tags: Vec<String> = (0..5_000)
+        .map(|index| String::from_utf8(scale_tag(index)).unwrap())
+        .collect();
+    let load = |branch: u64, tags: Vec<String>| {
+        let params = CountryStabilityParams {
+            branch_id: branch.to_string(),
+            tags,
+            hour: None,
+            breakdown_only: false,
+        };
+        CountryStability::validate(&params).unwrap();
+        CountryStability::load(&source, &params, &LoadContext { content: None }, &cancelled)
+            .unwrap()
+    };
+    let reply = load(2, tags.clone());
+    assert_eq!(reply.series.len(), tags.len());
+    for (index, series) in reply.series.iter().enumerate() {
+        assert_eq!(series.tag, tags[index]);
+        assert!(series.recorded);
+        assert_eq!(series.stability[0].value_raw, (79_249 + index).to_string());
+        assert_eq!(series.stability[0].first_hour, 100);
+    }
+    let restored = load(1, tags);
+    assert_eq!(restored.series, reply.series);
+}
+
+#[test]
+fn stability_carried_reads_have_no_entry_budget() {
+    let mut carried = Vec::new();
+    for hour in 1..=400_001 {
+        super::note_carried(&mut carried, hour, hour - 1);
+    }
+    assert_eq!(carried.len(), 400_001);
+    assert_eq!(carried.last().unwrap().read_hour, 400_000);
+}
+
+#[test]
+fn stability_oversized_breakdown_refuses_the_complete_reply_by_name() {
+    use super::{CountryStability, CountryStabilityParams};
+    use crate::products::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product};
+    let line = replay::rows::CountryStabilityLineRow {
+        country: 9001,
+        key: 0x8d,
+        kind: replay::rows::CountryStabilityLineRow::UNPAIRED,
+        text: vec![b'x'; MAX_PRODUCT_REPLY_BYTES],
+        ..Default::default()
+    };
+    let replay = Arc::new(
+        Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(
+                1,
+                vec![stability_frame(100, stability_inputs(), 100, vec![line])],
+            )],
+        )
+        .unwrap(),
+    );
+    let cancelled = AtomicBool::new(false);
+    let source = crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: "stability-large-breakdown".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        replay,
+        &cancelled,
+    )
+    .unwrap();
+    let params = CountryStabilityParams {
+        branch_id: "1".into(),
+        tags: vec!["GER".into()],
+        hour: Some(100),
+        breakdown_only: true,
+    };
+    let error =
+        CountryStability::load(&source, &params, &LoadContext { content: None }, &cancelled)
+            .unwrap_err();
+    assert!(
+        error.to_string().starts_with("StabilityReplyTooLarge:"),
+        "{error}"
+    );
+}

@@ -357,6 +357,60 @@ fn country_nukes_5000_countries_are_ranked_without_player_status_filtering() {
             .all(|series| series.runs[0].total.unwrap() >= 4991)
     );
     assert!(crate::transport::json_len(&series, MAX_PRODUCT_REPLY_BYTES).is_some());
+    for params in [
+        NukesParams {
+            branch_id: "1".into(),
+            tags: result.series.keys().cloned().collect(),
+            top: None,
+        },
+        NukesParams {
+            branch_id: "1".into(),
+            tags: Vec::new(),
+            top: Some(5000),
+        },
+    ] {
+        CountryNukes::validate(&params).unwrap();
+        let series = requested_series(&result, &params, &AtomicBool::new(false)).unwrap();
+        assert_eq!(series.len(), 5000);
+    }
+}
+
+#[test]
+fn country_nukes_only_serialized_reply_bytes_bound_the_selection() {
+    let counts = (0..MAX_PRODUCT_REPLY_BYTES / 64 + 1)
+        .map(|ordinal| NukeCount {
+            ordinal: ordinal as u32,
+            value: 0,
+        })
+        .collect();
+    let mut result = ScannedNukes::default();
+    result.series.insert(
+        "opaque".into(),
+        vec![NukeRun {
+            first_hour: 10,
+            last_hour: 10,
+            starts_segment: true,
+            counts,
+            total: Some(0),
+        }],
+    );
+    let params = NukesParams {
+        branch_id: "1".into(),
+        tags: vec!["opaque".into()],
+        top: None,
+    };
+    // The old per-count estimate refused this reply despite its actual fit.
+    let selected = requested_series(&result, &params, &AtomicBool::new(false)).unwrap();
+    assert!(crate::transport::json_len(&selected, MAX_PRODUCT_REPLY_BYTES).is_some());
+    let counts = &mut result.series.get_mut("opaque").unwrap()[0].counts;
+    counts.extend(
+        (counts.len()..MAX_PRODUCT_REPLY_BYTES / 20).map(|ordinal| NukeCount {
+            ordinal: ordinal as u32,
+            value: 0,
+        }),
+    );
+    let error = requested_series(&result, &params, &AtomicBool::new(false)).unwrap_err();
+    assert!(error.to_string().starts_with("NuclearReplyTooLarge:"));
 }
 
 #[test]

@@ -14,7 +14,9 @@ import { formatFixed } from '../../charts/valueAxis';
 import type { Run } from '../../charts/series';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
-import { useChartTokens } from '../../charts/useChartTokens';
+import { CHART_LAYOUT } from '../../charts/tokens';
+import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
+import { fitTooltip } from '../../charts/tooltip';
 import type { TooltipRow } from '../../charts/tooltip';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
@@ -32,7 +34,7 @@ import { readHourAt, validateStabilityReply } from '../../dashboard/stabilityRep
 import { formatDateTime } from '../../dashboard/calendar';
 import type { OptionField } from '../../dashboard/options';
 import type { CountryStabilityReply, Measure, MeasureReply } from '../../generated/dashboard';
-import { formatBalance, MAX_COUNTRIES, nearestDrop, netSpend, rawAt, toRuns, validateMeasureReply } from './measureData';
+import { formatBalance, nearestDrop, netSpend, rawAt, toRuns, validateMeasureReply } from './measureData';
 import { MEASURE_OPTIONS } from './options';
 import './measure.css';
 
@@ -63,6 +65,7 @@ export interface MeasureConfig {
 export default function MeasureWidget({ widget, runtime, active, headerSlot, onDiagnostics, config }: WidgetProps & { config: MeasureConfig }) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const tokens = useChartTokens();
+  const viewport = useViewportHeight();
   const options = resolveOptions(config.options ?? MEASURE_OPTIONS, widget.options);
   const showCeiling = config.ceiling != null && options.ceiling !== false;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -70,7 +73,7 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
   const lastHour = track?.branch.lastHour ?? 0;
   const groups = useCountryGroups(runtime, track, active && widget.countries.kind === 'group');
   const fallback = defaultCountryTag(track);
-  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, MAX_COUNTRIES), [widget.countries, fallback, groups.data, lastHour]);
+  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, Number.MAX_SAFE_INTEGER), [widget.countries, fallback, groups.data, lastHour]);
   const request = track && resolved.tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-measure',
     params: { branchId: track.branch.id, measure: config.measure, tags: resolved.tags } } : null;
   const { data, error, retry } = useProduct<MeasureReply>(runtime.client, request, active, validateMeasureReply);
@@ -94,11 +97,10 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
     const warnings = [...(data?.warnings ?? []), ...(styles.data?.warnings ?? []), ...(groups.data?.warnings ?? []),
       ...(ceilingRequest && ceiling.error ? [`The ${config.ceiling} could not be loaded: ${ceiling.error}`] : []),
       ...(ceilingRequest ? ceiling.data?.warnings ?? [] : []),
-      ...(uncoloured ? [uncoloured] : []),
-      ...(resolved.dropped ? [`${resolved.dropped} more countries are left out; this widget draws at most ${resolved.tags.length}.`] : [])];
+      ...(uncoloured ? [uncoloured] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, styles.data, known, groups.data, resolved.dropped, resolved.tags.length, onDiagnostics, ceilingRequest != null, ceiling.error, ceiling.data, config.ceiling]);
+  }, [data, styles.data, known, groups.data, onDiagnostics, ceilingRequest != null, ceiling.error, ceiling.data, config.ceiling]);
 
   const series = useMemo(() => {
     if (!data) return [];
@@ -175,7 +177,7 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
         hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }}
-        padding={{ right: options.endLabels ? 128 : 14 }} layers={layers} active={active} revision={`${head}:${data.branchId}:${series.length}`}
+        padding={{ right: options.endLabels ? CHART_LAYOUT.measureEndLabels : CHART_LAYOUT.right }} layers={layers} active={active} revision={`${head}:${data.branchId}:${series.length}:${viewport}`}
         formatValue={value => Math.abs(value) >= 1000 ? `${Math.round(value / 100) / 10}k` : String(Math.round(value))}
         snap={(hour, frame) => {
           if (!options.spendTicks) return hour;
@@ -218,7 +220,8 @@ export default function MeasureWidget({ widget, runtime, active, headerSlot, onD
             ...(rows.some(row => row.tone === 'negative') ? ['Daily income is not recorded, so a spend is the fall in the balance.'] : []),
             ...(showCeiling && ceiling.data && series.length > CEILING_ROWS_MAX ? [`Maximums are drawn dashed; they are listed here for up to ${CEILING_ROWS_MAX} countries.`, ...carriedNote(hour)] : []),
           ];
-          return { title: dayLabel(hour), rows, note: notes.length ? notes.join(' ') : undefined };
+          const content = { title: dayLabel(hour), rows, note: notes.length ? notes.join(' ') : undefined };
+          return series.length > 1 ? fitTooltip([content], viewport) : content;
         }}
         overlay={(ctx, frame, chartTokens) => {
           if (!options.endLabels) return;

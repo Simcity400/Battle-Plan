@@ -14,7 +14,10 @@ use crate::{
     transport::json_len,
 };
 use engine::craid_instance as native;
-use installed_content::raids::{Catalog, RaidType};
+use installed_content::raids::{
+    Catalog, RaidType,
+    target::{country as target_country, state as target_state},
+};
 use replay::{
     container::Replay,
     frame::{DecodedFrame, FrameDecoder},
@@ -34,10 +37,6 @@ use ts_rs::TS;
 pub struct Raids;
 
 const CACHED_BRANCHES: usize = 4;
-/// A memory budget, refused rather than truncating any country's history.
-const MAX_ENTRIES: usize = 4_000_000;
-/// The same display-selection bound as the other country race products.
-pub const MAX_COUNTRIES: usize = 30;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
@@ -52,6 +51,7 @@ pub enum RaidsView {
 pub enum RaidMetric {
     Launched,
     Succeeded,
+    Both,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -97,7 +97,6 @@ pub struct RaidDate {
 pub struct RaidRun {
     pub first_hour: i32,
     pub last_hour: i32,
-    pub read_hour: i32,
     pub raider: Option<String>,
     pub victim: Option<String>,
     #[serde(rename = "type")]
@@ -117,12 +116,31 @@ pub struct RaidRun {
     pub succeeded: Option<bool>,
 }
 
-/// (Read hour, stored preparation hours at CRaidInstance+0x44). The active
+/// (First read, last read, preparation at first read, change per read hour).
+/// Stored preparation hours at CRaidInstance+0x44. The active
 /// tooltip@141612820 -> phase text@140FD5730 reads it through
 /// GetPhaseElapsedHours@140FD53C0 in phase 2. Other phases do not use it as
-/// elapsed phase time. Every successful read is retained, without interpolation.
+/// elapsed phase time. Every hour in a run was read and matched its exact slope;
+/// a missing read ends it, so this encoding never interpolates across a gap.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
-pub struct RaidPreparationRead(pub i32, pub i32);
+pub struct RaidPreparationRun(pub i32, pub i32, pub i32, #[ts(type = "number")] pub i64);
+
+impl RaidPreparationRun {
+    fn extend(&mut self, hour: i32, hours: i32) -> bool {
+        if self.1.checked_add(1) != Some(hour) {
+            return false;
+        }
+        if self.0 == self.1 {
+            self.3 = i64::from(hours) - i64::from(self.2);
+        } else if i128::from(self.2) + (i128::from(hour) - i128::from(self.0)) * i128::from(self.3)
+            != i128::from(hours)
+        {
+            return false;
+        }
+        self.1 = hour;
+        true
+    }
+}
 
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -131,8 +149,8 @@ pub struct RaidEpisode {
     /// Creation/start dates are not in Raids. This is a bound, never an exact start.
     pub start: RaidDate,
     pub runs: Vec<RaidRun>,
-    /// Independent compact reads: preparation changes must not split fact runs.
-    pub preparation: Vec<RaidPreparationRead>,
+    /// Independent exact runs: preparation changes must not split fact runs.
+    pub preparation: Vec<RaidPreparationRun>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
@@ -158,6 +176,10 @@ pub struct RaidTallySeries {
 #[serde(rename_all = "camelCase")]
 pub struct RaidsReply {
     pub branch_id: String,
+    /// Native phase IDs, shared with consumers instead of duplicated UI numbers.
+    pub phase_preparing: i32,
+    pub phase_ended: i32,
+    pub outcome_none: i32,
     /// False only when content or the recording proves raids unavailable.
     pub available: Option<bool>,
     pub unavailable: Option<String>,
@@ -168,7 +190,6 @@ pub struct RaidsReply {
     /// Successful complete census reads with every current country's parent row
     /// resolved. Partial per-country values remain in series, never a world zero.
     pub read_hours: Vec<i32>,
-    pub unobserved: Vec<HourSpan>,
     pub warnings: Vec<String>,
 }
 
@@ -398,153 +419,54 @@ fn log_artwork(content: &Content, episodes: &[RaidEpisode]) -> Vec<RaidArtwork> 
         .collect()
 }
 
-/// country_resolver@140FD1AD0: building positive override or its location's
-/// controller; province; state; resolved captive leader's captor; leader province.
-fn target_country(frame: &DecodedFrame, scope: &RaidScope) -> Result<Option<u32>, String> {
-    let province = |id| {
-        frame
-            .complete::<tables::Provinces>()
-            .map_err(|e| e.to_string())?
-            .binary_search_by_key(&id, |r| r.id)
-            .map(|at| frame.complete::<tables::Provinces>().unwrap()[at].controller)
-            .map_err(|_| format!("raid target province {id} is absent"))
-    };
-    let state = |id| {
-        frame
-            .complete::<tables::States>()
-            .map_err(|e| e.to_string())?
-            .binary_search_by_key(&id, |r| r.id)
-            .map(|at| frame.complete::<tables::States>().unwrap()[at].controller)
-            .map_err(|_| format!("raid target state {id} is absent"))
-    };
-    let raw = if scope.building_type != 0 {
-        if scope.building_country > 0 {
-            scope.building_country as u32
-        } else if scope.building_flags & 1 != 0 {
-            province(scope.building_location)?
-        } else {
-            state(scope.building_location)?
-        }
-    } else if scope.province != 0 {
-        province(scope.province)?
-    } else if scope.state != 0 {
-        state(scope.state)?
-    } else if let Some(captor) = scope.leader_country {
-        captor.max(0) as u32
-    } else if scope.leader_province != 0 {
-        province(scope.leader_province)?
-    } else {
-        0
-    };
-    Ok((raw != 0).then_some(raw))
-}
-
-/// Location scope's state getter (plain location caller@140FD1BB0); state,
-/// province, leader province,
-/// then building location. Keep a missing province separate from an empty scope.
-fn target_state(frame: &DecodedFrame, scope: &RaidScope) -> Result<Option<u32>, String> {
-    if scope.state != 0 {
-        return Ok(Some(scope.state));
-    }
-    let province = if scope.province != 0 {
-        scope.province
-    } else if scope.leader_province != 0 {
-        scope.leader_province
-    } else if scope.building_type != 0 && scope.building_flags & 1 == 0 {
-        return Ok(Some(scope.building_location));
-    } else {
-        scope.building_location
-    };
-    if province == 0 {
-        return Ok(None);
-    }
-    let rows = frame
-        .complete::<tables::Provinces>()
-        .map_err(|e| e.to_string())?;
-    rows.binary_search_by_key(&province, |r| r.id)
-        .map(|at| Some(rows[at].state))
-        .map_err(|_| format!("raid target province {province} is absent"))
-}
-
 fn target_name(
     frame: &DecodedFrame,
     scope: &RaidScope,
     content: &Content,
-    tags: &LinkTags,
 ) -> Result<String, String> {
     let cat = &content.catalogue;
-    // Plain location@140FD1BB0 -> ResolveVictoryPointLocalization@140E68E30;
-    // state-owner tag key first, then unqualified VP, then display_name@1409CC380.
-    let province = if scope.province != 0 {
-        scope.province
-    } else {
-        scope.leader_province
-    };
-    if province != 0 {
-        let rows = frame
-            .complete::<tables::Provinces>()
-            .map_err(|e| e.to_string())?;
-        let row = rows
-            .binary_search_by_key(&province, |r| r.id)
-            .ok()
-            .map(|at| &rows[at])
-            .ok_or_else(|| format!("raid target province {province} is absent"))?;
-        let states = frame
-            .complete::<tables::States>()
-            .map_err(|e| e.to_string())?;
-        let state = states
-            .binary_search_by_key(&row.state, |r| r.id)
-            .ok()
-            .map(|at| &states[at])
-            .ok_or_else(|| format!("raid target state {} is absent", row.state))?;
-        let tag = if state.owner == 0 {
-            None
-        } else {
-            Some(tags.get(state.owner).ok_or_else(|| {
-                format!("raid target state's owner {} is unresolved", state.owner)
-            })?)
-        };
-        let mut keys = Vec::new();
-        if let Some(tag) = tag {
-            keys.push(format!("{tag}_VICTORY_POINTS_{province}"));
-        }
-        keys.push(format!("VICTORY_POINTS_{province}"));
-        for key in keys {
-            if cat.localisation.get(&key).is_some() {
-                let name = cat
-                    .localised(&key, View::Plain)
-                    .ok_or_else(|| format!("raid target name {key} is refused"))?;
-                if !name.is_empty() {
-                    return Ok(name);
-                }
+    installed_content::raids::target::location(
+        frame,
+        scope,
+        |key| {
+            if cat.localisation.get(key).is_none() {
+                return Ok(None);
             }
-        }
-    }
-    let Some(state) = target_state(frame, scope)? else {
-        return Ok("no_target_name".into());
-    };
-    let rows = frame
-        .complete::<tables::States>()
-        .map_err(|e| e.to_string())?;
-    let row = rows
-        .binary_search_by_key(&state, |r| r.id)
-        .ok()
-        .map(|at| &rows[at])
-        .ok_or_else(|| format!("raid target state {state} is absent"))?;
-    scripted_text::state_name_from(
-        row,
-        |bytes, what| {
-            scripted_text::stored_text(&cat.localisation, &cat.recorded_language, bytes, what)
+            cat.localisation
+                .localise_with(key.as_bytes(), &[])
+                .map(Some)
+                .map_err(|error| format!("raid target name {key}: {error}"))
         },
-        |id| {
-            let key = content
-                .names
-                .get(&id)
-                .ok_or_else(|| format!("state {id} has no content name"))?
-                .as_ref()
-                .map_err(Clone::clone)?;
-            cat.localised(key, View::Plain)
-                .ok_or_else(|| format!("state {id} name {key} is refused"))
+        |state| {
+            let rows = frame
+                .complete::<tables::States>()
+                .map_err(|error| error.to_string())?;
+            let row = rows
+                .binary_search_by_key(&state, |row| row.id)
+                .ok()
+                .map(|at| &rows[at])
+                .ok_or_else(|| format!("raid target state {state} is absent"))?;
+            scripted_text::state_name_from(
+                row,
+                |bytes, what| {
+                    scripted_text::stored_text(
+                        &cat.localisation,
+                        &cat.recorded_language,
+                        bytes,
+                        what,
+                    )
+                },
+                |id| {
+                    let key = content
+                        .names
+                        .get(&id)
+                        .ok_or_else(|| format!("state {id} has no content name"))?
+                        .as_ref()
+                        .map_err(Clone::clone)?;
+                    cat.localised(key, View::Plain)
+                        .ok_or_else(|| format!("state {id} name {key} is refused"))
+                },
+            )
         },
     )
     .and_then(|text| catalogue::plain_text(&text))
@@ -556,7 +478,6 @@ pub struct ScannedRaids {
     pub series: BTreeMap<String, Vec<RaidTallyRun>>,
     pub segments: BTreeMap<String, Vec<HourSpan>>,
     pub read_hours: Vec<i32>,
-    pub unobserved: Vec<HourSpan>,
     pub types: BTreeSet<String>,
     pub recording_present: bool,
     pub warnings: Vec<String>,
@@ -572,19 +493,6 @@ struct Track {
     holder: Option<(u32, u32)>,
 }
 
-fn mark(spans: &mut Vec<HourSpan>, hour: i32) {
-    if let Some(last) = spans.last_mut()
-        && last.last_hour.checked_add(1) == Some(hour)
-    {
-        last.last_hour = hour;
-    } else {
-        spans.push(HourSpan {
-            first_hour: hour,
-            last_hour: hour,
-        });
-    }
-}
-
 struct Scan {
     result: ScannedRaids,
     tracks: BTreeMap<String, Track>,
@@ -594,8 +502,6 @@ struct Scan {
     counted_success: BTreeSet<(u32, u32)>,
     ended_victims: BTreeMap<(u32, u32), Option<String>>,
     refusals: Refusals,
-    last: Option<i32>,
-    entries: usize,
 }
 
 impl Scan {
@@ -609,31 +515,12 @@ impl Scan {
             counted_success: BTreeSet::new(),
             ended_victims: BTreeMap::new(),
             refusals: Refusals::default(),
-            last: None,
-            entries: 0,
         }
     }
 
     fn observe(&mut self, frame: &DecodedFrame, content: Option<&Content>) -> io::Result<()> {
         let hour = frame.hour;
-        if let Some(last) = self.last
-            && last.checked_add(1) != Some(hour)
-            && last < hour - 1
-        {
-            if let Some(span) = self.result.unobserved.last_mut()
-                && span.last_hour.checked_add(1) == Some(last + 1)
-            {
-                span.last_hour = hour - 1;
-            } else {
-                self.result.unobserved.push(HourSpan {
-                    first_hour: last + 1,
-                    last_hour: hour - 1,
-                });
-            }
-        }
-        self.last = Some(hour);
         if self.tags.update(frame).is_err() {
-            mark(&mut self.result.unobserved, hour);
             return Ok(());
         }
         let countries = frame.complete::<tables::Countries>()?;
@@ -668,7 +555,6 @@ impl Scan {
                     first_hour: hour,
                     last_hour: hour,
                 });
-                self.entries += 1;
             }
             by_slot.insert(slot, tag.as_str());
         }
@@ -679,7 +565,6 @@ impl Scan {
             frame.complete::<tables::RaidCountries>(),
             frame.complete::<tables::Raids>(),
         ) else {
-            mark(&mut self.result.unobserved, hour);
             return Ok(());
         };
         self.result.recording_present |= parents
@@ -709,7 +594,6 @@ impl Scan {
         } else {
             // Valid country rows keep their values, but incomplete identity or
             // parent coverage cannot prove that an empty race is a world zero.
-            mark(&mut self.result.unobserved, hour);
             for (slot, tag) in &by_slot {
                 if !parent_tags.contains_key(slot) {
                     self.refusals
@@ -730,7 +614,6 @@ impl Scan {
                         runs: Vec::new(),
                         preparation: Vec::new(),
                     });
-                    self.entries += 1;
                     index
                 }
             };
@@ -798,7 +681,7 @@ impl Scan {
                     }
                 }
                 if let Some(content) = content {
-                    match target_name(frame, &target.scope, content, &self.tags) {
+                    match target_name(frame, &target.scope, content) {
                         Ok(text) => name = Some(text),
                         Err(reason) => self.refusals.note(reason, &id),
                     }
@@ -921,7 +804,6 @@ impl Scan {
             let run = RaidRun {
                 first_hour: hour,
                 last_hour: hour,
-                read_hour: hour,
                 raider,
                 victim,
                 raid_type: token,
@@ -938,10 +820,15 @@ impl Scan {
                 succeeded: was_success,
             };
             let episode = &mut self.result.episodes[index];
-            episode
+            if !episode
                 .preparation
-                .push(RaidPreparationRead(hour, row.preparation_hours));
-            self.entries += 1;
+                .last_mut()
+                .is_some_and(|last| last.extend(hour, row.preparation_hours))
+            {
+                episode
+                    .preparation
+                    .push(RaidPreparationRun(hour, hour, row.preparation_hours, 0));
+            }
             let runs = &mut episode.runs;
             // Values retain the read which first supplied them; read_hours also
             // dates unchanged successful reads. Country looks use hovered hour.
@@ -950,14 +837,12 @@ impl Scan {
                 && (RaidRun {
                     first_hour: run.first_hour,
                     last_hour: run.last_hour,
-                    read_hour: run.read_hour,
                     ..last.clone()
                 }) == run
             {
                 last.last_hour = hour;
             } else {
                 runs.push(run);
-                self.entries += 1;
             }
         }
         self.open = next;
@@ -978,13 +863,7 @@ impl Scan {
                 last.last_hour = hour;
             } else {
                 track.runs.push(run);
-                self.entries += 1;
             }
-        }
-        if self.entries > MAX_ENTRIES {
-            return Err(io::Error::other(
-                "The complete raid history exceeds its memory budget; no countries or raids were omitted",
-            ));
         }
         Ok(())
     }
@@ -1012,7 +891,7 @@ fn scan(
     content: Option<&Content>,
     cancelled: &AtomicBool,
 ) -> io::Result<ScannedRaids> {
-    let selected = [
+    let mut selected = vec![
         TableId::Campaign,
         TableId::Countries,
         TableId::CountryLinks,
@@ -1023,14 +902,13 @@ fn scan(
         TableId::Provinces,
         TableId::States,
     ];
+    if content.is_some() {
+        selected.push(TableId::CountryAppearance);
+    }
     let mut scan = Scan::new();
-    let start = replay
-        .branches
-        .iter()
-        .find(|b| b.id == branch)
-        .ok_or_else(|| crate::invalid("Branch is not in this recording"))?;
-    let (first, last) = crate::metadata::branch_bounds(replay, start);
-    scan.last = first.checked_sub(1);
+    if !replay.branches.iter().any(|b| b.id == branch) {
+        return Err(crate::invalid("Branch is not in this recording"));
+    }
     for block in replay.index.iter().filter(|b| b.branch == branch) {
         if cancelled.load(Ordering::Acquire) {
             return Err(io::Error::new(
@@ -1056,22 +934,6 @@ fn scan(
                 break;
             }
             scan.observe(decoded, content)?;
-        }
-    }
-    let next = scan
-        .last
-        .and_then(|hour| hour.checked_add(1))
-        .unwrap_or(first);
-    if next <= last {
-        if let Some(span) = scan.result.unobserved.last_mut()
-            && span.last_hour.checked_add(1) == Some(next)
-        {
-            span.last_hour = last;
-        } else {
-            scan.result.unobserved.push(HourSpan {
-                first_hour: next,
-                last_hour: last,
-            });
         }
     }
     Ok(scan.finish())
@@ -1137,6 +999,9 @@ fn recording_available(
 #[serde(rename_all = "camelCase")]
 struct ReplyMeasure<'a> {
     branch_id: &'a str,
+    phase_preparing: i32,
+    phase_ended: i32,
+    outcome_none: i32,
     available: Option<bool>,
     unavailable: &'a Option<String>,
     types: &'a [RaidTypeInfo],
@@ -1144,13 +1009,15 @@ struct ReplyMeasure<'a> {
     episodes: &'a [RaidEpisode],
     series: &'a [RaidTallySeries],
     read_hours: &'a [i32],
-    unobserved: &'a [HourSpan],
     warnings: &'a [String],
 }
 
 fn measure_reply(reply: &RaidsReply, episodes: &[RaidEpisode]) -> io::Result<()> {
     let measure = ReplyMeasure {
         branch_id: &reply.branch_id,
+        phase_preparing: reply.phase_preparing,
+        phase_ended: reply.phase_ended,
+        outcome_none: reply.outcome_none,
         available: reply.available,
         unavailable: &reply.unavailable,
         types: &reply.types,
@@ -1158,12 +1025,11 @@ fn measure_reply(reply: &RaidsReply, episodes: &[RaidEpisode]) -> io::Result<()>
         episodes,
         series: &reply.series,
         read_hours: &reply.read_hours,
-        unobserved: &reply.unobserved,
         warnings: &reply.warnings,
     };
     if json_len(&measure, MAX_PRODUCT_REPLY_BYTES).is_none() {
         return Err(io::Error::other(format!(
-            "The complete raid reply exceeds {} MiB; no countries or raids were omitted",
+            "RaidReplyTooLarge: the complete raid reply exceeds {} MiB; no countries or raids were omitted",
             MAX_PRODUCT_REPLY_BYTES / (1024 * 1024),
         )));
     }
@@ -1187,8 +1053,10 @@ fn selected_series(
                     let value = match top.metric {
                         RaidMetric::Launched => r.launched,
                         RaidMetric::Succeeded => r.succeeded,
+                        RaidMetric::Both => r.launched,
                     };
-                    (value != 0).then_some(i64::from(value))
+                    (value != 0 || (top.metric == RaidMetric::Both && r.succeeded != 0))
+                        .then_some(i64::from(value))
                 },
                 cancelled,
             )
@@ -1237,7 +1105,8 @@ fn selected_series(
                 )
                 .unwrap_or(MAX_PRODUCT_REPLY_BYTES),
             )
-            .saturating_add(1);
+            .saturating_add(usize::from(!pieces.is_empty()));
+        let mut has_run = false;
         let mut count = |run: &RaidTallyRun, first, last| {
             let piece = RaidTallyRun {
                 first_hour: first,
@@ -1248,7 +1117,8 @@ fn selected_series(
                 .saturating_add(
                     json_len(&piece, MAX_PRODUCT_REPLY_BYTES).unwrap_or(MAX_PRODUCT_REPLY_BYTES),
                 )
-                .saturating_add(1);
+                .saturating_add(usize::from(has_run));
+            has_run = true;
             Ok(())
         };
         if let Some(spans) = spans {
@@ -1266,7 +1136,7 @@ fn selected_series(
         }
         if bytes > MAX_PRODUCT_REPLY_BYTES {
             return Err(io::Error::other(
-                "These countries' raid tally exceeds one complete response; choose fewer countries",
+                "RaidReplyTooLarge: these countries' raid tally exceeds one complete response; no countries or raids were omitted",
             ));
         }
         pieces.push((tag, spans));
@@ -1319,7 +1189,7 @@ impl Product for Raids {
             RaidArtwork::decl(),
             RaidDate::decl(),
             RaidRun::decl(),
-            RaidPreparationRead::decl(),
+            RaidPreparationRun::decl(),
             RaidEpisode::decl(),
             RaidTallyRun::decl(),
             RaidTallySeries::decl(),
@@ -1331,17 +1201,11 @@ impl Product for Raids {
             .branch_id
             .parse::<u64>()
             .map_err(|_| "Invalid branch")?;
-        if params.tags.len() > MAX_COUNTRIES {
-            return Err("Too many countries");
-        }
         for tag in &params.tags {
             validate_tag(tag)?;
         }
         if let Some(top) = &params.top
-            && (top.count == 0
-                || top.count as usize > MAX_COUNTRIES
-                || !params.tags.is_empty()
-                || params.view != RaidsView::Tally)
+            && (top.count == 0 || !params.tags.is_empty() || params.view != RaidsView::Tally)
         {
             return Err("Invalid top countries");
         }
@@ -1393,6 +1257,11 @@ impl Product for Raids {
         };
         let mut reply = RaidsReply {
             branch_id: params.branch_id.clone(),
+            // Phase text@140FD5730 and feedback tooltip@141613BE0 select
+            // these CRaidInstance enum IDs.
+            phase_preparing: native::PHASE_PREPARING,
+            phase_ended: native::PHASE_ENDED,
+            outcome_none: native::OUTCOME_NONE,
             available,
             unavailable: (available == Some(false)).then(|| {
                 "Not in this recording: the recorded content defines no raid types".into()
@@ -1402,7 +1271,6 @@ impl Product for Raids {
             episodes: Vec::new(),
             series: Vec::new(),
             read_hours: Vec::new(),
-            unobserved: Vec::new(),
             warnings,
         };
         let mut log_scan = None;
@@ -1455,7 +1323,6 @@ impl Product for Raids {
                 });
             }
             reply.read_hours.clone_from(&scanned.read_hours);
-            reply.unobserved.clone_from(&scanned.unobserved);
             reply.warnings.extend(scanned.warnings.iter().cloned());
             reply.warnings.push("Counts are lower bounds from observed raids. A recorded in-progress phase or finite nonzero travelled distance proves launch, counted by its first proving read. A terminal result alone has unknown launch because native console completion can bypass it. Success is counted by its first successful result read. Pre-recording and entirely between-read raids are unknown. Limited success is not a native success.".into());
             if params.view == RaidsView::Log {

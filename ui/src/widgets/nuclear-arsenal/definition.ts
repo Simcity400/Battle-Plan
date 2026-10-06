@@ -2,7 +2,6 @@ import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOpti
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 
-export const MAX_COUNTRIES = 30;
 export const OPTIONS: readonly OptionField[] = [
   raceViewOption('nuke type'),
   DATE_OVERLAY_OPTION,
@@ -17,5 +16,5 @@ export const definition = {
   description: 'The game’s nuclear stockpile counter for every country, split by its content’s nuke types.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 },
-  countries: { max: MAX_COUNTRIES, ranked: true }, defaultCountries: TOP_COUNTRIES, options: OPTIONS,
+  countries: { max: Number.MAX_SAFE_INTEGER, ranked: true }, defaultCountries: TOP_COUNTRIES, options: OPTIONS,
 } as const satisfies WidgetMeta;

@@ -284,29 +284,7 @@ pub fn current(
 }
 
 pub fn target_state(world: &World<'_>, scope: &RaidScope) -> Result<Option<u32>, String> {
-    if scope.state != 0 {
-        return Ok(Some(scope.state));
-    }
-    let province = if scope.province != 0 {
-        scope.province
-    } else if scope.leader_province != 0 {
-        scope.leader_province
-    } else if scope.building_type != 0 && scope.building_flags & 1 == 0 {
-        return Ok(Some(scope.building_location));
-    } else {
-        scope.building_location
-    };
-    if province == 0 {
-        return Ok(None);
-    }
-    world
-        .frame()
-        .complete::<tables::Provinces>()
-        .map_err(|e| e.to_string())?
-        .iter()
-        .find(|row| row.id == province)
-        .map(|row| Some(row.state))
-        .ok_or_else(|| format!("target province {province} is absent"))
+    installed_content::raids::target::state(world.frame(), scope)
 }
 
 #[cfg(test)]

@@ -2,8 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { linesTooltip } from '../../charts/race/lines.ts';
 import { runAt } from '../../charts/series.ts';
+import { countryRaceItems } from '../../charts/race/countryRace.ts';
+import { stepRace } from '../../charts/race/race.ts';
 import type { CountryNukesReply } from '../../generated/dashboard';
 import { formatDateTime } from '../../dashboard/calendar.ts';
+import { resolveCountries } from '../../dashboard/groups.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { formatNukes, nuclearModel, nuclearRuns, nuclearSegmentAt, nuclearTooltip, nukesRequest, rankNukes, validateNukesReply } from './nuclearArsenalData.ts';
 
@@ -15,6 +18,13 @@ const reply = (): CountryNukesReply => ({ branchId: '1', readHours: [10, 11, 12,
   { firstHour: 12, lastHour: 12, startsSegment: false, counts: [{ ordinal: 1, value: 3 }], total: null },
   { firstHour: 14, lastHour: 14, startsSegment: true, counts: [{ ordinal: 0, value: 4 }, { ordinal: 1, value: 3 }], total: 7 },
 ] }] });
+
+test('nuclear country choices retain every one of 5000 recorded tags', () => {
+  const tags = Array.from({ length: 5000 }, (_, index) => `MOD ${index}`);
+  const resolved = resolveCountries({ kind: 'tags', tags }, [], undefined, 100, definition.countries.max);
+  assert.deepEqual(resolved.tags, tags);
+  assert.equal(resolved.dropped, 0);
+});
 
 test('nuclear arsenal uses content type names, totals and hourly read notes', () => {
   const data = validateNukesReply(reply());
@@ -121,4 +131,18 @@ test('nuclear reply validator refuses malformed, duplicated and noninteger value
   assert.throws(() => validateNukesReply(fractional), /malformed/);
   const inventedEmpty = reply(); inventedEmpty.emptyReadHours = [13];
   assert.throws(() => validateNukesReply(inventedEmpty), /malformed/);
+  const sparseSpans = reply(); sparseSpans.series[0].segments = new Array(1);
+  assert.throws(() => validateNukesReply(sparseSpans), /malformed/);
+});
+
+test('nuclear bar easing stops across an unknown total within an existing country', () => {
+  const data = reply();
+  data.series[0].runs[2].firstHour = 13;
+  data.series[0].runs[2].startsSegment = false;
+  const model = nuclearModel(data);
+  const items = (hour: number) => countryRaceItems(rankNukes(model, ['AAA'], hour, 1), new Map(), () => 'country', 'missing', false);
+  let state = stepRace(null, items(11), 0, 16, 100);
+  state = stepRace(state, items(13), 16, 16, 100);
+  assert.equal(state.rows[0].widths.get('0')!.solid, 4);
+  assert.equal(state.rows[0].item.label, '7');
 });

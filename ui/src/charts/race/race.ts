@@ -31,6 +31,8 @@ export interface RaceItem {
   /** The exact value, as the label at the bar's tip shows it. */
   label: string;
   segments: readonly RaceSegment[];
+  /** An inner secondary measure, independent of the stacked total. */
+  inset?: { value: number; color: string };
   /** The unbroken stretch of recorded hours the value belongs to; the bar glides
    * from the value last drawn only when it is the same. Null never glides. */
   stretch: number | string | null;
@@ -50,6 +52,7 @@ export interface RaceRow {
   y: number;
   alpha: number;
   widths: ReadonlyMap<string, { solid: number; hatched: number }>;
+  inset?: number;
 }
 
 export interface RaceState {
@@ -110,19 +113,24 @@ export function barParts(widths: readonly PartWidth[]): BarPart[] {
 }
 
 const itemWidths = (item: RaceItem): PartWidth[] => item.segments.map(segment => ({ solid: segment.value, hatched: Math.max(0, segment.hatched ?? 0) }));
+const withInset = (extent: Edge, inset: number | undefined): Edge =>
+  ({ low: Math.min(extent.low, inset ?? 0), high: Math.max(extent.high, inset ?? 0) });
+const itemExtent = (item: RaceItem) => withInset(barExtent(itemWidths(item)), item.inset?.value);
+/** Every amount actually drawn, including an inner measure exceeding the total. */
+export const rowExtent = (row: Pick<RaceRow, 'item' | 'widths' | 'inset'>) => withInset(barExtent(drawnWidths(row)), row.inset);
 
 /** The length a bar draws: the values its segments cover. */
-export const barLength = (item: RaceItem) => { const extent = barExtent(itemWidths(item)); return extent.high - extent.low; };
+export const barLength = (item: RaceItem) => { const extent = itemExtent(item); return extent.high - extent.low; };
 
 /** The value axis' end for these entries: a little past the furthest bar, so its
  * label fits; at least 1. */
 export function raceMax(items: readonly RaceItem[]): number {
-  return Math.max(1, ...items.map(item => barExtent(itemWidths(item)).high)) * AXIS_ROOM;
+  return Math.max(1, ...items.map(item => itemExtent(item).high)) * AXIS_ROOM;
 }
 
 /** The value axis' start: zero, or a little past the bar reaching furthest below it. */
 export function raceMin(items: readonly RaceItem[]): number {
-  return Math.min(0, ...items.map(item => barExtent(itemWidths(item)).low)) * AXIS_ROOM;
+  return Math.min(0, ...items.map(item => itemExtent(item).low)) * AXIS_ROOM;
 }
 
 const targetWidths = (item: RaceItem) => new Map(item.segments.map(segment =>
@@ -160,7 +168,8 @@ export function stepRace(state: RaceState | null, items: readonly RaceItem[], no
     if (first || !previous) {
       // New rows appear at their values: nothing grows out of zero.
       return { key: row.key, item: row.item, phase: row.phase, since: row.since, target,
-        y: first ? target : below, alpha: first ? 1 : ease(0, 1), widths: goal };
+        y: first ? target : below, alpha: first ? 1 : ease(0, 1), widths: goal,
+        ...(row.item.inset ? { inset: row.item.inset.value } : {}) };
     }
     // A bar glides only within one unbroken stretch; else it jumps. A segment it did
     // not have before appears at its value.
@@ -169,8 +178,11 @@ export function stepRace(state: RaceState | null, items: readonly RaceItem[], no
       const drawn = previous.widths.get(id);
       return [id, glide && drawn ? { solid: ease(drawn.solid, width.solid), hatched: ease(drawn.hatched, width.hatched) } : width];
     }));
+    const inset = leaving ? previous.inset : row.item.inset
+      ? glide && previous.inset !== undefined ? ease(previous.inset, row.item.inset.value) : row.item.inset.value : undefined;
     return { key: row.key, item: leaving ? previous.item : row.item, phase: row.phase, since: row.since, target,
-      y: ease(previous.y, target), alpha: ease(previous.alpha, leaving ? 0 : 1), widths };
+      y: ease(previous.y, target), alpha: ease(previous.alpha, leaving ? 0 : 1), widths,
+      ...(inset !== undefined ? { inset } : {}) };
   });
   const goalMax = raceMax(items);
   const goalMin = raceMin(items);
@@ -182,7 +194,7 @@ export function stepRace(state: RaceState | null, items: readonly RaceItem[], no
   let min = ease(state!.min, goalMin);
   for (const row of rows) {
     if (row.phase === 'leaving') continue;
-    const extent = barExtent(drawnWidths(row));
+    const extent = rowExtent(row);
     max = Math.max(max, extent.high * AXIS_ROOM);
     min = Math.min(min, extent.low * AXIS_ROOM);
   }
@@ -196,6 +208,7 @@ export function raceMoving(state: RaceState): boolean {
   if (Math.abs(state.max - raceMax(state.items)) > SETTLED * span || Math.abs(state.min - raceMin(state.items)) > SETTLED * span) return true;
   return state.rows.some(row => {
     if (row.phase === 'leaving' || Math.abs(row.y - row.target) > SETTLED || Math.abs(row.alpha - 1) > SETTLED) return true;
+    if (row.item.inset && (row.inset === undefined || Math.abs(row.inset - row.item.inset.value) > SETTLED * span)) return true;
     return row.item.segments.some(segment => {
       const drawn = row.widths.get(segment.id);
       return !drawn || Math.abs(drawn.solid - segment.value) > SETTLED * span
@@ -275,7 +288,7 @@ export const paintOrder = (rows: readonly RaceRow[]): RaceRow[] => [...rows].sor
 /** A row's bar as drawn: the rectangle from its lowest to its highest value, at its
  * place, on the axis from `min` to `max`. */
 export function barRectangle(row: RaceRow, layout: RaceLayout, min: number, max: number): { left: number; right: number; top: number; bottom: number } {
-  const extent = barExtent(drawnWidths(row));
+  const extent = rowExtent(row);
   const centre = rowCentre(layout, row.y);
   return { left: valueX(layout, min, max, extent.low), right: valueX(layout, min, max, extent.high),
     top: centre - layout.thickness / 2, bottom: centre + layout.thickness / 2 };

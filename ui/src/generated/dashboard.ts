@@ -574,13 +574,13 @@ readHours: Array<number>,
  */
 emptyReadHours: Array<number>, types: Array<NukeTypeInfo>, series: Array<NukeSeries>, warnings: Array<string>, };
 export type RaidsView = "catalogue" | "log" | "tally";
-export type RaidMetric = "launched" | "succeeded";
+export type RaidMetric = "launched" | "succeeded" | "both";
 export type RaidTop = { count: number, metric: RaidMetric, };
 export type RaidsParams = { branchId: string, view: RaidsView, tags: Array<string>, top: RaidTop | null, };
 export type RaidTypeInfo = { token: string, name: string | null, missing: string | null, };
 export type RaidArtwork = { key: string, image: string | null, missing: string | null, };
 export type RaidDate = { hour: number, };
-export type RaidRun = { firstHour: number, lastHour: number, readHour: number, raider: string | null, victim: string | null, type: string | null, province: number | null, state: number | null, targetName: string | null,
+export type RaidRun = { firstHour: number, lastHour: number, raider: string | null, victim: string | null, type: string | null, province: number | null, state: number | null, targetName: string | null,
 /**
  * Sprite key into RaidsReply.artwork, so each PNG is returned only once.
  */
@@ -589,19 +589,23 @@ icon: string | null, iconMissing: string | null, phase: number, phaseName: strin
  * Null for an ended raid whose launch was never observed.
  */
 launched: boolean | null, succeeded: boolean | null, };
-export type RaidPreparationRead = [number, number];
+export type RaidPreparationRun = [number, number, number, number];
 export type RaidEpisode = { id: string,
 /**
  * Creation/start dates are not in Raids. This is a bound, never an exact start.
  */
 start: RaidDate, runs: Array<RaidRun>,
 /**
- * Independent compact reads: preparation changes must not split fact runs.
+ * Independent exact runs: preparation changes must not split fact runs.
  */
-preparation: Array<RaidPreparationRead>, };
+preparation: Array<RaidPreparationRun>, };
 export type RaidTallyRun = { firstHour: number, lastHour: number, readHour: number, launched: number, succeeded: number, };
 export type RaidTallySeries = { tag: string, runs: Array<RaidTallyRun>, segments: Array<HourSpan>, membership: Array<HourSpan> | null, };
 export type RaidsReply = { branchId: string,
+/**
+ * Native phase IDs, shared with consumers instead of duplicated UI numbers.
+ */
+phasePreparing: number, phaseEnded: number, outcomeNone: number,
 /**
  * False only when content or the recording proves raids unavailable.
  */
@@ -610,7 +614,7 @@ available: boolean | null, unavailable: string | null, types: Array<RaidTypeInfo
  * Successful complete census reads with every current country's parent row
  * resolved. Partial per-country values remain in series, never a world zero.
  */
-readHours: Array<number>, unobserved: Array<HourSpan>, warnings: Array<string>, };
+readHours: Array<number>, warnings: Array<string>, };
 export type OccupiedStatesParams = { branchId: string, };
 export type OccupiedValues = { name: string | null, nameMissing: string | null, owner: string | null, occupier: string | null,
 /**

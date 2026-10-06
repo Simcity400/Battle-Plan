@@ -3,8 +3,6 @@ import type { Run } from '../../charts/series';
 import { runAt } from '../../charts/series.ts';
 import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
 
-/** Most countries one balance widget draws. */
-export const MAX_COUNTRIES = 16;
 const RAW = /^-?\d{1,20}$/;
 
 export const isFixedRun = (value: unknown): value is FixedRun => typeof value === 'object' && value != null

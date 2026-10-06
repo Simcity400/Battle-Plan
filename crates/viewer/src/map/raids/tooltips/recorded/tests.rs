@@ -739,3 +739,75 @@ fn hover_build_cost() {
         samples[50], samples[99]
     );
 }
+
+#[test]
+fn raid_target_names_refuse_unknown_owners_and_preserve_recorded_null_states() {
+    use super::super::super::tests::put;
+    let assets = assets();
+    let loc: Localisation = [("VICTORY_POINTS_1".into(), "Wrong bare fallback".into())]
+        .into_iter()
+        .collect();
+    for (owner, state) in [(999, 10), (0, 10), (10, 0)] {
+        let mut frame = frame();
+        if state == 0 {
+            let mut provinces = frame.complete::<tables::Provinces>().unwrap().to_vec();
+            provinces[0].state = 0;
+            put::<tables::Provinces>(&mut frame, provinces);
+        }
+        put::<tables::States>(
+            &mut frame,
+            vec![replay::rows::StateRow {
+                id: 10,
+                owner,
+                custom_name: b"Recorded state".to_vec(),
+                ..Default::default()
+            }],
+        );
+        let world = World::new(&frame, assets.facts()).unwrap();
+        let context = Context {
+            assets: &assets,
+            world: &world,
+            loc: &loc,
+            recorded_language: &loc.language,
+            scripted_content: &Err("no scripted content in this test".into()),
+            ours: 0,
+            countries: installed_content::country_names::CountryNames::read(&frame, &loc),
+            flag_exists: &|_| true,
+            scripted: Default::default(),
+        };
+        let reason = context
+            .location(&RaidScope {
+                province: 1,
+                ..Default::default()
+            })
+            .unwrap_err();
+        assert!(reason.contains(if owner == 0 || state == 0 {
+            "reserved owner original tag is not recorded"
+        } else {
+            "owner 999 is unresolved"
+        }));
+        if state == 0 {
+            for scope in [
+                RaidScope {
+                    province: 1,
+                    ..Default::default()
+                },
+                RaidScope {
+                    leader_province: 1,
+                    ..Default::default()
+                },
+                RaidScope {
+                    building_type: 4,
+                    building_flags: 1,
+                    building_location: 1,
+                    ..Default::default()
+                },
+            ] {
+                assert_eq!(intel::target_state(&world, &scope), Ok(None));
+                if scope.building_type != 0 {
+                    assert_eq!(context.location(&scope).as_deref(), Ok("no_target_name"));
+                }
+            }
+        }
+    }
+}

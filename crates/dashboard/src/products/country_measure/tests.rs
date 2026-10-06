@@ -142,3 +142,31 @@ fn measures_reply_every_requested_country_and_warn_for_unrecorded_ones() {
     assert_eq!(command.series[0].runs[0].value_raw, i64::MAX.to_string());
     assert_ne!(command.series[0].runs, reply.series[0].runs);
 }
+
+#[test]
+fn measure_oversized_complete_reply_is_refused_by_name() {
+    use super::{FixedRun, Measure, MeasureReply, MeasureSeries, checked_reply};
+    use crate::products::MAX_PRODUCT_REPLY_BYTES;
+
+    let reply = |runs: usize| MeasureReply {
+        branch_id: "1".into(),
+        measure: Measure::PoliticalPower,
+        decimals: 5,
+        series: vec![MeasureSeries {
+            tag: "opaque tag".into(),
+            runs: (0..runs)
+                .map(|hour| FixedRun {
+                    first_hour: hour as i32,
+                    last_hour: hour as i32,
+                    value_raw: (hour % 2).to_string(),
+                    starts_segment: hour == 0,
+                })
+                .collect(),
+            drops: vec![],
+        }],
+        warnings: vec![],
+    };
+    assert_eq!(checked_reply(reply(2)).unwrap().series[0].runs.len(), 2);
+    let error = checked_reply(reply(MAX_PRODUCT_REPLY_BYTES / 64)).unwrap_err();
+    assert!(error.to_string().starts_with("MeasureReplyTooLarge:"));
+}

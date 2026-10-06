@@ -12,6 +12,6 @@ export const definition = {
   kind: 'raid-log', version: 1, title: 'Raid log', icon: 'target',
   description: 'Every country’s raids: target, preparation, phase and outcome, dated by their recorded reads.',
   timeModes: ['campaign', 'follow', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
-  minSize: { w: 4, h: 6 }, defaultSize: { w: 7, h: 14 }, countries: { max: 16, all: true },
+  minSize: { w: 4, h: 6 }, defaultSize: { w: 7, h: 14 }, countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   availability: RAIDS_AVAILABILITY, options: OPTIONS,
 } as const satisfies WidgetMeta;

@@ -14,6 +14,7 @@ selection defaults to every country, with chosen countries and smart
 groups filtering by the raider at the observation hour. Only visible rows request
 country names and flags, at their own dated hours, through `logCountryRequests`.
 No human, AI or player status gates acquisition or inclusion.
+Country choices use the shared selector without a smaller widget-specific limit.
 
 Start and change dates say **by** the read. Nothing recorded supplies an exact
 start date. A gap leaves current phase and preparation unknown; the historical
@@ -36,8 +37,11 @@ preparation amount during the preparation phase (`GetPhaseElapsedHours@140FD53C0
 tooltip `141612820` → `140FD5730` and instance view `141B1A610`); no percentage
 denominator is guessed. The instance view selects outcome text only after the
 raid ends, so an absent outcome never prints **None**. Compact per-episode
-preparation reads update the amount and its read date without re-entering or
-reordering the row. The tooltip names its exact preparation read and the raid's
+linear preparation runs compress only consecutive observed hours: every value
+and read date inside a run was supplied by that hour's read, and runs never fill a
+gap. They update the amount without re-entering or reordering the row. Preparing,
+ended and no-outcome meanings come from the product, rather than UI constants.
+The tooltip names its exact preparation read and the raid's
 last observation, independently of other countries' missing reads.
 Per-instance building-suffixed art is resolved once per sprite in the reply.
 

@@ -94,7 +94,7 @@ export default function CountryRaceView({ runtime, track, active, options, view,
   const hours = useMemo(() => lineLabelHours(drawnLines, endLabels ? Math.max(extent[0], labelView?.[0] ?? extent[0]) : extent[0],
     endLabels ? Math.min(extent[1], labelView?.[1] ?? extent[1]) : extent[1], until), [drawnLines, endLabels, extent, labelView, until]);
   const tags = useMemo(() => presentation.countryLooks === false ? NO_TAGS : countryTags
-    ?? (view === 'race' ? ranked.map(entry => entry.tag) : view === 'lines' ? lines.map(line => line.tag) : mix ? [mix.tag] : []),
+    ?? (view === 'race' ? ranked.map(entry => entry.tag) : view === 'lines' ? [...new Set(lines.map(line => line.tag))] : mix ? [mix.tag] : []),
     [presentation.countryLooks, countryTags, view, ranked, lines, mix]);
   const looks = useCountryLooks(runtime.client, track, tags, moment, active, segmentAt,
     view === 'race' ? countryLookHours : linesView ? hours : undefined,

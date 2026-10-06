@@ -15,7 +15,7 @@ import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { readAt } from '../../dashboard/reads';
 import type { CountryNukesReply } from '../../generated/dashboard';
-import { MAX_COUNTRIES, OPTIONS } from './definition';
+import { OPTIONS } from './definition';
 import { formatNukes, nuclearModel, nuclearReadNote, nuclearRuns, nuclearSegmentAt, nuclearTooltip, nukesRequest, rankNukes, validateNukesReply } from './nuclearArsenalData';
 
 const NO_WARNINGS: string[] = [];
@@ -31,7 +31,7 @@ export default function NuclearArsenalWidget({ widget, runtime, active, onDiagno
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const groups = useCountryGroups(runtime, track, active && grouped);
   const fallback = defaultCountryTag(track);
-  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.lastHour ?? 0, MAX_COUNTRIES),
+  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.lastHour ?? 0, Number.MAX_SAFE_INTEGER),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const request = track && (resolved.top != null || resolved.tags.length) ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'country-nukes', params: nukesRequest(track.branch.id, resolved) } : null;
@@ -51,11 +51,10 @@ export default function NuclearArsenalWidget({ widget, runtime, active, onDiagno
   [model, mixTag, resolved.membership, range]);
   const segmentAt = useCallback((tag: string, hour: number) => nuclearSegmentAt(model, tag, hour), [model]);
   useEffect(() => {
-    const warnings = [...(data?.warnings ?? []), ...(groups.data?.warnings ?? []),
-      ...(resolved.dropped ? [`${resolved.dropped} more chosen countries are outside this widget’s current selection limit.`] : [])];
+    const warnings = [...(data?.warnings ?? []), ...(groups.data?.warnings ?? [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, groups.data, resolved.dropped, onDiagnostics]);
+  }, [data, groups.data, onDiagnostics]);
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its nuclear arsenal." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign." />;
   if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
@@ -65,6 +64,7 @@ export default function NuclearArsenalWidget({ widget, runtime, active, onDiagno
   if (!model.tags.length && resolved.top == null) return <WidgetState kind="unavailable" message="No nuclear stockpiles were recorded for these countries." />;
   return <CountryRaceView runtime={runtime} track={track} active={active} options={options} view={view} extent={extent} playhead={playhead}
     moment={moment} slots={slots} ranked={ranked} lines={lines} parts={model.parts} mix={mix} segmentAt={segmentAt}
+    presentation={{ exact: false, held: false }}
     label="Nuclear stockpile (game counter)" empty={resolved.top != null && readAt(data.emptyReadHours, moment) === moment
       ? 'No nuclear weapons yet.' : 'No nuclear stockpile was recorded at this time.'} formatValue={formatNukes}
     tooltip={(tag, hour, name, colours) => {
