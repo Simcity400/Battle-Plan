@@ -414,12 +414,14 @@ fn combat_resources_preserve_producer_dimensions_and_named_refusals() {
         std::process::id(),
         std::thread::current().id()
     ));
-    std::fs::create_dir_all(root.join("gfx")).unwrap();
+    std::fs::create_dir_all(root.join("gfx/interface")).unwrap();
     std::fs::write(root.join("gfx/one.tga"), tga(10, 4)).unwrap();
+    std::fs::write(root.join("gfx/interface/covered.tga"), tga(10, 4)).unwrap();
     let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
     let read = installed_content::gui::native::sprites::read_sprites(
         br#"spriteTypes = {
                 spriteType = { name = "GFX_negative" textureFile = "gfx/one.tga" noOfFrames = -2 }
+                spriteType = { name = "GFX_covered" textureFile = "gfx/interface/covered.tga" }
                 progressBarType = { name = "GFX_missing" textureFile1 = "gfx/one.tga"
                     textureFile2 = "gfx/missing.tga" size = { x = 10 y = 4 } }
                 resizeableSpriteType = { name = "GFX_resized" textureFile = "gfx/one.tga"
@@ -437,11 +439,19 @@ fn combat_resources_preserve_producer_dimensions_and_named_refusals() {
             b"GFX_negative".to_vec(),
             b"GFX_missing".to_vec(),
             b"GFX_resized".to_vec(),
+            b"GFX_covered".to_vec(),
         ]
         .into(),
         ..native_gui::Assets::default()
     };
     gui.load(&layers, &assets, &mut Vec::new()).unwrap();
+    // Only the read outside coverage is named; the covered and the missing texture are not.
+    assert_eq!(
+        gui.uncovered_note("Combat UI").as_deref(),
+        Some(
+            "Combat UI: 1 font/texture file(s) are outside the content coverage policy and are not hash-verified: gfx/one.tga."
+        )
+    );
     assert_eq!(
         prepared_size(&gui, b"GFX_resized", &gui.sprite(b"GFX_resized").unwrap()),
         Some([40.0, 20.0])

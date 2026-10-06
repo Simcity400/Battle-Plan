@@ -167,9 +167,20 @@ fn audit_paths(
             },
         ));
     }
+    let uncovered: BTreeSet<_> = graphs
+        .values()
+        .flat_map(|(base, resolved)| base.sources.iter().chain(&resolved.sources))
+        .filter(|(path, bytes)| bytes.is_some() && !installed_content::content::covered(path))
+        .map(|(path, _)| path.as_str())
+        .collect();
     out.lines.insert(0, format!(
-        "Map shader source audit: {}/{} affected passes, {} distinct differing source/include file(s); all map passes use compiled content shaders. Shader bytes are outside recorded content hash coverage; comparison is with the installed base game.",
-        out.affected_passes, passes.len(), changed_files.len(),
+        "Map shader source audit: {}/{} affected passes, {} distinct differing source/include file(s); all map passes use compiled content shaders; comparison is with the installed base game. {} source/include file(s) are outside recorded content hash coverage and are not hash-verified{}",
+        out.affected_passes, passes.len(), changed_files.len(), uncovered.len(),
+        if uncovered.is_empty() {
+            ".".to_owned()
+        } else {
+            format!(": {}.", uncovered.into_iter().collect::<Vec<_>>().join(", "))
+        },
     ));
     out
 }
@@ -232,8 +243,8 @@ pub fn check(layers: &ResolvedLayers, warnings: &mut Vec<String>) -> io::Result<
             .ok_or_else(|| invalid("Map shader source audit: no recorded base game layer"))?
             .clone(),
     );
-    // All audited shader paths are uncovered; this isolated reader deliberately has no
-    // cosmetic overlays and retains the base layer's folder/archive lookup semantics.
+    // This isolated reader deliberately has no cosmetic overlays and retains the base layer's
+    // folder/archive lookup semantics, verifying the covered sources.
     let base_passes = passes(&vanilla)?;
     let content_passes = passes(layers)?;
     let passes: Vec<_> = base_passes
@@ -340,6 +351,9 @@ mod tests {
         let audit = audit_with(&passes, &|p| source(&base, p), &|p| source(&content, p));
         assert_eq!(audit.affected_passes, 2);
         assert!(audit.lines[0].contains("2/2 affected passes, 1 distinct"));
+        assert!(audit.lines[0].ends_with(
+            "1 source/include file(s) are outside recorded content hash coverage and are not hash-verified: root."
+        ));
         assert!(audit.lines[1].contains("terrain"));
         assert!(audit.lines[2].contains("water"));
         assert!(audit.lines[1..].iter().all(|l| l.contains("gfx/FX/b.fxh")));

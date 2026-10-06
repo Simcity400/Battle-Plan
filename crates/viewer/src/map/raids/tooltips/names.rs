@@ -113,13 +113,13 @@ impl<'a> Name<'a> {
             return self.member(content, NAME, NAME_GROUP, CUSTOM_NAME, 0);
         }
         if self.value(NAME, WING_RESOLVED)? != 0 {
-            if let Ok(code) = self.value(WING_NAME, u32::MAX) {
-                if code < 0 {
-                    return Err(format!(
-                        "raid wing name was not recorded: {}",
-                        wing_name_error(code)
-                    ));
-                }
+            if let Ok(code) = self.value(WING_NAME, u32::MAX)
+                && code < 0
+            {
+                return Err(format!(
+                    "raid wing name was not recorded: {}",
+                    wing_name_error(code)
+                ));
             }
             let bytes = self
                 .bytes(WING_NAME)

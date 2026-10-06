@@ -751,6 +751,7 @@ impl Assets {
                 .map_err(super::invalid)?;
         }
         warnings.extend(sprite_warnings(&gui, &resident.sprites));
+        warnings.extend(gui.uncovered_note("Combat UI"));
         let reader = Arc::clone(shared);
         let decode = interface.decode;
         let portrait_failures = Arc::new(Mutex::new(BTreeMap::new()));

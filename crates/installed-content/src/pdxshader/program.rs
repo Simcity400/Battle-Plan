@@ -141,9 +141,9 @@ struct File {
     program: Program,
 }
 
-/// Effect sources are artwork outside the current hash coverage. Diagnostics must retain
-/// `Program::warnings`, just as consumers do for other uncovered visual assets. `effect` is the
-/// sprite's name as its bytes, and every path is opened by its bytes
+/// Effect sources under `gfx/FX` are covered and verified; any other source is not, and is named
+/// in `Program::warnings`, which diagnostics must retain as for other uncovered visual assets.
+/// `effect` is the sprite's name as its bytes, and every path is opened by its bytes
 /// ([`ResolvedLayers::read_uncovered_path`]), as `PHYSFS_openRead@1424DFAC0` is given them.
 pub fn read(layers: &ResolvedLayers, effect: &[u8]) -> Result<Program, String> {
     let errors = std::cell::RefCell::new(Vec::new());
@@ -744,5 +744,33 @@ mod tests {
             file.program.common.buffers[0].body,
             "float4 octal[8];\nfloat4 hex[16];\nfloat4 no_count;\nfloat4 zero;\n"
         );
+    }
+
+    #[test]
+    fn only_sources_outside_the_covered_effect_root_are_named_unverified() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_effect_coverage_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let effect = b"Includes = { common.fxh }\nMainCode P [[ float4 main() : PDX_COLOR { return 1; } ]]\nEffect Up { PixelShader = P }";
+        for (path, bytes) in [
+            ("gfx/FX/defines_hlsl_dx11.fxh", &b""[..]),
+            ("gfx/FX/common.fxh", b"Code [[\nC\n]]"),
+            ("gfx/FX/map.shader", effect),
+            ("gfx/models/rail.shader", effect),
+        ] {
+            let file = root.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, bytes).unwrap();
+        }
+        let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+        let covered = read(&layers, b"gfx/FX/map.lua").unwrap();
+        assert_eq!(covered.dependencies.len(), 3);
+        assert!(covered.warnings.is_empty(), "{:?}", covered.warnings);
+        let uncovered = read(&layers, b"gfx/models/rail.lua").unwrap();
+        assert_eq!(uncovered.warnings.len(), 1, "{:?}", uncovered.warnings);
+        assert!(uncovered.warnings[0].ends_with("not hash-verified: gfx/models/rail.shader"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
