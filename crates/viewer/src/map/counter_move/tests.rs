@@ -5,6 +5,105 @@ const W: f32 = 5632.0;
 /// The height [`Motion::new`]'s flat field samples.
 const FLOOR: f32 = crate::map::borders::WATER_HEIGHT;
 
+#[test]
+fn l4e9_scale_interpolates_over_the_next_anchor_arc_not_the_current_segment() {
+    let samples = [
+        Sample {
+            at: [0.0; 3],
+            arc: 0.0,
+        },
+        Sample {
+            at: [0.5, 0.0, 0.0],
+            arc: 0.5,
+        },
+        Sample {
+            at: [10.0, 0.0, 0.0],
+            arc: 10.0,
+        },
+    ];
+    let sample = RouteSample::from_samples(W, &samples, [[0.0; 3], [10.0, 0.0, 0.0]]);
+    assert_eq!(sample.next_arc, 10.0);
+    assert_eq!(
+        sample.interpolate_scale(0.22, 0.44),
+        (0.44 - 0.22) * 0.1 + 0.22
+    );
+    // A native zero-length next-anchor sample takes the destination scale.
+    let zero = [
+        Sample {
+            at: [0.0; 3],
+            arc: 0.0,
+        },
+        Sample {
+            at: [1.0, 0.0, 0.0],
+            arc: 0.0,
+        },
+    ];
+    let sample = RouteSample::from_samples(W, &zero, [[0.0; 3], [1.0, 0.0, 0.0]]);
+    assert_eq!(sample.interpolate_scale(0.22, 0.44), 0.44);
+    // If the next anchor is sample zero there is no positional motion, but
+    // the initialized route still changes scale to the next province's.
+    let map = MovementMap::from_parts(&[(1, LAND, land(&[2])), (2, LAND, land(&[1]))]);
+    let values = flat(0);
+    let world = RouteWorld {
+        map: &map,
+        heights: field(&values),
+        width: W,
+    };
+    let anchor = |_: u32| Some([10.0, 0.0, 10.0]);
+    assert!(Motion::from_route(1, &[2], &anchor, &world).is_none());
+    let sample = Motion::route_sample(1, &[2], &anchor, &world).unwrap();
+    assert!(sample.sample_count != 0 && sample.motion.is_none());
+    assert_eq!(sample.scale_fraction, 1.0);
+    assert_eq!(sample.interpolate_scale(0.22, 0.44), 0.44);
+}
+
+#[test]
+fn l4e9_a_nonempty_route_can_initialize_no_animator_samples() {
+    let map = line_map();
+    let values = flat(100);
+    let world = RouteWorld {
+        map: &map,
+        heights: field(&values),
+        width: W,
+    };
+    // The skipped final hop leaves three controls. The native initializer
+    // clears +0x14 even though CUnit's ordinary route remains nonempty.
+    let sample = Motion::route_sample(1, &[2, 3, 9], &line_anchor, &world).unwrap();
+    assert_eq!(sample.sample_count, 0);
+    assert!(sample.motion.is_none());
+    let route = UnitRoute {
+        class: CounterClass::TaskForce,
+        target: 9,
+        path_total: 3,
+        path: &[2, 3, 9],
+        ..Default::default()
+    };
+    // Main used route length and returned kind 20 here; native admits a
+    // docked plate without any ordinary formation (141279110).
+    assert_eq!(
+        route.stack_kind_from_animator(1, &map, sample.sample_count),
+        Some(19)
+    );
+}
+
+#[test]
+fn l4e9_cleared_animator_uses_the_ordinary_route_for_direction() {
+    let sea = ProvinceTerrain { flags: 0, index: 1 };
+    let map = MovementMap::from_parts(&[(1, sea, land(&[2, 3]))]);
+    let route = UnitRoute {
+        class: CounterClass::TaskForce,
+        path_total: 1,
+        path: &[2],
+        alternate_total: 1,
+        alternate_path: &[3],
+        ..Default::default()
+    };
+    // 141631210 fails after initializer clears the route; 140BEDEC0 reads
+    // ordinary[0]. With samples, the animator supplies display[0] instead.
+    assert_eq!(route.stack_kind_from_animator(1, &map, 0), Some(1));
+    assert_eq!(route.stack_kind_from_animator(1, &map, 8), Some(2));
+}
+
 fn flat(value: u8) -> Vec<u8> {
     vec![value; 16]
 }

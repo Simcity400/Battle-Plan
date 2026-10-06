@@ -64,6 +64,7 @@ fn anchors() -> CounterContent {
         terrain_widths: Vec::new(),
         mission_content: Err("unused in fixture".into()),
         anchors: BTreeMap::new(),
+        stack_scales: BTreeMap::new(),
         default_anchors: BTreeMap::new(),
         air_bases: BTreeMap::new(),
         ports: BTreeMap::new(),

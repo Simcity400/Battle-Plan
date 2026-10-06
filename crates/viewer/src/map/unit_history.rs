@@ -29,10 +29,11 @@
 //! land-gate loss (`14127CAA9`); aircraft and trains have their own
 //! managers. The shared creation counter is in [`super::mesh_budget`].
 //!
-//! Native slots are the 38 visual buckets of `14127F000`; this layer receives
-//! the viewer's existing stack/formation reconstruction, not their recorded
-//! ownership. Land uses its reconstructed visual order with identity ties;
-//! ships keep the stationary reconstruction. Deferred native selection runs
+//! Native slots are the 38 visual buckets of `14127F000`. Land uses its
+//! reconstructed visual order with identity ties; naval representatives use
+//! recorded occupant order and viewer-owned animator/selection presentation
+//! ([`naval`]). Hull handles and graphics are derived and retained here.
+//! Deferred native land selection runs
 //! in parallel (`140B3E400`, `1412785B0`), so worker completion/RNG order is
 //! not recoverable; all queued creations still become visible on one frame.
 
@@ -50,6 +51,9 @@ use super::{
     province_schedule::Update,
     unit_models::Gates,
 };
+
+pub mod naval;
+pub use naval::Sources as NavalSources;
 
 /// The model path an entity follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -96,6 +100,7 @@ pub struct Field {
     pub targets: Vec<Target>,
     /// The raid arrows' units where the hour placed them ([`History::set_raids`]).
     pub raids: Vec<(usize, ModelInstance)>,
+    pub naval: NavalSources,
 }
 
 /// One slot's targets, by part.
@@ -106,6 +111,8 @@ struct Part {
     target: Target,
     epoch: u32,
     identity: u32,
+    /// 140C2A380 / 141653F00: retained attachment's explicit graphics string.
+    graphics: Vec<u8>,
 }
 
 impl Part {
@@ -117,6 +124,7 @@ impl Part {
             target,
             epoch: if steady { 0 } else { *identity },
             identity: *identity,
+            graphics: Vec::new(),
         }
     }
 }
@@ -203,14 +211,20 @@ impl Province {
     /// then grows existing figures and attaches hulls, which spend it inline
     /// (`14127F000`). The queued land is created after every province's
     /// visit ([`Province::create_land`]).
-    fn visit(
+    fn visit<'a>(
         &mut self,
         targets: Option<&BTreeMap<Slot, Parts>>,
+        formations: impl Clone + Iterator<Item = &'a naval::Formation>,
         frame: Frame,
         epoch: &mut u32,
         budget: &mut Budget,
     ) -> Vec<(Slot, bool)> {
-        let placed = |slot: &Slot| targets.is_some_and(|targets| targets.contains_key(slot));
+        let placed = |slot: &Slot| {
+            targets.is_some_and(|targets| targets.contains_key(slot))
+                || formations
+                    .clone()
+                    .any(|formation| *slot == (Kind::Ship, formation.identity))
+        };
         let was = self.shown;
         let mut queued = Vec::new();
         if frame.shown[Kind::Land as usize] {
@@ -317,6 +331,30 @@ impl Province {
                 (entity.scale + frame.delta * frame.gates.scale_up).min(1.0)
             };
         }
+        // 14127F000 walks native visual slots, not task-force handles. A land
+        // representative in the same slot admits no ordinary naval formation.
+        for formation in formations {
+            let entity = self
+                .entities
+                .entry((Kind::Ship, formation.identity))
+                .or_insert_with(|| Entity {
+                    kind: Kind::Ship,
+                    scale: if frame.steady || was[Kind::Ship as usize] {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                    shrinking: false,
+                    parts: BTreeMap::new(),
+                });
+            formation.update(entity, frame, epoch, budget);
+            entity.shrinking = false;
+            entity.scale = if frame.steady {
+                1.0
+            } else {
+                (entity.scale + frame.delta * frame.gates.scale_up).min(1.0)
+            };
+        }
         // 14127C910 keeps a newly shown kind's bit clear while the counter is
         // spent, so what it creates next frame still grows from zero.
         for kind in 0..2 {
@@ -392,6 +430,7 @@ pub struct FrameModels {
 pub struct History {
     /// The hour's targets by province and slot.
     targets: BTreeMap<u32, BTreeMap<Slot, Parts>>,
+    naval: naval::History,
     provinces: BTreeMap<u32, Province>,
     /// Province boxes for camera admission.
     bounds: Arc<BTreeMap<u32, [f32; 4]>>,
@@ -417,6 +456,14 @@ pub struct History {
 }
 
 impl History {
+    /// Recorded roster/route inputs; mutable animator and attachment state
+    /// belongs to this viewer's frame history (141277A00 / 141653F00).
+    pub fn set_naval(&mut self, sources: NavalSources) {
+        for candidate in &sources.candidates {
+            self.provinces.entry(candidate.province).or_default();
+        }
+        self.naval.install(sources);
+    }
     /// Installs an hour's targets. Entities carry over; the next frame
     /// admits, grows or retires them.
     pub fn set(
@@ -475,6 +522,7 @@ impl History {
     /// [`super::presentation::UnitRestart`]): their entities go and their
     /// show bits drop, so what shows next grows in on a new clock.
     pub fn reset(&mut self, provinces: Option<&BTreeSet<u32>>) {
+        self.naval.reset(provinces);
         self.schedule
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -635,7 +683,13 @@ impl History {
             match schedule.update(id) {
                 Some(Update::InView) => queued.extend(
                     province
-                        .visit(self.targets.get(&id), frame, &mut self.epoch, budget)
+                        .visit(
+                            self.targets.get(&id),
+                            self.naval.representatives(id, frame),
+                            frame,
+                            &mut self.epoch,
+                            budget,
+                        )
                         .into_iter()
                         .map(|(slot, shown)| (id, slot, shown)),
                 ),
@@ -683,6 +737,8 @@ pub(super) mod tests {
         scale_up: 2.0,
         scale_down: 1.0,
         ship_scale_down: 0.5,
+        naval_movement_speed: 12.0,
+        land_movement_speed: 12.0,
     };
 
     pub fn target(province: u32, kind: Kind) -> Target {
@@ -1058,7 +1114,8 @@ pub(super) mod tests {
         let defines = installed_content::defines::Defines::new().unwrap();
         defines.load("synthetic.lua", br#"NDefines = { NGraphics = {
             UNITS_DISTANCE_CUTOFF=11, SHIPS_DISTANCE_CUTOFF=22, UNIT_ARROW_DISTANCE_CUTOFF=33, SHIP_IN_PORT_SCALE=.125,
-            MESH_POPUP_SCALE_UP_SPEED=7, MESH_POPUP_SCALE_DOWN_SPEED=9, SHIP_POPUP_SCALE_DOWN_SPEED=13
+            MESH_POPUP_SCALE_UP_SPEED=7, MESH_POPUP_SCALE_DOWN_SPEED=9, SHIP_POPUP_SCALE_DOWN_SPEED=13,
+            NAVAL_UNIT_MOVEMENT_SPEED=12, LAND_UNIT_MOVEMENT_SPEED=12
         }}"#).unwrap();
         let gates = Gates::read(&defines).unwrap();
         assert_eq!(

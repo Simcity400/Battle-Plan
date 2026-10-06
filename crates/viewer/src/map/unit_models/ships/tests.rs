@@ -1,5 +1,28 @@
 use super::*;
 
+#[test]
+fn l4e9_shared_animator_clock_preserves_empty_routes_and_names_missing_speed() {
+    let mut report = ModelReport::default();
+    assert_eq!(animator_min_arc(&[], None, &mut report), Some(0.0));
+    assert!(report.selection_errors.is_empty());
+    for (speed, expected) in [(0, 0.0), (3, 0.0), (4, 1.0)] {
+        let clock = replay::rows::ClockRow {
+            speed,
+            ..Default::default()
+        };
+        assert_eq!(
+            animator_min_arc(&[2], Some(&clock), &mut report),
+            Some(expected)
+        );
+        assert_eq!(animator_min_arc(&[], Some(&clock), &mut report), Some(0.0));
+    }
+    assert_eq!(animator_min_arc(&[2], None, &mut report), None);
+    assert_eq!(
+        report.selection_errors["naval_animator_clock: Clock speed is unavailable"],
+        1
+    );
+}
+
 fn formation(bytes: &[u8]) -> (String, f32) {
     read_formation(bytes, &mut Vec::new()).unwrap()
 }
@@ -253,6 +276,13 @@ fn a_patrol_here_has_no_formation_and_one_elsewhere_keeps_its_hulls() {
             task_force: FORCE,
             ..Default::default()
         }]));
+        set(TableRows::ProvinceUnitOrder(vec![
+            replay::rows::ProvinceUnitOrderRow {
+                province: 5,
+                mixed: vec![FORCE],
+                naval: vec![FORCE],
+            },
+        ]));
         if counter_inputs {
             set(TableRows::TaskForceCounterInputs(vec![
                 TaskForceCounterInputRow {
@@ -277,6 +307,11 @@ fn a_patrol_here_has_no_formation_and_one_elsewhere_keeps_its_hulls() {
     };
     let assets = UnitModelAssets {
         ships: ShipAssets {
+            root: Some(mesh::Transform::from_trs(
+                [0.0; 3],
+                [0.0, 0.0, 0.0, 1.0],
+                1.0,
+            )),
             nodes: vec![mesh::Transform::from_trs(
                 [0.0; 3],
                 [0.0, 0.0, 0.0, 1.0],
@@ -310,6 +345,7 @@ fn a_patrol_here_has_no_formation_and_one_elsewhere_keeps_its_hulls() {
                     land: &|_| false,
                     missions: &missions,
                     region: &|_| Some(region),
+                    scale: &|_, _| 1.0,
                 },
                 &mut report,
             )
@@ -322,4 +358,519 @@ fn a_patrol_here_has_no_formation_and_one_elsewhere_keeps_its_hulls() {
     assert_eq!(hulls(&recorded, 76), (1, 0));
     // Without its counter inputs the skip is undecided: no formation, counted.
     assert_eq!(hulls(&frame(false), 76), (0, 1));
+}
+
+/// Independent fixture with the recorded Kotka force's 11 capitals / 49 ships.
+/// The root and support locators deliberately differ, so mis-attaching a capital
+/// cannot pass merely because a template's locators happen to coincide.
+fn kotka_formation(combat_role: u8) -> (DecodedFrame, UnitModelAssets) {
+    let flags = std::iter::repeat_n(1 << 22, 3)
+        .chain(std::iter::repeat_n(1 << 6, 4))
+        .chain(std::iter::repeat_n(1 << 6, 3))
+        .chain(std::iter::repeat_n(1 << 6, 1))
+        .chain(std::iter::repeat_n(1 << 7, 8))
+        .chain(std::iter::repeat_n(1 << 8, 30));
+    formation_fixture((944 << 32) | 61, 9206, flags, combat_role)
+}
+
+fn formation_fixture(
+    force: u64,
+    province: u32,
+    flags: impl IntoIterator<Item = u64>,
+    combat_role: u8,
+) -> (DecodedFrame, UnitModelAssets) {
+    use replay::{
+        frame::{Metrics, TableView},
+        rows::{
+            CountryLinkRow, CountryRow, ShipCounterInputs, ShipModelRow, ShipRow, TableRows,
+            TaskForceCounterInputRow, TaskForceMapMotionRow, TaskForceRow,
+        },
+    };
+    let models: Vec<_> = flags
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, formation_flags)| ShipModelRow {
+            ship: ((ordinal as u64 + 1) << 32) | 51,
+            formation_flags,
+            hull_sprite: b"synthetic_hull".to_vec(),
+            counter: Some(ShipCounterInputs {
+                roster_ordinal: ordinal as u32,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .collect();
+    let ships = models
+        .iter()
+        .map(|model| ShipRow {
+            id: model.ship,
+            task_force: force,
+            ..Default::default()
+        })
+        .collect();
+    let mut views = std::array::from_fn(|_| TableView::Unavailable {
+        reason: "unused".into(),
+    });
+    for table in [
+        TableRows::CountryLinks(vec![CountryLinkRow {
+            id: 100,
+            canonical_slot: 0,
+        }]),
+        TableRows::Countries(vec![CountryRow {
+            id: 100,
+            canonical_slot: 0,
+            tag: b"TEST".to_vec(),
+            ..Default::default()
+        }]),
+        TableRows::TaskForces(vec![TaskForceRow {
+            id: force,
+            province,
+            roster_owner: 100,
+            logical_owner: 100,
+            ..Default::default()
+        }]),
+        TableRows::ProvinceUnitOrder(vec![replay::rows::ProvinceUnitOrderRow {
+            province,
+            mixed: vec![force],
+            naval: vec![force],
+        }]),
+        TableRows::Ships(ships),
+        TableRows::ShipModels(models),
+        TableRows::TaskForceMapMotion(vec![TaskForceMapMotionRow {
+            task_force: force,
+            combat_role,
+            ..Default::default()
+        }]),
+        TableRows::TaskForceCounterInputs(vec![TaskForceCounterInputRow {
+            task_force: force,
+            ..Default::default()
+        }]),
+    ] {
+        let index = table.table().index();
+        views[index] = TableView::Complete(table);
+    }
+    let assets = UnitModelAssets {
+        ships: ShipAssets {
+            root: Some(mesh::Transform::IDENTITY),
+            nodes: vec![mesh::Transform::from_trs(
+                [20.0, 2.0, 30.0],
+                [0.0, 0.0, 0.0, 1.0],
+                1.0,
+            )],
+            scale: 0.6,
+        },
+        gates: Gates {
+            ships: 240.0,
+            ..Gates::OFF
+        },
+        bounds: std::sync::Arc::new(BTreeMap::from([(
+            province,
+            [3240.0, 1740.0, 3260.0, 1760.0],
+        )])),
+        ..UnitModelAssets::off(String::new())
+    };
+    assets
+        .library
+        .write()
+        .unwrap()
+        .index
+        .insert("synthetic_hull_entity".into(), 0);
+    (
+        DecodedFrame {
+            branch: 1,
+            hour: 60827796,
+            tables: views.map(Into::into),
+            metrics: Metrics::default(),
+        },
+        assets,
+    )
+}
+
+fn kotka_hulls(
+    frame: &DecodedFrame,
+    assets: &UnitModelAssets,
+    land: bool,
+    scale: f32,
+) -> (Vec<Target>, ModelReport) {
+    let motions = TaskForceMotions::read(frame).unwrap();
+    let missions = MissionSkips::read(frame).unwrap();
+    let mut report = ModelReport::default();
+    let provinces: Vec<_> = rows::<tables::TaskForces>(frame)
+        .unwrap()
+        .rows()
+        .iter()
+        .map(|force| {
+            (
+                force.province,
+                installed_content::movement::ProvinceTerrain {
+                    flags: u8::from(land),
+                    index: 1,
+                },
+                Vec::new(),
+            )
+        })
+        .collect();
+    let map = installed_content::movement::MovementMap::from_parts(&provinces);
+    let world = counter_move::RouteWorld {
+        map: &map,
+        width: 5632.0,
+        heights: crate::map::borders::HeightField {
+            width: 2,
+            height: 2,
+            values: &[0; 4],
+        },
+    };
+    let placed = assets
+        .prepare_ships(
+            frame,
+            &Vision::default(),
+            &|_, _| Some([3246.0, 9.53, 1749.0]),
+            Some(&world),
+            &ShipPlaces {
+                motions: &motions,
+                movement: None,
+                land: &|_| land,
+                missions: &missions,
+                region: &|_| Some(206),
+                scale: &|_, _| scale,
+            },
+            &mut report,
+        )
+        .unwrap();
+    (placed, report)
+}
+
+#[test]
+fn l4e9_capital_uses_root_and_authored_animator_scale() {
+    let (frame, assets) = kotka_formation(0);
+    // The supplied C/E heights both pass the native raw ship cutoff. The
+    // transformation under test belongs to the hour, before popup scaling.
+    for height in [163.710_05, 162.928_39] {
+        assert!(assets.gates.ships(height));
+        let (placed, report) = kotka_hulls(&frame, &assets, false, 0.22);
+        assert_eq!(placed.len(), 4); // 141653F00 permits a capital and three supports.
+        let capital = placed.iter().find(|hull| hull.part == 0).unwrap();
+        assert_eq!(capital.instance.position, capital.origin);
+        assert_eq!(capital.instance.scale, 0.6 * 0.22);
+        let support = placed.iter().find(|hull| hull.part == 1).unwrap();
+        assert_eq!(
+            support.instance.position,
+            [
+                3246.0 + 20.0 * 0.132,
+                9.53 + 2.0 * 0.132,
+                1749.0 + 30.0 * 0.132
+            ]
+        );
+        assert_eq!(report.ship_hulls, 4);
+    }
+}
+
+#[test]
+fn l4e9_ordinary_formations_exclude_both_combat_slots() {
+    // A below-cutoff camera must not turn the ordinary formation path into
+    // the separate combat graphics path (14127F000).
+    for role in [1, 2] {
+        // POL's recorded eight-submarine force at province 2333.
+        let (frame, assets) = formation_fixture((3197 << 32) | 61, 2333, [1 << 39; 8], role);
+        for height in [114.589_68, 198.103_41] {
+            assert!(assets.gates.ships(height));
+            let (placed, report) = kotka_hulls(&frame, &assets, false, 0.22);
+            assert!(placed.is_empty());
+            assert_eq!(report.ship_hulls, 0);
+            assert_eq!(
+                report
+                    .selection_errors
+                    .iter()
+                    .filter(|(reason, _)| reason.starts_with("naval_combat_graphics:"))
+                    .map(|(_, count)| count)
+                    .sum::<usize>(),
+                1
+            );
+        }
+    }
+}
+
+#[test]
+fn l4e9_missing_capital_root_is_named_and_counted_without_losing_supports() {
+    let (frame, mut assets) = kotka_formation(0);
+    assets.ships.root = None;
+    let (placed, report) = kotka_hulls(&frame, &assets, false, 1.0);
+    assert_eq!(placed.len(), 3);
+    assert!(placed.iter().all(|hull| hull.part != 0));
+    assert_eq!(report.selection_errors.values().sum::<usize>(), 1);
+    assert!(
+        report
+            .selection_errors
+            .keys()
+            .next()
+            .unwrap()
+            .starts_with("naval_formation_capital_root:")
+    );
+}
+
+#[test]
+fn l4e9_capital_attach_point_can_be_a_skeleton_joint_without_a_locator() {
+    let mesh = mesh::Mesh {
+        skeleton: vec![mesh::Joint {
+            name: "root".into(),
+            index: 0,
+            parent: None,
+            inverse_bind: Some(mesh::Transform::IDENTITY),
+        }],
+        ..Default::default()
+    };
+    assert_eq!(capital_joint(&mesh, None), Some(mesh::Transform::IDENTITY));
+    assert!(mesh.locators.is_empty());
+}
+
+fn replace_table(frame: &mut DecodedFrame, table: replay::rows::TableRows) {
+    let index = table.table().index();
+    *frame.tables[index] = replay::frame::TableView::Complete(table);
+}
+
+#[test]
+fn l4e9_kotka_plate_only_when_another_task_force_holds_the_native_visual_slot() {
+    use replay::rows::{
+        ProvinceUnitOrderRow, TableRows, TaskForceCounterInputRow, TaskForceMapMotionRow,
+    };
+    let (mut frame, assets) = kotka_formation(0);
+    let force = (944 << 32) | 61;
+    let escort = (7 << 32) | 61;
+    // The captured camera/TF composition is real; this competing task force is
+    // synthetic, isolating 141277A00's shared slot from the hourly endpoint
+    // routes (which cannot establish the intervening client's frame history).
+    let mut forces = rows::<tables::TaskForces>(&frame).unwrap().rows().to_vec();
+    let mut other = forces[0].clone();
+    other.id = escort;
+    forces.push(other);
+    replace_table(&mut frame, TableRows::TaskForces(forces));
+    let mut ships = rows::<tables::Ships>(&frame).unwrap().rows().to_vec();
+    let mut other = ships[0].clone();
+    other.id = (98 << 32) | 32;
+    other.task_force = escort;
+    let ship = other.id;
+    ships.push(other);
+    replace_table(&mut frame, TableRows::Ships(ships));
+    let mut models = rows::<tables::ShipModels>(&frame).unwrap().rows().to_vec();
+    let mut other = models[0].clone();
+    other.ship = ship;
+    other.formation_flags = 1 << 7;
+    other.counter.as_mut().unwrap().roster_ordinal = 0;
+    models.push(other);
+    replace_table(&mut frame, TableRows::ShipModels(models));
+    replace_table(
+        &mut frame,
+        TableRows::ProvinceUnitOrder(vec![ProvinceUnitOrderRow {
+            province: 9206,
+            mixed: vec![force, escort],
+            naval: vec![force, escort],
+        }]),
+    );
+    replace_table(
+        &mut frame,
+        TableRows::TaskForceMapMotion(
+            [force, escort]
+                .into_iter()
+                .map(|task_force| TaskForceMapMotionRow {
+                    task_force,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    replace_table(
+        &mut frame,
+        TableRows::TaskForceCounterInputs(
+            [force, escort]
+                .into_iter()
+                .map(|task_force| TaskForceCounterInputRow {
+                    task_force,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    for height in [
+        163.710_052_490_234_38_f64 as f32,
+        162.928_390_502_929_69_f64 as f32,
+    ] {
+        assert!(assets.gates.ships(height));
+        let (targets, report) = kotka_hulls(&frame, &assets, false, 0.22);
+        assert_eq!(
+            targets.len(),
+            1,
+            "the escort has one hull, the CV only its plate"
+        );
+        assert_eq!(targets[0].identity, escort);
+        assert!(
+            report.selection_errors.is_empty(),
+            "this is native admission, not a gap"
+        );
+    }
+    // Same bucket, same own priority: last own occupant wins.
+    // Reversing the order admits the CV's four hulls.
+    replace_table(
+        &mut frame,
+        TableRows::ProvinceUnitOrder(vec![ProvinceUnitOrderRow {
+            province: 9206,
+            mixed: vec![escort, force],
+            naval: vec![escort, force],
+        }]),
+    );
+    assert_eq!(kotka_hulls(&frame, &assets, false, 0.22).0.len(), 4);
+}
+
+#[test]
+fn l4e9_malmo_rosters_hide_port_hulls_and_at_sea_share_one_native_slot() {
+    use replay::rows::{
+        ProvinceUnitOrderRow, TableRows, TaskForceCounterInputRow, TaskForceMapMotionRow,
+    };
+    let compositions = [
+        (497, vec![1 << 39; 8]),
+        (1671, vec![1 << 8; 8]),
+        (1497, vec![1 << 39; 8]),
+        (7926, vec![1 << 8; 8]),
+        (
+            8537,
+            std::iter::once(1 << 8)
+                .chain(std::iter::repeat_n(1 << 39, 6))
+                .collect(),
+        ),
+    ];
+    let mut frames = Vec::new();
+    for (id, flags) in compositions {
+        frames.push(formation_fixture((id << 32) | 61, 9279, flags, 0));
+    }
+    let (mut frame, assets) = frames.remove(0);
+    let mut forces = rows::<tables::TaskForces>(&frame).unwrap().rows().to_vec();
+    let mut ships = rows::<tables::Ships>(&frame).unwrap().rows().to_vec();
+    let mut models = rows::<tables::ShipModels>(&frame).unwrap().rows().to_vec();
+    // Independent handles preserve each recorded roster's ordinal order.
+    for (index, (other, _)) in frames.iter().enumerate() {
+        forces.extend_from_slice(rows::<tables::TaskForces>(other).unwrap().rows());
+        let offset = (index as u64 + 1) << 40;
+        ships.extend(
+            rows::<tables::Ships>(other)
+                .unwrap()
+                .rows()
+                .iter()
+                .cloned()
+                .map(|mut row| {
+                    row.id += offset;
+                    row
+                }),
+        );
+        models.extend(
+            rows::<tables::ShipModels>(other)
+                .unwrap()
+                .rows()
+                .iter()
+                .cloned()
+                .map(|mut row| {
+                    row.ship += offset;
+                    row
+                }),
+        );
+    }
+    replace_table(&mut frame, TableRows::TaskForces(forces.clone()));
+    replace_table(&mut frame, TableRows::Ships(ships));
+    replace_table(&mut frame, TableRows::ShipModels(models));
+    replace_table(
+        &mut frame,
+        TableRows::TaskForceMapMotion(
+            forces
+                .iter()
+                .map(|force| TaskForceMapMotionRow {
+                    task_force: force.id,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    replace_table(
+        &mut frame,
+        TableRows::TaskForceCounterInputs(
+            forces
+                .iter()
+                .map(|force| TaskForceCounterInputRow {
+                    task_force: force.id,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    replace_table(
+        &mut frame,
+        TableRows::ProvinceUnitOrder(vec![ProvinceUnitOrderRow {
+            province: 9279,
+            mixed: forces.iter().map(|force| force.id).collect(),
+            naval: forces.iter().map(|force| force.id).collect(),
+        }]),
+    );
+    assert!(assets.gates.ships(112.619_415_283_203_12_f64 as f32));
+    assert!(
+        kotka_hulls(&frame, &assets, true, 0.22).0.is_empty(),
+        "recorded Malmö port slot19 is hidden"
+    );
+    let at_sea = kotka_hulls(&frame, &assets, false, 0.22).0;
+    assert_eq!(
+        at_sea.len(),
+        3,
+        "synthetic sea placement chooses ONE representative, not five formations"
+    );
+    assert!(
+        at_sea
+            .iter()
+            .all(|target| target.identity == forces.last().unwrap().id)
+    );
+    // One live frame's shared budget attaches just one ship; subsequent
+    // frames retain that handle and fill missing support slots natively.
+    let motions = TaskForceMotions::read(&frame).unwrap();
+    let missions = MissionSkips::read(&frame).unwrap();
+    let sources = assets
+        .prepare_naval(
+            &frame,
+            &Vision::default(),
+            &|_, _| Some([3246.0, 9.53, 1749.0]),
+            None,
+            &ShipPlaces {
+                motions: &motions,
+                movement: None,
+                land: &|_| false,
+                missions: &missions,
+                region: &|_| Some(206),
+                scale: &|_, _| 0.22,
+            },
+            &mut ModelReport::default(),
+        )
+        .unwrap();
+    assert_eq!(sources.settled_targets(assets.gates).len(), 3);
+    let mut history = crate::map::unit_history::History::default();
+    history.set(Vec::new(), assets.bounds.clone(), false);
+    history.set_naval(sources);
+    let camera = crate::map::camera::Placement {
+        center: [3246.0, 1749.0],
+        height: 112.619_415_283_203_12_f64 as f32,
+    }
+    .on(
+        crate::map::camera::MapSize::TEST,
+        crate::map::camera::MapDefines::test(),
+    );
+    for count in [1, 2, 3, 3] {
+        assert_eq!(
+            history
+                .update_models(
+                    camera,
+                    [1024, 768],
+                    0.0,
+                    assets.gates,
+                    1,
+                    &mut crate::map::map_buildings::BuildingHistory::default(),
+                    false
+                )
+                .units
+                .len(),
+            count
+        );
+    }
 }

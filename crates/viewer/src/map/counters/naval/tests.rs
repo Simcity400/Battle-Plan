@@ -26,6 +26,120 @@ fn combat_task_forces_never_offer_sea_counter_sources() {
     }
 }
 
+/// Session-C N1: 14127EBF0/140BF0AD0 exclude POL's combat force before
+/// 14162E2C0 groups sea sources in their shared strategic region.
+#[test]
+fn l4e9_eng_plate_keeps_its_anchor_at_both_session_c_heights() {
+    use crate::map::counter_groups::{self, Extents, GroupDefines, Icon, Level};
+    use replay::rows::{ShipCounterInputs, ShipModelRow, ShipRow};
+
+    let eng = TaskForceRow {
+        id: (835_u64 << 32) | 61,
+        province: 2107,
+        roster_owner: 1,
+        ..Default::default()
+    };
+    let pol = TaskForceRow {
+        id: (3197_u64 << 32) | 61,
+        province: 2333,
+        roster_owner: 2,
+        combat_references: 1,
+        ..Default::default()
+    };
+    // Recorded compositions, with synthetic strengths making the CL the unambiguous
+    // native hull representative. Distinct synthetic anchors expose a wrong group mean.
+    let rosters: Vec<(ShipRow, ShipModelRow)> = [
+        (eng.id, vec![b"CL".as_slice(); 1]),
+        (eng.id, vec![b"DD".as_slice(); 12]),
+        (pol.id, vec![b"SS".as_slice(); 8]),
+    ]
+    .into_iter()
+    .flat_map(|(task_force, names)| names.into_iter().map(move |name| (task_force, name)))
+    .enumerate()
+    .map(|(ordinal, (task_force, name))| {
+        let id = ordinal as u64 + 1;
+        (
+            ShipRow {
+                id,
+                task_force,
+                strength: if name == b"CL" { 200_000 } else { 100_000 },
+                ..Default::default()
+            },
+            ShipModelRow {
+                ship: id,
+                fallback_sprite: name.to_vec(),
+                counter: Some(ShipCounterInputs {
+                    definition_valid: 1,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+    })
+    .collect();
+    let roster = |force| {
+        rosters
+            .iter()
+            .filter(move |(ship, _)| ship.task_force == force)
+    };
+    assert_eq!(roster(eng.id).count(), 13);
+    assert_eq!(roster(pol.id).count(), 8);
+    for (force, name) in [(eng.id, b"CL".as_slice()), (pol.id, b"SS".as_slice())] {
+        assert_eq!(
+            counter_order::hull_icon(roster(force).map(|(ship, model)| counter_order::Hull {
+                strength: ship.strength,
+                model,
+            })),
+            counter_order::HullIcon::Resolved(Some(name.to_vec()))
+        );
+    }
+
+    let skips = crate::map::task_force_visual::MissionSkips::fixture(
+        [(eng.id, (0, 0)), (pol.id, (0, 0))],
+        [],
+    );
+    let eng_anchor = [10.0, 9.5, 20.0];
+    let pol_anchor = [50.0, 9.5, 60.0];
+    let defines = GroupDefines::VANILLA;
+    let extents = Extents::build(
+        &[
+            (2107, [0.0, 0.0, 20.0, 30.0]),
+            (2333, [40.0, 40.0, 60.0, 70.0]),
+        ]
+        .into(),
+        &BTreeMap::new(),
+        &[(2107, 206), (2333, 206)].into(),
+        &defines,
+        100.0,
+    );
+    for (height, level) in [
+        (114.5896835_f64 as f32, Level::Province),
+        (198.1034088_f64 as f32, Level::State),
+    ] {
+        let mut report = CounterReport::default();
+        let sources: Vec<_> = [(&eng, 0, eng_anchor), (&pol, ATTACKING, pol_anchor)]
+            .into_iter()
+            .filter(|(force, kind, _)| stays_a_source(&skips, force, *kind, Some(206), &mut report))
+            .map(|(force, _, anchor)| Icon {
+                kind: 1,
+                owner: force.roster_owner,
+                province: force.province,
+                state: None,
+                region: Some(206),
+                anchor,
+            })
+            .collect();
+        assert_eq!(defines.grouping(height), level);
+        assert_eq!(sources.len(), 1, "height {height}: POL offers no plate");
+        assert_eq!(sources[0].province, eng.province);
+        let groups = counter_groups::group(&sources, level, &extents, &|_, _| true);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].members, [0]);
+        assert_eq!(groups[0].anchor, eng_anchor, "height {height}");
+        assert!(report.unplaced_task_forces.is_empty());
+    }
+}
+
 /// Runs `body` with a port context over `forces`, every one with default engagement
 /// operands, viewed by the default vision (slot 0).
 fn with_port_context<R>(
