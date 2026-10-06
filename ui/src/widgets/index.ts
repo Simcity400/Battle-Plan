@@ -23,6 +23,7 @@ import nationalFocus from './national-focus';
 import nationalSpirits from './national-spirits';
 import nuclearArsenal from './nuclear-arsenal';
 import occupiedStates from './occupied-states';
+import occupationTrend from './occupation-trend';
 import placeholder from './placeholder';
 import politicalPower from './political-power';
 import productionLines from './production-lines';
@@ -39,6 +40,6 @@ import subjects from './subjects';
 import tradeFlows from './trade-flows';
 import worldTension from './world-tension';
 
-const renderers: Record<(typeof widgetMetas)[number]['kind'], WidgetRenderer> = { map, 'national-focus': nationalFocus, research, 'political-power': politicalPower, 'command-power': commandPower, stability, 'idea-timeline': ideaTimeline, 'national-spirits': nationalSpirits, 'spirit-history': spiritHistory, 'ruling-party': rulingParty, 'resource-balance': resourceBalance, 'equipment-stockpile': equipmentStockpile, fuel, 'production-lines': productionLines, factories, 'equipment-produced': equipmentProduced, 'production-spending': productionSpending, 'occupied-states': occupiedStates, experience, factions, subjects, 'trade-flows': tradeFlows, 'world-tension': worldTension, autonomy, 'construction-log': constructionLog, 'construction-spending': constructionSpending, 'special-projects': specialProjects, 'nuclear-arsenal': nuclearArsenal, 'raid-log': raidLog, 'raid-tally': raidTally, decryption, 'espionage-log': espionageLog, 'agency-comparison': agencyComparison, scoreboard, placeholder };
+const renderers: Record<(typeof widgetMetas)[number]['kind'], WidgetRenderer> = { map, 'national-focus': nationalFocus, research, 'political-power': politicalPower, 'command-power': commandPower, stability, 'idea-timeline': ideaTimeline, 'national-spirits': nationalSpirits, 'spirit-history': spiritHistory, 'ruling-party': rulingParty, 'resource-balance': resourceBalance, 'equipment-stockpile': equipmentStockpile, fuel, 'production-lines': productionLines, factories, 'equipment-produced': equipmentProduced, 'production-spending': productionSpending, 'occupied-states': occupiedStates, 'occupation-trend': occupationTrend, experience, factions, subjects, 'trade-flows': tradeFlows, 'world-tension': worldTension, autonomy, 'construction-log': constructionLog, 'construction-spending': constructionSpending, 'special-projects': specialProjects, 'nuclear-arsenal': nuclearArsenal, 'raid-log': raidLog, 'raid-tally': raidTally, decryption, 'espionage-log': espionageLog, 'agency-comparison': agencyComparison, scoreboard, placeholder };
 
 registerWidgets(widgetMetas.map(meta => ({ ...meta, ...renderers[meta.kind] })));

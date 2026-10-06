@@ -19,6 +19,7 @@ import { definition as nationalFocus } from './national-focus/definition.ts';
 import { definition as nationalSpirits } from './national-spirits/definition.ts';
 import { definition as nuclearArsenal } from './nuclear-arsenal/definition.ts';
 import { definition as occupiedStates } from './occupied-states/definition.ts';
+import { definition as occupationTrend } from './occupation-trend/definition.ts';
 import { definition as placeholder } from './placeholder/definition.ts';
 import { definition as politicalPower } from './political-power/definition.ts';
 import { definition as productionLines } from './production-lines/definition.ts';
@@ -36,6 +37,6 @@ import { definition as subjects } from './subjects/definition.ts';
 import { definition as tradeFlows } from './trade-flows/definition.ts';
 import { definition as worldTension } from './world-tension/definition.ts';
 
-export const widgetMetas = [map, nationalFocus, research, politicalPower, commandPower, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, resourceBalance, equipmentStockpile, fuel, productionLines, factories, equipmentProduced, productionSpending, occupiedStates, experience, factions, subjects, tradeFlows, worldTension, autonomy, constructionLog, constructionSpending, specialProjects, nuclearArsenal, raidLog, raidTally, decryption, espionageLog, agencyComparison, scoreboard, placeholder] as const;
+export const widgetMetas = [map, nationalFocus, research, politicalPower, commandPower, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, resourceBalance, equipmentStockpile, fuel, productionLines, factories, equipmentProduced, productionSpending, occupiedStates, occupationTrend, experience, factions, subjects, tradeFlows, worldTension, autonomy, constructionLog, constructionSpending, specialProjects, nuclearArsenal, raidLog, raidTally, decryption, espionageLog, agencyComparison, scoreboard, placeholder] as const;
 
 registerWidgets(widgetMetas);

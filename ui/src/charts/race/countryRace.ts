@@ -1,7 +1,7 @@
 /** Country races share presentation; a widget supplies only its recorded values. */
 import type { RaceItem } from './race';
 import type { Run } from '../series';
-import { lineLabelHours, runAt } from '../series.ts';
+import { lineEndHour, runAt } from '../series.ts';
 import { stackedSegments } from '../stack.ts';
 import type { StackSegment } from '../stack';
 import type { StackModel } from '../stack';
@@ -15,10 +15,12 @@ export interface CountryRaceEntry {
 }
 export interface CountryRaceLine {
   tag: string; runs: readonly Run[];
+  /** Distinguishes several measures of the same country. */
+  id?: string;
   /** Fixed measure looks bypass country names and colours (for a level and ceiling). */
   name?: string; color?: string; area?: boolean; dash?: readonly number[]; endDot?: boolean; muted?: boolean;
   /** Exact recorded text, independent of the plotting number. */
-  endLabel?: (hour: number) => string;
+  endLabel?: (hour: number, name: string) => string;
 }
 
 /** Content order selects palette positions, so renamed types keep their colour. */
@@ -51,14 +53,19 @@ export function countryRaceHours(lines: readonly CountryRaceLine[]): number[] {
 export function countryRaceEnds(lines: readonly CountryRaceLine[], from: number, to: number, until: number | null,
   name: (tag: string, hour?: number) => string, colour: (tag: string, hour?: number) => string,
   format: (value: number) => string, dated = true) {
-  const hours = lineLabelHours(lines, from, to, until);
   return lines.flatMap(line => {
-    const hour = hours.get(line.tag);
-    const run = hour == null ? null : runAt(line.runs, hour);
-    return run ? [{ id: line.tag, color: line.color ?? colour(line.tag, dated ? hour : undefined), value: run.value,
-      text: line.endLabel?.(hour!) ?? `${line.name ?? name(line.tag, dated ? hour : undefined)} ${format(run.value)}`,
+    const hour = lineEndHour(line.runs, from, Math.min(to, until ?? to));
+    if (hour === null) return [];
+    const run = runAt(line.runs, hour);
+    return run ? [{ id: line.id ?? line.tag, color: line.color ?? colour(line.tag, dated ? hour : undefined), value: run.value,
+      text: line.endLabel?.(hour, name(line.tag, dated ? hour : undefined)) ?? `${line.name ?? name(line.tag, dated ? hour : undefined)} ${format(run.value)}`,
       ...(line.muted !== undefined ? { muted: line.muted } : {}) }] : [];
   });
+}
+
+/** Related tooltip countries are named at the same hovered hour; tags stay opaque. */
+export function countryRaceTooltipTags(hour: number, tags: readonly string[], related?: (hour: number, tags: readonly string[]) => readonly string[]): string[] {
+  return [...new Set([...tags, ...(related?.(hour, tags) ?? [])])];
 }
 
 /** Thin geometry on the drawing grid; held bands are the default for new races. */

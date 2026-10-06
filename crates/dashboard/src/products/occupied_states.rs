@@ -198,27 +198,55 @@ fn occupied(row: &StateResistanceRow) -> bool {
     row.active != 0 && (row.country as i32) > 0
 }
 
-fn tags<'a>(
-    countries: &'a [CountryRow],
+#[derive(Default)]
+struct CountryIndex {
+    identities: HashMap<u32, u32>,
+    names: HashMap<super::country_history::Identity, String>,
+    name_refusals: HashMap<super::country_history::Identity, &'static str>,
+}
+
+fn country_index(
+    countries: &[CountryRow],
     links: &[CountryLinkRow],
     refused: &mut Refusals,
-) -> HashMap<u32, &'a str> {
-    let mut result = HashMap::with_capacity(countries.len());
+) -> CountryIndex {
+    // Use the shared ambiguity rule before naming any slot: neither of two
+    // Countries rows wins. The same index serves both occupation consumers.
+    let unique = super::country_history::unique_by_slot(countries, links, |row| row.id);
+    let mut result = CountryIndex::default();
+    let mut named = std::collections::HashSet::new();
     for row in countries {
-        // Same identity guard tagged_country uses, indexed once rather than
-        // scanning all countries once for each state or raw link.
-        match mapped_slot(row, links).ok().zip(
-            std::str::from_utf8(&row.tag)
-                .ok()
-                .filter(|tag| !tag.is_empty() && !tag.contains('\0')),
-        ) {
-            Some((slot, tag)) => {
-                result.entry(slot).or_insert(tag);
-            }
-            None => refused.note(
-                "country tag or CountryLinks identity is unresolved",
+        let Ok(slot) = mapped_slot(row, links) else {
+            refused.note(
+                "CountryLinks identity is unresolved",
                 format!("country {}", row.id),
-            ),
+            );
+            continue;
+        };
+        if unique.rows.get(&slot).is_none_or(Option::is_none) {
+            refused.note(
+                "Countries canonical slot is ambiguous",
+                format!("slot {slot}, country {}", row.id),
+            );
+            continue;
+        }
+        result.identities.insert(slot, row.id);
+        let Some(tag) = std::str::from_utf8(&row.tag)
+            .ok()
+            .filter(|tag| !tag.is_empty() && !tag.contains('\0'))
+        else {
+            let reason = "country tag is empty, contains NUL or is not UTF-8";
+            result.name_refusals.insert((slot, row.id), reason);
+            refused.note(reason, format!("country {}", row.id));
+            continue;
+        };
+        // Preserve tagged_countries' first valid holder for a repeated tag.
+        if named.insert(tag) {
+            result.names.insert((slot, row.id), tag.to_owned());
+        } else {
+            let reason = "country tag repeats an earlier country";
+            result.name_refusals.insert((slot, row.id), reason);
+            refused.note(reason, format!("country {}", row.id));
         }
     }
     result
@@ -281,13 +309,59 @@ fn has_rows(frame: &DecodedFrame, table: TableId) -> bool {
 }
 
 mod scan;
-use scan::scan;
+#[cfg(test)]
+pub(super) use scan::scan_history;
+mod trend;
+
+pub(super) struct OccupationHistory {
+    pub states: OccupiedStatesReply,
+    pub trend: super::occupation_trend::History,
+}
 
 #[derive(Default)]
 struct Cache {
     branch: Option<u64>,
     catalogue: Option<Arc<Catalogue>>,
-    reply: Option<OccupiedStatesReply>,
+    reply: Option<Arc<OccupationHistory>>,
+}
+
+/// Both occupation products share the daily joins, decoder walk and cache.
+pub(super) fn history(
+    source: &Source,
+    branch: u64,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<Arc<OccupationHistory>> {
+    let cat = context
+        .content()
+        .and_then(|options| catalogue::catalogue(source, options));
+    let content_warning = cat
+        .as_ref()
+        .err()
+        .map(|e| format!("State names and occupation law artwork unavailable: {e}"));
+    let cat = cat.ok();
+    let state = source.state::<Cache>();
+    let mut cache = state.lock().unwrap_or_else(|e| e.into_inner());
+    let same = match (&cache.catalogue, &cat) {
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
+    };
+    if cache.branch == Some(branch)
+        && same
+        && let Some(reply) = &cache.reply
+    {
+        return Ok(reply.clone());
+    }
+    let mut reply = scan::scan_history(&source.replay(), branch, cat.as_deref(), cancelled)?;
+    reply.states.warnings.extend(content_warning);
+    let reply = Arc::new(reply);
+    *cache = Cache {
+        branch: Some(branch),
+        catalogue: cat,
+        reply: Some(reply.clone()),
+    };
+    Ok(reply)
 }
 
 impl Product for OccupiedStates {
@@ -320,35 +394,7 @@ impl Product for OccupiedStates {
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
         let branch = params.branch_id.parse().expect("validated branch");
-        let cat = context
-            .content()
-            .and_then(|options| catalogue::catalogue(source, options));
-        let content_warning = cat
-            .as_ref()
-            .err()
-            .map(|e| format!("State names and occupation law artwork unavailable: {e}"));
-        let cat = cat.ok();
-        let state = source.state::<Cache>();
-        let mut cache = state.lock().unwrap_or_else(|e| e.into_inner());
-        let same = match (&cache.catalogue, &cat) {
-            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-            (None, None) => true,
-            _ => false,
-        };
-        if cache.branch == Some(branch)
-            && same
-            && let Some(reply) = &cache.reply
-        {
-            return Ok(reply.clone());
-        }
-        let mut reply = scan(&source.replay(), branch, cat.as_deref(), cancelled)?;
-        reply.warnings.extend(content_warning);
-        *cache = Cache {
-            branch: Some(branch),
-            catalogue: cat,
-            reply: Some(reply.clone()),
-        };
-        Ok(reply)
+        Ok(history(source, branch, context, cancelled)?.states.clone())
     }
 }
 

@@ -86,6 +86,21 @@ The native garrison amount and failure marker are recorded; the bar is known
 only for the failure flag or complete zero assigned manpower. Those
 limitations remain explicit in the [widget guide](../../ui/src/widgets/occupied-states/README.md).
 
+The `occupation-trend` product shares that cached branch scan and its daily
+joins. It supplies every occupier's readable-state mean, using the native
+unweighted fixed5 arithmetic over recorded scalars, with covered/held counts,
+separate read dates, identity segments and gaps. Chosen countries and top-N
+requests use shared ranking and `MAX_PRODUCT_REPLY_BYTES`; no country, entry,
+scan or run count cap applies. Top requests refuse zero or a simultaneous tag
+selection. Country collaboration is optional tooltip context,
+joined from the occupied country's relation toward its occupier. The shared
+reader builds one unambiguous country index for both occupation consumers and
+keeps it through hourly balance changes; unchanged projections extend endpoints
+without cloning labels or context. Numeric-only replies omit collaboration and
+merge its additional boundaries. See its
+[widget guide](../../ui/src/widgets/occupation-trend/README.md) for the distinction
+between these read-derived means and the game's unrecorded cached group means.
+
 The Experience widget reads [`country_experience.rs`](src/products/country_experience.rs): banked army, navy and air experience at each read, and their net change from a read one day earlier in the same unbroken country stretch. Its [widget guide](../../ui/src/widgets/experience/README.md) describes the display and missing-data rules. Multi-country line products share selection validation in `products/mod.rs`.
 
 Equipment losses (one country's losses as cause, equipment type and design, each a running total: the Combat Log's reasons and recovered equipment for land, SunkShips, SunkConvoys and lend-lease sunk and sent, with air reported unknown; hours the game did not log the country's land losses are unknown, not zero; each cause lists the hours its record was not read, and lend-lease the exchanges that ended after their last read, whose totals are lower bounds from then; a Combat Log retention define below 1 makes land unknown by name; cause names the executable does not name come from the content's interface files). Daily values change only at their recorded read hours. Recorded gaps, failed blocks and the unread remainder of failed frames have explicit unknown coverage and unread spans. CombatLogState explains missing native land records and never selects capture; the product also checks division orders-group membership, since country-gate admission alone does not prove logging. A mixed census is Partial with the number of that country's divisions outside orders groups: the game kept losses of divisions in armies, not of those divisions. The native equipment writer also tests the runtime feature mask recorded by SimulationFeatures: a closed feature gate is NotLogged, missing writer inputs stay Unknown, and every captured amount is still counted. Combat Log observation checks the requested country's slice reads before accessing its sorted row ranges. The product selects the hourly DivisionCensus counts instead of Divisions. The collector accumulates every country's counts in its existing authenticated division core projection, preserving the writer's raw expeditionary or roster owner; aliases resolve through CountryLinks. Coverage is dated by each hourly census read, including equal successful reads; consecutive hours merge only for equal states and equal ungrouped counts, and an unavailable hour is Unknown. Missing country rows, unread counts or unresolved nonempty owners remain Unknown. Wire decoding and reconstruction of the selected tables remain part of the scan cost. The ignored release test `equipment_losses_observer_scale` measures observation of shared decoded observer frames; `equipment_losses_observer_scale_including_decode` keeps the same major-sized division workload in the wire recording but omits Divisions from the selected decode, and separately measures the Combat Log/SliceReads decode. Live detour cost remains separate. Its rules live beside [the product code](src/products/equipment_losses.rs).

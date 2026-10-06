@@ -116,9 +116,12 @@ fn raw_links_resolve_to_opaque_mod_tags_at_scale() {
         })
         .collect();
     let mut refused = Refusals::default();
-    let mapped = tags(&countries, &links, &mut refused);
-    assert_eq!(mapped.len(), 5000);
-    assert_eq!(mapped.get(&12000), Some(&"Mod country 5000"));
+    let mapped = country_index(&countries, &links, &mut refused);
+    assert_eq!(mapped.names.len(), 5000);
+    assert_eq!(
+        mapped.names.get(&(12000, 5000)).map(String::as_str),
+        Some("Mod country 5000")
+    );
     assert!(refused.lines("countries").is_empty());
 
     let mut invalid = countries[..3].to_vec();
@@ -126,7 +129,11 @@ fn raw_links_resolve_to_opaque_mod_tags_at_scale() {
     invalid[1].tag = b"Bad\0tag".to_vec();
     invalid[2].tag = vec![0xff];
     let mut refused = Refusals::default();
-    assert!(tags(&invalid, &links, &mut refused).is_empty());
+    assert!(
+        country_index(&invalid, &links, &mut refused)
+            .names
+            .is_empty()
+    );
     let warnings = refused.lines("countries");
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].contains("3") && warnings[0].contains("country 1"));
@@ -328,7 +335,8 @@ fn branch_scan_dates_equal_reads_and_requires_a_new_read_after_a_gap() {
         )],
     )
     .unwrap();
-    let reply = scan(&replay, 1, None, &AtomicBool::new(false)).unwrap();
+    let shared = scan_history(&replay, 1, None, &AtomicBool::new(false)).unwrap();
+    let reply = &shared.states;
     assert_eq!(reply.states.len(), 1);
     let runs = &reply.states[0].runs;
     assert_eq!(runs.len(), 2);
@@ -345,6 +353,12 @@ fn branch_scan_dates_equal_reads_and_requires_a_new_read_after_a_gap() {
     assert_eq!(runs[0].value.required_manpower, Some(0));
     assert_eq!(runs[0].value.law.as_deref(), Some("extra_mod_law"));
     assert_eq!(runs[0].value.resistance_raw, "9007199254740993");
+    let occupier = reply.states[0].runs[0].value.occupier.as_deref().unwrap();
+    let means = &shared.trend.series[occupier];
+    assert_eq!(
+        means.iter().map(|run| run.read_hour).collect::<Vec<_>>(),
+        [100, 102, 105]
+    );
 }
 
 #[test]
@@ -370,7 +384,9 @@ fn garrison_strength_keeps_the_native_early_zero_but_never_uses_strength_ratio()
         &[crate::test_fixtures::records(1, vec![missing, known])],
     )
     .unwrap();
-    let reply = scan(&replay, 1, None, &AtomicBool::new(false)).unwrap();
+    let reply = scan_history(&replay, 1, None, &AtomicBool::new(false))
+        .unwrap()
+        .states;
     let runs = &reply.states[0].runs;
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[0].value.garrison_strength_raw, None);
@@ -404,7 +420,9 @@ fn partial_resistance_keeps_known_rows_and_does_not_claim_an_empty_inventory() {
         )],
     )
     .unwrap();
-    let reply = scan(&replay, 1, None, &AtomicBool::new(false)).unwrap();
+    let reply = scan_history(&replay, 1, None, &AtomicBool::new(false))
+        .unwrap()
+        .states;
     assert_eq!(reply.states.len(), 1);
     assert_eq!(reply.states[0].runs[0].last_hour, 101);
     assert!(
@@ -472,7 +490,9 @@ fn a_branch_with_five_thousand_states_and_countries_is_not_capped() {
         &[crate::test_fixtures::records(1, vec![first, second])],
     )
     .unwrap();
-    let reply = scan(&replay, 1, None, &AtomicBool::new(false)).unwrap();
+    let reply = scan_history(&replay, 1, None, &AtomicBool::new(false))
+        .unwrap()
+        .states;
     assert_eq!(reply.states.len(), 5000);
     assert!(
         reply
@@ -559,7 +579,9 @@ fn controller_and_link_changes_between_reads_do_not_redate_occupation_values() {
         &[crate::test_fixtures::records(1, vec![first, between, next])],
     )
     .unwrap();
-    let reply = scan(&replay, 1, Some(&cat), &AtomicBool::new(false)).unwrap();
+    let reply = scan_history(&replay, 1, Some(&cat), &AtomicBool::new(false))
+        .unwrap()
+        .states;
     let runs = &reply.states[0].runs;
     assert_eq!(runs.len(), 3);
     assert_eq!(runs[1].value.owner.as_deref(), Some("New owner"));
@@ -646,7 +668,7 @@ fn native_zero_strength_requires_complete_resolved_manpower_or_the_failure_flag(
         *read.tables[TableId::StateAssignedManpower.index()] = assigned;
         scan.push(&read, hour).unwrap();
     }
-    let reply = scan.finish();
+    let reply = scan.finish().states;
     let runs = &reply.states[0].runs;
     assert_eq!(runs.len(), 4); // Equal unknown reads compress, with distinct read dates.
     let at = |hour| {
@@ -696,7 +718,7 @@ fn a_mod_threshold_uses_native_fixed5_and_missing_garrisons_are_not_zero() {
     for frame in [known, missing] {
         scan.push(&frame, frame.hour).unwrap();
     }
-    let reply = scan.finish();
+    let reply = scan.finish().states;
     assert_eq!(reply.states[0].runs[0].value.garrison_red, Some(false));
     assert_eq!(reply.states[0].runs[1].value.garrison_strength_raw, None);
     assert_eq!(reply.states[0].runs[1].value.assigned_manpower, None);
@@ -752,7 +774,7 @@ fn non_utf8_overrides_and_unresolved_links_are_named_and_counted_by_reason() {
         ]));
     let mut scan = super::scan::Scan::new(1, None);
     scan.push(&read, 100).unwrap();
-    let reply = scan.finish();
+    let reply = scan.finish().states;
     assert!(
         reply
             .warnings
@@ -834,7 +856,7 @@ fn long_campaign_scan_at_design_scale() {
             }
             scan.push(&frame, hour).unwrap();
         }
-        let reply = scan.finish();
+        let reply = scan.finish().states;
         let seconds = started.elapsed().as_secs_f64();
         eprintln!(
             "occupied-state projection: 1500 countries, 5000 states, {hours} hours (10 years), hourly catalogue changes={changed_hourly}: {seconds:.3}s ({:.3}ms/hour); excludes decoding/content I/O",

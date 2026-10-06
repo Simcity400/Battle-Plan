@@ -34,5 +34,5 @@ export function linesTooltip(hour: number, lines: readonly { tag: string; runs: 
 
 /** The countries a lines tooltip at `hour` names: those with a line recorded then. */
 export function linesAt(hour: number, lines: readonly { tag: string; runs: readonly Run[] }[]): string[] {
-  return lines.filter(line => runAt(line.runs, hour) != null).map(line => line.tag);
+  return [...new Set(lines.filter(line => runAt(line.runs, hour) != null).map(line => line.tag))];
 }

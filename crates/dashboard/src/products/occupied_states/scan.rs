@@ -7,6 +7,12 @@ type StateKey = (u32, u32, u32);
 type NameCache = HashMap<u32, (Vec<u8>, Vec<u8>, Result<String, String>)>;
 const HOURLY: [TableId; 3] = [TableId::States, TableId::Countries, TableId::CountryLinks];
 
+struct CountryInputs {
+    countries: Vec<(u32, u32, Vec<u8>)>,
+    links: Vec<CountryLinkRow>,
+    views: [ViewIdentity; 2],
+}
+
 pub(super) struct Scan<'a> {
     cat: Option<&'a Catalogue>,
     names: StateNames,
@@ -21,6 +27,10 @@ pub(super) struct Scan<'a> {
     last_hour: Option<i32>,
     read_hour: Option<i32>,
     complete: bool,
+    countries: Arc<CountryIndex>,
+    country_inputs: Option<CountryInputs>,
+    country_refused: Refusals,
+    trend: trend::TrendScan,
 }
 
 impl<'a> Scan<'a> {
@@ -81,13 +91,19 @@ impl<'a> Scan<'a> {
             last_hour: None,
             read_hour: None,
             complete: false,
+            countries: Arc::default(),
+            country_inputs: None,
+            country_refused: Refusals::default(),
+            trend: trend::TrendScan::default(),
         }
     }
 
     pub(super) fn gap(&mut self) {
         self.active.clear();
         self.hourly = None;
+        self.country_inputs = None;
         self.read_hour = None;
+        self.trend.gap();
     }
 
     fn name(&mut self, state: &StateRow) -> (Option<String>, Option<String>) {
@@ -114,11 +130,24 @@ impl<'a> Scan<'a> {
         )
     }
 
-    fn note_link(&mut self, field: &str, raw: u32, state: u32) {
-        self.refused.note(
-            format!("{field} cannot resolve through Countries and CountryLinks"),
-            format!("state {state}, raw link {raw}"),
-        );
+    fn note_link(&mut self, field: &str, raw: u32, state: u32, links: &[CountryLinkRow]) {
+        let refused = link_slot(links, raw)
+            .and_then(|slot| self.countries.identities.get(&slot).map(|&id| (slot, id)))
+            .and_then(|identity| {
+                self.countries
+                    .name_refusals
+                    .get(&identity)
+                    .map(|&reason| (reason, identity.1))
+            });
+        if let Some((reason, country)) = refused {
+            self.refused
+                .note(reason, format!("state {state}, country {country}"));
+        } else {
+            self.refused.note(
+                format!("{field} cannot resolve through Countries and CountryLinks"),
+                format!("state {state}, raw link {raw}"),
+            );
+        }
     }
 
     fn read(
@@ -126,14 +155,14 @@ impl<'a> Scan<'a> {
         frame: &DecodedFrame,
         hour: i32,
         states: &[StateRow],
-        countries: &[CountryRow],
         links: &[CountryLinkRow],
     ) -> io::Result<()> {
-        let tagged = tags(countries, links, &mut self.refused);
+        let countries = self.countries.clone();
         let tag = |raw| {
             link_slot(links, raw)
-                .and_then(|slot| tagged.get(&slot))
-                .map(|tag| (*tag).to_owned())
+                .and_then(|slot| countries.identities.get(&slot).map(|&id| (slot, id)))
+                .and_then(|identity| countries.names.get(&identity))
+                .cloned()
         };
         let key = |controller, occupied, state| -> Option<StateKey> {
             Some((
@@ -206,6 +235,16 @@ impl<'a> Scan<'a> {
         }
         let assigned_complete = frame.complete::<tables::StateAssignedManpower>().is_ok();
         let laws_complete = frame.complete::<tables::StateOccupationLaws>().is_ok();
+        let garrisons_read = slot_read(&frame.metrics, TableId::StateGarrisons, hour);
+        self.trend.begin(
+            hour,
+            countries.clone(),
+            links,
+            recorded_rows::<tables::StateGarrisons>(frame)?
+                .iter()
+                .filter(|_| garrisons_read),
+            garrisons_read && frame.complete::<tables::StateGarrisons>().is_ok(),
+        );
         self.active.clear();
         self.complete = frame.complete::<tables::StateResistance>().is_ok();
         for resistance in recorded_rows::<tables::StateResistance>(frame)?
@@ -222,11 +261,14 @@ impl<'a> Scan<'a> {
                     "active resistance names a state absent from States",
                     resistance.state.to_string(),
                 );
+                self.trend.missing_state(resistance.state);
                 continue;
             };
             // Every occupation key and tag below uses ONLY this read's controller
             // and CountryLinks snapshot. Hourly projection never changes them.
             let state_key = key(state.controller, resistance.country, state.id);
+            self.trend
+                .state(resistance, state, &countries.identities, links);
             let garrison = state_key.and_then(|key| garrisons.get(&key));
             let assigned_manpower = state_key
                 .filter(|_| {
@@ -306,7 +348,7 @@ impl<'a> Scan<'a> {
                 ),
             ] {
                 if missing {
-                    self.note_link(field, raw, state.id);
+                    self.note_link(field, raw, state.id, links);
                 }
             }
             let index = *self.positions.entry(state.id).or_insert_with(|| {
@@ -321,6 +363,7 @@ impl<'a> Scan<'a> {
             self.active.push(index);
         }
         self.read_hour = Some(hour);
+        self.trend.finish_read();
         Ok(())
     }
 
@@ -328,11 +371,10 @@ impl<'a> Scan<'a> {
         &mut self,
         hour: i32,
         states: &[StateRow],
-        countries: &[CountryRow],
         links: &[CountryLinkRow],
         states_changed: bool,
     ) {
-        let tagged = tags(countries, links, &mut self.refused);
+        let countries = self.countries.clone();
         if states_changed {
             self.state_slots = states
                 .iter()
@@ -352,10 +394,11 @@ impl<'a> Scan<'a> {
                 return false;
             };
             let owner = link_slot(links, state.owner)
-                .and_then(|slot| tagged.get(&slot))
-                .copied();
+                .and_then(|slot| countries.identities.get(&slot).map(|&id| (slot, id)))
+                .and_then(|identity| countries.names.get(&identity))
+                .map(String::as_str);
             if owner.is_none() {
-                self.note_link("owner", state.owner, id);
+                self.note_link("owner", state.owner, id, links);
             }
             let cached = self
                 .names_cached
@@ -398,8 +441,45 @@ impl<'a> Scan<'a> {
             self.gap();
             return Ok(());
         };
+        let country_tables = [TableId::Countries, TableId::CountryLinks];
+        let countries_changed = self.country_inputs.as_ref().is_none_or(|inputs| {
+            let same_countries = inputs.views[0].is(&frame.tables[TableId::Countries.index()])
+                || inputs.countries.len() == countries.len()
+                    && inputs
+                        .countries
+                        .iter()
+                        .zip(countries)
+                        .all(|((id, slot, tag), row)| {
+                            *id == row.id && *slot == row.canonical_slot && *tag == row.tag
+                        });
+            let same_links = inputs.views[1].is(&frame.tables[TableId::CountryLinks.index()])
+                || inputs.links == links;
+            !same_countries || !same_links
+        });
+        let views = country_tables.map(|table| frame.tables[table.index()].identity());
+        if countries_changed {
+            self.countries = Arc::new(country_index(countries, links, &mut self.country_refused));
+            self.country_inputs = Some(CountryInputs {
+                countries: countries
+                    .iter()
+                    .map(|row| (row.id, row.canonical_slot, row.tag.clone()))
+                    .collect(),
+                links: links.to_vec(),
+                views,
+            });
+        } else {
+            self.country_inputs
+                .as_mut()
+                .expect("unchanged inputs were saved")
+                .views = views;
+        }
+        // Countries' hourly balances can change without changing any naming
+        // operand. Compare those operands without copying their strings, then
+        // retain only typed identity/link inputs and the latest view identities.
+        self.trend
+            .collaboration(frame, hour, &self.countries.identities, links)?;
         if slot_read(&frame.metrics, TableId::StateResistance, hour) {
-            self.read(frame, hour, states, countries, links)?;
+            self.read(frame, hour, states, links)?;
         } else if self.read_hour.is_none() {
             return Ok(());
         } else if self.hourly.as_ref().is_some_and(|views| {
@@ -420,9 +500,11 @@ impl<'a> Scan<'a> {
                 .hourly
                 .as_ref()
                 .is_none_or(|views| !views[0].is(&frame.tables[TableId::States.index()]));
-            self.project(hour, states, countries, links, states_changed);
+            self.project(hour, states, links, states_changed);
         }
         self.hourly = Some(HOURLY.map(|table| frame.tables[table.index()].identity()));
+        self.trend
+            .project(hour, &self.countries.names, countries_changed);
         let read = self.read_hour.expect("a read precedes every observation");
         if let Some(last) = self.result.observed.last_mut()
             && last.last_hour.checked_add(1) == Some(hour)
@@ -441,7 +523,7 @@ impl<'a> Scan<'a> {
         Ok(())
     }
 
-    pub(super) fn finish(mut self) -> OccupiedStatesReply {
+    pub(super) fn finish(mut self) -> OccupationHistory {
         let tokens: BTreeSet<_> = self
             .result
             .states
@@ -482,16 +564,27 @@ impl<'a> Scan<'a> {
         self.result
             .warnings
             .extend(self.refused.lines("recorded occupation facts"));
+        let mut trend = self.trend.finish();
+        let country_warnings = self
+            .country_refused
+            .lines("recorded occupation country identities");
         self.result
+            .warnings
+            .extend(country_warnings.iter().cloned());
+        trend.warnings.extend(country_warnings);
+        OccupationHistory {
+            states: self.result,
+            trend,
+        }
     }
 }
 
-pub(super) fn scan(
+pub(in crate::products) fn scan_history(
     replay: &Replay,
     branch: u64,
     cat: Option<&Catalogue>,
     cancelled: &AtomicBool,
-) -> io::Result<OccupiedStatesReply> {
+) -> io::Result<OccupationHistory> {
     let selected = [
         TableId::Campaign,
         TableId::Countries,
@@ -502,6 +595,7 @@ pub(super) fn scan(
         TableId::StateOccupationLaws,
         TableId::OccupationSettings,
         TableId::StateAssignedManpower,
+        TableId::CountryCollaboration,
     ];
     let mut scan = Scan::new(branch, cat);
     for block in replay.index.iter().filter(|block| block.branch == branch) {
@@ -511,6 +605,10 @@ pub(super) fn scan(
             Err(e) => {
                 scan.result.warnings.push(format!(
                     "Occupied states block {} unavailable: {e}",
+                    block.first_hour
+                ));
+                scan.trend.unavailable(format!(
+                    "Occupation history block {} unavailable: {e}",
                     block.first_hour
                 ));
                 scan.gap();
@@ -531,6 +629,10 @@ pub(super) fn scan(
                         "Occupied states at {} unavailable: {e}",
                         frame.hour
                     ));
+                    scan.trend.unavailable(format!(
+                        "Occupation history at {} unavailable: {e}",
+                        frame.hour
+                    ));
                     scan.gap();
                     break;
                 }
@@ -540,4 +642,143 @@ pub(super) fn scan(
         }
     }
     Ok(scan.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use replay::rows::{CountryCollaborationRow, StateGarrisonRow, TableRows};
+
+    #[test]
+    fn occupation_trend_ambiguous_canonical_slots_refuse_every_holder() {
+        // The current wire writer already rejects this malformed country
+        // inventory. Exercise the scan's defensive guard directly, rather
+        // than constructing a recording the codec correctly cannot write.
+        let mut frame = crate::test_fixtures::source(1, 100, Some(1));
+        *frame.tables[TableId::Countries.index()] =
+            TableView::Complete(TableRows::Countries(vec![
+                CountryRow {
+                    id: 12,
+                    canonical_slot: 7,
+                    tag: b"Second opaque tag".to_vec(),
+                    ..Default::default()
+                },
+                CountryRow {
+                    id: 9001,
+                    canonical_slot: 7,
+                    tag: b"First opaque tag".to_vec(),
+                    ..Default::default()
+                },
+            ]));
+        *frame.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(vec![
+                CountryLinkRow {
+                    id: 11,
+                    canonical_slot: 7,
+                },
+                CountryLinkRow {
+                    id: 12,
+                    canonical_slot: 7,
+                },
+                CountryLinkRow {
+                    id: 9001,
+                    canonical_slot: 7,
+                },
+            ]));
+        *frame.tables[TableId::States.index()] =
+            TableView::Complete(TableRows::States(vec![StateRow {
+                id: 1,
+                controller: 11,
+                owner: 11,
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::StateResistance.index()] =
+            TableView::Complete(TableRows::StateResistance(vec![StateResistanceRow {
+                state: 1,
+                country: 11,
+                active: 1,
+                level: 10,
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::CountryCollaboration.index()] =
+            TableView::Complete(TableRows::CountryCollaboration(vec![
+                CountryCollaborationRow {
+                    source: 11,
+                    target: 12,
+                    progress: 12345,
+                },
+            ]));
+        frame.metrics.table_ns[TableId::StateResistance.index()] = 1;
+        let mut scan = Scan::new(1, None);
+        scan.push(&frame, 100).unwrap();
+        assert!(scan.countries.identities.is_empty());
+        assert!(scan.countries.names.is_empty());
+        let history = scan.finish();
+        assert!(history.trend.series.is_empty());
+        assert_eq!(
+            history.trend.warnings,
+            [
+                "1 recorded occupation trend facts not shown: active resistance controller link is unresolved; state 1, raw link 11",
+                "2 recorded occupation country identities not shown: Countries canonical slot is ambiguous; slot 7, country 12, slot 7, country 9001",
+            ]
+        );
+        assert_eq!(
+            history.trend.collaboration_warnings,
+            [
+                "1 recorded occupation trend facts not shown: CountryCollaboration link is unresolved; 11 → 12"
+            ]
+        );
+    }
+
+    #[test]
+    fn occupation_trend_identity_cache_ignores_hourly_balances_but_rebuilds_for_tag_changes() {
+        let mut frame = crate::test_fixtures::source(1, 100, Some(1));
+        *frame.tables[TableId::States.index()] =
+            TableView::Complete(TableRows::States(vec![StateRow {
+                id: 1,
+                controller: 11,
+                owner: 11,
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::StateResistance.index()] =
+            TableView::Complete(TableRows::StateResistance(vec![StateResistanceRow {
+                state: 1,
+                country: 11,
+                active: 1,
+                level: 10,
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::StateGarrisons.index()] =
+            TableView::Complete(TableRows::StateGarrisons(vec![StateGarrisonRow {
+                controller: 11,
+                occupied: 11,
+                state: 1,
+                ..Default::default()
+            }]));
+        frame.metrics.table_ns[TableId::StateResistance.index()] = 1;
+        let mut scan = Scan::new(1, None);
+        scan.push(&frame, 100).unwrap();
+        let indexed = scan.countries.clone();
+        frame.hour = 101;
+        frame.metrics.table_ns.fill(0);
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        {
+            rows[0].political_power_raw = Some(2);
+        }
+        scan.push(&frame, 101).unwrap();
+        assert!(Arc::ptr_eq(&indexed, &scan.countries));
+        frame.hour = 102;
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        {
+            rows[0].tag = b"Changed opaque tag".to_vec();
+        }
+        scan.push(&frame, 102).unwrap();
+        assert!(!Arc::ptr_eq(&indexed, &scan.countries));
+        assert_eq!(
+            scan.finish().trend.series["Changed opaque tag"][0].read_hour,
+            100
+        );
+    }
 }

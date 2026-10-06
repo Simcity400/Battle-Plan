@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { countryRaceEnds, countryRaceHours, countryRaceItems, countryRaceSegments, heldStackSegment, partColours } from './countryRace.ts';
+import { countryRaceEnds, countryRaceHours, countryRaceItems, countryRaceSegments, countryRaceTooltipTags, heldStackSegment, partColours } from './countryRace.ts';
 import { barExtent, stepRace } from './race.ts';
 import { linesAt, linesTooltip } from './lines.ts';
 import { buildStack, stackedSegments } from '../stack.ts';
@@ -124,4 +124,24 @@ test('shared fitting keeps supplied totals and reads the full compacted tooltip 
   assert.match(fitted.spoken!, /Ceiling 20; Part 0 1/);
   const noTotal = fitTooltip([full], 90, { keep: 0 });
   assert.ok(!noTotal.rows.some(row => row.label === 'Net'));
+});
+
+test('one country compares independent measures without stacking or bridging their gaps', () => {
+  const lines = [{ tag: 'MOD A', id: 'resistance', runs: [{ firstHour: 1, lastHour: 4, value: 20 }] },
+    { tag: 'MOD A', id: 'compliance', runs: [{ firstHour: 1, lastHour: 8, value: 70 }] }];
+  assert.deepEqual(countryRaceEnds(lines, 1, 10, null, (_tag, hour) => `Name at ${hour}`, () => 'country', String),
+    [{ id: 'resistance', color: 'country', value: 20, text: 'Name at 4 20' },
+      { id: 'compliance', color: 'country', value: 70, text: 'Name at 8 70' }]);
+  assert.deepEqual(linesAt(3, lines), ['MOD A']);
+  assert.deepEqual(linesAt(6, lines), ['MOD A']);
+  assert.deepEqual(linesAt(9, lines), []);
+  assert.deepEqual(countryRaceTooltipTags(6, ['MOD A'], (hour, tags) => [`${tags[0]} ${hour}`, 'MOD A', 'MOD']), ['MOD A', 'MOD A 6', 'MOD']);
+});
+
+test('related hover countries are deduplicated at the hovered hour for 5000 countries', () => {
+  assert.deepEqual(countryRaceTooltipTags(101, ['Mod country', 'Mod country'],
+    (hour, tags) => [`${tags[0]} at ${hour}`, 'Other', 'Other']), ['Mod country', 'Mod country at 101', 'Other']);
+  const tags = Array.from({ length: 5000 }, (_, index) => `Mod country ${index}`);
+  assert.deepEqual(countryRaceTooltipTags(102, tags, () => tags), tags);
+  assert.deepEqual(countryRaceTooltipTags(102, []), []);
 });

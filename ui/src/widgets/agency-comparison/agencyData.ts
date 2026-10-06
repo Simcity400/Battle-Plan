@@ -7,10 +7,9 @@ import { formatDateTime } from '../../dashboard/calendar.ts';
 import { worldRequestTags } from '../../dashboard/groups.ts';
 import { readAt } from '../../dashboard/reads.ts';
 import type { CountrySelection } from '../../dashboard/model';
-import { object, int } from '../../dashboard/validation.ts';
+import { object, int, signed64 as raw } from '../../dashboard/validation.ts';
 
 const text = (v: unknown) => v === null || typeof v === 'string';
-const raw = (v: unknown) => typeof v === 'string' && /^-?\d{1,19}$/.test(v) && BigInt(v) >= -(1n << 63n) && BigInt(v) < (1n << 63n);
 const upgrade = (v: unknown) => object(v) && (v.count === null || int(v.count))
   && Array.isArray(v.items) && v.items.every(item => object(item) && typeof item.branchToken === 'string' && typeof item.token === 'string' && text(item.name) && 'icon' in item);
 const value = (v: unknown) => object(v) && typeof v.created === 'boolean' && text(v.name) && raw(v.defenseRaw) && text(v.defenseText) && text(v.defenseValue)

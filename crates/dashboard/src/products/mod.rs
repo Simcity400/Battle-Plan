@@ -35,6 +35,7 @@ pub mod intelligence_content;
 pub use identity::civil_war;
 pub mod land_owners;
 pub mod national_focus;
+pub mod occupation_trend;
 pub mod occupied_states;
 pub mod party_history;
 pub mod politics_content;
@@ -276,6 +277,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<country_nukes::CountryNukes>(),
     register::<raids::Raids>(),
     register::<occupied_states::OccupiedStates>(),
+    register::<occupation_trend::OccupationTrend>(),
     register::<country_experience::CountryExperience>(),
     register::<idea_history::IdeaHistory>(),
     register::<party_history::PartyHistory>(),

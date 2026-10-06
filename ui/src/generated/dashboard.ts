@@ -627,6 +627,30 @@ export type OccupiedStatesReply = { branchId: string, decimals: number, states: 
  * Includes known empty inventories, distinguishing them from gaps.
  */
 observed: Array<OccupiedObservation>, laws: Array<OccupationLawInfo>, strengthMissing: string, warnings: Array<string>, };
+export type OccupationMeasure = "resistance" | "compliance";
+export type OccupationTop = { count: number, measure: OccupationMeasure, };
+export type OccupationTrendParams = { branchId: string,
+/**
+ * Empty with no top request means every occupier, independently of status.
+ */
+tags: Array<string>, top: OccupationTop | null,
+/**
+ * Tooltip context only; omitted requests keep the smaller numeric history.
+ */
+collaboration: boolean, };
+export type OccupationCollaboration = { tag: string,
+/**
+ * P: CCountryCollaborationData+0x10, 1413DFC50; fixed5 fraction, unlike
+ * the state percentage-point scalars. Politics meter: 141C441D0.
+ */
+raw: string | null, readHour: number | null, };
+export type OccupationTrendRun = { firstHour: number, lastHour: number, readHour: number, startsSegment: boolean, resistanceRaw: string, complianceRaw: string, states: number,
+/**
+ * Known held inventory at this read. Incomplete inventories are a lower bound.
+ */
+heldStates: number, heldComplete: boolean, collaboration: Array<OccupationCollaboration>, };
+export type OccupationTrendSeries = { tag: string, runs: Array<OccupationTrendRun>, segments: Array<HourSpan>, membership: Array<HourSpan> | null, };
+export type OccupationTrendReply = { branchId: string, decimals: number, series: Array<OccupationTrendSeries>, warnings: Array<string>, };
 export type ExperienceParams = { branchId: string, tags: Array<string>, };
 export type ExperienceChange = { armyRaw: string, navyRaw: string, airRaw: string, };
 export type ChangeUnknown = "noMatchingRead";
@@ -2243,4 +2267,4 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "scoreboard", "country-nukes", "raids", "occupied-states", "idea-history", "party-history", "resource-balance", "decryption", "production-lines", "production-line-detail", "equipment-stockpile", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "equipment-losses", "construction-spending", "espionage-log", "agency-comparison"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "scoreboard", "country-nukes", "raids", "occupied-states", "occupation-trend", "idea-history", "party-history", "resource-balance", "decryption", "production-lines", "production-line-detail", "equipment-stockpile", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "equipment-losses", "construction-spending", "espionage-log", "agency-comparison"] as const;
