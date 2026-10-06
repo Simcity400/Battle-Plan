@@ -1,7 +1,7 @@
 use super::*;
 
 pub(in crate::effect_description) struct CharacterContent {
-    pub(super) catalogue: Result<installed_content::characters::Characters, String>,
+    pub(in crate::effect_description) catalogue: Result<installed_content::characters::Characters, String>,
     pub(super) unit_leaders: Result<installed_content::unit_leader::Leaders<String>, String>,
     pub(in crate::effect_description) special_projects: Result<installed_content::special_projects::Catalog, String>,
     pub(super) scientist_traits: Result<installed_content::scientist_traits::ScientistTraits, String>,
@@ -64,7 +64,7 @@ impl Renderer<'_, '_, '_> {
         Ok(&self.context.text.content().effects()?.characters)
     }
 
-    pub(super) fn char_country_traits(
+    pub(in crate::effect_description) fn char_country_traits(
         &self,
     ) -> Result<&installed_content::leader_traits::LeaderTraits, String> {
         self.context.text.content().environment()?.leader_traits()

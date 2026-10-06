@@ -388,9 +388,19 @@ names and targeted-decision seeds read their replay operands at each table's
 existing cadence; decision definition seeds derive from the authored identifier.
 Content databases are cached per stack, with independent reader failures refused
 only by dependent leaves. Referenced event titles load by ID and never recursively
-describe their event bodies. Corpus-only effect classes, bound custom tooltip
-forms and nonempty timed-idea research/equipment/trait forms remain named,
-counted refusals; doctrine technology operands are
+describe their event bodies. Idea/law descriptions share display-name and
+research/equipment/trait/targeted-modifier fragments with timed ideas. Dynamic
+modifier values use the same scoped-variable session, and opinion/static
+modifier catalogues come from the recorded content stack. Balance-of-power
+effects read their values, sides and ordered range identities from the replay;
+range transitions use the native strict interval probe and numeric modifier
+difference. Timed-idea modification/swaps require the unrecorded timed roster
+and remaining days, and advisor-backed ideas require the available-advisor
+roster/cached advisor modifiers; both retain named, counted refusals.
+Fixed5 numeric leaves share one formatting template, with native rounding,
+truncation, integer clamping and newline rules selected per class. Mines refuse
+the unrecorded strategic-region instance name. Corpus-zero classes and ambiguous
+range identities remain named, counted refusals; doctrine technology operands are
 also refused by name rather than dropped from a folder-only description.
 Character effects resolve names and roles through the cached content stack and
 recorded character/leader rosters. Operative-event titles use the ordinary event

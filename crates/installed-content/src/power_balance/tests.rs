@@ -1,5 +1,19 @@
 use super::*;
 
+#[test]
+fn description_fields_keep_fixed5_range_bounds_and_template_defaults() {
+    let read = read_file(b"SYN={initial_value=-0.25 left_side=SYN_LEFT right_side=SYN_RIGHT side={id=SYN_LEFT range={id=SYN_RANGE min=-1 max=0 max=bad}}}", modifiers::UNKNOWN).unwrap();
+    let items = read.items[0].value.items().unwrap();
+    let side = items.iter().find(|item| item.keyword_is("side")).unwrap().value.items().unwrap();
+    let mut notes = Vec::new();
+    let range = range(side.iter().find(|item| item.keyword_is("range")).unwrap().value.items().unwrap(), &mut notes, modifiers::UNKNOWN);
+    assert_eq!((range.min, range.max), (-100_000, 0));
+    assert_eq!((Range::default().min, Range::default().max), (0, 100_000));
+    let database = Database::from_parsed([(Definition { id: b"SYN".to_vec(), initial_value: -25_000, left: b"SYN_LEFT".to_vec(), ..Default::default() }, vec![range])]);
+    assert_eq!(database.definition(b"syn").unwrap().initial_value, -25_000);
+    assert_eq!(database.range(b"syn", b"SYN_RANGE").unwrap().unwrap().min, -100_000);
+}
+
 fn read_file(input: &[u8], registry: modifiers::Registry<'_>) -> Result<native::Read, String> {
     super::read_file(input, registry, &KeyNames::default())
 }

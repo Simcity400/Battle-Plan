@@ -143,6 +143,31 @@ impl Renderer<'_, '_, '_> {
             // modifiers — I
             0x142751C20 /* CAddTimedIdeaEffect */ => self.timed_idea(item, scopes),
 
+            0x1427511D8 /* CAddIdeasEffect */ => self.ideas_effect(item, scopes, false, false), // 140373BB0.
+            0x142751E58 /* CRemoveIdeasEffect */ => self.ideas_effect(item, scopes, true, false), // 140389270.
+            0x142751330 /* CShowIdeasTooltipEffect */ => self.ideas_effect(item, scopes, false, true), // 140394850.
+            0x142759740 /* CRemoveIdeasWithTraitEffect */ => self.remove_ideas_with_trait(item, scopes), // 140389480.
+            0x142751D30 /* CModifyTimedIdeaEffect */ => self.modify_timed_idea(item, scopes), // 140385480.
+            0x142751598 /* CSwapIdeasEffect */ => self.swap_ideas(item, scopes), // 140396910.
+            0x1427527D0 /* CAddOpinionModifierEffect */ => self.opinion_modifier(item, scopes, false, false), // 1403759C0.
+            0x142752978 /* CReverseAddOpinionModifierEffect */ => self.opinion_modifier(item, scopes, false, true), // 1403759C0.
+            0x142752A50 /* CRemoveOpinionModifierEffect */ => self.opinion_modifier(item, scopes, true, false), // 14038A4F0.
+            0x14275D790 /* CAddRelationModifierEffect */ => self.relation_modifier(item, scopes, false), // 140376590.
+            0x14275D888 /* CRemoveRelationModifierEffect */ => self.relation_modifier(item, scopes, true), // 14038AB90.
+            0x142768550 /* CAddRemoveDynamicModifierEffect<> */ => self.dynamic_modifier(item, scopes, false), // 14036CEB0.
+            0x142768620 /* CAddRemoveDynamicModifierEffect<> */ => self.dynamic_modifier(item, scopes, true), // 14036D9C0.
+            0x142739EE8 /* CAddStateModifierEffect */ => self.state_modifier(item, scopes), // 140314A70.
+            0x142738C98 /* CAddStaticProvinceModifierEffect */ => self.province_modifier(item, scopes, false), // 140314F00.
+            0x142738E18 /* CRemoveStaticProvinceModifierEffect */ => self.province_modifier(item, scopes, true), // 140316F70.
+            0x1427A3828 /* CAddPowerBalanceModifierEffect */ => self.balance_modifier(item, scopes, false), // 140482860.
+            0x1427A3920 /* CRemovePowerBalanceModifierEffect */ => self.balance_modifier(item, scopes, true), // 1404844F0.
+            0x1427A35C8 /* CAddPowerBalanceValueEffect */ => self.balance_value(item, scopes), // 140482CE0.
+            0x1427A34F8 /* CRemovePowerBalanceEffect */ => self.balance_remove(item, scopes), // 140484040.
+            0x1427A32E0 /* CSetPowerBalanceEffect */ => self.balance_set(item, scopes), // 140484970.
+            0x14273A8F0 /* CAddStateResistanceComplianceModifierEffect */
+            | 0x14273AA20 /* CRemoveStateResistanceComplianceModifierEffect */
+            | 0x1427A3A18 /* CRemoveAllPowerBalanceModifiersEffect */ => Err("zero reach across the inventory effective stacks; native description is not ported".into()), // 140315850/140483800.
+
             // numeric — I
             0x142751FF8 /* CAddPoliticalPowerEffect */ => {
                 self.numeric_value(item, scopes, b"POLITICS_ADD_POLITICAL_POWER")
@@ -152,6 +177,55 @@ impl Renderer<'_, '_, '_> {
             } // 140370FF0
             0x142758BF8 /* CAddStabilityEffect */ => self.numeric_value(item, scopes, b"EFFECT_ADD_STABILITY"), // 140377DF0
             0x142758DC8 /* CAddWarSupportEffect */ => self.numeric_value(item, scopes, b"EFFECT_ADD_WAR_SUPPORT"), // 1403797B0
+
+            0x1427523C8 /* AddFuelEffect */ => self.numeric_value(item, scopes, b"POLITICS_ADD_FUEL"), // 14036EDE0; reach 169.
+            0x1427294A0 /* CAddAttackSkillEffect */ => self.numeric_leaf(item, scopes, b"ADD_ATTACK_SKILL", numeric::NumericFormat::Skill), // 1402E9B70; reach 634.
+            0x1427A7368 /* CAddCICEffect@?A0x9cb35315 */ => self.numeric_leaf(item, scopes, b"EFFECT_ADD_CIC", numeric::NumericFormat::Truncated), // 14048E850; reach 304.
+            0x142763688 /* CAddCollaborationEffect */ => self.numeric_collaboration(item, scopes), // 140371C60; reach 118.
+            0x14275D980 /* CAddCommandPowerEffect */ => self.numeric_value(item, scopes, b"EFFECT_ADD_COMMAND_POWER"), // 140371EF0; reach 8240.
+            0x142727748 /* CAddCoordinationSkillEffect */ => self.numeric_leaf(item, scopes, b"ADD_COORDINATION_SKILL", numeric::NumericFormat::Skill), // 1402E9D20; reach 120.
+            0x1427632E0 /* CAddDecryptionEffect */ => self.numeric_decryption(item, scopes), // 140373590; reach 138.
+            0x142729588 /* CAddDefenseSkillEffect */ => self.numeric_leaf(item, scopes, b"ADD_DEFENSE_SKILL", numeric::NumericFormat::Skill), // 1402E9ED0; reach 516.
+            0x142763508 /* CAddIntelEffect */ => self.numeric_intel(item, scopes), // 140373D80; reach 400.
+            0x142761428 /* CAddLegitimacyEffect */ => self.numeric_value(item, scopes, b"EFFECT_ADD_LEGITIMACY"), // 1403741F0; reach 152.
+            0x142729670 /* CAddLogisticsSkillEffect */ => self.numeric_leaf(item, scopes, b"ADD_LOGISTICS_SKILL", numeric::NumericFormat::Skill), // 1402EA080; reach 598.
+            0x142727660 /* CAddManeuverSkillEffect */ => self.numeric_leaf(item, scopes, b"ADD_MANEUVER_SKILL", numeric::NumericFormat::Skill), // 1402EA230; reach 64.
+            0x142761940 /* CAddMinesEffect */ => self.numeric_mines(item, scopes), // 140374410; reach 46.
+            0x142752200 /* CAddNukeEffect */ => self.numeric_leaf(item, scopes, b"EFFECT_ADD_NUKE", numeric::NumericFormat::Rounded), // 140375150; reach 145.
+            0x142727570 /* CAddPlanningSkillEffect */ => self.numeric_leaf(item, scopes, b"ADD_PLANNING_SKILL", numeric::NumericFormat::Skill), // 1402EA590; reach 723.
+            0x142727830 /* CAddSkillLevelEffect */ => self.numeric_leaf(item, scopes, b"ADD_SKILL_LEVEL", numeric::NumericFormat::Skill), // 1402EAC20; reach 460.
+            0x14275AA00 /* CAddThreatEffect */ => self.numeric_leaf(item, scopes, b"EFFECT_ADD_THREAT", numeric::NumericFormat::Threat), // 1403785F0; reach 566.
+            0x14275B850 /* CCreateImportEffect */ => self.numeric_import(item, scopes), // 14037C2F0; reach 24.
+            0x1427AC0C8 /* CCreateProductionLicense */ => self.numeric_license(item, scopes), // 14049C740; reach 1345.
+            0x142728FD8 /* CGainXpEffect */ => self.numeric_leaf(item, scopes, b"EFFECT_GAIN_XP", numeric::NumericFormat::Xp), // 1402EC4D0; reach 532.
+            0x1427522E0 /* CLaunchNukeEffect */ => self.numeric_launch_nuke(item, scopes), // 140383630; reach 620.
+            0x142755F18 /* CRandomizeWeatherEffect */ => Err("zero reach across the inventory effective stacks; native description is not ported".into()), // 140386550; reach 0.
+            0x142763838 /* CSetCollaborationEffect */ => Err("zero reach across the inventory effective stacks; native description is not ported".into()), // 14038FE80; reach 0.
+            0x1427524D8 /* CSetFuelEffect */ => Err("zero reach across the inventory effective stacks; native description is not ported".into()), // 140391140; reach 0.
+            0x142752118 /* CSetFuelRatioEffect */ => self.numeric_value(item, scopes, b"EFFECT_SET_FUEL_RATIO"), // 140391360; reach 16.
+            0x1427391E0 /* CSetGarrisonStrengthEffect */ => self.numeric_leaf(item, scopes, b"EFFECT_SET_GARRISON_STRENGTH", numeric::NumericFormat::Garrison), // 1403181B0; reach 107.
+            0x142761538 /* CSetLegitimacyEffect */ => self.numeric_value(item, scopes, b"EFFECT_SET_LEGITIMACY"), // 140391890; reach 2.
+            0x142758CE0 /* CSetStabilityEffect */ => self.numeric_value(item, scopes, b"EFFECT_SET_STABILITY"), // 140393340; reach 392.
+            0x142761318 /* CSetTruceEffect */ => self.numeric_truce(item, scopes), // 1403941B0; reach 524.
+            0x1427319E8 /* NIndustrialOrganisation::CAddAttachPolicyCooldownEffect */ => Err("zero reach across the inventory effective stacks; native description is not ported".into()), // 1402FBA10; reach 0.
+            0x1427317A8 /* NIndustrialOrganisation::CAddAttachPolicyCostEffect */ => Err("zero reach across the inventory effective stacks; native description is not ported".into()), // 1402FBD20; reach 0.
+            0x1427304D0 /* NIndustrialOrganisation::CAddDesignTeamAssignCostEffect */ => self.numeric_value(item, scopes, b"EFFECT_MIO_ADD_RESEARCH_ASSIGN_COST"), // 1402FC030; reach 43.
+            0x142730AD0 /* NIndustrialOrganisation::CAddDesignTeamChangeCostEffect */ => self.numeric_value(item, scopes, b"EFFECT_MIO_ADD_DESIGN_CHANGE_ASSIGN_COST"), // 1402FC250; reach 1.
+            0x14272F768 /* NIndustrialOrganisation::CAddFundsEffect */ => self.numeric_value(item, scopes, b"EFFECT_MIO_ADD_FUNDS"), // 1402FC470; reach 1643.
+            0x142730DD8 /* NIndustrialOrganisation::CAddFundsGainFactorEffect */ => self.numeric_value(item, scopes, b"EFFECT_MIO_ADD_FUNDS_GAIN_FACTOR"), // 1402FC690; reach 980.
+            0x1427307C8 /* NIndustrialOrganisation::CAddIndustrialManufacturerAssignCostEffect */ => self.numeric_value(item, scopes, b"EFFECT_MIO_ADD_PRODUCTION_ASSIGN_COST"), // 1402FC8B0; reach 5.
+            0x14272FA68 /* NIndustrialOrganisation::CAddSizeEffect */ => self.numeric_leaf(item, scopes, b"EFFECT_MIO_ADD_SIZE_SINGULAR", numeric::NumericFormat::Size), // 1402FCCF0; reach 2670.
+            0x142731060 /* NIndustrialOrganisation::CAddSizeUpRequirementFactorEffect */ => self.numeric_value(item, scopes, b"EFFECT_MIO_ADD_SIZEUP_REQUIREMENT_FACTOR"), // 1402FCFC0; reach 15.
+            0x14272FFF0 /* NIndustrialOrganisation::CAddTaskCapacityEffect */ => self.numeric_leaf(item, scopes, b"EFFECT_MIO_ADD_TASK_CAPACITY", numeric::NumericFormat::Truncated), // 1402FD1E0; reach 32.
+            0x142731AD8 /* NIndustrialOrganisation::CSetAttachPolicyCooldownEffect */ => Err("zero reach across the inventory effective stacks; native description is not ported".into()), // 1402FD410; reach 0.
+            0x1427318B0 /* NIndustrialOrganisation::CSetAttachPolicyCostEffect */ => Err("zero reach across the inventory effective stacks; native description is not ported".into()), // 1402FD720; reach 0.
+            0x142730630 /* NIndustrialOrganisation::CSetDesignTeamAssignCostEffect */ => self.numeric_value(item, scopes, b"EFFECT_MIO_SET_RESEARCH_ASSIGN_COST"), // 1402FDA30; reach 2.
+            0x142730C38 /* NIndustrialOrganisation::CSetDesignTeamChangeCostEffect */ => Err("zero reach across the inventory effective stacks; native description is not ported".into()), // 1402FDC50; reach 0.
+            0x14272F908 /* NIndustrialOrganisation::CSetFundsEffect */ => Err("zero reach across the inventory effective stacks; native description is not ported".into()), // 1402FDE70; reach 0.
+            0x142730ED0 /* NIndustrialOrganisation::CSetFundsGainFactorEffect */ => self.numeric_value(item, scopes, b"EFFECT_MIO_SET_FUNDS_GAIN_FACTOR"), // 1402FE0A0; reach 2.
+            0x142730928 /* NIndustrialOrganisation::CSetIndustrialManufacturerAssignCostEffect */ => Err("zero reach across the inventory effective stacks; native description is not ported".into()), // 1402FE2C0; reach 0.
+            0x142731160 /* NIndustrialOrganisation::CSetSizeUpRequirementFactorEffect */ => Err("zero reach across the inventory effective stacks; native description is not ported".into()), // 1402FEB90; reach 0.
+            0x1427300E0 /* NIndustrialOrganisation::CSetTaskCapacityEffect */ => Err("zero reach across the inventory effective stacks; native description is not ported".into()), // 1402FEDB0; reach 0.
 
             // characters — F
             0x14275BDD0 /* CWhitePeaceEffect */ => self.char_peace(item, scopes, false), // 14039AA90

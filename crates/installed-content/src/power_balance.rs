@@ -131,9 +131,12 @@ pub const RULES: &[(&str, &str, bool, bool)] = &[
     ),
 ];
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Range {
     pub id: Vec<u8>,
+    /// CProgressSection +8/+0x10 (140A05820); constructor 140A7C610.
+    pub min: i64,
+    pub max: i64,
     pub modifiers: modifiers::Modifiers,
     /// One boolean per executable rule, including the defaults (14062BED0).
     pub rules: Vec<bool>,
@@ -142,13 +145,48 @@ pub struct Range {
     pub deactivation: Vec<Item>,
 }
 
+impl Default for Range {
+    fn default() -> Self {
+        Self {
+            id: Vec::new(), min: 0, max: 100_000,
+            modifiers: modifiers::Modifiers::default(), rules: Vec::new(),
+            activation: Vec::new(), deactivation: Vec::new(),
+        }
+    }
+}
+
+/// Template own fields, consumed by effect descriptions (140A7FD10).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Definition {
+    pub id: Vec<u8>,
+    pub initial_value: i64,
+    pub left: Vec<u8>,
+    pub right: Vec<u8>,
+    /// Native side array order; find_side (140A7E960) takes its first match.
+    pub sides: Vec<Vec<u8>>,
+}
+
 #[derive(Default)]
 pub struct Database {
     balances: BTreeMap<Vec<u8>, Vec<Range>>,
+    definitions: BTreeMap<Vec<u8>, Definition>,
     pub notes: Vec<String>,
 }
 
 impl Database {
+    pub fn definition(&self, id: &[u8]) -> Option<&Definition> {
+        self.definitions.get(&parser::c_string(id).to_ascii_lowercase())
+    }
+
+    pub fn from_parsed(entries: impl IntoIterator<Item = (Definition, Vec<Range>)>) -> Self {
+        let mut database = Self::default();
+        for (definition, ranges) in entries {
+            let key = definition.id.to_ascii_lowercase();
+            database.balances.insert(key.clone(), ranges);
+            database.definitions.insert(key, definition);
+        }
+        database
+    }
     /// A recorded id identifies a unique authored range. The active pointer
     /// (+0xB0, 140E43E70) is not recorded, so duplicate ids are ambiguous.
     pub fn range(&self, balance: &[u8], range: &[u8]) -> Result<Option<&Range>, String> {
@@ -257,6 +295,12 @@ fn range(items: &[Item], notes: &mut Vec<String>, registry: modifiers::Registry<
             Some(b"id") => {
                 range.id = parser::c_string(item.value.scalar().unwrap_or_default()).to_vec()
             }
+            Some(b"min") => {
+                if let Some(value) = modifiers::read_fixed5(item) { range.min = value; }
+            }
+            Some(b"max") => {
+                if let Some(value) = modifiers::read_fixed5(item) { range.max = value; }
+            }
             Some(b"modifier") => range
                 .modifiers
                 .read_all(item.value.items().unwrap_or_default()),
@@ -326,6 +370,24 @@ pub fn read(layers: &ResolvedLayers, registry: modifiers::Registry<'_>) -> io::R
         for balance in read.items {
             let key = parser::c_string(balance.key.as_deref().unwrap_or_default()).to_vec();
             let items = balance.value.items().unwrap_or_default();
+            let mut definition = Definition { id: key.clone(), ..Default::default() };
+            // 140A7CA70 initialises value to zero; repeated reads retain on failure.
+            for item in items {
+                if item.keyword_is("initial_value") {
+                    if let Some(value) = modifiers::read_fixed5(item) { definition.initial_value = value; }
+                } else if item.keyword_is("left_side") {
+                    definition.left = parser::c_string(item.value.scalar().unwrap_or_default()).to_vec();
+                } else if item.keyword_is("right_side") {
+                    definition.right = parser::c_string(item.value.scalar().unwrap_or_default()).to_vec();
+                } else if item.keyword_is("side") {
+                    let mut id = Vec::new();
+                    for own in item.value.items().unwrap_or_default().iter().filter(|own| own.keyword_is("id")) {
+                        id = parser::c_string(own.value.scalar().unwrap_or_default()).to_vec();
+                    }
+                    definition.sides.push(id);
+                }
+            }
+            database.definitions.insert(key.to_ascii_lowercase(), definition);
             let mut ranges = Vec::new();
             for item in items.iter().filter(|i| i.keyword_is("range")) {
                 ranges.push(range(
@@ -369,6 +431,12 @@ pub fn read(layers: &ResolvedLayers, registry: modifiers::Registry<'_>) -> io::R
         }
     }
     Ok(database)
+}
+
+/// The content registry supplies 1406042A0's native modifier-token lookup.
+pub fn read_descriptions(layers: &ResolvedLayers) -> io::Result<Database> {
+    let names = layers.key_names()?;
+    read(layers, &|key| modifiers::registered(key, Some(&names)))
 }
 
 #[cfg(test)]

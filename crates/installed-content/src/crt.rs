@@ -161,6 +161,16 @@ pub fn scan_i32(bytes: &[u8]) -> Scanned<i32> {
     parse_integer(bytes, 0, true).map(|value| value as u32 as i32)
 }
 
+/// `sscanf(text, "%d", &value)` (1424B0220, format 14291F82C):
+/// signed decimal, narrowed by the caller when its destination is a short.
+pub fn scan_d32(bytes: &[u8]) -> Scanned<i32> {
+    parse_integer(bytes, 10, true).map(|value| value as u32 as i32)
+}
+
+#[cfg(test)]
+#[path = "crt/tests.rs"]
+mod decimal_tests;
+
 /// `sscanf(text, "%u", &value)` (ReadScriptUnsignedInt32 1424AB9A0): the
 /// unsigned decimal conversion, its low 32 bits, so `4294967296` stores 0
 /// and `-1` stores `u32::MAX`.

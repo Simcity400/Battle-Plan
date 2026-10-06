@@ -1,6 +1,22 @@
 use super::*;
 
 #[test]
+fn targeted_modifiers_keep_the_original_scoped_operand_and_absent_target() {
+    for (body, tag, operand) in [
+        ("tag=bBb attack=1", Some("BBB"), Some(b"bBb".as_slice())),
+        ("tag=event_target:MixedCase attack=1", None, Some(b"event_target:MixedCase".as_slice())),
+        ("tag=var:MixedCase tag=global.MixedCase attack=1", Some("GLOBAL.MIXEDCASE"), Some(b"global.MixedCase".as_slice())),
+        ("attack=1", None, None),
+    ] {
+        let items = crate::parser::parse(body.as_bytes()).unwrap().items;
+        let modifier = targeted(&items);
+        assert_eq!(modifier.tag.as_deref(), tag);
+        assert_eq!(modifier.operand.as_deref(), operand);
+        assert_eq!(modifier.modifiers.values[0].value, 100_000);
+    }
+}
+
+#[test]
 fn numeric_notes_skip_blocks_and_show_invalid_scalar_bytes_lossily() {
     let document =
         crate::parser::parse(b"block = { } integer = \"\xfe\" fixed = \"\xfe\"").unwrap();

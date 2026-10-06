@@ -120,16 +120,17 @@ impl Renderer<'_, '_, '_> {
         ) // LocalizeForCountry 140BBA780.
     }
 
-    pub(super) fn units_equipment_production(
+    /// CEquipmentReference::GetName (141411150), shared by production/licences.
+    pub(super) fn units_equipment_reference_name(
         &self,
-        item: &Item,
+        fields: &[Item],
         scopes: Scopes,
     ) -> Result<String, String> {
         let mut version = "";
         let mut kind = b"".as_slice();
         let mut creator = b"---".as_slice(); // Country-database slot0, 14070E670/1427CDA44.
         // 141411210 mutates the same reference across repeated equipment bodies.
-        for equipment in children(item)
+        for equipment in fields
             .iter()
             .filter(|field| field.keyword_is("equipment"))
         {
@@ -168,6 +169,15 @@ impl Renderer<'_, '_, '_> {
         } else {
             version.to_owned()
         };
+        Ok(name)
+    }
+
+    pub(super) fn units_equipment_production(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let name = self.units_equipment_reference_name(children(item), scopes)?;
         self.localised(
             b"EFFECT_ADD_EQUIPMENT_PRODUCTION",
             &[("EQUIPMENT", Argument::Text(&name))],

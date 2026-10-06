@@ -29,6 +29,18 @@
 //!   `modifier_list_with` expands it in the supplied scope (14054E520/1410CF560).
 //!   `ModifierListOptions` maps the native formatting arguments; `modifier_list`
 //!   uses its defaults. The numeric prefix is a separate `&str` argument.
+//! - `Content::{static_modifiers, dynamic_modifiers, opinion_modifiers,
+//!   power_balances}` supplies description catalogues from the same stack;
+//!   static descriptions resolve each requested name once (140550940).
+//! - `Renderer::units_equipment_reference_name(&self, fields: &[Item],
+//!   scopes: Scopes) -> Result<String, String>` shares CEquipmentReference naming
+//!   for production and licences (141411150). `character_content().catalogue`
+//!   `char_country_traits` and `char_equipment_bonuses` are shared inside effect_description for
+//!   advisor-backed idea lookup and equipment fragments (1410D69C0/140FBB140).
+//! - Numeric leaves share `numeric_leaf(&self, item: &Item, scopes: Scopes,
+//!   key: &[u8], format: numeric::NumericFormat) -> Result<String, String>`;
+//!   `numeric_value` keeps its existing fixed5 signature (1405382B0).
+//!   The native modifier/number formatters below remain unchanged.
 //!   `crate::modifier_text::value_text`, localisation
 //!   `Argument`, and `installed_content::fixed5::{fixed5_to_string, fixed5_percent}` retain
 //!   native modifier/number formatting (14054FE50, 142230F20).
@@ -193,6 +205,10 @@ pub struct Content<'a> {
     pub doctrines: Option<&'a installed_content::doctrines::Database>,
     pub decisions: Option<&'a installed_content::decisions::Database>,
     pub ideas: Option<&'a installed_content::ideas::IdeaContent>,
+    pub static_modifiers: Option<&'a installed_content::static_modifiers::Descriptions>,
+    pub dynamic_modifiers: Option<&'a installed_content::dynamic_modifiers::Database>,
+    pub opinion_modifiers: Option<&'a installed_content::opinion_modifiers::Database>,
+    pub power_balances: Option<&'a installed_content::power_balance::Database>,
     pub name_lists: Option<&'a installed_content::names::NameLists>,
     pub events: Option<&'a EventLookup<'a>>,
     pub key_names: Option<&'a installed_content::key_names::KeyNames>,
@@ -215,6 +231,10 @@ pub struct CachedContent {
     doctrines: Option<installed_content::doctrines::Database>,
     decisions: Option<installed_content::decisions::Database>,
     ideas: Option<installed_content::ideas::IdeaContent>,
+    static_modifiers: installed_content::static_modifiers::Descriptions,
+    dynamic_modifiers: Option<installed_content::dynamic_modifiers::Database>,
+    opinion_modifiers: Option<installed_content::opinion_modifiers::Database>,
+    power_balances: Option<installed_content::power_balance::Database>,
     /// Advisor templates from the same ideas read (140FC0B30 -> 1406B0490).
     pub advisor_templates: Option<installed_content::characters::Characters>,
     name_lists: Option<installed_content::names::NameLists>,
@@ -253,6 +273,9 @@ impl CachedContent {
         let doctrines = keep(installed_content::doctrines::read(layers), "doctrines", &mut gaps);
         let decisions = keep(installed_content::decisions::read(layers), "decisions", &mut gaps);
         let defines = environment.defines();
+        let dynamic_modifiers = keep(installed_content::dynamic_modifiers::read(layers), "dynamic modifiers", &mut gaps);
+        let opinion_modifiers = keep(installed_content::opinion_modifiers::read(layers, defines), "opinion modifiers", &mut gaps);
+        let power_balances = keep(installed_content::power_balance::read_descriptions(layers), "power balances", &mut gaps);
         let read_ideas = || {
             let officers = defines.strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")?;
             installed_content::ideas::read(layers, &officers)
@@ -274,6 +297,9 @@ impl CachedContent {
             .as_ref()
             .map(|db| db.notes.clone())
             .unwrap_or_default();
+        if let Some(database) = &dynamic_modifiers { notes.extend(database.notes.iter().cloned()); }
+        if let Some(database) = &opinion_modifiers { notes.extend(database.notes.iter().cloned()); }
+        if let Some(database) = &power_balances { notes.extend(database.notes.iter().cloned()); }
         notes.extend(environment.catalogue_notes.iter().cloned());
         notes.extend(
             decisions
@@ -374,6 +400,10 @@ impl CachedContent {
             doctrines,
             decisions,
             ideas,
+            static_modifiers: installed_content::static_modifiers::Descriptions::default(),
+            dynamic_modifiers,
+            opinion_modifiers,
+            power_balances,
             advisor_templates,
             name_lists,
             key_names,
@@ -397,6 +427,10 @@ impl CachedContent {
             doctrines: self.doctrines.as_ref(),
             decisions: self.decisions.as_ref(),
             ideas: self.ideas.as_ref(),
+            static_modifiers: Some(&self.static_modifiers),
+            dynamic_modifiers: self.dynamic_modifiers.as_ref(),
+            opinion_modifiers: self.opinion_modifiers.as_ref(),
+            power_balances: self.power_balances.as_ref(),
             name_lists: self.name_lists.as_ref(),
             key_names: self.key_names.as_ref(),
             scripted_effects: self.scripted_effects.as_ref(),

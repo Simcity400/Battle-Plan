@@ -164,7 +164,7 @@ impl Renderer<'_, '_, '_> {
 
     // 1407118A0 -> 140711C80: authored equipment name, yellow controls,
     // ': \n'@1427D4220; stat rows are the native stored order, not sorted.
-    fn char_equipment_bonuses(
+    pub(in crate::effect_description) fn char_equipment_bonuses(
         &self,
         bonuses: &[EquipmentBonus],
         prefix: &str,

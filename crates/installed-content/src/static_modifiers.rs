@@ -55,7 +55,82 @@ use crate::{
         native::{self, Shape},
     },
 };
-use std::io;
+use std::{cell::{OnceCell, RefCell}, collections::BTreeMap, io};
+
+type DescriptionValue = Result<(Option<String>, modifiers::Modifiers), String>;
+type DescriptionFiles = Result<(KeyNames, Vec<(String, File)>), String>;
+
+/// Lazy description lookups share the native file walk and bucket precedence.
+/// Each stack is read once, and each requested name is resolved once.
+#[derive(Default)]
+pub struct Descriptions {
+    files: OnceCell<DescriptionFiles>,
+    values: RefCell<BTreeMap<String, DescriptionValue>>,
+}
+
+impl Descriptions {
+    pub fn from_blocks(blocks: impl IntoIterator<Item = (String, modifiers::Modifiers)>) -> Self {
+        Self {
+            values: RefCell::new(blocks.into_iter().map(|(name, block)| {
+                (name.clone(), Ok((Some(name), block)))
+            }).collect()),
+            ..Self::default()
+        }
+    }
+
+    /// 140550940 returns the last exact-name definition, or the empty null object.
+    pub fn get(&self, layers: &ResolvedLayers, name: &str) -> DescriptionValue {
+        if let Some(value) = self.values.borrow().get(name) {
+            return value.clone();
+        }
+        let value = (|| {
+            let (names, files) = self.files.get_or_init(|| {
+                let mut names = layers.key_names().map_err(|why| why.to_string())?.at(Point::StaticModifiers);
+                // Static load 14018F06D precedes sub-unit modifier registration.
+                names.effects.modifiers = names.effects.early_modifiers.clone();
+                names.effects.modifiers_gap = names.effects.early_modifiers_gap.clone();
+                let registry = |key: &[u8]| modifiers::registered(key, Some(&names));
+                let files = layer_files(layers).map_err(|why| why.to_string())?.into_iter().map(|(path, bytes)| {
+                    (path, read_file_with_registry(&bytes, Some(&names), &registry))
+                }).collect();
+                Ok((names, files))
+            }).as_ref().map_err(Clone::clone)?;
+            let (mut values, _) = resolve_parsed(
+                files.iter().map(|(path, file)| (path.as_str(), file)),
+                &[name],
+                (None, modifiers::Modifiers::default()),
+                |name, items| {
+                    let mut block = stored_block(items)?;
+                    description_values(&mut block, names)?;
+                    Ok((Some(name.to_owned()), block))
+                },
+            );
+            values.pop().expect("one requested modifier").map_err(|why| {
+                format!("{}: static modifier {}: {}", why.file, name, why.reason)
+            })
+        })();
+        self.values.borrow_mut().insert(name.to_owned(), value.clone());
+        value
+    }
+
+    pub fn notes(&self) -> Vec<String> {
+        self.files.get().and_then(|files| files.as_ref().ok()).into_iter().flat_map(|(_, files)| files)
+            .flat_map(|(path, file)| file.notes.iter().map(move |note| format!("{path}: {note}")))
+            .collect()
+    }
+}
+
+// 1406042A0/14054FDB0: an unknown token never inserts an accumulator value.
+fn description_values(block: &mut modifiers::Modifiers, names: &KeyNames) -> Result<(), String> {
+    for value in &block.values {
+        if modifiers::registered(value.name.as_bytes(), Some(names)).is_none() {
+            return Err(format!("modifier {} registry is unavailable at static load (1406042A0)", value.key));
+        }
+    }
+    block.values.retain(|value| modifiers::registered(value.name.as_bytes(), Some(names)) == Some(true));
+    for child in &mut block.children { description_values(child, names)?; }
+    Ok(())
+}
 
 /// The native directory `1406007E0` is called with.
 pub const DIRECTORY: &str = "common/modifiers";
@@ -182,6 +257,10 @@ enum Node {
 }
 
 fn read_file(bytes: &[u8], key_names: Option<&KeyNames>) -> File {
+    read_file_with_registry(bytes, key_names, modifiers::UNKNOWN)
+}
+
+fn read_file_with_registry(bytes: &[u8], key_names: Option<&KeyNames>, registry: modifiers::Registry<'_>) -> File {
     let mut undecided: Vec<Undecided> = Vec::new();
     // Each definition's position among those read, when it began.
     let mut entries = 0_usize;
@@ -202,7 +281,7 @@ fn read_file(bytes: &[u8], key_names: Option<&KeyNames>) -> File {
                     Shape::Object(Node::Modifier(modifiers::Node::Targeted))
                 }
                 Node::Modifier(modifier) => {
-                    modifiers::shape(modifier, field, modifiers::UNKNOWN, &mut undecided)
+                    modifiers::shape(modifier, field, registry, &mut undecided)
                         .map(Node::Modifier)
                 }
             };
@@ -282,12 +361,21 @@ fn resolve_with<'a, T: Clone>(
     names: &[&str],
     key_names: Option<&KeyNames>,
     absent: T,
+    stored: impl FnMut(&str, &[Item]) -> Result<T, String>,
+) -> (Vec<Result<T, Refusal>>, Vec<String>) {
+    let files: Vec<_> = files.into_iter().map(|(path, bytes)| (path, read_file(bytes, key_names))).collect();
+    resolve_parsed(files.iter().map(|(path, file)| (*path, file)), names, absent, stored)
+}
+
+fn resolve_parsed<'a, T: Clone>(
+    files: impl IntoIterator<Item = (&'a str, &'a File)>,
+    names: &[&str],
+    absent: T,
     mut stored: impl FnMut(&str, &[Item]) -> Result<T, String>,
 ) -> (Vec<Result<T, Refusal>>, Vec<String>) {
     let mut blocks = vec![Ok(absent); names.len()];
     let mut notes = Vec::new();
-    for (path, bytes) in files {
-        let file = read_file(bytes, key_names);
+    for (path, file) in files {
         let refuse = |name: &str, reason: String| Refusal {
             file: path.to_owned(),
             modifier: name.to_owned(),
