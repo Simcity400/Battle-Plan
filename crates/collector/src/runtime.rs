@@ -1427,8 +1427,8 @@ impl RegistryWatch {
     }
 
     /// Larger raid arena demand than any seen, at most every
-    /// `INTEL_INTERVAL`: raid parents' type lists and convoy reservations
-    /// fill after a save's registry does, and a full hour must read them all.
+    /// `INTEL_INTERVAL`: the path memo, raid parents' type lists and convoy
+    /// reservations fill after a save's registry does; a full hour reads all.
     fn poll_raids(
         &mut self,
         memory: &impl engine::Memory,
@@ -1443,11 +1443,13 @@ impl RegistryWatch {
         self.last_raids = Some(Instant::now());
         let demand = crate::country_scale::observe_raid_arenas(memory, base)?;
         (demand.type_tokens > self.raids.type_tokens
-            || demand.reservation_words > self.raids.reservation_words)
+            || demand.reservation_words > self.raids.reservation_words
+            || demand.path_rows > self.raids.path_rows)
             .then(|| {
                 self.raids.type_tokens = self.raids.type_tokens.max(demand.type_tokens);
                 self.raids.reservation_words =
                     self.raids.reservation_words.max(demand.reservation_words);
+                self.raids.path_rows = self.raids.path_rows.max(demand.path_rows);
                 self.raids
             })
     }
@@ -2351,6 +2353,77 @@ mod tests {
         memory.0.set(1 << 20);
         watch.last = None;
         assert_eq!(watch.poll(&memory, 0), None);
+    }
+
+    #[test]
+    fn raid_path_memo_growth_presizes_before_refresh() {
+        use engine::{Memory, craid_system, raid_path_memo};
+        use std::cell::Cell;
+        // Five thousand null country slots, with no raid-parent payloads.
+        // The memo buckets are deliberately unreadable: sizing needs headers.
+        struct Memo {
+            registry: Registry,
+            mask: Cell<u32>,
+        }
+        impl Memory for Memo {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                const STATE: usize = 0x1000;
+                const SYSTEM: usize = 0x8000;
+                if address == STATE + cgame_state::RAID_SYSTEM && output.len() == 8 {
+                    output.copy_from_slice(&(SYSTEM as u64).to_le_bytes());
+                    return true;
+                }
+                if (0x9008..0x9000 + 5_001 * 8).contains(&address) && output.len() == 8 {
+                    output.fill(0);
+                    return true;
+                }
+                let mut bytes = [0_u8; 0x300];
+                bytes[..8].copy_from_slice(&(craid_system::VTABLE_RVA as u64).to_le_bytes());
+                let memo = raid_path_memo::MEMO;
+                bytes[memo + 8..memo + 16].copy_from_slice(&0x10_0000_u64.to_le_bytes());
+                bytes[memo + 0x14..memo + 0x18].copy_from_slice(&self.mask.get().to_le_bytes());
+                bytes[memo + 0x18] = (self.mask.get() + 1).ilog2() as u8 + 2;
+                if let Some(source) = address
+                    .checked_sub(SYSTEM)
+                    .and_then(|offset| bytes.get(offset..offset + output.len()))
+                {
+                    output.copy_from_slice(source);
+                    return true;
+                }
+                self.registry.copy(address, output)
+            }
+        }
+        let memory = Memo {
+            registry: Registry(Cell::new(5_001), Cell::new(0)),
+            mask: Cell::new(2_047),
+        };
+        let mut sizing = crate::country_scale::Sizing::for_slots(5_001);
+        assert_eq!(sizing.extended.projects.rows[12], 1_024);
+        let initial = crate::country_scale::observe_raid_arenas(&memory, 0).unwrap();
+        assert_eq!(initial.path_rows, 2_048 + 13);
+        sizing.extended.raise_for_raid_arenas(initial);
+        assert!(sizing.extended.projects.rows[12] >= initial.path_rows);
+        let mut watch = RegistryWatch {
+            raids: initial,
+            ..Default::default()
+        };
+        assert_eq!(watch.poll_raids(&memory, 0), None);
+        // Rehash alone grows: tokens and reservations remain unchanged.
+        memory.mask.set(8_191);
+        assert_eq!(watch.poll_raids(&memory, 0), None); // throttled
+        watch.last_raids = None;
+        let demand = watch.poll_raids(&memory, 0).unwrap();
+        assert_eq!(demand.path_rows, 8_192 + 15);
+        assert_eq!(demand.type_tokens, initial.type_tokens);
+        assert_eq!(demand.reservation_words, initial.reservation_words);
+        sizing.extended.raise_for_raid_arenas(demand);
+        assert!(sizing.extended.projects.rows[12] >= demand.path_rows);
+        watch.last_raids = None;
+        assert_eq!(watch.poll_raids(&memory, 0), None);
+        memory.mask.set(1_023);
+        watch.last_raids = None;
+        assert_eq!(watch.poll_raids(&memory, 0), None);
+        assert_eq!(watch.raids.path_rows, demand.path_rows);
     }
 
     #[test]

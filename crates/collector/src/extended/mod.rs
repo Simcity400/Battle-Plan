@@ -554,6 +554,7 @@ impl Capacities {
     /// Presize the raid arenas whose per-country demand content decides.
     pub fn raise_for_raid_arenas(&mut self, demand: crate::country_scale::RaidArenas) {
         self.projects.raise_for_raid_type_tokens(demand.type_tokens);
+        self.projects.raise_for_raid_paths(demand.path_rows);
         self.projects.raise_for_facilities(demand.facility_rows);
         crate::country_scale::raise(&mut self.air.scores.regions, demand.air_regions);
         crate::country_scale::raise(

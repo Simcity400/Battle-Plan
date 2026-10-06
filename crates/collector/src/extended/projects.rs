@@ -117,6 +117,11 @@ impl Capacities {
         raise(&mut self.raid_type_tokens, rows(tokens, 1));
     }
 
+    pub(crate) fn raise_for_raid_paths(&mut self, count: usize) {
+        use crate::country_scale::{raise, rows};
+        raise(&mut self.rows[12], rows(count, 1));
+    }
+
     pub(crate) fn raise_for_facilities(&mut self, count: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows[16], rows(count, 1));

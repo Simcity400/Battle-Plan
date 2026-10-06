@@ -115,11 +115,12 @@ pub fn observe_production_lines(memory: &impl Memory, base: usize) -> Option<usi
 
 /// The raid arenas whose per-country demand content decides, not the slot
 /// count: the raid type tokens of every raid parent and of the player cache,
-/// and every country's convoy reservation words.
+/// every country's convoy reservation words, and the session's path memo.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RaidArenas {
     pub type_tokens: usize,
     pub reservation_words: usize,
+    pub path_rows: usize,
     pub facility_rows: usize,
     pub air_regions: usize,
     pub counteroperatives: usize,
@@ -151,6 +152,7 @@ pub fn observe_raid_arenas(memory: &impl Memory, base: usize) -> Option<RaidAren
     Some(RaidArenas {
         type_tokens: parents.checked_add(player)?,
         reservation_words,
+        path_rows: engine::raid_path_memo::required_rows(memory, base, state).unwrap_or(0),
         facility_rows,
         air_regions,
         counteroperatives: engine::raid_intel_inputs::required_operatives(memory, base, state)
@@ -336,12 +338,14 @@ mod tests {
     /// The #63 attach hour: 440 countries whose raid type lists need more
     /// tokens than the default arena (it read 336 parents), and more
     /// convoy reservation words than the default 512. The observed demand
-    /// raises both arenas, so the first hour's packs hold every row.
+    /// raises the arenas, including a path memo beyond the default 1,024
+    /// rows, so the first hour's packs hold every row.
     #[test]
-    fn observed_raid_demand_presizes_both_raid_arenas() {
+    fn observed_raid_demand_presizes_raid_arenas() {
         let demand = RaidArenas {
             type_tokens: 5_400,
             reservation_words: 1_900,
+            path_rows: 5_000,
             facility_rows: 10_000,
             counteroperatives: 5000 * 11,
             air_regions: 700,
@@ -349,8 +353,10 @@ mod tests {
         let mut sizing = Sizing::for_slots(440);
         let default_tokens = sizing.extended.projects.raid_type_tokens;
         assert!(default_tokens < demand.type_tokens);
+        assert!(sizing.extended.projects.rows[12] < demand.path_rows);
         sizing.extended.raise_for_raid_arenas(demand);
         assert!(sizing.extended.projects.raid_type_tokens >= demand.type_tokens);
+        assert!(sizing.extended.projects.rows[12] >= demand.path_rows);
         assert!(sizing.extended.projects.rows[16] >= demand.facility_rows);
         assert!(sizing.extended.air.scores.regions >= demand.air_regions);
         assert!(

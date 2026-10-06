@@ -54,6 +54,15 @@ pub struct Row {
     pub ok: u8,
 }
 
+/// Header-only sizing hint; nothing observed here is recorded. Rehash
+/// `1419F5D90` allocates `mask + 1 + max_probe` data slots, then a sentinel.
+/// Inserts (`1419F3430`) keep that geometry until rehash, so this bounds every
+/// row `copy_table` can emit even if COUNT grows before the next sizing poll.
+pub fn required_rows(memory: &impl Memory, base: usize, game_state: usize) -> Option<usize> {
+    let memo = memo_address(memory, base, game_state).ok()?;
+    table_slots(&read_header(memory, memo).ok()?).ok()
+}
+
 /// Every memo entry, ordered by (source, target). Capacity shortfalls
 /// truncate and count the unread entries. `torn` counts copies rejected
 /// because a writer overlapped them (see the module documentation).
@@ -77,6 +86,24 @@ fn walk_rows(
     rows: &mut [Row],
     torn: &mut u32,
 ) -> Result<Outcome, &'static str> {
+    let memo = memo_address(memory, base, game_state)?;
+    let before = read_header(memory, memo)?;
+    let copied = copy_table(memory, &before, rows);
+    let after = read_header(memory, memo)?;
+    let locked = |header: &[u8; HEADER]| header[LOCK - BUCKETS..] != [0; 4];
+    if before != after || locked(&before) || locked(&after) {
+        *torn += 1;
+        return Err("raid path memo was written during the read");
+    }
+    // A quiet table that fails validation is malformed, not torn.
+    copied
+}
+
+fn memo_address(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+) -> Result<usize, &'static str> {
     let system = game_state
         .checked_add(cgame_state::RAID_SYSTEM)
         .and_then(|at| read::<u64>(memory, at))
@@ -89,23 +116,29 @@ fn walk_rows(
     if read::<u64>(memory, system) != Some(vtable) {
         return Err("raid system vtable mismatch");
     }
-    let memo = system + MEMO;
-    let header = || {
-        let mut bytes = [0_u8; HEADER];
-        read_slice(memory, memo + BUCKETS, &mut bytes)
-            .then_some(bytes)
-            .ok_or("raid path memo header unreadable")
-    };
-    let before = header()?;
-    let copied = copy_table(memory, &before, rows);
-    let after = header()?;
-    let locked = |header: &[u8; HEADER]| header[LOCK - BUCKETS..] != [0; 4];
-    if before != after || locked(&before) || locked(&after) {
-        *torn += 1;
-        return Err("raid path memo was written during the read");
-    }
-    // A quiet table that fails validation is malformed, not torn.
-    copied
+    system
+        .checked_add(MEMO)
+        .ok_or("raid path memo address overflow")
+}
+
+fn read_header(memory: &impl Memory, memo: usize) -> Result<[u8; HEADER], &'static str> {
+    let mut bytes = [0_u8; HEADER];
+    memo.checked_add(BUCKETS)
+        .is_some_and(|at| read_slice(memory, at, &mut bytes))
+        .then_some(bytes)
+        .ok_or("raid path memo header unreadable")
+}
+
+fn table_slots(header: &[u8; HEADER]) -> Result<usize, &'static str> {
+    let mask = u32::from_le_bytes(header[MASK - BUCKETS..][..4].try_into().unwrap());
+    let slots = mask
+        .checked_add(1)
+        .filter(|slots| slots.is_power_of_two())
+        .ok_or("raid path memo mask is not a power of two less one")?;
+    // The probe tail precedes the end sentinel (`1419F5D90`).
+    (slots as usize)
+        .checked_add(usize::from(header[MAX_PROBE - BUCKETS]))
+        .ok_or("raid path memo slot count overflow")
 }
 
 /// Copy and validate the buckets the header snapshot describes.
@@ -120,16 +153,8 @@ fn copy_table(
         .filter(|&pointer| pointer != 0)
         .ok_or("raid path memo buckets unreadable or null")?;
     let count = u32::from_le_bytes(field(COUNT)[..4].try_into().unwrap());
-    let mask = u32::from_le_bytes(field(MASK)[..4].try_into().unwrap());
     let max_probe = field(MAX_PROBE)[0];
-    if mask
-        .checked_add(1)
-        .is_none_or(|slots| !slots.is_power_of_two())
-    {
-        return Err("raid path memo mask is not a power of two less one");
-    }
-    // Slots `0..=mask + max_probe`, then the end sentinel.
-    let slots = mask as usize + usize::from(max_probe) + 1;
+    let slots = table_slots(header)?;
     let mut chunk = [0_u8; BATCH * BUCKET];
     let (mut len, mut occupied, mut unread) = (0, 0_u32, 0_u32);
     let mut first = 0;
@@ -249,6 +274,50 @@ mod tests {
         let outcome = walk(&SliceMemory { base: 0, bytes }, 0, GAME, rows, &mut torn);
         assert_eq!(torn, 0, "a quiet table is never torn");
         outcome
+    }
+
+    #[test]
+    fn required_rows_reads_slot_geometry_without_buckets() {
+        let size = |bytes: &[u8]| required_rows(&SliceMemory { base: 0, bytes }, 0, GAME);
+        let cases = [(0, 0, 0, 1), (7, 1, 0, 9), (7, 4, 1, 12), (7, 4, 4, 12)];
+        for (mask, probe, count, required) in cases {
+            let bytes = fixture(&[], mask, probe, count);
+            // The buckets are deliberately outside readable memory.
+            assert_eq!(size(&bytes[..TABLE]), Some(required));
+        }
+        let mut bytes = fixture(&[], 7, 4, 0);
+        for mask in [2, u32::MAX] {
+            put(&mut bytes, SYSTEM + MEMO + MASK, &mask.to_le_bytes());
+            assert_eq!(size(&bytes), None);
+        }
+        let bytes = fixture(&[], 7, 4, 0);
+        assert_eq!(size(&bytes[..SYSTEM + MEMO + BUCKETS + HEADER - 1]), None);
+        let mut bytes = bytes;
+        put(&mut bytes, SYSTEM, &0_u64.to_le_bytes());
+        assert_eq!(size(&bytes), None);
+    }
+
+    #[test]
+    fn required_rows_holds_later_inserts_in_the_probe_tail() {
+        let empty = fixture(&[], 7, 4, 0);
+        let required = required_rows(
+            &SliceMemory {
+                base: 0,
+                bytes: &empty,
+            },
+            0,
+            GAME,
+        )
+        .unwrap();
+        // Inserts grow COUNT without changing the mask or the probe limit.
+        let filled = fixture(
+            &[(7, 1, 1, 2, 3, 1), (8, 2, 2, 3, 4, 0), (10, 4, 3, 4, 5, 1)],
+            7,
+            4,
+            3,
+        );
+        let mut rows = vec![Row::default(); required];
+        assert_eq!(run(&filled, &mut rows), Outcome::Rows { len: 3 });
     }
 
     #[test]
@@ -424,6 +493,29 @@ mod tests {
             put(&mut bytes, at + OK, &[1]);
         }
         bytes
+    }
+
+    #[test]
+    fn required_rows_covers_memos_past_the_default_capacity() {
+        for entries in [1_149, 1_500, 5_000] {
+            let bytes = scaled(entries);
+            let memory = SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            };
+            if entries == 1_149 {
+                let mut old = vec![Row::default(); 1_024];
+                assert_eq!(
+                    run(&bytes, &mut old),
+                    Outcome::Truncated {
+                        len: 1_024,
+                        unread_rows: 125
+                    }
+                );
+            }
+            let mut rows = vec![Row::default(); required_rows(&memory, 0, GAME).unwrap()];
+            assert_eq!(run(&bytes, &mut rows), Outcome::Rows { len: entries });
+        }
     }
 
     #[test]
