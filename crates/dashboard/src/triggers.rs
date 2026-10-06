@@ -24,6 +24,7 @@ use replay::Hour;
 
 mod aliases;
 mod coded;
+mod collections;
 mod eval;
 pub(crate) mod event_scopes;
 pub use event_scopes::EventGraphGuard;
@@ -152,6 +153,8 @@ pub enum Scope {
     Leader(u64),
     /// A character by its recorded id.
     Character(u32),
+    /// Full industrial-organisation reference (CEventScope+0x78, 14052E720).
+    IndustrialOrganisation(u64),
     /// A combat side's scope: its first primary country with the combat
     /// ([`Combat`]).
     Combat,

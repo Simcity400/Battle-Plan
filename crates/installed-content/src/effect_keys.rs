@@ -1198,6 +1198,29 @@ pub fn native_class(keyword: &[u8]) -> Option<NativeClass> {
         })
 }
 
+/// Runtime-generated meta text uses the same ReadEffect dispatcher (1414082F0).
+pub fn read_body(bytes: &[u8], names: &KeyNames) -> Result<Vec<Item>, String> {
+    let read = crate::parser::native::read(
+        bytes,
+        crate::parser::native::Mode::KeepMark,
+        crate::parser::native::Top::Persistent(()),
+        Some(names),
+        &mut |(), field| shape(Some(names), field),
+    );
+    if let Some(why) = read.unsettled {
+        return Err(why.to_string());
+    }
+    if !read.misreads.is_empty() {
+        return Err(read
+            .misreads
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; "));
+    }
+    Ok(read.items)
+}
+
 /// Whether ReadEffect adds a child. Conditional tails attach to the last
 /// added if, so invalid/skipped keys must not break their adjacency (1405345D0).
 pub fn adds_child(item: &Item, names: &KeyNames) -> Result<bool, String> {
@@ -1217,6 +1240,55 @@ pub fn adds_child(item: &Item, names: &KeyNames) -> Result<bool, String> {
         }
     }
     Ok(names.scripted_effects.contains(&key.to_ascii_lowercase()))
+}
+
+/// Slot-4 own fields never enter CEffect+8's child array (140534280/1405345D0).
+/// Callers use this projection for both BuildDescription and vf11 probes.
+pub fn description_fields(item: &Item) -> Result<Vec<Item>, String> {
+    let items = item.value.items().unwrap_or_default();
+    let token = if item.keyword_is("else") {
+        Some(key_readers::ELSE_TOKEN)
+    } else if item.keyword_is("else_if") {
+        Some(key_readers::ELSE_IF_TOKEN)
+    } else {
+        item.keyword().and_then(|key| registered(&key.folded()))
+    };
+    let Some(token) = token else {
+        return Ok(items.to_vec()); // Context/scripted blocks have no registered own fields.
+    };
+    let class_token = if matches!(token, key_readers::ELSE_TOKEN | key_readers::ELSE_IF_TOKEN) {
+        IF_TOKEN
+    } else {
+        token
+    };
+    let (value, key) = class(class_token).expect("registered effect class");
+    if value == READ_SCRIPT || value == 0x14051BBB0 {
+        if key == READ_EFFECT && value == READ_SCRIPT {
+            return Ok(items.to_vec());
+        }
+        return key_readers::description_fields(token, items);
+    }
+    if value == READ_VALUE || items.is_empty() {
+        return Ok(Vec::new());
+    }
+    value_readers::description_fields(value, key, token, item)
+}
+
+/// Random-list members use their parent's own-key projection (141386050).
+/// A member's weight and modifiers remain available to the list builder.
+pub fn random_list_members(item: &Item) -> Result<Vec<Item>, String> {
+    let token = item
+        .keyword()
+        .and_then(|key| registered(&key.folded()))
+        .ok_or_else(|| {
+            "random-list own-key projection needs a registered class (141386050)".to_string()
+        })?;
+    key_readers::random_list_members(token, item.value.items().unwrap_or_default())
+}
+
+/// Random-list members have their own slot-4 reader (141386370).
+pub fn random_member_fields(item: &Item) -> Vec<Item> {
+    key_readers::random_member_fields(item.value.items().unwrap_or_default())
 }
 
 /// CBoundLocalization::vf3 (142390E40), shared with authored folder names.

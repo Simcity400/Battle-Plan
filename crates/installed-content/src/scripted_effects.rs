@@ -8,7 +8,87 @@ use crate::{
         native::{self, Shape},
     },
 };
-use std::{collections::BTreeSet, io};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
+
+#[derive(Clone, Debug, Default)]
+pub struct ScriptedEffects {
+    pub bodies: BTreeMap<Vec<u8>, Result<Vec<crate::parser::Item>, String>>,
+}
+
+impl ScriptedEffects {
+    /// Body pass 1401765B0: only names registered by 14012B430 bind templates.
+    pub fn read_file(&mut self, bytes: &[u8], names: &crate::key_names::KeyNames) {
+        let read = native::read(
+            bytes,
+            native::Mode::KeepMark,
+            native::Top::File(()),
+            Some(names),
+            &mut |(), field| {
+                if names
+                    .scripted_effects
+                    .contains(&c_string(&field.key.text).to_ascii_lowercase())
+                {
+                    Shape::Effect
+                } else {
+                    Shape::One // A mismatch skips no body (14015B610).
+                }
+            },
+        );
+        for (index, item) in read.items.into_iter().enumerate() {
+            let name = c_string(item.key.as_deref().unwrap_or_default()).to_ascii_lowercase();
+            if !names.scripted_effects.contains(&name) {
+                continue;
+            }
+            let notes = read.item_misreads.get(index).cloned().unwrap_or_default();
+            let body = if notes.is_empty() {
+                Ok(item.value.items().unwrap_or_default().to_vec())
+            } else {
+                Err(notes
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; "))
+            };
+            let existing = self.bodies.entry(name).or_insert_with(|| Ok(Vec::new()));
+            match (&mut *existing, body) {
+                (Ok(existing), Ok(body)) => existing.extend(body), // ReadScript@140534280 appends.
+                (_, Err(why)) => *existing = Err(why),
+                (Err(_), Ok(_)) => {}
+            }
+        }
+        if let Some(why) = read.unsettled {
+            // An unread suffix can append to any registered template.
+            for name in &names.scripted_effects {
+                self.bodies.insert(name.clone(), Err(why.to_string()));
+            }
+        }
+    }
+}
+
+pub fn read(
+    layers: &ResolvedLayers,
+    names: &crate::key_names::KeyNames,
+) -> io::Result<ScriptedEffects> {
+    let mut result = ScriptedEffects {
+        bodies: names
+            .scripted_effects
+            .iter()
+            .map(|name| (name.clone(), Ok(Vec::new())))
+            .collect(),
+    };
+    let paths = layers.listed_paths("common/scripted_effects/");
+    for path in crate::defines::load_order(
+        "common/scripted_effects/",
+        ".txt",
+        paths.iter().map(String::as_str),
+    ) {
+        result.read_file(&layers.read(&path)?, names);
+    }
+    Ok(result)
+}
 
 /// Name pass (140193190 -> 14013ECE0 -> 14012B430): directory's own
 /// `.txt` files, values skipped without
@@ -38,45 +118,4 @@ pub fn file_names(bytes: &[u8]) -> BTreeSet<Vec<u8>> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn name_pass_skips_bodies_and_folds_tokens() {
-        let names = file_names(
-            b"@name = One One = { @hidden = Lost } Two = @hidden \"Three\" = {} One = {}",
-        );
-        assert_eq!(
-            names,
-            [b"one".to_vec(), b"two".to_vec(), b"three".to_vec()].into()
-        );
-    }
-
-    #[test]
-    fn names_resolve_recorded_stack_and_only_directory_files() -> io::Result<()> {
-        let root = std::env::temp_dir().join(format!("effect-names-{}", std::process::id()));
-        let vanilla = root.join("base");
-        let modded = root.join("mod");
-        for folder in [&vanilla, &modded] {
-            std::fs::create_dir_all(folder.join("common/scripted_effects/sub"))?;
-        }
-        std::fs::write(
-            vanilla.join("common/scripted_effects/base.txt"),
-            b"old = {}",
-        )?;
-        std::fs::write(modded.join("common/scripted_effects/mod.txt"), b"New = {}")?;
-        std::fs::write(
-            modded.join("common/scripted_effects/sub/nested.txt"),
-            b"nested = {}",
-        )?;
-        let layers = ResolvedLayers::from_folders(&[
-            (&vanilla, &[]),
-            (&modded, &["common/scripted_effects"]),
-        ])?;
-        let loaded = names(&layers)?;
-        assert_eq!(loaded, [b"new".to_vec()].into());
-        // This test owns the process-specific scratch directory.
-        std::fs::remove_dir_all(root)?;
-        Ok(())
-    }
-}
+mod tests;

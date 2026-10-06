@@ -17,6 +17,7 @@ pub(super) struct Fixture {
     dlcs: BTreeSet<String>,
     triggers: installed_content::trigger_keys::TriggerNames,
     aliases: Arc<installed_content::tag_aliases::TagAliases>,
+    pub neighbors: Option<BTreeMap<u32, Vec<u32>>>,
 }
 
 impl Fixture {
@@ -37,8 +38,15 @@ impl Fixture {
                     " EFFECT_TRANSFER_STATE:0 \"Transfer $STATE$\"\n EFFECT_ADD_STATE_CLAIM:0 \"Claim $STATE$\"\n",
                     " EFFECT_DECLARE_WAR:0 \"War $NAME$/$COUNTRY$\"\n EFFECT_ANNEX_COUNTRY:0 \"Annex $NAME$/$TARGET$\"\n",
                     " EFFECT_START_BORDER_WAR:0 \"Border $STATE1$/$STATE2$\"\n",
+                    " EFFECT_CONTEXT_MIO:0 \"$ORGANISATION$ $FLAG$\"\n",
                     " EFFECT_CONTEXT_COUNTRY:0 \"@$TAG$$COUNTRY$\"\n EFFECT_CONTEXT_STATE:0 \"$COUNTRY$\"\n",
+                    " EFFECT_LIST_COUNTRY:0 \"@$TAG$$COUNTRY$\"\n EFFECT_CONTEXT_LEADER:0 \"$FLAG$$LEADER$\"\n",
+                    " RANDOM_EFFECT:0 \"$CHANCE|%0$: \"\n RANDOM_LIST_EFFECT:0 \"$SIZE$ options:\\n\"\n NO_EFFECT:0 \"No effect\"\n",
+                    " EFFECT_SET_POLITICS:0 \"Politics\"\n EFFECT_SET_POLITICS_NO_ELECTIONS:0 \"No elections\"\n EFFECT_SET_POLITICS_ELECTIONS:0 \"Elections\"\n EFFECT_SET_POLITICS_ELECTION_FREQUENCY:0 \"Every $MONTHS$\"\n",
+                    " EFFECT_CHARACTER_LIST_POLITICAL_ADVISORS:0 \"Advisors\"\n EFFECT_CHARACTER_LIST_MILITARY_ADVISORS:0 \"Military advisors\"\n EFFECT_CHARACTER_LIST_THEORISTS:0 \"Theorists\"\n EFFECT_CHARACTER_LIST_IN_SERVICE:0 \"in service\"\n",
+                    " POLITICS_PARTY_NAME_CHANGE:0 \"$IDEOLOGY$=$NAME$\"\n EFFECT_SET_POLITICS_RULING_PARTY:0 \"Party $PARTY$\"\n",
                     " EFFECT_LIST_OTHERS:0 \"$LIST$ and $NUMBER|0$ others\"\n",
+                    " COLLECTION_OP_FACTION_MEMBERS:0 \"Faction members\"\n",
                     " EFFECT_ADD_TO_FACTION:0 \"Join $COUNTRY$\"\n EFFECT_ADD_TO_FACTION_NAME:0 \"Join $COUNTRY$/$FACTION$\"\n",
                     " EFFECT_RELEASE_NATION:0 \"Release $COUNTRY$\"\n",
                     " EFFECT_REMOVE_FROM_FACTION_NAME:0 \"Leave $COUNTRY$/$FACTION$\"\n EFFECT_REMOVE_FROM_FACTION_END_PUPPET:0 \"Free $PUPPET$/$MASTER$\"\n",
@@ -143,6 +151,7 @@ impl Fixture {
             dlcs: Default::default(),
             triggers: Default::default(),
             aliases: Default::default(),
+            neighbors: None,
         }
     }
 
@@ -152,23 +161,68 @@ impl Fixture {
         scopes: &mut EventScopes,
         content: Content<'_>,
     ) -> Description {
+        self.render_items(
+            &installed_content::parser::parse(body.as_bytes()).unwrap().items,
+            scopes,
+            content,
+        )
+    }
+
+    pub(super) fn render_native(
+        &self,
+        body: &str,
+        scopes: &mut EventScopes,
+        content: Content<'_>,
+    ) -> Description {
+        let items =
+            installed_content::effect_keys::read_body(body.as_bytes(), content.key_names.unwrap()).unwrap();
+        self.render_items(&items, scopes, content)
+    }
+
+    fn render_items(
+        &self,
+        items: &[Item],
+        scopes: &mut EventScopes,
+        content: Content<'_>,
+    ) -> Description {
+        self.with_context(content, |context| describe(items, context, scopes))
+    }
+
+    pub(super) fn with_renderer<T>(
+        &self,
+        scopes: &mut EventScopes,
+        content: Content<'_>,
+        run: impl FnOnce(&mut Renderer<'_, '_, '_>) -> T,
+    ) -> T {
+        self.with_context(content, |context| {
+            let mut renderer = Renderer {
+                context,
+                graph: Rc::new(RefCell::new(scopes.clone())),
+                evaluator: OnceCell::new(),
+                out: Description::default(),
+                scripted_stack: Vec::new(),
+            };
+            let out = run(&mut renderer);
+            *scopes = renderer.graph.borrow().clone();
+            out
+        })
+    }
+
+    fn with_context<T>(&self, content: Content<'_>, run: impl FnOnce(&Context<'_, '_>) -> T) -> T {
         let scripted = self.catalogue.scripted_content().unwrap();
         let text = ScriptedText::new(&self.frame, &self.catalogue.localisation, scripted, 1);
-        let world = World::read(
-            &self.frame,
-            ContentFacts::content_only(&self.dlcs, &self.triggers, &self.aliases),
-        );
+        let mut facts = ContentFacts::content_only(&self.dlcs, &self.triggers, &self.aliases);
+        if let Some(neighbors) = &self.neighbors {
+            facts.neighbor_states = Ok(neighbors);
+        }
+        let world = World::read(&self.frame, facts);
         text.set_synthetic_world(world);
         let context = Context::new(&text, &self.catalogue.localisation, 1, "synthetic", content);
-        describe(
-            &installed_content::parser::parse(body.as_bytes()).unwrap().items,
-            &context,
-            scopes,
-        )
+        run(&context)
     }
 }
 
-fn fresh() -> EventScopes {
+pub(super) fn fresh() -> EventScopes {
     EventScopes::new(vec![EventScope::of(EventObject::Country(1))])
 }
 
@@ -551,7 +605,27 @@ fn failed_context_layout_probe_counts_one_description_occurrence() {
     assert!(
         out.refusals
             .keys()
-            .any(|why| why.contains("context header layout is unknown"))
+            .any(|why| why.contains("unknown key") && why.contains("unported_effect"))
+    );
+}
+
+#[test]
+fn empty_own_generic_builder_keeps_children_and_multiple_probe() {
+    let fixture = Fixture::new();
+    let out = fixture.render("BBB={create_dynamic_country={original_tag=AAA copy_tag=BBB army_experience=2 add_political_power=3}}", &mut fresh(), Content::default());
+    assert_eq!(out.text, "\u{12}BBBBeta:\n   XP2\n   PP3\n");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    let out = fixture.render(
+        "add_doctrine_cost_reduction={technology=synthetic_tech army_experience=2}",
+        &mut fresh(),
+        Content::default(),
+    );
+    assert_eq!(out.text, "XP2\n"); // A refused own operand cannot hide independent children.
+    assert_eq!(out.refusals.values().sum::<usize>(), 1);
+    assert!(
+        out.refusals
+            .keys()
+            .any(|why| why.contains("CAddDoctrineCostReduction"))
     );
 }
 
@@ -1164,6 +1238,32 @@ fn timed_idea_repeats_native_target_prefix_and_floors_duration_components() {
     );
     assert_eq!(result.text, "XP2\n");
     assert_eq!(result.refusals.values().sum::<usize>(), 1);
+}
+
+#[test]
+fn country_event_random_block_is_described_as_a_native_child() {
+    let fixture = Fixture::new();
+    let names = installed_content::key_names::KeyNames::default();
+    let reference = |_: &[u8]| {
+        Ok(Arc::new(installed_content::events::Event {
+            titles: installed_content::parser::parse(b"title=TIP").unwrap().items,
+            ..Default::default()
+        }))
+    };
+    let content = Content {
+        key_names: Some(&names),
+        events: Some(&reference),
+        ..Default::default()
+    };
+    // 1413859E0 -> 1413857F5: the block adds CRandomEffect to +8,
+    // whereas the scalar remains a delay operand at +0x740.
+    let output = fixture.render_native(
+        "country_event={id=synthetic.1 random=3 random={chance=100 army_experience=2}}",
+        &mut fresh(),
+        content,
+    );
+    assert_eq!(output.text, "Event tip\n100%: XP2\n");
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
 
 #[test]

@@ -136,6 +136,7 @@ fn event_scopes(scopes: Scopes) -> EventScopes {
         Scope::Province(id) => EventObject::Province(id),
         Scope::Leader(reference) => EventObject::UnitLeader(reference),
         Scope::Character(id) => EventObject::Character(id),
+        Scope::IndustrialOrganisation(reference) => EventObject::IndustrialOrganisation(reference),
         Scope::Combat => unreachable!("a raid condition is never checked in a combat scope"),
     };
     let unknown = |scope| EventScope {

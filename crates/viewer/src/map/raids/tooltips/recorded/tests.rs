@@ -555,6 +555,15 @@ fn event_scopes_keep_the_raid_links_leaders_and_target_variables() {
     assert_eq!(nested.scopes[0].root, Link::Scope(1));
     assert_eq!(nested.scopes[1].root, Link::Unknown);
     assert_eq!(nested.variables.target_state, Some(10));
+    let organisation = 9 << 32 | 79;
+    let nested = event_scopes(Scopes {
+        this: Scope::IndustrialOrganisation(organisation),
+        ..raid
+    });
+    assert_eq!(
+        nested.scopes[0].this,
+        EventObject::IndustrialOrganisation(organisation)
+    );
 }
 
 #[test]

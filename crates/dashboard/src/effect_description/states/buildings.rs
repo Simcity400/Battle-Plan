@@ -422,7 +422,6 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        self.require_no_effect_children(item)?; // 1403B0960 delegates unknown keys.
         let level = self.building_level(item, scopes, 100_000)?;
         if level < 1 {
             return Ok(String::new());

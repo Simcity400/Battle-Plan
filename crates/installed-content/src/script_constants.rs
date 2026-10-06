@@ -22,7 +22,7 @@ use std::{collections::BTreeMap, io};
 use crate::{
     ResolvedLayers,
     crt::{Scanned, scan_i32},
-    fixed5::script_fixed5,
+    fixed5::{decimal_i32, script_fixed5},
     parser::{
         Item,
         native::{self, Shape},
@@ -72,9 +72,18 @@ enum Value {
     Int(i32),
     /// Type 1: `fixed_point`, fixed5.
     Fixed(i64),
-    /// Types 3, 4 and the arrays (5, 6, 8, 9), which a scoped variable does
-    /// not take.
+    /// Non-scope arrays (5, 6), which a scoped variable does not take.
     Other,
+    Collection(CollectionConstant),
+}
+
+/// The stored types a collection input accepts (140A0FFB0/1404B8110).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CollectionConstant {
+    Country(Vec<u8>),
+    State(i32),
+    Countries(Vec<Vec<u8>>),
+    States(Vec<i32>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,12 +151,41 @@ impl Constants {
         match node {
             Some(Node::Value(Value::Fixed(value))) => Constant::Value(*value),
             Some(Node::Value(Value::Int(value))) => Constant::Value(i64::from(*value) * 100_000),
-            Some(Node::Value(Value::Other)) => Constant::Unset(format!(
+            Some(Node::Value(Value::Other | Value::Collection(_))) => Constant::Unset(format!(
                 "constant:{shown}: Scoped variable constant only supports Fixed Points"
             )),
             // The walk ended on a map: too few parts.
             _ => Constant::Unset(format!("No constant value: {shown}")),
         }
+    }
+
+    /// FindValue (140A96B20) keeps the country/state scalar or array variant;
+    /// a CScopedVariable deliberately rejects the same variants (140539B50).
+    pub fn collection(&self, parts: &[&str]) -> Result<Option<&CollectionConstant>, String> {
+        let Some((category, path)) = parts.split_first() else {
+            return Ok(None);
+        };
+        let Some(found) = self.categories.get(&token(category.as_bytes())) else {
+            return match &self.unsettled {
+                Some(why) => Err(why.clone()),
+                None => Ok(None),
+            };
+        };
+        if let Some(why) = &found.refused {
+            return Err(why.clone());
+        }
+        let mut map = &found.root;
+        for (at, part) in path.iter().enumerate() {
+            match map.get(&token(part.as_bytes())) {
+                Some(Node::Map(next)) => map = next,
+                Some(Node::Refused(why)) => return Err(why.clone()),
+                Some(Node::Value(Value::Collection(value))) if at + 1 == path.len() => {
+                    return Ok(Some(value));
+                }
+                _ => return Ok(None),
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -328,6 +366,18 @@ fn value(entry: &Item, kind: Kind, array: bool) -> Value {
     if array {
         return match (kind, entry.value.items()) {
             (Kind::Token, _) | (_, None) => Value::Int(0),
+            (Kind::Country, Some(items)) => Value::Collection(CollectionConstant::Countries(
+                items
+                    .iter()
+                    .map(|item| item.value.scalar().unwrap_or_default().to_vec())
+                    .collect(),
+            )), // 140A95890: retains null tags.
+            (Kind::State, Some(items)) => Value::Collection(CollectionConstant::States(
+                items
+                    .iter()
+                    .map(|item| decimal_i32(item.value.scalar().unwrap_or_default()))
+                    .collect(),
+            )), // 140A95C10: retains zero IDs.
             _ => Value::Other,
         };
     }
@@ -342,10 +392,18 @@ fn value(entry: &Item, kind: Kind, array: bool) -> Value {
         }),
         // read_fixed5 (1424B0480).
         Kind::FixedPoint => script_fixed5(text).map_or(Value::Int(0), Value::Fixed),
-        Kind::Country | Kind::State => Value::Other,
+        Kind::Country => Value::Collection(CollectionConstant::Country(text.to_vec())), // 140A97750.
+        Kind::State => match decimal_i32(text) {
+            id if id > 0 => Value::Collection(CollectionConstant::State(id)),
+            _ => Value::Int(0),
+        },
         Kind::Token => Value::Int(0),
     }
 }
+
+#[cfg(test)]
+#[path = "script_constants/collections/tests.rs"]
+mod collection_tests;
 
 #[cfg(test)]
 mod tests {

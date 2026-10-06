@@ -93,7 +93,7 @@ ported!(
 
 ported!(
     focus_custom_tooltip,
-    "complete_national_focus={focus=SYN_FOCUS tooltip=SYN_FOCUS_TOOLTIP}",
+    "complete_national_focus={focus=SYN_FOCUS originator_name=SYN_FOCUS_TOOLTIP}",
     "Complete for BBB/Alpha:Focus AAA/AAA/AAA/AAA"
 );
 ported!(

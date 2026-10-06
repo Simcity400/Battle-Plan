@@ -147,13 +147,16 @@ impl Shaper<'_> {
             };
         }
         // Assignment callback 140A10660: only `limit` reads a CAndTrigger
-        // (140A0E020). The three bare-only operators use raw SkipBlock after
+        // (140A0E020). The four bare-only operators use raw SkipBlock after
         // TryHandleOrRecordError; every other key uses RecordError's skip.
         match field.keyword().as_deref() {
             Some(b"limit") => Shape::Body(Node::Trigger),
-            Some(b"country_and_all_subjects" | b"controlled_states" | b"faction_members") => {
-                Shape::RawSkip
-            }
+            Some(
+                b"country_and_all_subjects"
+                | b"owned_states"
+                | b"controlled_states"
+                | b"faction_members",
+            ) => Shape::RawSkip,
             _ => Shape::Skip,
         }
     }

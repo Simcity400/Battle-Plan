@@ -126,6 +126,7 @@ fn render(body: &str, graph: EventScopes, template: Option<&Template>) -> Result
         graph,
         evaluator: OnceCell::new(),
         out: Description::default(),
+        scripted_stack: Vec::new(),
     };
     let items = installed_content::parser::parse(body.as_bytes()).unwrap().items;
     if template.is_some() {

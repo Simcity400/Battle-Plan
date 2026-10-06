@@ -25,6 +25,7 @@ fn native_aliases_share_one_class_dispatch() {
         graph: Rc::new(RefCell::new(graph)),
         evaluator: OnceCell::new(),
         out: Description::default(),
+        scripted_stack: Vec::new(),
     };
     let items =
         installed_content::parser::parse(b"set_unit_leader_flag=x set_character_flag=x if={} else_if={}")
@@ -43,7 +44,7 @@ fn native_aliases_share_one_class_dispatch() {
         renderer.leaf(&items[0], scopes),
         renderer.leaf(&items[1], scopes)
     );
-    assert_eq!(renderer.leaf(&items[0], scopes), Ok(String::new()));
+    assert_eq!(renderer.leaf(&items[0], scopes), Some(Ok(String::new())));
     // Conditional tails alias CIfEffect and reach the same landed own function.
     assert_eq!(
         renderer.effect_class(&items[2]).map(|class| class.name),
@@ -53,7 +54,7 @@ fn native_aliases_share_one_class_dispatch() {
         renderer.effect_class(&items[2]),
         renderer.effect_class(&items[3])
     );
-    assert_eq!(renderer.leaf(&items[2], scopes), Ok(String::new()));
+    assert_eq!(renderer.leaf(&items[2], scopes), Some(Ok(String::new())));
     assert_eq!(
         renderer.leaf(&items[2], scopes),
         renderer.leaf(&items[3], scopes)

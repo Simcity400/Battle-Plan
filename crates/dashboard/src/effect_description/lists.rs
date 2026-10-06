@@ -1,8 +1,19 @@
 use super::*;
 use crate::triggers::Eval;
 
+#[cfg(test)]
+mod tests;
+
 impl Renderer<'_, '_, '_> {
     /// Native attachment follows the last added child, not the last lexical field.
+    fn adds_child(&self, item: &Item) -> bool {
+        self.context
+            .content
+            .key_names
+            .map(|names| installed_content::effect_keys::adds_child(item, names).unwrap_or(true))
+            .unwrap_or_else(|| self.effect_class(item).is_some())
+    }
+
     pub(super) fn attached<'a>(
         &mut self,
         items: &'a [Item],
@@ -11,16 +22,6 @@ impl Renderer<'_, '_, '_> {
         let mut out: Vec<(&Item, Vec<&Item>)> = Vec::new();
         let mut last_added = None;
         for item in items {
-            if matches!(
-                key(item).to_ascii_lowercase().as_str(),
-                "limit"
-                    | "tooltip"
-                    | "visible_when_empty"
-                    | "display_individual_scopes"
-                    | "random_select_amount"
-            ) {
-                continue;
-            }
             if item.keyword_is("else") || item.keyword_is("else_if") {
                 if let Some(at) = last_added {
                     let (prior, branches): &mut (&Item, Vec<&Item>) = &mut out[at];
@@ -40,17 +41,7 @@ impl Renderer<'_, '_, '_> {
                 }
                 continue;
             }
-            let added = self
-                .context
-                .content
-                .key_names
-                .map(|names| installed_content::effect_keys::adds_child(item, names).unwrap_or(true))
-                .unwrap_or_else(|| {
-                    installed_content::effect_keys::REGISTERED_EFFECTS
-                        .iter()
-                        .any(|(_, name)| name.eq_ignore_ascii_case(&key(item)))
-                        || self.is_context(item)
-                });
+            let added = self.adds_child(item);
             out.push((item, Vec::new()));
             if added {
                 last_added = Some(out.len() - 1);
@@ -59,7 +50,7 @@ impl Renderer<'_, '_, '_> {
         out
     }
 
-    fn limit<'a>(&self, items: &'a [Item]) -> Result<&'a [Item], String> {
+    pub(super) fn limit<'a>(&self, items: &'a [Item]) -> Result<&'a [Item], String> {
         // 141385BA0 reads another limit only while the embedded trigger has no children.
         let evaluator = self.evaluator()?;
         for body in items
@@ -100,14 +91,15 @@ impl Renderer<'_, '_, '_> {
             };
             match result {
                 Eval::True => {
+                    let body = self.effect_children(branch);
                     return Some(if probe {
-                        if self.multiple(children(branch), scopes) {
+                        if self.multiple(&body, scopes) {
                             "multiple".into()
                         } else {
                             String::new()
                         }
                     } else {
-                        self.group(children(branch), scopes, indent)
+                        self.group(&body, scopes, indent)
                     });
                 }
                 Eval::False => {}
@@ -125,13 +117,16 @@ impl Renderer<'_, '_, '_> {
     pub(super) fn multiple(&mut self, items: &[Item], scopes: Scopes) -> bool {
         let children = self.attached(items, false);
         if let [(item, branches)] = children.as_slice() {
-            let own = self.own(item, scopes);
+            let Some(own) = self.own(item, scopes) else {
+                return false;
+            };
             return own.is_empty() && self.multiple_child(item, branches, scopes);
         }
         let mut count = 0;
         for (item, branches) in children {
-            let contributes =
-                !self.own(item, scopes).is_empty() || self.multiple_child(item, &branches, scopes);
+            let contributes = self
+                .own(item, scopes)
+                .is_some_and(|own| !own.is_empty() || self.multiple_child(item, &branches, scopes));
             if contributes {
                 count += 1;
             }
@@ -143,29 +138,33 @@ impl Renderer<'_, '_, '_> {
     }
 
     fn multiple_child(&mut self, item: &Item, branches: &[&Item], scopes: Scopes) -> bool {
-        if item.keyword_is("if") {
-            self.if_chain(item, branches, scopes, 0, true)
-                .is_some_and(|text| !text.is_empty())
-        } else if self.is_context(item) {
-            // Context vf11 is the base virtual (14299F750): this probe keeps
-            // the supplied scope. Its vf8 separately probes the selected scope.
-            self.multiple(children(item), scopes)
-        } else if matches!(
-            key(item).to_ascii_lowercase().as_str(),
-            "effect_tooltip" | "hidden_effect" | "every_state"
-        ) {
-            self.multiple(children(item), scopes)
-        } else {
-            false
+        if self.iterator_multiple(item) {
+            return true; // vf11 ReturnTrue@1401802A0, also random selectors.
+        }
+        match self.effect_class(item).map(|class| class.vtable) {
+            Some(0x14275FF40) => field(children(item), "tooltip")
+                .and_then(|item| item.value.scalar())
+                .is_some_and(|key| !key.is_empty()), // has_0x208@1403A5340.
+            Some(0x1427BE590) => self
+                .if_chain(item, branches, scopes, 0, true)
+                .is_some_and(|text| !text.is_empty()),
+            _ => {
+                // Base vf11 and CRandomScopeInArray use this child projection.
+                // Empty vf8 overrides still inherit it (14275FEC8/142760258/142760160).
+                let body = self.effect_children(item);
+                self.multiple(&body, scopes) // 140533D80.
+            }
         }
     }
 
     pub(super) fn tooltip_group(&mut self, item: &Item, scopes: Scopes, indent: usize) -> String {
-        self.group(children(item), scopes, indent)
+        let body = self.effect_children(item);
+        self.group(&body, scopes, indent)
     }
 
     pub(super) fn hidden_group(&mut self, item: &Item, scopes: Scopes, indent: usize) -> String {
-        self.group(children(item), scopes, indent);
+        let body = self.effect_children(item);
+        self.group(&body, scopes, indent);
         String::new()
     }
 }
@@ -173,4 +172,354 @@ impl Renderer<'_, '_, '_> {
 // The control/list own-description virtual is empty (140176EE0).
 pub(super) fn own() -> Result<String, String> {
     Ok(String::new())
+}
+
+impl Renderer<'_, '_, '_> {
+    pub(super) fn list_builder(
+        &mut self,
+        item: &Item,
+        scopes: Scopes,
+        indent: usize,
+    ) -> Option<String> {
+        let class = self.effect_class(item)?;
+        let result = match class.vtable {
+            0x14299F7C8 => self.scripted_effect(item, scopes, indent), // 141382080.
+            0x1429A00F0 => self.random_effect(item, scopes, indent),   // 141381B60.
+            0x1429A0260 => self
+                .random_list(item, scopes)
+                .map(|text| format!("{}{text}", "   ".repeat(indent))), // 141381EB0.
+            0x14275FF40 => self.scope_loop(item, scopes, indent),      // 14036B420.
+            0x142761860 => self.meta_effect(item, scopes, indent),     // 14036B860.
+            0x14299FFF8 => self.override_tooltip(item, scopes, indent), // 141384190 / 140532780.
+            _ => return None,
+        };
+        Some(match result {
+            Ok(text) => text,
+            Err(why) => {
+                self.refuse(class.name, why);
+                String::new()
+            }
+        })
+    }
+
+    fn scripted_effect(
+        &mut self,
+        item: &Item,
+        scopes: Scopes,
+        indent: usize,
+    ) -> Result<String, String> {
+        // Port backstop, not a game limit: changing THIS must not exhaust our stack.
+        if self.scripted_stack.len() >= 64 {
+            return Err("scripted-effect description depth exceeds the port's 64-level stack limit (141382080)".into());
+        }
+        let name = installed_content::parser::c_string(item.key.as_deref().unwrap_or_default())
+            .to_ascii_lowercase();
+        if self
+            .scripted_stack
+            .iter()
+            .any(|(active, this)| *active == name && *this == scopes.this)
+        {
+            return Err(format!(
+                "scripted effect {} recursively calls an active template in the same THIS scope (141382080); this recursive expansion is not ported",
+                String::from_utf8_lossy(&name)
+            ));
+        }
+        let database = self
+            .context
+            .content
+            .scripted_effects
+            .ok_or_else(|| self.content_gap("scripted effects"))?;
+        let body = database
+            .bodies
+            .get(&name)
+            .ok_or("registered scripted-effect template has no body")?
+            .as_ref()
+            .map_err(Clone::clone)?;
+        self.scripted_stack.push((name, scopes.this));
+        // CScriptedEffect's boolean operand controls execution, not description.
+        let text = self.group(body, scopes, indent);
+        self.scripted_stack.pop();
+        Ok(text)
+    }
+
+    fn random_effect(
+        &mut self,
+        item: &Item,
+        scopes: Scopes,
+        indent: usize,
+    ) -> Result<String, String> {
+        let fields = children(item);
+        let value = field(fields, "chance")
+            .and_then(|item| item.value.scalar())
+            .unwrap_or(b"0");
+        let chance = crate::triggers::fixed_round(self.scoped_value(value, scopes)?) as i32;
+        // 141381B60 rounds percent to an i32, then divides its fixed5 by 100.
+        let mut text = "   ".repeat(indent);
+        text.push_str(&self.localised(
+            b"RANDOM_EFFECT",
+            &[("CHANCE", Argument::Fixed5(i64::from(chance) * 1000))],
+            scopes,
+            false,
+        )?);
+        let body = self.effect_children(item);
+        let count = self
+            .attached(&body, false)
+            .iter()
+            .filter(|(child, _)| self.adds_child(child))
+            .count();
+        if count < 2 {
+            text.push_str(&self.group(&body, scopes, 0));
+        } else {
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(&self.group(&body, scopes, indent + 1));
+        }
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        Ok(text)
+    }
+
+    pub(super) fn random_list(&mut self, item: &Item, scopes: Scopes) -> Result<String, String> {
+        let members = installed_content::effect_keys::random_list_members(item)?;
+        let mut weights = Vec::new();
+        let mut total = 0_i64;
+        // 141386790: Exists before Evaluate; modifiers apply in authored order.
+        for member in &members {
+            let operand = member.key.as_deref().unwrap_or_default();
+            let mut weight = if self.evaluator()?.scoped_exists(operand, scopes)? {
+                self.scoped_value(operand, scopes)?
+            } else {
+                0
+            };
+            for modifier in children(member)
+                .iter()
+                .filter(|item| item.keyword_is("modifier"))
+            {
+                let fields = children(modifier);
+                let condition = without(fields, &["factor", "add"]);
+                match self.evaluator()?.evaluate(&condition, scopes) {
+                    Eval::True => {
+                        let factor = field(fields, "factor")
+                            .and_then(|item| item.value.scalar())
+                            .unwrap_or(b"1");
+                        let add = field(fields, "add")
+                            .and_then(|item| item.value.scalar())
+                            .unwrap_or(b"0");
+                        weight = weight.wrapping_mul(self.scoped_value(factor, scopes)?) / 100_000;
+                        weight = weight.wrapping_add(self.scoped_value(add, scopes)?);
+                    }
+                    Eval::False => {}
+                    Eval::Unknown(why) => {
+                        return Err(why.into_iter().collect::<Vec<_>>().join("; "));
+                    }
+                }
+            }
+            weights.push(weight);
+            total = total.wrapping_add(weight);
+        }
+        if total < 1 {
+            return Ok(String::new());
+        }
+        let size = members.len().to_string();
+        let mut text = self.localised(
+            b"RANDOM_LIST_EFFECT",
+            &[("SIZE", Argument::Text(&size))],
+            scopes,
+            false,
+        )?;
+        let cursor = scopes
+            .cursor
+            .ok_or("random_list needs an event graph cursor")?;
+        let seed = self.graph.borrow().scopes[cursor];
+        // 141383AB0 resets both words before each member. The final member's
+        // description leaves its draws; explicit execution seed is not used.
+        for (member, weight) in members.iter().zip(weights) {
+            let chance = if matches!(weight, i64::MAX | i64::MIN) || weight == i64::MIN + 1 {
+                0xffff_ffff
+            } else {
+                weight.wrapping_mul(100_000) / total
+            };
+            text.push_str(&self.localised(
+                b"RANDOM_EFFECT",
+                &[("CHANCE", Argument::Fixed5(chance))],
+                scopes,
+                false,
+            )?);
+            {
+                let mut graph = self.graph.borrow_mut();
+                graph.scopes[cursor].random_seed = seed.random_seed;
+                graph.scopes[cursor].random_counter = seed.random_counter;
+            }
+            let body = self.group(
+                &installed_content::effect_keys::random_member_fields(member),
+                scopes,
+                0,
+            );
+            let body = trim_description(&body);
+            if body.len() < 2 {
+                text.push_str(&self.localised(b"NO_EFFECT", &[], scopes, false)?);
+            } else {
+                text.push_str(body);
+            }
+            text.push('\n');
+        }
+        Ok(text)
+    }
+
+    fn scope_loop(&mut self, item: &Item, scopes: Scopes, indent: usize) -> Result<String, String> {
+        let fields = children(item);
+        let Some(tooltip) = field(fields, "tooltip")
+            .and_then(|item| item.value.read_string())
+            .filter(|key| !key.is_empty())
+        else {
+            return Ok(String::new());
+        };
+        let array = field(fields, "array")
+            .and_then(|item| item.value.scalar())
+            .unwrap_or_default();
+        let Some(target) = self
+            .evaluator()?
+            .scoped_array_scopes(array, scopes)?
+            .into_iter()
+            .flatten()
+            .next()
+        else {
+            return Ok(String::new());
+        };
+        // 14036B420 decodes into a default-constructed scope, not a caller copy.
+        let object = match target {
+            Scope::Country(id) => crate::scripted_text::EventObject::Country(id),
+            Scope::State(id) => crate::scripted_text::EventObject::State(id),
+            Scope::Province(id) => crate::scripted_text::EventObject::Province(id),
+            Scope::Character(id) => crate::scripted_text::EventObject::Character(id),
+            Scope::Leader(id) => crate::scripted_text::EventObject::UnitLeader(id),
+            Scope::IndustrialOrganisation(id) => {
+                crate::scripted_text::EventObject::IndustrialOrganisation(id)
+            }
+            Scope::Combat => return Err("array combat scope is unavailable (140537A10)".into()),
+        };
+        let cursor = scopes.cursor.ok_or("scope loop needs a graph cursor")?;
+        let at = {
+            let mut graph = self.graph.borrow_mut();
+            let caller = *graph
+                .scopes
+                .get(cursor)
+                .ok_or("scope loop caller is absent")?;
+            let mut selected = crate::scripted_text::EventScope::of(object);
+            selected.root = caller.root;
+            selected.from = caller.from;
+            selected.prev = crate::scripted_text::Link::Scope(cursor);
+            let at = graph.scopes.len();
+            // 14036B420 default-constructs, then copies ROOT/FROM and sets PREV.
+            if selected.root == crate::scripted_text::Link::Itself {
+                selected.root = crate::scripted_text::Link::Scope(cursor);
+            }
+            if selected.from == crate::scripted_text::Link::Itself {
+                selected.from = crate::scripted_text::Link::Scope(cursor);
+            }
+            graph.scopes.push(selected);
+            at
+        };
+        let selected = self.evaluator()?.event_scopes(at)?;
+        let mut text = "   ".repeat(indent);
+        text.push_str(&self.line(tooltip, &[], scopes, true)?);
+        let body = self.effect_children(item);
+        text.push_str(&self.group(&body, selected, indent + 1));
+        Ok(text)
+    }
+
+    fn meta_effect(
+        &mut self,
+        item: &Item,
+        scopes: Scopes,
+        indent: usize,
+    ) -> Result<String, String> {
+        let fields = children(item);
+        let raw = match field(fields, "text") {
+            Some(item) => item
+                .value
+                .scalar()
+                .ok_or("meta_effect text must be read as native raw text (141408C80)")?,
+            None => b"".as_slice(), // Empty default script in CMetaEffect, 14036B860.
+        };
+        let mut parameters = BTreeMap::new();
+        for parameter in fields
+            .iter()
+            .filter(|item| !item.keyword_is("text") && !item.keyword_is("debug"))
+        {
+            let name = parameter.key.as_deref().unwrap_or_default();
+            let value = parameter
+                .value
+                .scalar()
+                .ok_or("meta_effect parameter is not scalar (141408D40)")?;
+            let value = if parameter.quoted() {
+                let text = std::str::from_utf8(installed_content::parser::c_string(value))
+                    .map_err(|_| "meta_effect parameter is not UTF-8")?;
+                if text.contains('[') {
+                    self.expanded(text, scopes)?
+                } else {
+                    text.to_owned()
+                }
+            } else if value
+                .iter()
+                .enumerate()
+                .all(|(i, byte)| byte.is_ascii_digit() || i == 0 && matches!(byte, b'+' | b'-'))
+            {
+                integer(value).to_string()
+            } else {
+                installed_content::fixed5::fixed5_to_string(self.scoped_value(value, scopes)?, -1)
+            };
+            parameters.entry(name.to_vec()).or_insert(value); // 141408490's first exact name match.
+        }
+        let mut generated = Vec::new();
+        let mut remaining = raw;
+        while let Some(start) = remaining.iter().position(|byte| *byte == b'[') {
+            generated.extend_from_slice(&remaining[..start]);
+            let end = remaining[start + 1..]
+                .iter()
+                .position(|byte| *byte == b']')
+                .ok_or("meta_effect parameter bracket is not closed (141408C80)")?
+                + start
+                + 1;
+            if let Some(value) = parameters.get(&remaining[start + 1..end]) {
+                generated.extend_from_slice(value.as_bytes());
+            }
+            remaining = &remaining[end + 1..];
+        }
+        generated.extend_from_slice(remaining);
+        let names = self
+            .context
+            .content
+            .key_names
+            .ok_or_else(|| self.content_gap("effect key names"))?;
+        let body = installed_content::effect_keys::read_body(&generated, names)?; // 1414082F0 -> 140534280.
+        Ok(self.group(&body, scopes, indent))
+    }
+
+    pub(super) fn override_own(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
+        field(children(item), "tooltip")
+            .filter(|item| !item.value.read_string().is_some_and(|key| key.is_empty()))
+            .map(|tooltip| self.custom_tooltip(tooltip, scopes))
+            .unwrap_or_else(|| Ok(String::new()))
+    }
+
+    fn override_tooltip(
+        &mut self,
+        item: &Item,
+        scopes: Scopes,
+        indent: usize,
+    ) -> Result<String, String> {
+        let own = self.override_own(item, scopes)?;
+        let mut text = if own.len() > 1 {
+            format!("{}{own}", "   ".repeat(indent))
+        } else {
+            String::new()
+        };
+        let children = self.effect_children(item);
+        let body = self.group(&children, scopes, indent);
+        append_description(&mut text, &body);
+        Ok(text)
+    }
 }

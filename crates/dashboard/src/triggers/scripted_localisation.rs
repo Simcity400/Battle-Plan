@@ -74,6 +74,10 @@ impl Evaluator<'_, '_> {
                     0
                 }
             }
+            super::Scope::IndustrialOrganisation(reference) => {
+                self.world().industrial_organisation(reference)?;
+                ((reference >> 32) as u32).wrapping_mul(82) // 140529EE0, object+0x0C.
+            }
             super::Scope::Combat => return Err("random_list seed: the combat scope's native reference identity (140529EE0) is not given".into()),
         };
         Ok(Some((value as u32).wrapping_add(identity)))

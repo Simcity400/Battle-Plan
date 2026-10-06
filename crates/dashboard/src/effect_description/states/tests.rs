@@ -899,8 +899,8 @@ fn native_states_branches() {
         (
             "force_enable_resistance={add_political_power=1}",
             S(1),
-            "",
-            Some("140532780"),
+            "Enable One\nPP1\n",
+            None,
         ),
         (
             "start_resistance={}",
@@ -993,13 +993,7 @@ fn native_states_branches() {
         (
             "add_resistance_target={amount=0 add_political_power=1}",
             S(1),
-            "",
-            Some("140532780"),
-        ),
-        (
-            "add_resistance_target={amount=0 ignored_field=yes}",
-            S(1),
-            "",
+            "PP1\n",
             None,
         ),
         ("goto_state=1", C(1), "Go One\n", None),
@@ -1193,8 +1187,8 @@ fn native_states_branches() {
         (
             "build_railway={level=0 add_stability=.1}",
             C(1),
-            "",
-            Some("140532780"),
+            "S0\n",
+            None,
         ),
         (
             "create_railway_gun={location=1}",
@@ -1259,6 +1253,20 @@ fn native_states_branches() {
             );
         }
     }
+    // The shared child projection sends non-own fields through ReadEffect@1405345D0.
+    let mut scopes = EventScopes::new(vec![EventScope::of(S(1))]);
+    let out = fixture.render(
+        "add_resistance_target={amount=0 ignored_field=yes}",
+        &mut scopes,
+        content,
+    );
+    assert!(out.text.is_empty());
+    assert_eq!(out.refusals.values().sum::<usize>(), 1);
+    assert!(
+        out.refusals
+            .keys()
+            .all(|why| why.contains("unknown effect key ignored_field"))
+    );
     let mut scopes = EventScopes::new(vec![
         EventScope {
             root: Link::Scope(1),

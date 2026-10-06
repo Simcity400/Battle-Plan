@@ -98,6 +98,78 @@ fn reader(token: u32) -> Option<KeyReader> {
         .map(|index| KEY_READERS[index].1)
 }
 
+// Slot 4 separates stored operands, child effects and random-list members.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DescriptionField {
+    Own,
+    Effect,
+    RandomListMember,
+}
+
+fn description_field(reader: KeyReader, item: &crate::parser::Item) -> DescriptionField {
+    use DescriptionField::*;
+    match reader {
+        KeyReader::Conditional if !item.keyword_is("limit") => Effect,
+        KeyReader::Conditional
+        | KeyReader::Variable
+        | KeyReader::DivideVariable
+        | KeyReader::GenerateCharacter => Own,
+        KeyReader::Keys(keys, fallback) => {
+            if keys.iter().any(|(name, _)| item.keyword_is(name)) {
+                return Own;
+            }
+            match fallback {
+                Fallback::Effect => Effect,
+                Fallback::Reader(helper) => description_field(data::helper(helper), item),
+                Fallback::RandomListMember
+                    if !c_string(item.key.as_deref().unwrap_or_default()).is_empty() =>
+                {
+                    RandomListMember
+                }
+                _ => Own,
+            }
+        }
+    }
+}
+
+fn description_projection(
+    token: u32,
+    items: &[crate::parser::Item],
+    field: DescriptionField,
+) -> Result<Vec<crate::parser::Item>, String> {
+    let reader = reader(token).ok_or_else(|| {
+        format!("effect own-key projection is not ported for token {token:X} (140534280)")
+    })?;
+    Ok(items
+        .iter()
+        .filter(|item| description_field(reader, item) == field)
+        .cloned()
+        .collect())
+}
+
+pub(super) fn description_fields(
+    token: u32,
+    items: &[crate::parser::Item],
+) -> Result<Vec<crate::parser::Item>, String> {
+    description_projection(token, items, DescriptionField::Effect)
+}
+
+pub(super) fn random_list_members(
+    token: u32,
+    items: &[crate::parser::Item],
+) -> Result<Vec<crate::parser::Item>, String> {
+    description_projection(token, items, DescriptionField::RandomListMember)
+}
+
+pub(super) fn random_member_fields(items: &[crate::parser::Item]) -> Vec<crate::parser::Item> {
+    let reader = data::helper(Helper::RandomListMember);
+    items
+        .iter()
+        .filter(|item| description_field(reader, item) == DescriptionField::Effect)
+        .cloned()
+        .collect()
+}
+
 /// Whether the token's static key reader handles this bare key before fallback.
 pub fn is_own_field(token: u32, key: &[u8]) -> bool {
     match reader(token) {

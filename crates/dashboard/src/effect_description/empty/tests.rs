@@ -2,7 +2,7 @@ use super::super::{tests::Fixture, *};
 use crate::scripted_text::{EventObject, EventScope};
 
 #[test]
-fn native_empty_dispatch_and_core_refusals() {
+fn native_empty_dispatch() {
     let fixture = Fixture::new();
     for body in [
         "add_ai_strategy={}",
@@ -68,72 +68,56 @@ fn native_empty_dispatch_and_core_refusals() {
         assert!(out.text.is_empty(), "{body}: {}", out.text);
         assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals);
     }
-    for (body, class) in [
+}
+
+#[test]
+fn native_empty_containers_describe_and_probe_children_once() {
+    let fixture = Fixture::new();
+    let names = installed_content::key_names::KeyNames::default();
+    let content = Content {
+        key_names: Some(&names),
+        ..Default::default()
+    };
+    // Both inherit BuildDescription@140532780 and vf11@140533D80
+    // (142763228 / 142739BC0); their own text remains empty.
+    for (class, own) in [
+        ("create_dynamic_country", "original_tag=AAA copy_tag=BBB"),
         (
-            "create_dynamic_country={original_tag=AAA add_political_power=2}",
-            "CCreateDynamicCountry",
-        ),
-        (
-            "force_disable_resistance={clear=yes add_political_power=2}",
-            "CForceDisableResistanceEffect",
+            "force_disable_resistance",
+            "clear=yes occupied=AAA occupier=BBB",
         ),
     ] {
+        let body = format!("{class}={{{own} add_political_power=2 add_political_power=3}}");
+        let items = installed_content::effect_keys::read_body(body.as_bytes(), &names).unwrap();
         let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
-        let out = fixture.render(body, &mut scopes, Content::default());
-        assert!(out.text.is_empty());
-        assert_eq!(
-            out.refusals.values().sum::<usize>(),
-            1,
-            "{body}: {:?}",
-            out.refusals
-        );
-        assert!(
-            out.refusals.keys().any(|why| why.contains(class)
-                && why.contains("140532780")
-                && why.contains("140533D80")),
-            "{:?}",
-            out.refusals
-        );
+        let out = fixture.render_native(&body, &mut scopes, content);
+        assert_eq!(out.text, "PP2\nPP3\n", "{class}: {:?}", out.refusals);
+        assert!(out.refusals.is_empty(), "{class}: {:?}", out.refusals);
+        fixture.with_renderer(&mut scopes, content, |renderer| {
+            let selected =
+                crate::triggers::event_scopes::project(&renderer.graph.borrow(), 0).unwrap();
+            assert!(renderer.multiple(&items, selected), "{class}");
+            assert!(renderer.out.refusals.is_empty());
+        });
     }
-    let mut names = installed_content::key_names::KeyNames::default();
-    names.scripted_effects.insert(b"synthetic_child".to_vec());
-    for (body, reason) in [
-        (
-            "create_dynamic_country={synthetic_child=yes}",
-            Some("140532780"),
-        ),
-        ("create_dynamic_country={ignored_field=yes else={}}", None),
-    ] {
+}
+
+#[test]
+fn native_empty_containers_keep_child_refusals_once() {
+    let fixture = Fixture::new();
+    for class in ["create_dynamic_country", "force_disable_resistance"] {
         let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
         let out = fixture.render(
-            body,
+            &format!("{class}={{add_political_power=2 add_manpower=1}}"),
             &mut scopes,
-            Content {
-                key_names: Some(&names),
-                ..Default::default()
-            },
+            Content::default(),
         );
-        assert!(out.text.is_empty());
-        assert_eq!(
-            out.refusals.values().sum::<usize>(),
-            usize::from(reason.is_some()),
-            "{body}: {:?}",
+        assert_eq!(out.text, "PP2\n");
+        assert_eq!(out.refusals.values().sum::<usize>(), 1);
+        assert!(
             out.refusals
+                .keys()
+                .all(|why| why.contains("CManpowerAddEffect"))
         );
-        if let Some(reason) = reason {
-            assert!(out.refusals.keys().any(|why| why.contains(reason)));
-        }
     }
-    let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
-    let out = fixture.render(
-        "create_dynamic_country={unclassified=yes}",
-        &mut scopes,
-        Content::default(),
-    );
-    assert_eq!(out.refusals.values().sum::<usize>(), 1);
-    assert!(
-        out.refusals
-            .keys()
-            .any(|why| why.contains("content names unavailable"))
-    );
 }

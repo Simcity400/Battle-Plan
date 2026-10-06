@@ -29,28 +29,84 @@ impl Renderer<'_, '_, '_> {
             }) // 14299F7C8, ReadEffect@1405345D0.
     }
 
-    pub(super) fn leaf(&mut self, item: &Item, scopes: Scopes) -> Result<String, String> {
-        let class = self
-            .effect_class(item)
-            .ok_or_else(|| format!("unknown effect key {} (ReadEffect 1405345D0)", key(item)))?;
-        match class.vtable {
-            // scopes — I
+    pub(super) fn leaf(&mut self, item: &Item, scopes: Scopes) -> Option<Result<String, String>> {
+        let class = self.effect_class(item)?;
+        Some(match class.vtable {
+            // scopes â€” I
             0x14299F6F8 /* CContextEffect */ => self
                 .context_header(item, scopes)
                 .map(|selected| selected.map(|(_, header)| header).unwrap_or_default()),
             0x1427576E8 /* CEveryStateEffect */ => lists::own(), // Own 140176EE0, build 140312880.
+            0x1427B6A68 /* CEveryCollectionElementEffect */ => lists::own(), // Build 1404C3640.
 
-            // variables — I
+            0x142767790 /* CAlliedCountryEffectBase<> */ => lists::own(), // Build 14036AA80.
+            0x1427678A0 /* CAlliedCountryEffectBase<> */ => lists::own(), // Build 1402F4BA0.
+            0x14272B088 /* CCharacterListTooltipEffect */ => lists::own(), // Build 1402F53E0.
+            0x1427971A8 /* CEveryArmyEffect */ => lists::own(), // Build 1402F4200.
+            0x142753F50 /* CEveryArmyLeaderEffect */ => lists::own(), // Build 14036AA80.
+            0x14272AE58 /* CEveryCharacterEffect */ => lists::own(), // Build 1402F4200.
+            0x142738188 /* CEveryControlledStateEffect */ => lists::own(), // Build 140312880.
+            0x142757E68 /* CEveryCoreStateEffect */ => lists::own(), // Build 140312880.
+            0x142756730 /* CEveryCountryEffect */ => lists::own(), // Build 14036AA80.
+            0x142758AE8 /* CEveryCountryWithOriginalTag */ => lists::own(), // Build 14036AA80.
+            0x142758688 /* CEveryEnemyCountryEffect */ => lists::own(), // Build 14036AA80.
+            0x1427B2F58 /* CEveryFactionMember */ => lists::own(), // Build 14036AA80.
+            0x142753E68 /* CEveryNavyLeaderEffect */ => lists::own(), // Build 14036AA80.
+            0x142758248 /* CEveryNeighborCountryEffect */ => lists::own(), // Build 14036AA80.
+            0x142738278 /* CEveryNeighborStateEffect */ => lists::own(), // Build 140312880.
+            0x1427588A8 /* CEveryOccupiedCountryEffect */ => lists::own(), // Build 14036AA80.
+            0x142754128 /* CEveryOperativeLeaderEffect */ => lists::own(), // Build 14036AA80.
+            0x142756A60 /* CEveryOtherCountryEffect */ => lists::own(), // Build 14036AA80.
+            0x142757D78 /* CEveryOwnedStateEffect */ => lists::own(), // Build 140312880.
+            0x142756840 /* CEveryPossibleCountryEffect */ => lists::own(), // Build 14036AA80.
+            0x1427A9500 /* CEveryScientistEffect@?A0x9898cfbe@NProject */ => lists::own(), // Build 1402F4200.
+            0x1427975D8 /* CEveryStateArmyEffect */ => lists::own(), // Build 1402F4200.
+            0x142758578 /* CEverySubjectCountryEffect */ => lists::own(), // Build 14036AA80.
+            0x142753BA0 /* CEveryUnitLeaderEffect */ => lists::own(), // Build 14036AA80.
+            0x142754210 /* CGlobalEveryArmyLeaderEffect */ => lists::own(), // Build 14036AA80.
+            0x14272B230 /* CPartyLeaderTarget */ => lists::own(), // Build 1402F4BA0.
+            0x1427A96D0 /* CRandomActiveScientistEffect@?A0x9898cfbe@NProject */ => lists::own(), // Build 1402F4BA0.
+            0x1427970B8 /* CRandomArmyEffect */ => lists::own(), // Build 1402F4BA0.
+            0x142753C88 /* CRandomArmyLeaderEffect */ => lists::own(), // Build 1402F4BA0.
+            0x14272AD68 /* CRandomCharacterEffect */ => lists::own(), // Build 1402F4BA0.
+            0x142757AA8 /* CRandomControlledStateEffect */ => lists::own(), // Build 1402F4BA0.
+            0x142758048 /* CRandomCoreStateEffect */ => lists::own(), // Build 1402F4BA0.
+            0x142756620 /* CRandomCountryEffect */ => lists::own(), // Build 1402F4BA0.
+            0x1427589B8 /* CRandomCountryWithOriginalTag */ => lists::own(), // Build 1402F4BA0.
+            0x142758358 /* CRandomEnemyCountryEffect */ => lists::own(), // Build 1402F4BA0.
+            0x142753D78 /* CRandomNavyLeaderEffect */ => lists::own(), // Build 1402F4BA0.
+            0x142758138 /* CRandomNeighborCountryEffect */ => lists::own(), // Build 1402F4BA0.
+            0x1427575F8 /* CRandomNeighborStateEffect */ => lists::own(), // Build 1402F4BA0.
+            0x142758798 /* CRandomOccupiedCountryEffect */ => lists::own(), // Build 1402F4BA0.
+            0x142754038 /* CRandomOperativeLeaderEffect */ => lists::own(), // Build 1402F4BA0.
+            0x142756950 /* CRandomOtherCountryEffect */ => lists::own(), // Build 1402F4BA0.
+            0x142757C88 /* CRandomOwnedControlledStateEffect */ => lists::own(), // Build 1402F4BA0.
+            0x1427578C8 /* CRandomOwnedStateEffect */ => lists::own(), // Build 1402F4BA0.
+            0x1427A9410 /* CRandomScientistEffect@?A0x9898cfbe@NProject */ => lists::own(), // Build 1402F4BA0.
+            0x142760010 /* CRandomScopeInArray */ => lists::own(), // Build 14036B940.
+            0x1427974E8 /* CRandomStateArmyEffect */ => lists::own(), // Build 1402F4BA0.
+            0x142757418 /* CRandomStateEffect */ => lists::own(), // Build 1402F4BA0.
+            0x142758468 /* CRandomSubjectCountryEffect */ => lists::own(), // Build 1402F4BA0.
+            0x142753AB0 /* CRandomUnitLeaderEffect */ => lists::own(), // Build 1402F4BA0.
+            0x142750FC8 /* CSetPoliticsEffect */ => self.set_politics(item, scopes), // Build 14036C090.
+            0x14272F680 /* NIndustrialOrganisation::CEveryIndustrialOrgEffect */ => lists::own(), // Build 1402F4200.
+            0x14272F590 /* NIndustrialOrganisation::CRandomIndustrialOrgEffect */ => lists::own(), // Build 1402F4BA0.
+
+            // variables â€” I
             0x14275F568 /* CClearVariableEffect */ => variables::clear_variable(),
             0x14275A188 /* CSaveEventTargetAsEffect */ => self.save_event_target(item, scopes),
 
-            // lists — I
+            // lists â€” I
             0x1427BE590 /* CIfEffect */ | 0x14299FCB8 /* CHiddenEffect */ | 0x14299FD88 /* CEffectTooltipEffect */ => lists::own(),
 
-            // modifiers — I
+            0x14299F7C8 /* CScriptedEffect */ | 0x14275FF40 /* CForEachScopeEffect */ | 0x142761860 /* CMetaEffect */ | 0x1429A00F0 /* CRandomEffect */ => lists::own(),
+            0x1429A0260 /* CRandomListEffect */ => self.random_list(item, scopes), // 141383AB0.
+            0x14299FFF8 /* CWithTooltipOverrideEffect */ => self.override_own(item, scopes), // 141384190.
+
+            // modifiers â€” I
             0x142751C20 /* CAddTimedIdeaEffect */ => self.timed_idea(item, scopes),
 
-            // numeric — I
+            // numeric â€” I
             0x142751FF8 /* CAddPoliticalPowerEffect */ => {
                 self.numeric_value(item, scopes, b"POLITICS_ADD_POLITICAL_POWER")
             } // 140376050
@@ -60,8 +116,8 @@ impl Renderer<'_, '_, '_> {
             0x142758BF8 /* CAddStabilityEffect */ => self.numeric_value(item, scopes, b"EFFECT_ADD_STABILITY"), // 140377DF0
             0x142758DC8 /* CAddWarSupportEffect */ => self.numeric_value(item, scopes, b"EFFECT_ADD_WAR_SUPPORT"), // 1403797B0
 
-            // characters — F
-            // politics — F
+            // characters â€” F
+            // politics â€” F
             0x1429A04C8 /* CLogScriptEffect */ => Ok(String::new()), // 140176EE0
             0x142759550 /* CAddPopularityEffect */ => self.politics_popularity(item, scopes), // 140376270
             0x142738560 /* CAddCoreOfEffect */ => self.politics_core(item, scopes, b"EFFECT_ADD_CORE_OF"), // 140313AB0
@@ -121,21 +177,21 @@ impl Renderer<'_, '_, '_> {
             0x14275BB58 /* CSetOobEffect */ => self.politics_oob(item, scopes, b"EFFECT_SET_OOB"), // 140391580
             0x14275ADB0 /* CSetPartyRuleEffect */ => self.politics_rules(item, scopes, true), // 140392590
 
-            // technology — F
+            // technology â€” F
             0x1427BB520 /* NDoctrines::CAddMasteryEffect */ => self.mastery(item, scopes),
             0x14273BC98 /* CAddDoctrineCostReduction */ => self.doctrine_reduction(item, scopes),
 
-            // events — F
+            // events â€” F
             0x14299FF28 /* CCustomEffectTooltipEffect */ => self.custom_tooltip(item, scopes),
             0x142756450 /* CCountryEventEffect */ => self.country_event(item, scopes),
             0x14275E4C0 /* CRemoveTargetedDecisionEffect */ => self.removed_decision(item, scopes),
 
-            // diplomacy — D2
+            // diplomacy â€” D2
             0x142758F98 /* CDeclareWarEffect */ => self.war_or_annex(item, scopes, false),
             0x142756B70 /* CAnnexCountryEffect */ => self.war_or_annex(item, scopes, true),
             0x1427B2A08 /* CAddToFactionEffect */ => self.faction(item, scopes),
 
-            // states — D2
+            // states â€” D2
             0x1427535F8 /* CAddStateClaimEffect */ => self.state_change(item, scopes, b"EFFECT_ADD_STATE_CLAIM"), // 140378010
             0x1427531F8 /* CTransferStateEffect */ => self.state_change(item, scopes, b"EFFECT_TRANSFER_STATE"), // 140398680
             0x1427602D0 /* CStartBorderWarEffect */ => self.start_border_war(item, scopes),
@@ -184,24 +240,24 @@ impl Renderer<'_, '_, '_> {
             0x142729758 /* CSupplyUnits */ => self.supply_units(item, scopes), // 1402EDC70
             0x14273A1F8 /* CTransferStateToEffect */ => self.state_country_to(item, scopes, b"EFFECT_TRANSFER_STATE_TO"), // 1403192B0
 
-            // units — D2
+            // units â€” D2
             0x142760FA8 /* CDeleteTemplateAndItsUnits */ => self.delete_template(item, scopes),
 
-            // empty — D2
+            // empty â€” D2
             0x14275C610 /* CAddAIStrategyEffect */ => empty::describe(), // 140176EE0
             0x142752B58 /* CAddDivisionTemplateEffect */ => empty::describe(), // 140176EE0
             0x1427293C8 /* CClearCharacterFlagEffect */ => empty::describe(), // 140176EE0
             0x14275A328 /* CClearGlobalEventTargetEffect */ => empty::describe(), // 140176EE0
             0x1427560F0 /* CClearGlobalFlagEffect */ => empty::describe(), // 140176EE0
             0x14275ACE0 /* CClearRuleEffect */ => empty::describe(), // 140176EE0
-            0x1427631D0 /* CCreateDynamicCountry */ => self.empty_child_container(item), // 1402E9B40
+            0x1427631D0 /* CCreateDynamicCountry */ => empty::describe(), // Own 1402E9B40; inherited child walk 140532780.
             0x142764020 /* CCreateEntityEffect */ => empty::describe(), // 1402E9B40
             0x142764840 /* CDamageUnitsEffect */ => empty::describe(), // 1402E9B40
             0x14275CC50 /* CDeleteUnitEffect */ => empty::describe(), // 1402E9B40
             0x142764108 /* CDestroyEntityEffect */ => empty::describe(), // 1402E9B40
             0x14275D008 /* CDropCosmeticTagEffect */ => empty::describe(), // 1402E9B40
             0x142763D28 /* CExecuteOperationCoordinatedStrike */ => empty::describe(), // 140176EE0
-            0x142739B68 /* CForceDisableResistanceEffect */ => self.empty_child_container(item), // 1402E9B40
+            0x142739B68 /* CForceDisableResistanceEffect */ => empty::describe(), // Own 1402E9B40; inherited child walk 140532780.
             0x142761A70 /* CForceRecalcModifiersEffect */ => empty::describe(), // 1402E9B40
             0x142764910 /* CForceUpdateMapMode */ => empty::describe(), // 1402E9B40
             0x14275FE70 /* CForEachEffect */ => empty::describe(), // 1402E9B40; empty build 1402E9B40
@@ -246,9 +302,7 @@ impl Renderer<'_, '_, '_> {
             0x142756378 /* CClearCountryFlagEffect */ => empty::describe(), // 140176EE0
             0x142737A40 /* CClearStateFlagEffect */ => empty::describe(), // 140176EE0
 
-            _ => Err(format!(
-                "{}@{:X} description is not ported (CEffect::BuildDescription 140532780)", class.name, class.vtable
-            )),
-        }
+            _ => return None,
+        })
     }
 }

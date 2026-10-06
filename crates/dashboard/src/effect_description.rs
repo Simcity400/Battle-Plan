@@ -23,6 +23,10 @@
 //!   with_expansion_scopes, variable_session}` retain indentation/session rules.
 //! - `Renderer::refuse(class, reason)` counts a named failure; the class-keyed
 //!   dispatch is in `dispatch.rs`. Each lead edits only its own domain and rows.
+//! - `Renderer::effect_children(item)` projects slot-4 own fields out of the
+//!   child array, shared by builders and probes (140534280/1405345D0).
+//! - `Renderer::fresh_country_state_scope(country, state)` creates a localisation
+//!   environment without caller ROOT/FROM/PREV (1404A5070/1404A5160).
 use std::{
     cell::{OnceCell, RefCell},
     collections::BTreeMap,
@@ -77,6 +81,9 @@ pub struct Content<'a> {
     pub name_lists: Option<&'a installed_content::names::NameLists>,
     pub events: Option<&'a EventLookup<'a>>,
     pub key_names: Option<&'a installed_content::key_names::KeyNames>,
+    pub scripted_effects: Option<&'a installed_content::scripted_effects::ScriptedEffects>,
+    pub industrial_organisations: Option<&'a installed_content::industrial_organisations::Database>,
+    pub collections: Option<&'a installed_content::collections::Database>,
     pub buildings: Option<&'a installed_content::buildings::Buildings>,
     pub resources: Option<&'a [installed_content::resources::Resource]>,
     pub max_railway_level: Option<i32>,
@@ -91,6 +98,9 @@ pub struct CachedContent {
     ideas: Option<installed_content::ideas::IdeaContent>,
     name_lists: Option<installed_content::names::NameLists>,
     key_names: Option<installed_content::key_names::KeyNames>,
+    scripted_effects: Option<installed_content::scripted_effects::ScriptedEffects>,
+    industrial_organisations: Option<installed_content::industrial_organisations::Database>,
+    collections: Option<installed_content::collections::Database>,
     buildings: Option<installed_content::buildings::Buildings>,
     resources: Option<Vec<installed_content::resources::Resource>>,
     max_railway_level: Option<i32>,
@@ -148,6 +158,33 @@ impl CachedContent {
             "effect key names",
             &mut gaps,
         );
+        let scripted_effects = key_names.as_ref().and_then(|names| {
+            keep(
+                installed_content::scripted_effects::read(layers, names),
+                "scripted effects",
+                &mut gaps,
+            )
+        });
+        let industrial_organisations = key_names.as_ref().and_then(|names| {
+            keep(
+                installed_content::industrial_organisations::read(layers, names),
+                "industrial organisation visibility",
+                &mut gaps,
+            )
+        });
+        if let Some(database) = &industrial_organisations {
+            notes.extend(database.notes.clone());
+        }
+        let collections = key_names.as_ref().and_then(|names| {
+            keep(
+                installed_content::collections::read(layers, names),
+                "collections",
+                &mut gaps,
+            )
+        });
+        if let Some(database) = &collections {
+            notes.extend(database.notes.clone());
+        }
         let buildings = keep(installed_content::buildings::read(layers), "buildings", &mut gaps);
         let resources = keep(installed_content::resources::read(layers), "resources", &mut gaps).and_then(
             |(resources, warnings)| {
@@ -183,6 +220,9 @@ impl CachedContent {
             ideas,
             name_lists,
             key_names,
+            scripted_effects,
+            industrial_organisations,
+            collections,
             buildings,
             resources,
             max_railway_level,
@@ -198,6 +238,9 @@ impl CachedContent {
             ideas: self.ideas.as_ref(),
             name_lists: self.name_lists.as_ref(),
             key_names: self.key_names.as_ref(),
+            scripted_effects: self.scripted_effects.as_ref(),
+            industrial_organisations: self.industrial_organisations.as_ref(),
+            collections: self.collections.as_ref(),
             buildings: self.buildings.as_ref(),
             resources: self.resources.as_deref(),
             max_railway_level: self.max_railway_level,
@@ -290,6 +333,7 @@ pub fn describe(
         graph,
         evaluator: OnceCell::new(),
         out: Description::default(),
+        scripted_stack: Vec::new(),
     };
     let projected = crate::triggers::event_scopes::project(&out.graph.borrow(), 0);
     match projected {
@@ -322,6 +366,7 @@ struct Renderer<'r, 'c, 'f> {
     graph: Rc<RefCell<EventScopes>>,
     evaluator: OnceCell<Result<Evaluator<'c, 'f>, String>>,
     out: Description,
+    scripted_stack: Vec<(Vec<u8>, Scope)>,
 }
 
 /// 1424B7400 trims exactly these four ASCII bytes.
@@ -354,6 +399,21 @@ pub(super) fn append_description(text: &mut String, child: &str) {
 
 fn field<'a>(items: &'a [Item], name: &str) -> Option<&'a Item> {
     items.iter().rev().find(|item| item.keyword_is(name))
+}
+
+fn integer(text: &[u8]) -> i32 {
+    match installed_content::crt::scan_i32(text) {
+        installed_content::crt::Scanned::Stored(value) => value,
+        _ => 0,
+    }
+}
+
+fn without(items: &[Item], names: &[&str]) -> Vec<Item> {
+    items
+        .iter()
+        .filter(|item| !names.iter().any(|name| item.keyword_is(name)))
+        .cloned()
+        .collect()
 }
 
 fn children(item: &Item) -> &[Item] {
@@ -771,38 +831,82 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
     }
 
-    fn own(&mut self, item: &Item, scopes: Scopes) -> String {
+    fn own(&mut self, item: &Item, scopes: Scopes) -> Option<String> {
         match self.leaf(item, scopes) {
-            Ok(text) => text,
-            Err(why) => {
+            Some(Ok(text)) => Some(text),
+            result => {
                 let class = self
                     .effect_class(item)
                     .map(|class| class.name)
                     .unwrap_or("unknown key");
+                let why = match &result {
+                    Some(Err(why)) => why.clone(),
+                    _ => self.effect_class(item).map(|class| format!(
+                        "{}@{:X} description is not ported (CEffect::BuildDescription 140532780)", class.name, class.vtable
+                    )).unwrap_or_else(|| format!("unknown effect key {} (ReadEffect 1405345D0)", key(item))),
+                };
                 self.refuse(class, format!("key {}: {why}", key(item)));
-                String::new()
+                // Known builders can still describe their independent children.
+                // An unported class may override vf8, so do not assume base traversal.
+                result.map(|_| String::new())
             }
         }
     }
 
     fn builder(&mut self, item: &Item, scopes: Scopes, indent: usize) -> String {
+        if let Some(text) = self.scope_builder(item, scopes, indent) {
+            return text;
+        }
+        if let Some(text) = self.list_builder(item, scopes, indent) {
+            return text;
+        }
         match self.effect_class(item).map(|class| class.vtable) {
-            Some(0x1427576E8) /* CEveryStateEffect */ => return self.every_state(item, scopes, indent),
             Some(0x14299F6F8) /* CContextEffect */ => return self.context_effect(item, scopes, indent),
             Some(0x14299FD88) /* CEffectTooltipEffect */ => return self.tooltip_group(item, scopes, indent),
             Some(0x14299FCB8) /* CHiddenEffect */ => return self.hidden_group(item, scopes, indent),
             _ => {}
         }
-        let own = self.own(item, scopes);
-        if own.len() as i32 <= 1 {
+        let Some(own) = self.own(item, scopes) else {
             return String::new();
-        }
+        };
         // vf14 and generic own-line prefix, 140532780. Custom event desc differs.
-        if self.indents(item) {
+        let mut text = if own.len() as i32 <= 1 {
+            String::new()
+        } else if self.indents(item) {
             format!("{}{own}", "   ".repeat(indent))
         } else {
             own
+        };
+        // 140532780 always walks +8/count +0x14, even when own length <= 1.
+        if !self.empty_build_override(item) {
+            let body = self.effect_children(item);
+            append_description(&mut text, &self.group(&body, scopes, indent));
         }
+        text
+    }
+
+    pub(super) fn effect_children(&mut self, item: &Item) -> Vec<Item> {
+        match installed_content::effect_keys::description_fields(item) {
+            Ok(body) => body,
+            Err(why) => {
+                let class = self
+                    .effect_class(item)
+                    .map(|class| class.name)
+                    .unwrap_or("unknown key");
+                self.refuse(class, why);
+                Vec::new()
+            }
+        }
+    }
+
+    fn empty_build_override(&self, item: &Item) -> bool {
+        // These four override vf8 with 1402E9B40, discarding all children.
+        self.effect_class(item).is_some_and(|class| {
+            matches!(
+                class.name,
+                "CForEachEffect" | "CForEffect" | "CWhileEffect" | "CSetPoliticalPartyEffect"
+            )
+        })
     }
 
     fn indents(&self, item: &Item) -> bool {

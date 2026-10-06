@@ -127,7 +127,6 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        self.require_no_effect_children(item)?;
         // 140316590: operands name no countries in the own text; no LF.
         let Some(state) = self.occupation_state(scopes)? else {
             return Ok(String::new());
@@ -196,7 +195,6 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        self.require_no_effect_children(item)?;
         // 14030B010 defaults amount=-1; scalar vf25@14031B120 writes amount.
         let amount = match item.value.scalar() {
             Some(amount) => Some(amount),

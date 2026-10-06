@@ -219,8 +219,9 @@ impl Renderer<'_, '_, '_> {
         let country = self.politics_focus_country(scopes)?;
         let name = self.politics_focus_name(id, definition, country)?;
         let who = self.country_name(country, false)?; // 140BA5960.
+        // 1403A9B50/1403B1040 read originator_name at +0x80; 14037B7B0 localises it.
         if action == 0
-            && let Some(tooltip) = field(children(item), "tooltip")
+            && let Some(tooltip) = field(children(item), "originator_name")
                 .and_then(|item| item.value.scalar())
                 .filter(|value| !value.is_empty())
         {

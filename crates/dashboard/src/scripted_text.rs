@@ -81,6 +81,12 @@ pub enum Link {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventObject {
     Country(u32),
+    /// SetCountry/SetState without clearing, for environment localisation
+    /// (1404A5070/1404A5160 -> 1410CF4A0).
+    CountryState {
+        country: u32,
+        state: u32,
+    },
     /// A state by id; SetState (14052ECE0) clears the scope's country.
     State(u32),
     Province(u32),
@@ -89,6 +95,8 @@ pub enum EventObject {
     UnitLeader(u64),
     /// A character by id; SetCharacter (14052DAF0) clears the country.
     Character(u32),
+    /// SetIndustrialOrganisation@14052E720 clears other carried objects.
+    IndustrialOrganisation(u64),
 }
 
 /// One CEventScope as text reads it: its object and its links.
@@ -767,6 +775,17 @@ impl<'a> ScriptedText<'a> {
         scopes: &ExpansionScopes,
         active: &mut usize,
     ) -> Result<Object, String> {
+        // Kind-0 environment selectors retain both carried fields (1410CF710).
+        if object == Object::Event
+            && let EventObject::CountryState { country, state } = scopes.scope(*active).this
+        {
+            if named(segment, "Country") {
+                return Ok(Object::Country(country));
+            }
+            if named(segment, "State") {
+                return Ok(Object::State(Some(state)));
+            }
+        }
         // 1. The current kind's table.
         match object {
             Object::Country(slot) => {
@@ -1303,7 +1322,9 @@ impl<'a> ScriptedText<'a> {
     /// (+0xA8).
     fn event_object(&self, object: EventObject, name: &str) -> Result<Object, String> {
         Ok(match object {
-            EventObject::Country(slot) => Object::Country(slot),
+            EventObject::Country(slot) | EventObject::CountryState { country: slot, .. } => {
+                Object::Country(slot)
+            }
             EventObject::State(id) => Object::State(Some(id)),
             EventObject::Character(id) => Object::Character(id),
             EventObject::UnitLeader(reference) => {
@@ -1325,6 +1346,7 @@ impl<'a> ScriptedText<'a> {
                     "{name}: province {id} is a text object, not a native event-scope target (141A81250)"
                 ));
             }
+            EventObject::IndustrialOrganisation(_) => Object::State(None), // No +8/+50/+A8 (141A81250).
         })
     }
 
@@ -1373,8 +1395,17 @@ impl<'a> ScriptedText<'a> {
         event: EventObject,
     ) -> Result<Option<u32>, String> {
         let country = match (object, event) {
-            (Object::Country(slot), _) | (_, EventObject::Country(slot)) => Some(slot),
-            (_, EventObject::State(_) | EventObject::Character(_) | EventObject::UnitLeader(_)) => {
+            (Object::Country(slot), _)
+            | (_, EventObject::Country(slot) | EventObject::CountryState { country: slot, .. }) => {
+                Some(slot)
+            }
+            (
+                _,
+                EventObject::State(_)
+                | EventObject::Character(_)
+                | EventObject::UnitLeader(_)
+                | EventObject::IndustrialOrganisation(_),
+            ) => {
                 return Ok(None);
             }
             (_, EventObject::Province(_)) => None,
@@ -1460,7 +1491,7 @@ impl<'a> ScriptedText<'a> {
         self.party_name(party, tag, long)
     }
 
-    fn party_name(
+    pub(crate) fn party_name(
         &self,
         party: &replay::rows::PoliticalPartyRow,
         tag: &str,

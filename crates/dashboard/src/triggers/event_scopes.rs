@@ -9,11 +9,14 @@ use crate::scripted_text::{EventObject, EventScope, EventScopes, Link};
 
 pub(super) fn object(value: EventObject) -> Scope {
     match value {
-        EventObject::Country(id) => Scope::Country(id),
+        EventObject::Country(id) | EventObject::CountryState { country: id, .. } => {
+            Scope::Country(id)
+        }
         EventObject::State(id) => Scope::State(id),
         EventObject::Province(id) => Scope::Province(id),
         EventObject::UnitLeader(id) => Scope::Leader(id),
         EventObject::Character(id) => Scope::Character(id),
+        EventObject::IndustrialOrganisation(id) => Scope::IndustrialOrganisation(id),
     }
 }
 
@@ -24,6 +27,7 @@ fn event_object(value: Scope) -> Result<EventObject, String> {
         Scope::Province(id) => EventObject::Province(id),
         Scope::Leader(id) => EventObject::UnitLeader(id),
         Scope::Character(id) => EventObject::Character(id),
+        Scope::IndustrialOrganisation(id) => EventObject::IndustrialOrganisation(id),
         Scope::Combat => return Err("combat scope graph needs its caller's combat context".into()),
     })
 }
@@ -244,11 +248,11 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             .get(&owner)
             .and_then(|rows| lookup(rows, name))
             .is_some_and(|target| match target {
-                EventObject::Country(_) => true,
+                EventObject::Country(_) | EventObject::CountryState { .. } => true,
                 EventObject::State(id) | EventObject::Province(id) | EventObject::Character(id) => {
                     id > 0
                 }
-                EventObject::UnitLeader(id) => id != 0,
+                EventObject::UnitLeader(id) | EventObject::IndustrialOrganisation(id) => id != 0,
             }))
     }
 
@@ -398,12 +402,79 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(index)
     }
 
+    /// Set each target on the same copied scope (14036AA80/1402F4BA0).
+    pub(crate) fn repoint_this(&self, scopes: Scopes, this: Scope) -> Result<Scopes, String> {
+        let Some(at) = scopes.cursor else {
+            return Ok(scopes.with_this(this));
+        };
+        let binding = self.event_graph.borrow();
+        let graph = binding.as_ref().ok_or("scope graph is missing")?;
+        graph
+            .borrow_mut()
+            .scopes
+            .get_mut(at)
+            .ok_or("scope cursor is absent")?
+            .this = event_object(this)?;
+        self.event_scopes(at).map(|mut scopes| {
+            scopes.bare = true;
+            scopes
+        })
+    }
+
     /// Collection setters keep caller ROOT/FROM and install PREV (1413AE780).
     pub fn with_this(&self, scopes: Scopes, this: Scope) -> Result<Scopes, String> {
         let Some(at) = scopes.cursor else {
             return Ok(scopes.with_this(this));
         };
         let index = self.copy_scope(scopes, at, this)?;
+        self.event_scopes(index).map(|mut scopes| {
+            scopes.bare = true;
+            scopes
+        })
+    }
+
+    /// Fresh collection scopes use default seeds; terminal representatives
+    /// follow the caller's ROOT environment (1404BEDA0/1404C1760).
+    pub(crate) fn collection_scope(
+        &self,
+        scopes: Scopes,
+        this: Scope,
+        terminal: bool,
+    ) -> Result<Scopes, String> {
+        let Some(caller) = scopes.cursor else {
+            return Err("collection description needs its event graph (1404BEDA0)".into());
+        };
+        let index = {
+            let binding = self.event_graph.borrow();
+            let mut graph = binding
+                .as_ref()
+                .ok_or("scope graph is missing")?
+                .borrow_mut();
+            let caller_scope = *graph
+                .scopes
+                .get(caller)
+                .ok_or("collection caller is absent")?;
+            let source = if terminal {
+                linked(&graph, caller, caller_scope.root)?
+            } else {
+                caller
+            };
+            let origin = *graph
+                .scopes
+                .get(source)
+                .ok_or("collection caller is absent")?;
+            let absolute = |link| match link {
+                Link::Itself => Link::Scope(source),
+                other => other,
+            };
+            let mut fresh = EventScope::of(event_object(this)?);
+            fresh.root = absolute(origin.root);
+            fresh.from = absolute(origin.from);
+            fresh.prev = Link::Scope(source);
+            let at = graph.scopes.len();
+            graph.scopes.push(fresh);
+            at
+        };
         self.event_scopes(index).map(|mut scopes| {
             scopes.bare = true;
             scopes

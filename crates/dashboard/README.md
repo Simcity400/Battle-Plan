@@ -163,17 +163,62 @@ country/state leaves, numeric fixed5 values, faction and doctrine descriptions,
 targeted decisions and timed ideas, with the native conditional/context/state-list
 builders. Own lines use three spaces per level; `IndentNonEmptyLines` uses one.
 Context layout repeats native description probes instead of counting rendered
-newlines; a failed probe counts one context refusal. Unattached conditional
+newlines; a failed probe retains its named leaf causes once. Unattached conditional
 continuations are named refusals. State leaves require the complete state roster
-before applying native invalid-state behavior. Default `every_state` lists its targets but describes the body once in
-the first target. Hidden effects build and discard text while retaining failures.
+before applying native invalid-state behavior. Generic builders and probes share
+the native own-key projection: an empty own description still visits effect children.
+
+The shared scope iterator builder lists at most four targets, or the first
+three plus the native others text when five or more pass the limit. It describes
+the body in the first target unless individual scopes are requested. Random
+selectors and subset removal advance the caller's native scope seed, including
+singleton random picks. Individual descriptions and their tooltip use one copied
+scope across targets, carrying its RNG and targets. A random-selector layout probe
+advances the same copy before rebuilding; its refusals count only once.
+Prioritized random states retain roster order and fall
+back to the full roster only if no prioritized state passes. Country, faction, subject, state, character, scientist
+and script-array rosters retain their native recorded or content order. Missing
+country neighbor/occupied rosters, division roster order and scientist
+activity produce named refusals rather than invented values. Owned/core/controlled
+states and army/navy/operative leaders derive recorded membership; only two or
+more passing targets need the missing order. Owned membership is checked against
+the recorded count. Original-tag lists
+refuse ambiguous order; party-leader selection refuses the unrecorded current
+role ideology; without the mandatory ideology predicate it returns empty.
+
+MIO selectors use the recorded roster and reference handles,
+the shared evaluator's organisation scopes, and the content's own or directly
+inherited visibility trigger, including deleted inherited values. Their variable
+store is not recorded; dependent conditions retain a named refusal.
+
+Character-list military sections refuse their unrecorded
+assignment references; advisor-only lists use the recorded roles and traits.
+
+Scripted-effect bodies load through the recorded stack's registered templates;
+calls describe the template regardless of the execution boolean. Recursive
+calls into different THIS scopes expand up to a counted 64-level port backstop;
+re-entry into an active template in the same THIS scope remains a named recursion
+refusal. Meta text uses the native effect reader after
+case-sensitive parameter substitution.
+
+Random/list descriptions share the
+existing evaluator, variable session and seeded graph; every weighted member
+renders, including zero weights, with both seed words restored per member.
+For-each-array descriptions use the first decodable object only when a tooltip
+is authored. Collection descriptions resolve named collections and country/state
+constants through content, use the first successful representative with fresh
+native scope seeds, and expand their header in the caller's environment.
+Zero-reach classes remain named, counted refusals.
+
+Hidden effects build and discard text while retaining failures.
 
 The D2 empty family dispatches all assigned native classes to empty own text
 (`140176EE0` / `1402E9B40`), including the four empty build overrides. Setters
 never execute during description. `create_dynamic_country` and targeted
-`force_disable_resistance` forms with effect children retain named, counted
-refusals until the core supplies the generic child walk (`140532780`) and
-multiple-description probe (`140533D80`); their childless forms describe nothing.
+`force_disable_resistance` share the generic child walk (`140532780`) and
+multiple-description probe (`140533D80`); their children describe once while
+their childless forms describe nothing. Railway and targeted resistance
+descriptions use the same core traversal after their own text.
 
 The D2 states family dispatches its 43 assigned classes. State/country changes,
 capital and state naming, resistance/compliance, shared slots, supply, province

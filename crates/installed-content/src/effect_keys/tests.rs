@@ -296,3 +296,118 @@ fn deferred_readers_keep_by_key_bodies_and_count_named_gaps() {
     assert!(gaps[1].what.contains("0x1402F6D70"));
     assert_eq!(gaps[1].count, Some(1));
 }
+
+#[test]
+fn description_projection_follows_own_readers_without_a_global_skip_list() {
+    let document = crate::parser::parse(br#"
+        if = { limit = { always = yes } array = yes original_tag = ABC prioritize = 1 }
+        else = { limit = { always = no } array = yes }
+        hidden_effect = { array = yes original_tag = ABC include_invisible = yes prioritize = 1 }
+        synthetic_scripted = { array = yes original_tag = ABC include_invisible = yes prioritize = 1 }
+        ABC = { array = yes original_tag = ABC include_invisible = yes prioritize = 1 }
+        create_dynamic_country = { original_tag = ABC copy_tag = DEF array = yes prioritize = 1 }
+        random_army_leader = { include_invisible = yes limit = { always = yes } array = yes }
+        add_popularity = { ideology = synthetic popularity = 0.2 hidden_effect = { add_stability = 1 } }
+        complete_national_focus = { focus = synthetic use_side_message = yes originator_name = KEY hidden_effect = { add_stability = 1 } }
+        add_stability = { add_war_support = 1 }
+        set_character_flag = { flag = synthetic value = 1 days = 3 }
+        set_unit_leader_flag = { flag = synthetic value = 1 days = 3 }
+    "#).unwrap();
+    let expected: &[&[&str]] = &[
+        &["array", "original_tag", "prioritize"],
+        &["array"],
+        &["array", "original_tag", "include_invisible", "prioritize"],
+        &["array", "original_tag", "include_invisible", "prioritize"],
+        &["array", "original_tag", "include_invisible", "prioritize"],
+        &["array", "prioritize"],
+        &["array"],
+        &["hidden_effect"],
+        &["hidden_effect"],
+        &[],
+        &[],
+        &[],
+    ];
+    for (item, expected) in document.items.iter().zip(expected) {
+        let projected = description_fields(item).unwrap();
+        let keys: Vec<_> = projected
+            .iter()
+            .map(|item| item.key.as_deref().unwrap())
+            .collect();
+        let expected: Vec<_> = expected.iter().map(|key| key.as_bytes()).collect();
+        assert_eq!(keys, expected, "{:?}", item.key);
+    }
+    assert_eq!(
+        description_fields(&document.items[10]).unwrap(),
+        description_fields(&document.items[11]).unwrap()
+    );
+}
+
+#[test]
+fn random_list_and_member_projection_share_the_native_own_key_metadata() {
+    let document = crate::parser::parse(br#"
+        random_list = {
+            seed = 4 log = no
+            10 = { modifier = { factor = 2 always = yes } array = yes hidden_effect = { add_stability = 1 } }
+            20 = { modifier = { add = 1 always = yes } original_tag = ABC }
+        }
+    "#).unwrap();
+    let item = &document.items[0];
+    let members = random_list_members(item).unwrap();
+    assert_eq!(members.len(), 2);
+    assert_eq!(members[0].key.as_deref(), Some(b"10".as_slice()));
+    assert_eq!(members[1].key.as_deref(), Some(b"20".as_slice()));
+    assert!(description_fields(item).unwrap().is_empty());
+    let first = random_member_fields(&members[0]);
+    assert_eq!(first.len(), 2);
+    assert!(first[0].keyword_is("array"));
+    assert!(first[1].keyword_is("hidden_effect"));
+    assert!(random_member_fields(&members[1])[0].keyword_is("original_tag"));
+}
+
+#[test]
+fn event_random_blocks_project_as_children_but_delay_and_tooltip_stay_own() {
+    // 1413859E0 delegates to 141385790; its block branch at 1413857F5
+    // calls ReadEffect, while the scalar reads the delay at +0x740.
+    for key in [
+        "country_event",
+        "state_event",
+        "news_event",
+        "unit_leader_event",
+    ] {
+        let text = format!(
+            "{key} = {{ id = synthetic.1 tooltip = SYN_TOOLTIP random = 3 random = {{ chance = 100 add_stability = 1 }} }}"
+        );
+        let items = read_body(text.as_bytes(), &KeyNames::default()).unwrap();
+        let projected = description_fields(&items[0]).unwrap();
+        assert_eq!(projected.len(), 1, "{key}");
+        assert!(projected[0].keyword_is("random"));
+        assert!(projected[0].value.items().is_some());
+    }
+}
+
+#[test]
+fn focus_projection_keeps_the_native_originator_and_invalid_tooltip_boundary() {
+    // 1403B1040 consumes focus/use_side_message/originator_name only.
+    // tooltip is not accepted here as it is in CFireEventEffect (141385790).
+    let document = crate::parser::parse(
+        br#"
+        complete_national_focus = {
+            focus = SYN_FOCUS use_side_message = yes
+            originator_name = { localization_key = SYN_ORIGINATOR }
+            tooltip = SYN_INVALID hidden_effect = { add_stability = 1 }
+        }
+    "#,
+    )
+    .unwrap();
+    let projected = description_fields(&document.items[0]).unwrap();
+    assert_eq!(projected.len(), 2);
+    assert!(projected[0].keyword_is("tooltip"));
+    assert!(projected[1].keyword_is("hidden_effect"));
+    assert!(
+        read_body(
+            b"complete_national_focus = { focus = SYN_FOCUS tooltip = SYN_INVALID }",
+            &KeyNames::default(),
+        )
+        .is_err()
+    );
+}

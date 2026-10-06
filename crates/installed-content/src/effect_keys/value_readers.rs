@@ -141,12 +141,12 @@ pub(super) fn shape(value: u64, key: u64, field: &Field<'_>) -> Option<Shape<()>
             (source, ScalarRead::One)
         }
         Form::Persistent(reader) => {
-            own_reader(reader, field.key)?;
+            own_reader(reader, |name| field.key.is_keyword(name))?;
             return Some(Shape::EffectValueKeys(reader));
         }
         Form::AlwaysKeys(source) => {
             let reader = source.address(value, key);
-            own_reader(reader, field.key)?;
+            own_reader(reader, |name| field.key.is_keyword(name))?;
             // 14051BBB0 begins its loop even when the value is scalar or stale.
             return Some(Shape::EffectValueKeys(reader));
         }
@@ -193,7 +193,7 @@ pub(super) fn shape(value: u64, key: u64, field: &Field<'_>) -> Option<Shape<()>
     let reader = source.address(value, key);
     // Shared slots retain named, counted refusals for class grammars
     // absent from the own-key table, on both scalar and block forms.
-    own_reader(reader, field.key)?;
+    own_reader(reader, |name| field.key.is_keyword(name))?;
     if field.opens() {
         return Some(Shape::EffectValueKeys(reader));
     }
@@ -680,6 +680,8 @@ const OWN_KEYS: &[(u64, OwnReader)] = &[
     ),
     (
         0x1403B1040,
+        // 1403B1040 accepts exactly these three tokens; tooltip (0x92)
+        // takes the ReadEffect tail at 1403B105C, rather than an own field.
         OwnReader::Fields(
             &[
                 ("focus", OwnValue::One),
@@ -715,7 +717,7 @@ const OWN_KEYS: &[(u64, OwnReader)] = &[
     ),
 ];
 
-fn own_reader(address: u64, class: &Token) -> Option<OwnReader> {
+fn own_reader(address: u64, is_class: impl Fn(&str) -> bool) -> Option<OwnReader> {
     let reader = OWN_KEYS
         .iter()
         .find(|(reader, _)| *reader == address)
@@ -723,10 +725,73 @@ fn own_reader(address: u64, class: &Token) -> Option<OwnReader> {
     match reader {
         OwnReader::ClassKeys(classes) => classes
             .iter()
-            .find(|(name, _)| class.is_keyword(name))
+            .find(|(name, _)| is_class(name))
             .map(|(_, keys)| OwnReader::Keys(keys)),
         _ => Some(reader),
     }
+}
+
+/// Inline value loops use the same own-field metadata as the reader replay.
+pub(super) fn description_fields(
+    value: u64,
+    key: u64,
+    token: u32,
+    item: &Item,
+) -> Result<Vec<Item>, String> {
+    let form = VALUE_READERS
+        .iter()
+        .find(|(address, _)| *address == value)
+        .map(|(_, form)| *form)
+        .ok_or_else(|| {
+            format!("effect own-key projection is not ported for value reader {value:X}")
+        })?;
+    let items = item.value.items().unwrap_or_default();
+    let source = match form {
+        Form::CurrentOrKeys(source)
+        | Form::ScalarOrKeys(source)
+        | Form::StringOrKeys(source)
+        | Form::Keys(source)
+        | Form::AlwaysKeys(source)
+        | Form::RoleKeys(source) => source,
+        Form::Persistent(address) => return inline_description_fields(address, item, items),
+        Form::One
+        | Form::SkipIfOpen
+        | Form::Current
+        | Form::CurrentOrRaw
+        | Form::List
+        | Form::Ideas
+        | Form::Localization => return Ok(Vec::new()),
+    };
+    match source {
+        LoopSource::ClassKey if key == super::READ_EFFECT => Ok(items.to_vec()),
+        LoopSource::ClassKey => inline_description_fields(key, item, items)
+            .or_else(|_| super::key_readers::description_fields(token, items)),
+        LoopSource::Inline => inline_description_fields(value, item, items),
+    }
+}
+
+fn inline_description_fields(
+    address: u64,
+    class: &Item,
+    items: &[Item],
+) -> Result<Vec<Item>, String> {
+    let reader = own_reader(address, |name| class.keyword_is(name)).ok_or_else(|| {
+        format!("effect own-key projection is not ported for inline reader {address:X}")
+    })?;
+    Ok(items
+        .iter()
+        .filter(|item| match reader {
+            // 1413859E0 -> 141385790: scalar random is the delay operand;
+            // a block takes ReadEffect at 1413857F5 and adds a child.
+            OwnReader::Event(_) => item.keyword_is("random") && item.value.items().is_some(),
+            OwnReader::EffectFallback(keys) => !keys.iter().any(|key| item.keyword_is(key)),
+            OwnReader::Fields(fields, Unknown::Effect) => {
+                !fields.iter().any(|(name, _)| item.keyword_is(name))
+            }
+            _ => false,
+        })
+        .cloned()
+        .collect())
 }
 
 pub(crate) struct Shaper<'n, 'c> {
@@ -742,7 +807,8 @@ impl<'n, 'c> Shaper<'n, 'c> {
     pub(crate) fn new(address: u64, names: Option<&'n KeyNames>, class: &'c Token) -> Self {
         Self {
             address,
-            reader: own_reader(address, class).expect("ported effect value key loop"),
+            reader: own_reader(address, |name| class.is_keyword(name))
+                .expect("ported effect value key loop"),
             class,
             names,
             distribution: 0,
@@ -765,7 +831,8 @@ impl<'n, 'c> Shaper<'n, 'c> {
             Node::Units(group, placement) => self.unit(group, placement, field),
             Node::Root => self.field(self.address, self.reader, field),
             Node::Keys(address) => {
-                let reader = own_reader(address, self.class).expect("ported nested value key loop");
+                let reader = own_reader(address, |name| self.class.is_keyword(name))
+                    .expect("ported nested value key loop");
                 self.field(address, reader, field)
             }
             Node::IterationOutput => {

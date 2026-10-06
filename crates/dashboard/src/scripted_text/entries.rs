@@ -577,11 +577,14 @@ fn bound_scope(object: Object, scopes: &ExpansionScopes, active: usize) -> usize
 /// reads none, 1403CE520).
 fn entry_scopes(scopes: &ExpansionScopes, at: usize, bare: bool) -> Scopes {
     let scope = |object| match object {
-        EventObject::Country(slot) => Scope::Country(slot),
+        EventObject::Country(slot) | EventObject::CountryState { country: slot, .. } => {
+            Scope::Country(slot)
+        }
         EventObject::State(id) => Scope::State(id),
         EventObject::Province(id) => Scope::Province(id),
         EventObject::UnitLeader(reference) => Scope::Leader(reference),
         EventObject::Character(id) => Scope::Character(id),
+        EventObject::IndustrialOrganisation(id) => Scope::IndustrialOrganisation(id),
     };
     let current = scopes.scope(at);
     let this = scope(current.this);
