@@ -93,6 +93,57 @@ fn state_reading_note_keeps_misread_kind() {
     );
 }
 
+#[test]
+fn state_field_recovery_causes_keep_offline_notes() {
+    let input = b"@bad nope orphan=yes state={id=1 impassable=yes impassable=maybe provinces={1 100} resources={unknown=2} history={victory_points={1} buildings=4}}";
+    let parsed = attributed(input);
+    let state = &parsed.states[0].0;
+    assert!(state.impassable);
+    assert_eq!(state.provinces, [1]);
+    assert_eq!(state.resources, Ok(Vec::new()));
+    assert!(state.victory_points.is_empty());
+    assert!(state.buildings.is_empty());
+    assert_eq!(
+        parsed
+            .diagnostics
+            .iter()
+            .filter_map(|note| note.cause)
+            .collect::<Vec<_>>(),
+        [
+            MisreadCause::InvalidImpassable,
+            MisreadCause::OffMapProvince,
+            MisreadCause::NonStrategicResource,
+            MisreadCause::InvalidVictoryPoints,
+            MisreadCause::NonBlockBuildings,
+        ]
+    );
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .all(|note| note.kind == crate::DiagnosticKind::Misread)
+    );
+    assert!(parsed.diagnostics.iter().any(|note| note.cause.is_none()));
+    let (_, offline) = parse_states(
+        input,
+        &Context {
+            resource: &|_| Resource::Null,
+            max_building_levels: 15,
+            province_count: 100,
+            names: &KeyNames::default(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        offline,
+        parsed
+            .diagnostics
+            .into_iter()
+            .map(Diagnostic::into_diagnostic)
+            .collect::<Vec<_>>()
+    );
+}
+
 fn attributed(input: &[u8]) -> ParsedStates {
     parse_states_attributed(
         input,
@@ -154,7 +205,7 @@ fn states_repeated_deferred_diagnostics_keep_each_templates_count() {
         ]
     );
     assert_eq!(parsed.diagnostics.len(), 1, "{:?}", parsed.diagnostics);
-    assert!(parsed.diagnostics[0].1.contains("count: 3"));
+    assert!(parsed.diagnostics[0].message.contains("count: 3"));
 }
 
 #[test]
@@ -229,7 +280,7 @@ fn states_file_diagnostics_without_kept_templates_remain_notes() {
     assert_eq!(parsed.diagnostics.len(), 1);
     assert!(
         parsed.diagnostics[0]
-            .1
+            .message
             .contains("definition `@a` has no `=`")
     );
     let parsed = attributed(b"@a bad state = { id = 0 }");

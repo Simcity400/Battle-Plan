@@ -432,13 +432,25 @@ impl Catalogue {
         arguments: &[(&str, Argument<'_>)],
         view: View,
     ) -> Option<String> {
-        self.localised_for(key, arguments, view, Kind::Unsupported)
+        self.localised_for(key, arguments, view, Kind::Unsupported, None)
+    }
+
+    /// The same native text walk, retaining this caller's failures separately
+    /// from refusals already accumulated by other products.
+    pub(crate) fn localised_with_refusals(
+        &self,
+        key: &str,
+        arguments: &[(&str, Argument<'_>)],
+        view: View,
+        refusals: &Mutex<Refusals>,
+    ) -> Option<String> {
+        self.localised_for(key, arguments, view, Kind::Unsupported, Some(refusals))
     }
 
     /// Stability and special projects evaluate this text with the recorded
     /// country on their live paths.
     pub(crate) fn localised_offline_country(&self, key: &str) -> Option<String> {
-        self.localised_for(key, &[], View::Scripted, Kind::Offline)
+        self.localised_for(key, &[], View::Scripted, Kind::Offline, None)
     }
 
     fn localised_for(
@@ -447,14 +459,23 @@ impl Catalogue {
         arguments: &[(&str, Argument<'_>)],
         view: View,
         country_kind: Kind,
+        refusals: Option<&Mutex<Refusals>>,
     ) -> Option<String> {
         let (text, findings) =
             localised_with_reason(&self.localisation, key, arguments, view, country_kind);
         for finding in findings {
             self.note(finding);
         }
-        text.inspect_err(|finding| self.refuse_finding((**finding).clone()))
-            .ok()
+        text.inspect_err(|finding| {
+            if let Some(refusals) = refusals {
+                refusals
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .note(&finding.message, &finding.subject);
+            }
+            self.refuse_finding((**finding).clone());
+        })
+        .ok()
     }
 
     /// [`Catalogue::localised_with`] with no arguments.
@@ -502,6 +523,14 @@ impl Catalogue {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .lines("texts are");
+        lines.extend(self.reader_warning_lines());
+        lines
+    }
+
+    /// Shared lazy-reader and uncovered-read warnings without another
+    /// product's accumulated text/artwork refusals.
+    pub(crate) fn reader_warning_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
         if let Some(Ok(scripted)) = self.scripted.get() {
             lines.extend(
                 scripted

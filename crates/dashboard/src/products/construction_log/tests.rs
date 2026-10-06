@@ -472,7 +472,7 @@ pub(crate) fn construction_frames(last: i32, frame: impl Fn(i32, bool) -> Decode
 }
 
 #[test]
-fn construction_log_live_reply_keeps_the_first_duplicate_state_without_a_warning() {
+fn construction_log_live_reply_warns_only_for_unproven_state_reading() {
     use crate::products::{
         LoadContext, Product,
         construction_log::{ConstructionLog, ConstructionLogParams},
@@ -501,7 +501,10 @@ fn construction_log_live_reply_keeps_the_first_duplicate_state_without_a_warning
             "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp",
         ),
         ("map/definition.csv", "0;0;0;0;land;false;unknown;0\n"),
-        ("history/states/1-kept.txt", "state={id=5 name=STATE_KEPT}"),
+        (
+            "history/states/1-kept.txt",
+            "@bad nope orphan=yes state={id=5 name=STATE_KEPT impassable=maybe provinces={1} resources={unknown=2} history={victory_points={1} buildings=4} state_startup_effect={free_operative={operative=authored}}}",
+        ),
         (
             "history/states/2-duplicate.txt",
             "state={id=5 name=STATE_DUPLICATE}",
@@ -546,13 +549,16 @@ fn construction_log_live_reply_keeps_the_first_duplicate_state_without_a_warning
         state_content.states.get(5).unwrap().name_key.as_deref(),
         Ok("STATE_KEPT")
     );
-    assert!(
-        state_content
-            .warnings
-            .iter()
-            .any(|(kind, note)| *kind == installed_content::DiagnosticKind::Warning
-                && note.contains("state 5 is defined by both"))
-    );
+    assert!(state_content.warnings.iter().any(|note| {
+        note.kind == installed_content::DiagnosticKind::Warning
+            && note.message.contains("state 5 is defined by both")
+    }));
+    let proven: Vec<_> = state_content
+        .warnings
+        .iter()
+        .filter(|note| note.cause.is_some())
+        .collect();
+    assert_eq!(proven.len(), 5, "{proven:?}");
     let reply = ConstructionLog::load(
         &source,
         &ConstructionLogParams {
@@ -575,6 +581,41 @@ fn construction_log_live_reply_keeps_the_first_duplicate_state_without_a_warning
             .all(|note| !note.contains("state 5 is defined by both")),
         "{:?}",
         reply.warnings
+    );
+    for note in proven {
+        assert!(
+            reply
+                .warnings
+                .iter()
+                .all(|warning| !warning.contains(&note.message)),
+            "{:?}",
+            reply.warnings
+        );
+    }
+    for note in state_content
+        .warnings
+        .iter()
+        .filter(|note| note.cause.is_none() && note.kind != installed_content::DiagnosticKind::Warning)
+    {
+        assert!(
+            reply
+                .warnings
+                .contains(&format!("State names: {}", note.message)),
+            "{:?}",
+            reply.warnings
+        );
+    }
+    assert!(
+        reply
+            .warnings
+            .iter()
+            .any(|note| note.contains("definition `@bad` has no `=`"))
+    );
+    assert!(
+        reply
+            .warnings
+            .iter()
+            .any(|note| note.contains("Deferred effect `free_operative`"))
     );
     assert!(
         reply

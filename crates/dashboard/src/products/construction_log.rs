@@ -1830,7 +1830,7 @@ pub struct Named {
     pub warnings: Vec<installed_content::Diagnostic>,
     /// A refused state read, warned live; the states corpus owns it offline.
     state_read_error: Option<String>,
-    pub(crate) state_diagnostics: Vec<installed_content::Diagnostic>,
+    pub(crate) state_diagnostics: Vec<installed_content::states::Diagnostic>,
     pub(crate) declared_types: Vec<String>,
 }
 

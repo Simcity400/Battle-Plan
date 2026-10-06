@@ -646,7 +646,7 @@ fn raids_offline_fallbacks_only_cover_absent_localisation_and_omit_reader_notes(
 }
 
 #[test]
-fn raids_live_reply_keeps_the_first_duplicate_state_without_a_warning() {
+fn raids_live_reply_warns_only_for_unproven_state_reading() {
     use replay::spool::Record;
     let scratch = Scratch::new();
     for (path, text) in [
@@ -673,7 +673,10 @@ fn raids_live_reply_keeps_the_first_duplicate_state_without_a_warning() {
             "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp",
         ),
         ("map/definition.csv", "0;0;0;0;land;false;unknown;0\n"),
-        ("history/states/1-kept.txt", "state={id=41 name=STATE_KEPT}"),
+        (
+            "history/states/1-kept.txt",
+            "@bad nope orphan=yes state={id=41 name=STATE_KEPT impassable=maybe provinces={1} resources={unknown=2} history={victory_points={1} buildings=4} state_startup_effect={free_operative={operative=authored}}}",
+        ),
         (
             "history/states/2-duplicate.txt",
             "state={id=41 name=STATE_DUPLICATE}",
@@ -713,8 +716,14 @@ fn raids_live_reply_keeps_the_first_duplicate_state_without_a_warning() {
         state_content
             .warnings
             .iter()
-            .any(|(_, note)| note.contains("state 41 is defined by both"))
+            .any(|note| note.message.contains("state 41 is defined by both"))
     );
+    let proven: Vec<_> = state_content
+        .warnings
+        .iter()
+        .filter(|note| note.cause.is_some())
+        .collect();
+    assert_eq!(proven.len(), 5, "{proven:?}");
     let reply = Raids::load(
         &source,
         &RaidsParams {
@@ -740,6 +749,36 @@ fn raids_live_reply_keeps_the_first_duplicate_state_without_a_warning() {
             .all(|note| !note.contains("state 41 is defined by both")),
         "{:?}",
         reply.warnings
+    );
+    for note in proven {
+        assert!(
+            !reply.warnings.contains(&note.message),
+            "{:?}",
+            reply.warnings
+        );
+    }
+    for note in state_content
+        .warnings
+        .iter()
+        .filter(|note| note.cause.is_none() && note.kind != installed_content::DiagnosticKind::Warning)
+    {
+        assert!(
+            reply.warnings.contains(&note.message),
+            "{:?}",
+            reply.warnings
+        );
+    }
+    assert!(
+        reply
+            .warnings
+            .iter()
+            .any(|note| note.contains("definition `@bad` has no `=`"))
+    );
+    assert!(
+        reply
+            .warnings
+            .iter()
+            .any(|note| note.contains("Deferred effect `free_operative`"))
     );
 }
 

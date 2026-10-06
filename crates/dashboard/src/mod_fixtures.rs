@@ -2550,7 +2550,7 @@ fn shared_equipment_and_autonomy_reader_notes_are_not_repeated_by_products() {
 #[test]
 fn every_shared_preparation_note_has_one_owner_and_its_producer_kind() {
     use crate::content_check::{
-        AUTONOMY_CHECK_KEY, CONSTRUCTION_CHECK_KEY, Finding, INTELLIGENCE_CHECK_KEY,
+        AUTONOMY_CHECK_KEY, CONSTRUCTION_CHECK_KEY, Finding, INTELLIGENCE_CHECK_KEY, Kind,
         PRODUCTION_LINES_CHECK_KEY, SHARED_CHECK_KEYS, check,
     };
     let stack = Stack::new("all_shared_note_owners");
@@ -2580,7 +2580,7 @@ fn every_shared_preparation_note_has_one_owner_and_its_producer_kind() {
     stack.write(
         &addon,
         "history/states/01-kept.txt",
-        "state = { id = 1 name = FIRST }",
+        "@bad nope orphan=yes state={id=1 name=FIRST impassable=maybe provinces={0} resources={unknown=2} history={victory_points={1} buildings=4}}",
     );
     stack.write(
         &addon,
@@ -2617,6 +2617,11 @@ fn every_shared_preparation_note_has_one_owner_and_its_producer_kind() {
         &addon,
         "common/operations/mod.txt",
         "mod_operation = { on_start = { free_operative = { operative = custom_name } } }",
+    );
+    stack.write(
+        &addon,
+        "common/operations/unsettled.txt",
+        "unsettled_operation = { operation_target = { target_array = custom_array } }",
     );
     stack.write(&addon, "common/ideologies/mod.txt", "ideologies = { mod_group = { color = { 0.1 0.2 0.3 } modifiers = { mod_unknown_modifier = { value = 1 } } } }");
     let cat = stack.catalogue(&[]);
@@ -2693,7 +2698,51 @@ fn every_shared_preparation_note_has_one_owner_and_its_producer_kind() {
         assert_eq!(copies[0].0, owner);
         assert_eq!(copies[0].1.kind, note.kind);
     }
-    let mut owned = vec![states.warnings];
+    for (kind, text) in [
+        (Kind::Unsupported, "Deferred effect `free_operative`"),
+        (Kind::Unsettled, "target_array"),
+    ] {
+        assert!(
+            emitted.iter().any(|(owner, note)| {
+                *owner == INTELLIGENCE_CHECK_KEY && note.kind == kind && note.message.contains(text)
+            }),
+            "{emitted:?}"
+        );
+        assert!(
+            emitted.iter().all(|(owner, note)| {
+                *owner != "agency-comparison" || !note.message.contains(text)
+            }),
+            "{emitted:?}"
+        );
+    }
+    let proven: Vec<_> = states
+        .warnings
+        .iter()
+        .filter(|note| note.cause.is_some())
+        .collect();
+    assert_eq!(proven.len(), 5, "{proven:?}");
+    assert!(
+        proven
+            .iter()
+            .all(|note| note.kind == installed_content::DiagnosticKind::Misread)
+    );
+    assert!(
+        crate::scripted_text::live_state_warnings(&states.warnings)
+            .any(|note| note.contains("definition `@bad` has no `=`"))
+    );
+    let map = installed_content::terrain::read_default_map(layers).unwrap();
+    let provinces =
+        installed_content::map::parse_definitions(&layers.read(&map.file("definitions").unwrap()).unwrap())
+            .unwrap();
+    let (_, offline) = installed_content::states::read(layers, &states.defines, &provinces).unwrap();
+    let all_notes: Vec<_> = states
+        .warnings
+        .into_iter()
+        .map(installed_content::states::Diagnostic::into_diagnostic)
+        .collect();
+    assert_eq!(offline, all_notes);
+    assert_eq!(states.states.diagnostics(1).len(), 6);
+    let mut owned = vec![all_notes];
     let (ideologies, ideology_notes) = installed_content::ideologies::read(layers).unwrap();
     assert!(ideologies.groups().1.is_some());
     assert!(

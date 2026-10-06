@@ -88,14 +88,30 @@ pub(crate) struct StateContent {
     pub defines: installed_content::defines::Defines,
     pub states: installed_content::states::States,
     pub names: StateNames,
-    pub warnings: Vec<installed_content::Diagnostic>,
+    pub warnings: Vec<installed_content::states::Diagnostic>,
 }
 
-pub(crate) fn live_state_warnings(notes: &[installed_content::Diagnostic]) -> impl Iterator<Item = &str> {
+pub(crate) fn live_state_warnings(
+    notes: &[installed_content::states::Diagnostic],
+) -> impl Iterator<Item = &str> {
+    use installed_content::states::MisreadCause;
     // States' Warning channel contains 140AAD450's nonpositive-ID and
     // duplicate-ID skips. Both keep exactly the templates the game keeps.
-    notes.iter().filter_map(|(kind, message)| {
-        (*kind != installed_content::DiagnosticKind::Warning).then_some(message.as_str())
+    // Only the explicitly cited state-field recoveries are proven exact;
+    // shared reader notes and unported readers still warn.
+    notes.iter().filter_map(|note| {
+        let exact = note.kind == installed_content::DiagnosticKind::Misread
+            && matches!(
+                note.cause,
+                Some(
+                    MisreadCause::InvalidImpassable
+                        | MisreadCause::OffMapProvince
+                        | MisreadCause::NonStrategicResource
+                        | MisreadCause::InvalidVictoryPoints
+                        | MisreadCause::NonBlockBuildings
+                )
+            );
+        (note.kind != installed_content::DiagnosticKind::Warning && !exact).then_some(note.message.as_str())
     })
 }
 
@@ -119,11 +135,11 @@ fn read_state_templates(
 ) -> std::io::Result<(
     installed_content::states::States,
     StateNames,
-    Vec<installed_content::Diagnostic>,
+    Vec<installed_content::states::Diagnostic>,
 )> {
     let map = installed_content::terrain::read_default_map(layers)?;
     let provinces = installed_content::map::parse_definitions(&layers.read(&map.file("definitions")?)?)?;
-    let (states, warnings) = installed_content::states::read(layers, defines, &provinces)?;
+    let (states, warnings) = installed_content::states::read_with_diagnostics(layers, defines, &provinces)?;
     let names = states
         .definitions()
         .iter()

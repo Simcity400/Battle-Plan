@@ -707,7 +707,7 @@ impl Product for AgencyComparison {
             .collect();
         let content = match context
             .content()
-            .and_then(|options| super::intelligence_content::intelligence_content(source, options))
+            .and_then(|options| super::intelligence_content::agency_content(source, options))
         {
             Ok(content) => Some(content),
             Err(error) => {
@@ -758,7 +758,7 @@ impl Product for AgencyComparison {
         let defense_label = content.as_ref().and_then(|content| content.defense_label());
         if let Some(content) = content {
             warnings.extend(content.warnings.iter().cloned());
-            warnings.extend(content.catalogue.refusal_lines());
+            warnings.extend(content.agency_refusal_lines());
         }
         let reply = AgencyComparisonReply {
             branch_id: params.branch_id.clone(),
@@ -799,6 +799,230 @@ mod tests {
             include_uncreated: false,
             top: None,
         }
+    }
+
+    fn agency_source(
+        operation_files: &[(&str, &[u8])],
+    ) -> (Source, LoadContext, crate::catalogue::tests::Folder) {
+        use crate::products::ContentOptions;
+        use crate::test_fixtures::{CAMPAIGN, records, source};
+        use replay::{
+            frame::TableView,
+            rows::{LexicalTokenRow, OperationRow, TableRows},
+        };
+        let (_, folder) = crate::catalogue::tests::folder_catalogue(&[]);
+        let localisation = "\u{feff}l_english:\n MOD_OPERATION:0 \"Custom operation\"\n AGENCY_NAME:0 \"Custom agency\"\n AGENCY_DEFENSE_LEVEL:0 \"Protection: $LEVEL$ / $LEVEL$\"\n";
+        for (path, bytes) in operation_files
+            .iter()
+            .copied()
+            .chain([("localisation/test_l_english.yml", localisation.as_bytes())])
+        {
+            let file = folder.0.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, bytes).unwrap();
+        }
+        let layers = installed_content::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+        let catalogue = crate::catalogue::tests::layers_catalogue(layers);
+        let options = ContentOptions {
+            options: installed_content::ResolveOptions {
+                game_dir: folder.0.clone(),
+                user_dir: folder.0.clone(),
+                cache_dir: folder.0.join("cache"),
+            },
+            allow_unverified: true,
+        };
+        let mut first = source(1, 16, Some(1));
+        let mut agency = row(11, 125_000);
+        agency.created = 0;
+        *first.tables[TableId::IntelligenceAgencies.index()] =
+            TableView::Complete(TableRows::IntelligenceAgencies(vec![agency]));
+        *first.tables[TableId::OperativeMemberships.index()] =
+            TableView::Complete(TableRows::OperativeMemberships(Vec::new()));
+        first.metrics.table_ns[TableId::Operations.index()] = 1;
+        *first.tables[TableId::Operations.index()] = TableView::Complete(TableRows::Operations(
+            [70, 71]
+                .into_iter()
+                .map(|definition_token| OperationRow {
+                    id: u64::from(definition_token),
+                    owner: 11,
+                    target: 11,
+                    definition_token,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        *first.tables[TableId::OperationAssignments.index()] =
+            TableView::Complete(TableRows::OperationAssignments(Vec::new()));
+        *first.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![
+                LexicalTokenRow {
+                    token: 70,
+                    literal: b"mod_operation".to_vec(),
+                },
+                LexicalTokenRow {
+                    token: 71,
+                    literal: b"AGENCY_NAME".to_vec(),
+                },
+            ]));
+        let replay =
+            Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first])]).unwrap());
+        let cancelled = AtomicBool::new(false);
+        let source = Source::from_replay(
+            crate::SourceKey {
+                source_id: "agency-operation-notes".into(),
+                revision: "1".into(),
+            },
+            "synthetic.battleplan".into(),
+            replay,
+            &cancelled,
+        )
+        .unwrap();
+        crate::catalogue::set_test_catalogue(&source, &options, Arc::new(catalogue));
+        (
+            source,
+            LoadContext {
+                content: Some(options),
+            },
+            folder,
+        )
+    }
+
+    #[test]
+    fn agency_comparison_neither_shows_nor_reads_operation_definitions() {
+        use super::super::intelligence_content::intelligence_content;
+        use crate::products::{BranchParams, espionage_log::EspionageLog};
+        let (good, good_context, _good_folder) = agency_source(&[(
+            "common/operations/known.txt",
+            b"mod_operation = { name = MOD_OPERATION icon = mod_sprite }",
+        )]);
+        let (bad, bad_context, bad_folder) = agency_source(&[
+            (
+                "common/operations/known.txt",
+                b"mod_operation = { name = MOD_OPERATION icon = mod_sprite on_start = { free_operative = { operative = custom_name } } }",
+            ),
+            (
+                "common/operations/misread.txt",
+                b"misread_operation = { name = { unused = yes } }",
+            ),
+            (
+                "common/operations/unsettled.txt",
+                b"unsettled_operation = { operation_target = { target_array = custom_array } }",
+            ),
+            ("common/operations/unparsable.txt", b"\x80 = {}"),
+            (
+                "common/operations/collision.txt",
+                b"AGENCY_NAME = { name = MOD_OPERATION icon = AGENCY_DEFENSE_LEVEL }",
+            ),
+            ("common/operations/unreadable.txt", b"unused_operation = {}"),
+        ]);
+        let cancelled = AtomicBool::new(false);
+        let agency_params = AgencyComparisonParams {
+            include_uncreated: true,
+            ..params()
+        };
+        let baseline =
+            AgencyComparison::load(&good, &agency_params, &good_context, &cancelled).unwrap();
+        assert_eq!(baseline.series.len(), 1);
+        assert_eq!(
+            baseline.series[0].entries[0].value.name.as_deref(),
+            Some("Custom agency")
+        );
+        let expected = serde_json::to_value(&baseline).unwrap();
+        let malformed =
+            AgencyComparison::load(&bad, &agency_params, &bad_context, &cancelled).unwrap();
+        assert_eq!(serde_json::to_value(&malformed).unwrap(), expected);
+        let content = intelligence_content(&bad, bad_context.content().unwrap()).unwrap();
+        for kind in [
+            installed_content::DiagnosticKind::Misread,
+            installed_content::DiagnosticKind::Unsupported,
+            installed_content::DiagnosticKind::Unsettled,
+            installed_content::DiagnosticKind::Refused,
+        ] {
+            assert!(
+                content.definitions.notes.iter().any(|note| note.0 == kind),
+                "{:?}",
+                content.definitions.notes
+            );
+        }
+        assert!(content.definitions.notes.iter().any(|(kind, note)| {
+            *kind == installed_content::DiagnosticKind::Refused && note.contains("unparsable.txt")
+        }));
+        let espionage = EspionageLog::load(
+            &bad,
+            &BranchParams {
+                branch_id: "1".into(),
+            },
+            &bad_context,
+            &cancelled,
+        )
+        .unwrap();
+        for warning in &content.definitions.warnings {
+            assert!(espionage.warnings.contains(warning), "{warning}");
+        }
+        // Keep the inventory, but make a file unreadable and replace the
+        // catalogue so a cached full intelligence read cannot mask an I/O error.
+        let layers = content.catalogue.content.layers.clone();
+        std::fs::remove_file(bad_folder.0.join("common/operations/unreadable.txt")).unwrap();
+        let catalogue = crate::catalogue::tests::layers_catalogue(layers);
+        crate::catalogue::set_test_catalogue(
+            &bad,
+            bad_context.content().unwrap(),
+            Arc::new(catalogue),
+        );
+        let unreadable =
+            AgencyComparison::load(&bad, &agency_params, &bad_context, &cancelled).unwrap();
+        assert_eq!(serde_json::to_value(&unreadable).unwrap(), expected);
+        assert!(intelligence_content(&bad, bad_context.content().unwrap()).is_err());
+    }
+
+    #[test]
+    fn agency_comparison_omits_operation_notes_and_keeps_agency_refusals_after_espionage() {
+        use crate::products::{BranchParams, espionage_log::EspionageLog};
+        let (source, context, _folder) = agency_source(&[(
+            "common/operations/art.txt",
+            b"mod_operation = { name = MOD_OPERATION icon = AGENCY_DEFENSE_LEVEL } AGENCY_NAME = { name = MOD_OPERATION icon = AGENCY_NAME }",
+        )]);
+        let cancelled = AtomicBool::new(false);
+        let operation_params = BranchParams {
+            branch_id: "1".into(),
+        };
+        let agency_params = AgencyComparisonParams {
+            include_uncreated: true,
+            ..params()
+        };
+        let espionage =
+            EspionageLog::load(&source, &operation_params, &context, &cancelled).unwrap();
+        assert_eq!(espionage.types.len(), 2);
+        for operation in &espionage.types {
+            assert_eq!(operation.name.as_deref(), Some("Custom operation"));
+            assert!(
+                operation
+                    .icon_missing
+                    .as_ref()
+                    .unwrap()
+                    .contains("artwork AGENCY_")
+            );
+        }
+        assert!(
+            espionage
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("AGENCY_NAME"))
+        );
+        assert!(
+            espionage
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("AGENCY_DEFENSE_LEVEL"))
+        );
+        let reply_after_artwork =
+            AgencyComparison::load(&source, &agency_params, &context, &cancelled).unwrap();
+        assert_eq!(
+            reply_after_artwork.warnings,
+            [
+                "1 texts are not shown: defence template must render LEVEL once to separate its label and number; rendered 2 occurrences; AGENCY_DEFENSE_LEVEL"
+            ]
+        );
     }
 
     #[test]

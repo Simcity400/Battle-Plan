@@ -2,7 +2,7 @@
 use super::ContentOptions;
 use crate::{
     Artwork, Source,
-    catalogue::{self, Catalogue, View},
+    catalogue::{self, Catalogue, Refusals, View},
 };
 use installed_content::localisation::Argument;
 use std::{
@@ -15,6 +15,7 @@ pub struct IntelligenceContent {
     pub catalogue: Arc<Catalogue>,
     pub definitions: installed_content::intelligence::Intelligence,
     pub warnings: Vec<String>,
+    agency_refusals: Mutex<Refusals>,
     defense: OnceLock<Option<DefenseTemplate>>,
     artwork: Mutex<ArtworkCache>,
 }
@@ -29,21 +30,20 @@ impl DefenseTemplate {
     /// 140F172A0 passes LEVEL through 1402E2DA0; 142232AB0's Text branch
     /// copies this marker but does not apply numeric precision, sign or suffix.
     /// Boundaries therefore isolate the Fixed5 branch's complete native number.
-    fn load(catalogue: &Catalogue) -> Option<Self> {
+    fn load(content: &IntelligenceContent) -> Option<Self> {
         const KEY: &str = "AGENCY_DEFENSE_LEVEL";
         const MARKER: &str = "\u{e000}";
-        if catalogue.localisation.get(KEY).is_none() {
-            catalogue.refuse(
+        if content.catalogue.localisation.get(KEY).is_none() {
+            content.refuse_agency(
                 "required agency defence localisation key missing from the recorded content stack",
                 KEY,
             );
             return None;
         }
-        let text =
-            catalogue.localised_with(KEY, &[("LEVEL", Argument::Text(MARKER))], View::Plain)?;
+        let text = content.agency_text(KEY, &[("LEVEL", Argument::Text(MARKER))])?;
         let count = text.matches(MARKER).count();
         if count != 1 {
-            catalogue.refuse(
+            content.refuse_agency(
                 &format!("defence template must render LEVEL once to separate its label and number; rendered {count} occurrences"),
                 KEY,
             );
@@ -56,7 +56,7 @@ impl DefenseTemplate {
             })
             .to_owned();
         if label.is_empty() {
-            catalogue.refuse("defence template has no label apart from LEVEL", KEY);
+            content.refuse_agency("defence template has no label apart from LEVEL", KEY);
             return None;
         }
         Some(Self {
@@ -76,17 +76,51 @@ pub fn intelligence_content(
     source: &Source,
     options: &ContentOptions,
 ) -> io::Result<Arc<IntelligenceContent>> {
-    type Cached = Option<Arc<IntelligenceContent>>;
+    prepared_content(source, options, ContentScope::Operations)
+}
+
+/// Agency comparison neither shows nor reads operation definitions.
+pub fn agency_content(
+    source: &Source,
+    options: &ContentOptions,
+) -> io::Result<Arc<IntelligenceContent>> {
+    prepared_content(source, options, ContentScope::Agency)
+}
+
+#[derive(Clone, Copy)]
+enum ContentScope {
+    Agency,
+    Operations,
+}
+
+#[derive(Default)]
+struct Cached {
+    agency: Option<Arc<IntelligenceContent>>,
+    operations: Option<Arc<IntelligenceContent>>,
+}
+
+fn prepared_content(
+    source: &Source,
+    options: &ContentOptions,
+    scope: ContentScope,
+) -> io::Result<Arc<IntelligenceContent>> {
     let catalogue = catalogue::catalogue(source, options)?;
     let state = source.state::<Cached>();
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some(cached) = state.as_ref()
+    let cached = match scope {
+        ContentScope::Agency => &mut state.agency,
+        ContentScope::Operations => &mut state.operations,
+    };
+    if let Some(cached) = cached.as_ref()
         && Arc::ptr_eq(&cached.catalogue, &catalogue)
     {
         return Ok(Arc::clone(cached));
     }
-    let loaded = Arc::new(IntelligenceContent::load(catalogue)?);
-    *state = Some(Arc::clone(&loaded));
+    let loaded = Arc::new(match scope {
+        ContentScope::Agency => IntelligenceContent::load_agency(catalogue),
+        ContentScope::Operations => IntelligenceContent::load(catalogue)?,
+    });
+    *cached = Some(Arc::clone(&loaded));
     Ok(loaded)
 }
 
@@ -161,25 +195,48 @@ impl IntelligenceContent {
             catalogue,
             definitions: installed_content::intelligence::Intelligence::default(),
             warnings,
+            agency_refusals: Mutex::default(),
             defense: OnceLock::default(),
             artwork: Mutex::default(),
         }
     }
 
+    /// Agency comparison neither shows nor reads operation definitions. Track
+    /// agency text at its producer: operation tokens and sprites can use the
+    /// same identifiers as the native agency localisation keys.
+    pub fn agency_refusal_lines(&self) -> Vec<String> {
+        let mut lines = self
+            .agency_refusals
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .lines("texts are");
+        lines.extend(self.catalogue.reader_warning_lines());
+        lines
+    }
+
+    fn agency_text(&self, key: &str, arguments: &[(&str, Argument<'_>)]) -> Option<String> {
+        self.catalogue
+            .localised_with_refusals(key, arguments, View::Plain, &self.agency_refusals)
+    }
+
+    fn refuse_agency(&self, reason: &str, key: &str) {
+        self.agency_refusals
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .note(reason, key);
+        self.catalogue.refuse(reason, key);
+    }
+
     /// GetAgency's uncreated branch, 141A7B350 case 0x19. The literal is an
     /// executable fact; the displayed bytes always come from recorded content.
     pub fn default_agency_name(&self) -> Option<String> {
-        self.catalogue.localised("AGENCY_NAME", View::Plain)
+        self.agency_text("AGENCY_NAME", &[])
     }
 
     /// Agency screen 140F172A0 -> LocalizeWithFixedPointArgument 1402E2DA0:
     /// the content controls the LEVEL argument's precision and suffix.
     pub fn defense_text(&self, raw: i64) -> Option<String> {
-        self.catalogue.localised_with(
-            "AGENCY_DEFENSE_LEVEL",
-            &[("LEVEL", Argument::Fixed5(raw))],
-            View::Plain,
-        )
+        self.agency_text("AGENCY_DEFENSE_LEVEL", &[("LEVEL", Argument::Fixed5(raw))])
     }
 
     /// The same content template's label, without its LEVEL number or separator.
@@ -196,7 +253,7 @@ impl IntelligenceContent {
             .strip_prefix(&template.prefix)
             .and_then(|text| text.strip_suffix(&template.suffix));
         if value.is_none() {
-            self.catalogue.refuse(
+            self.refuse_agency(
                 "defence template's rendered LEVEL boundaries differ from its fixed-point output",
                 "AGENCY_DEFENSE_LEVEL",
             );
@@ -206,7 +263,7 @@ impl IntelligenceContent {
 
     fn defense_template(&self) -> Option<&DefenseTemplate> {
         self.defense
-            .get_or_init(|| DefenseTemplate::load(&self.catalogue))
+            .get_or_init(|| DefenseTemplate::load(self))
             .as_ref()
     }
 
@@ -567,5 +624,21 @@ mod tests {
         assert!(refusals[0].contains("1 texts are not shown"));
         assert!(refusals[0].contains("AGENCY_DEFENSE_LEVEL"));
         assert!(refusals[0].contains("required agency defence localisation key missing"));
+        assert_eq!(content.agency_refusal_lines(), refusals);
+    }
+
+    #[test]
+    fn intelligence_content_agency_name_refusal_keeps_its_live_wording() {
+        let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
+            "localisation/test_l_english.yml",
+            "\u{feff}l_english:\n AGENCY_NAME:0 \"Custom\u{00a4}agency\"\n",
+        )]);
+        let content = IntelligenceContent::load_agency(Arc::new(catalogue));
+        assert_eq!(content.default_agency_name(), None);
+        let refusals = content.catalogue.refusal_lines();
+        assert_eq!(refusals.len(), 1);
+        assert!(refusals[0].contains("AGENCY_NAME"));
+        assert!(refusals[0].contains("control byte 0x14"));
+        assert_eq!(content.agency_refusal_lines(), refusals);
     }
 }
