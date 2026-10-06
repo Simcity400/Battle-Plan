@@ -430,6 +430,7 @@ pub struct ProductionDetailParams {
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProductionLineDetailReply {
+    pub warnings: Vec<String>,
     pub branch_id: String,
     pub tag: String,
     pub decimals: u8,
@@ -1701,11 +1702,12 @@ impl Product for ProductionLineDetail {
             branch_id: params.branch_id.clone(),
             tag: params.tag.clone(),
         };
-        // Warnings are the history's to give; the detail only answers values.
-        let (_, scanned) = scanned_lines(source, &country, context, cancelled, &mut Vec::new())?;
+        let mut warnings = Vec::new();
+        let (_, scanned) = scanned_lines(source, &country, context, cancelled, &mut warnings)?;
         let (first_hour, last_hour) = detail_window(params.window).expect("validated window");
         bounded(
             ProductionLineDetailReply {
+                warnings,
                 branch_id: params.branch_id.clone(),
                 tag: params.tag.clone(),
                 decimals: EQUIPMENT_DECIMALS,

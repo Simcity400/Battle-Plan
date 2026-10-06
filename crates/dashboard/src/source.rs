@@ -8,7 +8,10 @@ use std::{
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
 
-use installed_content::{ResolveOptions, content::ResolvedContent};
+use installed_content::{
+    ResolveOptions,
+    content::{ResolvedContent, UncoveredReads},
+};
 use replay::container::Replay;
 
 use crate::{
@@ -27,6 +30,8 @@ pub struct SourceKey {
     pub revision: String,
 }
 
+type ContentCache = Option<(ResolveOptions, Arc<ResolvedContent>, UncoveredReads)>;
+
 /// The replay bytes, its presentation metadata, the resolved game content and
 /// every product's per-source cache. Dropping the last handle releases it all.
 pub struct Source {
@@ -36,7 +41,7 @@ pub struct Source {
     metadata: ReplayMetadata,
     /// The metadata with country names resolved for the last folders it was asked for.
     named: Mutex<Option<(Option<ContentKey>, ReplayMetadata)>>,
-    content: Mutex<Option<(ResolveOptions, Arc<ResolvedContent>)>>,
+    content: Mutex<ContentCache>,
     state: Mutex<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
 }
 
@@ -87,10 +92,26 @@ impl Source {
     /// The initial observed catalogue, not a census of every campaign hour, with
     /// country names once [`Self::name_countries`] has run and tags before.
     pub fn metadata(&self) -> ReplayMetadata {
-        let named = self.named.lock().unwrap_or_else(|error| error.into_inner());
-        named
+        let mut metadata = self
+            .named
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .as_ref()
-            .map_or_else(|| self.metadata.clone(), |(_, metadata)| metadata.clone())
+            .map_or_else(|| self.metadata.clone(), |(_, metadata)| metadata.clone());
+        self.append_content_warnings(&mut metadata.warnings);
+        metadata
+    }
+
+    /// Report the live read set even for cached metadata and product replies.
+    pub(crate) fn append_content_warnings(&self, warnings: &mut Vec<String>) {
+        if let Some((_, _, reads)) = self
+            .content
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+        {
+            reads.append_to(warnings);
+        }
     }
 
     /// Resolves the catalogue's names in the user's game language at each
@@ -156,15 +177,14 @@ impl Source {
             .content
             .lock()
             .map_err(|error| io::Error::other(error.to_string()))?;
-        if !cache.as_ref().is_some_and(|(old, _)| {
+        if !cache.as_ref().is_some_and(|(old, _, _)| {
             old.game_dir == options.game_dir
                 && old.user_dir == options.user_dir
                 && old.cache_dir == options.cache_dir
         }) {
-            *cache = Some((
-                options.clone(),
-                Arc::new(installed_content::resolve(&self.replay.identity, options)?),
-            ));
+            let content = Arc::new(installed_content::resolve(&self.replay.identity, options)?);
+            let reads = content.layers.report_uncovered_reads();
+            *cache = Some((options.clone(), content, reads));
         }
         Ok(Arc::clone(&cache.as_ref().expect("content cached").1))
     }

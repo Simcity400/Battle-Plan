@@ -884,7 +884,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         // orders: the recorded player's battle plan
         let order_field = document.order_field(&options.perspective)?;
-        for warning in document.warnings.iter().chain(layers.warnings()) {
+        // Printed before the dump's fallible steps so a failed dump keeps them.
+        let mut warnings = document.warnings.clone();
+        warnings.extend(layers.warnings().iter().cloned());
+        document.uncovered_reads.append_to(&mut warnings);
+        for warning in &warnings {
             eprintln!("Warning: {warning}");
         }
         let map_size = map::camera::MapSize::of(&document.map);
@@ -1627,6 +1631,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 )
             }
         );
+        // Lazy reads during the dump can add uncovered files; print the refreshed line.
+        let mut content = Vec::new();
+        document.uncovered_reads.append_to(&mut content);
+        for warning in content.iter().filter(|line| !warnings.contains(line)) {
+            eprintln!("Warning: {warning}");
+        }
         return Ok(());
     }
     let viewport = eframe::egui::ViewportBuilder::default()

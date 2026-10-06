@@ -60,9 +60,11 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   }, [data, track, shownHour, hovered]);
   const windows = useLineDetail(runtime, track, tag, wanted, active);
   useEffect(() => {
-    onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
+    const warnings = new Set(data?.warnings ?? NO_WARNINGS);
+    for (const detail of windows.data.values()) for (const warning of detail.warnings) warnings.add(warning);
+    onDiagnostics(warnings.size ? [...warnings] : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, onDiagnostics]);
+  }, [data, windows.data, onDiagnostics]);
 
   if (!track || !tag) return <WidgetState kind="empty" icon="grid" message="Load a campaign and choose a country to see its production lines." />;
   if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the country’s recorded branch." />;

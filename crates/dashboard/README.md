@@ -1,5 +1,12 @@
 # dashboard
 
+Resolved content carries shared uncovered-read diagnostics. Source metadata,
+catalogue diagnostics and every serialized product reply refresh the named,
+counted note after lazy reads; it states that those bytes are not hash-verified.
+Production detail windows carry warnings too, so a cached history cannot hide a
+later content read. The [installed-content contract](../installed-content/README.md) owns this
+reporting opt-in and the strict default for other readers.
+
 Everything a widget needs natively: opened recordings, data products, the host/viewer protocol and the data service that answers the frontend. No map pixels are drawn here and no live game memory is read.
 
 Opened metadata carries the replay's terminal partial marker separately from branch gaps. The verified prefix remains readable; the marker keeps the failure reason and an optional attempted hour. An unknown failed hour adds no inferred gap. Recording-library summaries read only the validated replay trailer, leaving frame blocks to the normal source-open path.

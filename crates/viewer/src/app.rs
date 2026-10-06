@@ -1161,6 +1161,7 @@ impl Viewer {
         {
             warnings.push(note.clone());
         }
+        document.uncovered_reads.append_to(&mut warnings);
         warnings
     }
 

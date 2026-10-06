@@ -91,12 +91,65 @@ impl LoadContext {
     }
 }
 
+/// All product replies carry content diagnostics at the shared serialization boundary.
+pub trait ReplyWarnings {
+    fn warnings_mut(&mut self) -> &mut Vec<String>;
+}
+
+macro_rules! reply_warnings {
+    ($($reply:ty),+ $(,)?) => {$(
+        impl ReplyWarnings for $reply {
+            fn warnings_mut(&mut self) -> &mut Vec<String> {
+                &mut self.warnings
+            }
+        }
+    )+};
+}
+
+reply_warnings!(
+    agency_comparison::AgencyComparisonReply,
+    autonomy::AutonomyReply,
+    construction_log::ConstructionLogReply,
+    construction_spending::ConstructionSpendingReply,
+    country_experience::ExperienceReply,
+    country_factories::CountryFactoriesReply,
+    country_flags::CountryFlagReply,
+    country_fuel::FuelReply,
+    country_groups::CountryGroupReply,
+    country_measure::MeasureReply,
+    country_nukes::CountryNukesReply,
+    country_stability::CountryStabilityReply,
+    country_styles::CountryStyleReply,
+    decryption::DecryptionReply,
+    equipment_losses::LossesReply,
+    equipment_produced::EquipmentProducedReply,
+    equipment_stockpile::EquipmentStockpileReply,
+    espionage_log::EspionageLogReply,
+    idea_history::IdeaHistoryReply,
+    crate::LandOwners,
+    national_focus::FocusReply,
+    occupied_states::OccupiedStatesReply,
+    party_history::PartyHistoryReply,
+    production_lines::ProductionLinesReply,
+    production_lines::ProductionLineDetailReply,
+    production_spending::ProductionSpendingReply,
+    raids::RaidsReply,
+    research::ResearchReply,
+    resource_balance::ResourceBalanceReply,
+    scoreboard::ScoreboardReply,
+    special_projects::SpecialProjectsReply,
+    stability_parts::StabilityPartsReply,
+    subjects::SubjectReply,
+    trade_flows::TradeFlowsReply,
+    world_tension::TensionReply,
+);
+
 pub trait Product: 'static {
     const KEY: &'static str;
     /// Whether any reply field reads localisation, artwork or content definitions.
     const CONTENT_DEPENDENT: bool;
     type Params: DeserializeOwned + TS + 'static;
-    type Reply: Serialize + TS + 'static;
+    type Reply: Serialize + TS + ReplyWarnings + 'static;
 
     fn validate(_params: &Self::Params) -> Result<(), &'static str> {
         Ok(())
@@ -244,7 +297,8 @@ fn load_json<P: Product>(
     let params: P::Params = serde_json::from_value(params)
         .map_err(|error| format!("Invalid {} request: {error}", P::KEY))?;
     P::validate(&params).map_err(str::to_owned)?;
-    let data = P::load(source, &params, context, cancelled).map_err(|error| error.to_string())?;
+    let mut data = P::load(source, &params, context, cancelled).map_err(|error| error.to_string())?;
+    source.append_content_warnings(data.warnings_mut());
     bounded_json(
         &Envelope {
             source_id: lease_id,

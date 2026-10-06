@@ -97,6 +97,12 @@ Raid naming, capture and save comparison follow the [raid tooltip contract](../v
 
 ## Live checks and performance
 
+The save oracle reports the resolved content's shared uncovered-read note after
+all content comparisons, naming the files, policy and distinct read count. Those
+bytes are not hash-verified. `inspect` and `inspect-characters` read only recording
+data and resolve no game content. Other content-reading tools keep strict ordinary
+reads until they opt into the [shared reporting contract](../installed-content/README.md).
+
 The [equipment destruction oracle](src/oracle/equipment_destruction.rs) checks
 positive removals, codec-validated stable causes (including explicit unknown),
 raw owner links, design reference types and membership in the frame's complete

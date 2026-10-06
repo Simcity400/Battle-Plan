@@ -74,6 +74,7 @@ export function validateDetailReply(data: unknown): ProductionLineDetailReply {
   const reply = data as ProductionLineDetailReply;
   const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && typeof reply.tag === 'string'
     && Number.isInteger(reply.decimals) && HOUR(reply.window) && HOUR(reply.firstHour) && HOUR(reply.lastHour) && reply.firstHour <= reply.lastHour
+    && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
     && Array.isArray(reply.lines) && reply.lines.every(line => typeof line.key === 'string'
       && Array.isArray(line.runs) && ordered(line.runs) && line.runs.every(isRun)
       && Array.isArray(line.output) && ordered(line.output) && line.output.every(isOutput))

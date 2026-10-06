@@ -360,7 +360,7 @@ impl Catalogue {
     }
 
     /// The texts refused so far, one warning per reason, and the warnings
-    /// of the scripted localisation read once scripted text was evaluated.
+    /// of scripted localisation and shared content reads, including lazy reads.
     pub fn refusal_lines(&self) -> Vec<String> {
         let mut lines = self
             .refused
@@ -379,6 +379,7 @@ impl Catalogue {
                 lines.extend(environment.warnings().iter().cloned());
             }
         }
+        self.content.layers.read_warnings().append_to(&mut lines);
         lines
     }
 }

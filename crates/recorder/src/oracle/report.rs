@@ -132,6 +132,8 @@ pub(super) fn recorded_table_counts(
 
 #[derive(Debug, Default)]
 pub(super) struct Report {
+    /// Queried at output time, after all content-dependent comparisons.
+    pub(super) content_reads: Option<installed_content::content::UncoveredReads>,
     /// Positive game-thread costs identify refresh groups actually walked,
     /// including forced branch/keyframe refreshes outside their usual slot.
     /// A reconstructed snapshot alone is not proof: it may contain cached rows.
@@ -194,6 +196,10 @@ pub(super) struct Report {
 }
 
 impl Report {
+    pub(super) fn content_warning(&self) -> Option<String> {
+        self.content_reads.as_ref().and_then(|reads| reads.warning())
+    }
+
     pub(super) fn set_load_hour(&mut self, branch: &replay::branches::BranchStart) {
         self.load_hour = branch.reason == replay::branches::BranchReason::LoadSignal
             && branch.loaded_hour == Some(self.hour)
@@ -584,6 +590,9 @@ impl Report {
     }
 
     pub(super) fn print(&self, format: replay::format::FormatVersion) {
+        if let Some(warning) = self.content_warning() {
+            println!("Warning: {warning}");
+        }
         println!(
             "Replay format {}: comparison covers its {} recorded tables",
             format.version(),

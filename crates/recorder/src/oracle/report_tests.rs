@@ -1,6 +1,35 @@
 use super::*;
 
 #[test]
+fn oracle_output_keeps_the_latest_uncovered_content_note() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_oracle_content_notes_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    fs::create_dir_all(root.join("events")).unwrap();
+    fs::create_dir_all(root.join("gfx/leaders")).unwrap();
+    fs::write(root.join("events/a.txt"), b"synthetic event").unwrap();
+    fs::write(root.join("gfx/leaders/a.tga"), b"synthetic portrait").unwrap();
+    let layers = installed_content::ResolvedLayers::from_folders_with_coverage_policy(&[(&root, &[])], 2)
+        .unwrap();
+    let report = Report {
+        content_reads: Some(layers.report_uncovered_reads()),
+        ..Default::default()
+    };
+    assert_eq!(report.content_warning(), None);
+    layers.read("events/a.txt").unwrap();
+    assert!(
+        report.content_warning().unwrap().starts_with("Content: 1 file(s)")
+    );
+    layers.clone().read("gfx/leaders/a.tga").unwrap();
+    let note = report.content_warning().unwrap();
+    assert!(note.starts_with("Content: 2 file(s)"));
+    assert!(note.contains("coverage policy 2; these bytes are not hash-verified: events/a.txt, gfx/leaders/a.tga"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn membership_exclusions_are_counted_separately_from_failed_groups() {
     let membership = state_history_tests::membership(
         "state={id=1 provinces={1} history={free_operative={operative=a}}}",

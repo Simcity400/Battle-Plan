@@ -1296,7 +1296,7 @@ key: string, runs: Array<LineRun>,
  */
 output: Array<OutputRun>, };
 export type ProductionDetailParams = { branchId: string, tag: string, window: number, };
-export type ProductionLineDetailReply = { branchId: string, tag: string, decimals: number, window: number,
+export type ProductionLineDetailReply = { warnings: Array<string>, branchId: string, tag: string, decimals: number, window: number,
 /**
  * The window's hours, both included.
  */

@@ -71,11 +71,13 @@ const REPLY: ProductionLinesReply = {
   icons: [{ key: 'sprite:GFX_infantry_weapons1_medium', image: PNG }, { key: 'sprite:GFX_GER_rifle_medium', image: null }, { key: 'sprite:GFX_idea_mauser', image: PNG }],
 };
 
-const DETAIL: ProductionLineDetailReply = { branchId: '1', tag: 'GER', decimals: 5, window: 0, firstHour: 0, lastHour: 719, lines: LINES.map(item => item.detail) };
+const DETAIL: ProductionLineDetailReply = { warnings: [], branchId: '1', tag: 'GER', decimals: 5, window: 0, firstHour: 0, lastHour: 719, lines: LINES.map(item => item.detail) };
 
 test('well-formed replies pass and malformed ones are refused', () => {
   assert.equal(validateProductionReply(REPLY), REPLY);
   assert.equal(validateDetailReply(DETAIL), DETAIL);
+  assert.throws(() => validateDetailReply({ ...DETAIL, warnings: null }));
+  assert.throws(() => validateDetailReply({ ...DETAIL, warnings: [0] }));
   const steps = (key: string, list: LineStep[]) => ({ ...LINES[0].history, key, steps: list });
   assert.throws(() => validateProductionReply({ ...REPLY, lines: [steps('5#1', [...stepsOf([run(100, 130)]), ...stepsOf([run(120, 140)])])] }));
   assert.throws(() => validateProductionReply({ ...REPLY, lines: [REPLY.lines[0], REPLY.lines[0]] }), 'keys are unique');
