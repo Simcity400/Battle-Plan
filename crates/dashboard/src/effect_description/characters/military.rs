@@ -287,9 +287,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let operand = if matches!(scopes.this, Scope::Character(_) | Scope::Leader(_)) {
             None
         } else {
-            item.value.scalar().or_else(|| {
-                field(children(item), "character").and_then(|item| item.value.scalar())
-            })
+            item.value
+                .scalar()
+                .or_else(|| field(children(item), "character").and_then(|item| item.value.scalar()))
         };
         let Some(character) = self.effect_character_target(operand, scopes)? else {
             return Ok(String::new());
@@ -349,17 +349,53 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Own 14045D0D0: ResolveArmy 140529260 reads the independent unit pair,
-    // not a character/leader enum. Divisions records its full native handle;
-    // the graph does not transport known-absent versus carried references.
-    pub(in crate::effect_description) fn char_divisional_xp(&self) -> Result<String, String> {
-        Err("CEventScope UNIT_REFERENCE (+0x70/+0x74) is not represented by the event graph (140529260); Divisions records the handles".into())
+    // Own 14045D0D0: ResolveArmy 140529260 only gates Army existence;
+    // no commander record, current XP or name is read. Evaluate +0x58 then
+    // localise ADD_DIVISIONAL_COMMANDER_XP with Fixed5 VAL@14272F830.
+    // Neither scope expansion nor a terminal LF is added.
+    pub(in crate::effect_description) fn char_divisional_xp(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let Scope::Unit(reference) = scopes.this else {
+            return Ok(String::new());
+        };
+        if reference == 0 {
+            return Ok(String::new());
+        }
+        // Native null is empty (14045D0D0); missing Divisions cannot prove null.
+        self.context.world()?.unit(reference)?;
+        let amount = self.scoped_value(item.value.scalar().unwrap_or_default(), scopes)?;
+        self.char_native_text(
+            b"ADD_DIVISIONAL_COMMANDER_XP",
+            &[("VAL", Argument::Fixed5(amount))],
+            scopes,
+            false,
+        )
     }
 
     // Own 14045D8B0: after the same ResolveArmy, GetName 140C72F00 copies
     // the stored Army+0x340 -> CNameGroupMember+0x60 cache. Naming operands
-    // cannot prove this stale cache. Both gaps are in unrecorded-F.md.
-    pub(in crate::effect_description) fn char_unit_medal(&self) -> Result<String, String> {
-        Err("CEventScope UNIT_REFERENCE (+0x70/+0x74, 140529260) and Army cached name (+0x340 -> +0x60, 140C72F00) are unrecorded".into())
+    // cannot prove this stale cache. Core carries UNIT; only its name remains
+    // a recording gap. Null Army returns native empty without reading operands.
+    pub(in crate::effect_description) fn char_unit_medal(
+        &self,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let Scope::Unit(reference) = scopes.this else {
+            return Ok(String::new());
+        };
+        if reference == 0 {
+            return Ok(String::new());
+        }
+        // Missing Divisions cannot prove ResolveArmy null (140529260/14045D8B0).
+        let name = self.unit_name(reference)?;
+        self.char_native_text(
+            b"ADD_UNIT_MEDAL_DIV_EFFECT",
+            &[("DIV", Argument::Text(&name))],
+            scopes,
+            false,
+        ) // DIV@142797880.
     }
 }

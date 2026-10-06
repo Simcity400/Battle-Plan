@@ -28,7 +28,8 @@ fn fixture(category: i32) -> (Fixture, Folder) {
                 " EFFECT_ADD_RANDOM_UNIT_TRAIT:0 \"Random trait for $NAME$\"\n",
                 " fm_leader:0 \"Field Marshal\"\n cc_leader:0 \"General\"\n navy_leader:0 \"Admiral\"\n",
                 " operative_skill_3:0 \"Expert Agent\"\n OPERATIVE:0 \"Agent\"\n",
-                " synthetic_operative:0 \"Authored agent\"\n"
+                " synthetic_operative:0 \"Authored agent\"\n",
+                " ADD_DIVISIONAL_COMMANDER_XP:0 \"Commander XP $VAL|2$ [Root.GetTag]\"\n"
             ),
         ),
     ]);
@@ -381,34 +382,60 @@ fn remove_operative_role_uses_skill_specific_title_then_native_fallback() {
     );
 }
 
-// common/decisions/phi.txt:1481; unit graph reference must not be guessed absent.
+// common/decisions/phi.txt:1481. The describer gates only on Army existence.
 #[test]
 fn add_divisional_commander_xp() {
-    let (fixture, _folder) = fixture(1);
+    let (mut fixture, _folder) = fixture(1);
+    let reference = 44 | 2 << 32;
+    *fixture.frame.tables[TableId::Divisions.index()] =
+        TableView::Complete(TableRows::Divisions(vec![DivisionRow {
+            id: reference,
+            ..Default::default()
+        }]));
     let out = fixture.render(
         "add_divisional_commander_xp=200",
-        &mut character_scopes(),
+        &mut EventScopes::new(vec![EventScope::of(EventObject::Unit(reference))]),
         Content::default(),
     );
-    assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([(
-        "synthetic effect CAddDivisionalCommanderXpEffect: key add_divisional_commander_xp: CEventScope UNIT_REFERENCE (+0x70/+0x74) is not represented by the event graph (140529260); Divisions records the handles".to_owned(), 1
-    )]));
+    assert_eq!(out.text, "Commander XP 200.00 [Root.GetTag]");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    for object in [EventObject::Unit(0), EventObject::Country(1)] {
+        let out = fixture.render(
+            "add_divisional_commander_xp=200",
+            &mut EventScopes::new(vec![EventScope::of(object)]),
+            Content::default(),
+        );
+        assert_eq!(out.text, "");
+        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    }
 }
 
 // Workshop 1137372539 common/national_focus/soviet.txt:12453.
 #[test]
 fn add_unit_medal_to_latest_entry() {
-    let (fixture, _folder) = fixture(1);
+    let (mut fixture, _folder) = fixture(1);
+    let reference = 44 | 2 << 32;
+    *fixture.frame.tables[TableId::Divisions.index()] =
+        TableView::Complete(TableRows::Divisions(vec![DivisionRow {
+            id: reference,
+            ..Default::default()
+        }]));
     let out = fixture.render(
         "add_unit_medal_to_latest_entry={unit_medals=synthetic_medal}",
-        &mut character_scopes(),
+        &mut EventScopes::new(vec![EventScope::of(EventObject::Unit(reference))]),
         Content::default(),
     );
     assert_eq!(out.text, "");
     assert_eq!(out.refusals, BTreeMap::from([(
-        "synthetic effect CAddUnitMedalEffect: key add_unit_medal_to_latest_entry: CEventScope UNIT_REFERENCE (+0x70/+0x74, 140529260) and Army cached name (+0x340 -> +0x60, 140C72F00) are unrecorded".to_owned(), 1
+        "synthetic effect CAddUnitMedalEffect: key add_unit_medal_to_latest_entry: UNIT 0x20000002c name: CArmy+0x340 -> CNameGroupMember+0x60 cached MSVC string is not recorded (140C72F00; writer 1409B4C40)".to_owned(), 1
     )]));
+    let out = fixture.render(
+        "add_unit_medal_to_latest_entry={unit_medals=synthetic_medal}",
+        &mut EventScopes::new(vec![EventScope::of(EventObject::Unit(0))]),
+        Content::default(),
+    );
+    assert_eq!(out.text, "");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
 // Workshop 1521695605 common/on_actions/00_on_actions_global.txt:3104.

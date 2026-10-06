@@ -111,13 +111,44 @@ pub struct Constants {
 }
 
 impl Constants {
+    fn find_value(&self, parts: &[&str]) -> Result<Option<&Value>, &str> {
+        let Some((category, path)) = parts.split_first() else {
+            return Ok(None);
+        };
+        let Some(found) = self.categories.get(&token(category.as_bytes())) else {
+            return self.unsettled.as_deref().map_or(Ok(None), Err);
+        };
+        if let Some(why) = &found.refused {
+            return Err(why);
+        }
+        let mut map = &found.root;
+        for (at, part) in path.iter().enumerate() {
+            match map.get(&token(part.as_bytes())) {
+                Some(Node::Map(next)) => map = next,
+                Some(Node::Refused(why)) => return Err(why),
+                Some(Node::Value(value)) if at + 1 == path.len() => return Ok(Some(value)),
+                _ => return Ok(None),
+            }
+        }
+        Ok(None)
+    }
+
+    /// Read an integer constant as 140327DB0 does: fixed-point values are
+    /// rejected even when numerically integral; the caller retains its field.
+    pub fn integer(&self, parts: &[&str]) -> Result<Option<i32>, String> {
+        match self.find_value(parts).map_err(str::to_owned)? {
+            Some(Value::Int(value)) => Ok(Some(*value)),
+            _ => Ok(None),
+        }
+    }
+
     /// FindValue (140A96B20) of a `constant:` path's parts, then the scoped
     /// variable's type test in 140539B50: type 1 is the literal as stored,
     /// type 0 the integer times 100000, any other logged ("Scoped variable
     /// constant only supports Fixed Points") and unset.
     pub fn value(&self, parts: &[&str]) -> Constant {
         let shown = parts.join(".");
-        let Some((category, path)) = parts.split_first() else {
+        let Some((category, _)) = parts.split_first() else {
             return Constant::Unset(format!("constant:{shown} names no category"));
         };
         let unknown = |why: &str| {
@@ -125,35 +156,16 @@ impl Constants {
                 "constant:{shown} cannot be read as the game reads it: {why}"
             ))
         };
-        let Some(found) = self.categories.get(&token(category.as_bytes())) else {
-            if let Some(why) = &self.unsettled {
-                return unknown(why);
-            }
-            return Constant::Unset(format!("No constant category: {category}"));
-        };
-        if let Some(why) = &found.refused {
-            return unknown(why);
-        }
-        let mut map = &found.root;
-        let mut node = None;
-        for (at, part) in path.iter().enumerate() {
-            match map.get(&token(part.as_bytes())) {
-                Some(Node::Map(next)) => {
-                    map = next;
-                    node = None;
-                }
-                Some(Node::Refused(why)) => return unknown(why),
-                Some(value @ Node::Value(_)) if at + 1 == path.len() => node = Some(value),
-                // A value before the last part, or a missing key.
-                _ => return Constant::Unset(format!("No constant value: {shown}")),
-            }
-        }
-        match node {
-            Some(Node::Value(Value::Fixed(value))) => Constant::Value(*value),
-            Some(Node::Value(Value::Int(value))) => Constant::Value(i64::from(*value) * 100_000),
-            Some(Node::Value(Value::Other | Value::Collection(_))) => Constant::Unset(format!(
+        match self.find_value(parts) {
+            Err(why) => unknown(why),
+            Ok(Some(Value::Fixed(value))) => Constant::Value(*value),
+            Ok(Some(Value::Int(value))) => Constant::Value(i64::from(*value) * 100_000),
+            Ok(Some(Value::Other | Value::Collection(_))) => Constant::Unset(format!(
                 "constant:{shown}: Scoped variable constant only supports Fixed Points"
             )),
+            Ok(None) if !self.categories.contains_key(&token(category.as_bytes())) => {
+                Constant::Unset(format!("No constant category: {category}"))
+            }
             // The walk ended on a map: too few parts.
             _ => Constant::Unset(format!("No constant value: {shown}")),
         }
@@ -162,30 +174,10 @@ impl Constants {
     /// FindValue (140A96B20) keeps the country/state scalar or array variant;
     /// a CScopedVariable deliberately rejects the same variants (140539B50).
     pub fn collection(&self, parts: &[&str]) -> Result<Option<&CollectionConstant>, String> {
-        let Some((category, path)) = parts.split_first() else {
-            return Ok(None);
-        };
-        let Some(found) = self.categories.get(&token(category.as_bytes())) else {
-            return match &self.unsettled {
-                Some(why) => Err(why.clone()),
-                None => Ok(None),
-            };
-        };
-        if let Some(why) = &found.refused {
-            return Err(why.clone());
+        match self.find_value(parts).map_err(str::to_owned)? {
+            Some(Value::Collection(value)) => Ok(Some(value)),
+            _ => Ok(None),
         }
-        let mut map = &found.root;
-        for (at, part) in path.iter().enumerate() {
-            match map.get(&token(part.as_bytes())) {
-                Some(Node::Map(next)) => map = next,
-                Some(Node::Refused(why)) => return Err(why.clone()),
-                Some(Node::Value(Value::Collection(value))) if at + 1 == path.len() => {
-                    return Ok(Some(value));
-                }
-                _ => return Ok(None),
-            }
-        }
-        Ok(None)
     }
 }
 
@@ -462,6 +454,18 @@ mod tests {
             constants.value(&["missing", "x"]),
             Constant::Unset("No constant category: missing".into())
         );
+    }
+
+    #[test]
+    fn integer_lookup_preserves_native_leaf_type() {
+        let constants = database();
+        assert_eq!(
+            constants.integer(&["sp", "small", "min"]).unwrap(),
+            Some(20)
+        );
+        assert_eq!(constants.integer(&["sp", "small", "gain"]).unwrap(), None);
+        assert_eq!(constants.integer(&["missing", "value"]).unwrap(), None);
+        assert_eq!(constants.integer(&["groups", "nordics"]).unwrap(), None);
     }
 
     /// A repeated category merges into the first; a repeated key is

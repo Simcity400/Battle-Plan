@@ -3,9 +3,11 @@ use super::*;
 pub(in crate::effect_description) struct CharacterContent {
     pub(in crate::effect_description) catalogue: Result<installed_content::characters::Characters, String>,
     pub(super) unit_leaders: Result<installed_content::unit_leader::Leaders<String>, String>,
-    pub(in crate::effect_description) special_projects: Result<installed_content::special_projects::Catalog, String>,
+    pub(in crate::effect_description) special_projects:
+        Result<installed_content::special_projects::Catalog, String>,
     pub(super) scientist_traits: Result<installed_content::scientist_traits::ScientistTraits, String>,
     pub(super) factions: Result<installed_content::faction_templates::Catalog, String>,
+    pub(super) mio_traits: Result<installed_content::mio_traits::Catalog, String>,
     pub(in crate::effect_description) notes: Vec<String>,
 }
 
@@ -48,19 +50,25 @@ impl CharacterContent {
         let factions = installed_content::faction_templates::read(layers)
             .inspect(|db| notes.extend(db.warnings.iter().cloned()))
             .map_err(|why| why.to_string());
+        let mio_traits = installed_content::mio_traits::read(layers)
+            .inspect(|db| notes.extend(db.warnings.iter().cloned()))
+            .map_err(|why| why.to_string());
         Self {
             catalogue,
             unit_leaders,
             special_projects,
             scientist_traits,
             factions,
+            mio_traits,
             notes,
         }
     }
 }
 
 impl Renderer<'_, '_, '_> {
-    pub(in crate::effect_description) fn character_content(&self) -> Result<&CharacterContent, String> {
+    pub(in crate::effect_description) fn character_content(
+        &self,
+    ) -> Result<&CharacterContent, String> {
         Ok(&self.context.text.content().effects()?.characters)
     }
 

@@ -42,6 +42,7 @@ pub mod leader_traits;
 pub mod localisation;
 pub mod map;
 pub mod mesh;
+pub mod mio_traits;
 #[cfg(test)]
 mod mod_layers_tests;
 pub mod modifier_definitions;

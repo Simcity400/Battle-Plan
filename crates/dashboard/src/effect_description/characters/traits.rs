@@ -119,9 +119,10 @@ impl Renderer<'_, '_, '_> {
         Ok(features.dlc_mask & definition.feature_selector != 0)
     }
 
-    // 1410079E0 keeps custom tooltip/child blocks or any eligible entry,
+    // 1410079E0 / IsEffectivelyEmpty 140600440 keep custom tooltip/child
+    // blocks or any eligible entry,
     // even a hidden/zero entry that FormatLine will not show.
-    fn char_trait_modifier_kept(&self, source: &Modifiers) -> Result<bool, String> {
+    pub(super) fn char_trait_modifier_kept(&self, source: &Modifiers) -> Result<bool, String> {
         if let Some(why) = source.unheld.cause() {
             return Err(why.to_owned());
         }
@@ -227,7 +228,9 @@ impl Renderer<'_, '_, '_> {
             let tag = target.tag.as_deref().ok_or_else(|| format!(
                 "country trait {} targeted-country operand is not retained by the shared catalogue (1406039B0/140712850)", trait_.token,
             ))?;
-            let country = self.evaluator()?.scoped_country(tag.as_bytes(), empty)?
+            let country = self
+                .evaluator()?
+                .scoped_country(tag.as_bytes(), empty)?
                 .filter(|country| *country > 0);
             let context = if let Some(country) = country {
                 // 1406E63A0: capitalise the stored definite country name.
@@ -620,8 +623,7 @@ impl Renderer<'_, '_, '_> {
         } else {
             item.value.scalar().unwrap_or_default()
         };
-        let name = std::str::from_utf8(token)
-            .map_err(|_| "unit trait operand is not UTF-8")?;
+        let name = std::str::from_utf8(token).map_err(|_| "unit trait operand is not UTF-8")?;
         let database = self.char_unit_catalogue()?;
         let Some(definition) = database.traits.get(name) else {
             return Ok(String::new());

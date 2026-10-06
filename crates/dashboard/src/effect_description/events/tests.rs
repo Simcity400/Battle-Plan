@@ -15,34 +15,50 @@ fn event_fixture() -> (Fixture, installed_content::decisions::Database, Folder) 
     event_files_fixture(&[])
 }
 
-fn event_files_fixture(events: &[(&str, &str)]) -> (Fixture, installed_content::decisions::Database, Folder) {
+fn event_files_fixture(
+    events: &[(&str, &str)],
+) -> (Fixture, installed_content::decisions::Database, Folder) {
     let (mut fixture, mut database) = decision_fixture(Some(None));
     let mut files = vec![
-        ("common/defines/test.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}"),
-        ("localisation/events_l_english.yml", concat!(
-            "\u{feff}l_english:\n AAA:0 \"Alpha\"\n BBB:0 \"Beta\"\n AAA_DEF:0 \"alpha\"\n BBB_DEF:0 \"beta\"\n",
-            " SYN_NAME:0 \"Plan [FROM.GetTag]\"\n SYN_CATEGORY:0 \"Category [ROOT.GetTag]\"\n",
-            " EFFECT_ACTIVATE_DECISION:0 \"Activate $NAME$\"\n EFFECT_REMOVE_DECISION:0 \"Remove $NAME$\"\n",
-            " EFFECT_REMOVE_MISSION:0 \"Cancel $NAME$\"\n EFFECT_ACTIVATES_MISSION:0 \"Mission $NAME$\"\n",
-            " ADD_DAYS_TO_MISSION:0 \"Add $DAYS|0$ to $MISSION$\"\n REMOVE_DAYS_TO_MISSION:0 \"Subtract $DAYS|0$ from $MISSION$\"\n",
-            " EFFECT_UNLOCK_DECISION_CATEGORY:0 \"Unlock $NAME$\"\n EFFECT_UNLOCK_DECISION:0 \"Unlock $NAME$$EFFECT$\"\n EFFECT_UNLOCK_DECISION_BOP:0 \"Balance $NAME$$EFFECT$\"\n",
-            " EFFECT_UNLOCK_DECISION_SELECT_HEADER:0 \"Select:\"\n EFFECT_UNLOCK_DECISION_REMOVE_HEADER:0 \"Remove:\"\n EFFECT_UNLOCK_DECISION_TIMED_HEADER:0 \"After $DAYS|0$:\"\n",
-            " DECISION_WHILE_ACTIVE:0 \"Active [ROOT.GetTag]\"\n POWER:0 \"Power\"\n COST:0 \"Cost\"\n MOD_BODY:0 \"Body [ROOT.GetTag]\"\n",
-            " EFFECT_ACTIVATE_TARGETED_DECISION:0 \"Targeted $NAME$\"\n TIP:0 \"detail\"\n EFFECT_COUNTRY_EVENT:0 \"Event $EVENT$\"\n SYN_EVENT:0 \"News [FROM.GetName]\"\n",
-            " EFFECT_SHOW_MIO_TOOLTIP_MIO_NAME:0 \"Organisation $NAME$\"\n EFFECT_SHOW_MIO_TOOLTIP_INITIAL_TRAIT_NAME:0 \"Trait $NAME$\"\n",
-            " SYN_MIO_NAME:0 \"Forge\"\n SYN_MIO_initial_trait:0 \"Industry\"\n EFFECT_MIO_UNLOCK_MIO:0 \"Unlock $NAME$\"\n EFFECT_MIO_UNLOCK_POLICY:0 \"Policy $NAME$\"\n SYN_POLICY:0 \"Tools\"\n"
-        )),
+        (
+            "common/defines/test.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+        ),
+        (
+            "localisation/events_l_english.yml",
+            concat!(
+                "\u{feff}l_english:\n AAA:0 \"Alpha\"\n BBB:0 \"Beta\"\n AAA_DEF:0 \"alpha\"\n BBB_DEF:0 \"beta\"\n",
+                " SYN_NAME:0 \"Plan [FROM.GetTag]\"\n SYN_CATEGORY:0 \"Category [ROOT.GetTag]\"\n",
+                " EFFECT_ACTIVATE_DECISION:0 \"Activate $NAME$\"\n EFFECT_REMOVE_DECISION:0 \"Remove $NAME$\"\n",
+                " EFFECT_REMOVE_MISSION:0 \"Cancel $NAME$\"\n EFFECT_ACTIVATES_MISSION:0 \"Mission $NAME$\"\n",
+                " ADD_DAYS_TO_MISSION:0 \"Add $DAYS|0$ to $MISSION$\"\n REMOVE_DAYS_TO_MISSION:0 \"Subtract $DAYS|0$ from $MISSION$\"\n",
+                " EFFECT_UNLOCK_DECISION_CATEGORY:0 \"Unlock $NAME$\"\n EFFECT_UNLOCK_DECISION:0 \"Unlock $NAME$$EFFECT$\"\n EFFECT_UNLOCK_DECISION_BOP:0 \"Balance $NAME$$EFFECT$\"\n",
+                " EFFECT_UNLOCK_DECISION_SELECT_HEADER:0 \"Select:\"\n EFFECT_UNLOCK_DECISION_REMOVE_HEADER:0 \"Remove:\"\n EFFECT_UNLOCK_DECISION_TIMED_HEADER:0 \"After $DAYS|0$:\"\n",
+                " DECISION_WHILE_ACTIVE:0 \"Active [ROOT.GetTag]\"\n POWER:0 \"Power\"\n COST:0 \"Cost\"\n MOD_BODY:0 \"Body [ROOT.GetTag]\"\n",
+                " EFFECT_ACTIVATE_TARGETED_DECISION:0 \"Targeted $NAME$\"\n TIP:0 \"detail\"\n EFFECT_COUNTRY_EVENT:0 \"Event $EVENT$\"\n SYN_EVENT:0 \"News [FROM.GetName]\"\n",
+                " EFFECT_SHOW_MIO_TOOLTIP_MIO_NAME:0 \"Organisation $NAME$\"\n EFFECT_SHOW_MIO_TOOLTIP_INITIAL_TRAIT_NAME:0 \"Trait $NAME$\"\n",
+                " SYN_MIO_NAME:0 \"Forge\"\n BBB_SYN_MIO_NAME:0 \"Forge [FROM.GetTag]\"\n SYN_MIO_initial_trait:0 \"Industry\"\n EFFECT_MIO_UNLOCK_MIO:0 \"Unlock $NAME$ [ROOT.GetTag]\"\n EFFECT_MIO_UNLOCK_POLICY:0 \"Policy $NAME$\"\n SYN_POLICY:0 \"Tools\"\n"
+            ),
+        ),
     ];
     files.extend_from_slice(events);
     let (catalogue, folder) = folder_catalogue(&files);
-    catalogue.scripted_content().unwrap().set_synthetic_environment(Default::default());
+    catalogue
+        .scripted_content()
+        .unwrap()
+        .set_synthetic_environment(Default::default());
     fixture.catalogue = catalogue;
-    let definition = database.entries.get_mut(b"syn_decision".as_slice()).unwrap();
+    let definition = database
+        .entries
+        .get_mut(b"syn_decision".as_slice())
+        .unwrap();
     definition.name = b"SYN_NAME".to_vec();
     definition.has_state_targets = false;
     definition.target_states.clear();
     definition.fixed_random_seed = true;
-    database.categories.insert(b"syn_category".to_vec(), b"SYN_CATEGORY".to_vec());
+    database
+        .categories
+        .insert(b"syn_category".to_vec(), b"SYN_CATEGORY".to_vec());
     (fixture, database, folder)
 }
 
@@ -52,9 +68,15 @@ macro_rules! decision_description_case {
         fn $name() {
             let (fixture, database, _folder) = event_fixture();
             let names = installed_content::key_names::KeyNames::default();
-            let output = fixture.render_native($body, &mut super::super::tests::fresh(), Content {
-                decisions: Some(&database), key_names: Some(&names), ..Default::default()
-            });
+            let output = fixture.render_native(
+                $body,
+                &mut super::super::tests::fresh(),
+                Content {
+                    decisions: Some(&database),
+                    key_names: Some(&names),
+                    ..Default::default()
+                },
+            );
             assert_eq!(output.text, $expected);
             assert!(output.refusals.is_empty(), "{:?}", output.refusals);
         }
@@ -63,38 +85,102 @@ macro_rules! decision_description_case {
 
 // F reach examples, with synthetic identifiers and the same authored form.
 // common/continuous_focus/generic.txt:194 (14036F660).
-decision_description_case!(activate_mission_native_scalar, "activate_mission=SYN_DECISION", "Mission Plan AAA\n");
+decision_description_case!(
+    activate_mission_native_scalar,
+    "activate_mission=SYN_DECISION",
+    "Mission Plan AAA\n"
+);
 // common/decisions/ast.txt:2496 (140389C20).
-decision_description_case!(remove_mission_native_scalar, "remove_mission=SYN_DECISION", "Cancel Plan AAA\n");
+decision_description_case!(
+    remove_mission_native_scalar,
+    "remove_mission=SYN_DECISION",
+    "Cancel Plan AAA\n"
+);
 // common/decisions/por.txt:2452 (14036F380).
-decision_description_case!(activate_decision_native_scalar, "activate_decision=SYN_DECISION", "Activate Plan AAA\n");
+decision_description_case!(
+    activate_decision_native_scalar,
+    "activate_decision=SYN_DECISION",
+    "Activate Plan AAA\n"
+);
 // common/national_focus/czechoslovakia_mu.txt:16401 (140388CA0).
-decision_description_case!(remove_decision_native_scalar, "remove_decision=SYN_DECISION", "Remove Plan AAA\n");
+decision_description_case!(
+    remove_decision_native_scalar,
+    "remove_decision=SYN_DECISION",
+    "Remove Plan AAA\n"
+);
 // common/decisions/jap.txt:428 (14036F940).
-decision_description_case!(activate_mission_tooltip_native_scalar, "activate_mission_tooltip=SYN_DECISION", "Mission Plan AAA\n");
+decision_description_case!(
+    activate_mission_tooltip_native_scalar,
+    "activate_mission_tooltip=SYN_DECISION",
+    "Mission Plan AAA\n"
+);
 // common/decisions/afg.txt:249 (140372A90).
-decision_description_case!(add_days_mission_timeout_native_block, "add_days_mission_timeout={mission=SYN_DECISION days=180}", "Add 180 to Plan AAA\n");
+decision_description_case!(
+    add_days_mission_timeout_native_block,
+    "add_days_mission_timeout={mission=SYN_DECISION days=180}",
+    "Add 180 to Plan AAA\n"
+);
 // common/national_focus/australia_taog.txt:5811 (140399060).
-decision_description_case!(unlock_decision_category_native_scalar, "unlock_decision_category_tooltip=SYN_CATEGORY", "Unlock Category AAA\n");
+decision_description_case!(
+    unlock_decision_category_native_scalar,
+    "unlock_decision_category_tooltip=SYN_CATEGORY",
+    "Unlock Category AAA\n"
+);
 // common/characters/swe.txt:1566 (140399360).
-decision_description_case!(unlock_decision_native_flags, "unlock_decision_tooltip={decision=SYN_DECISION show_effect_tooltip=yes show_modifiers=yes}", "Unlock Plan AAA\n");
-decision_description_case!(unlock_decision_missing_definition_keeps_wrapper, "unlock_decision_tooltip=missing", "Unlock \n");
+decision_description_case!(
+    unlock_decision_native_flags,
+    "unlock_decision_tooltip={decision=SYN_DECISION show_effect_tooltip=yes show_modifiers=yes}",
+    "Unlock Plan AAA\n"
+);
+decision_description_case!(
+    unlock_decision_missing_definition_keeps_wrapper,
+    "unlock_decision_tooltip=missing",
+    "Unlock \n"
+);
 // common/decisions/ins.txt:4837 (140388F80).
-decision_description_case!(remove_decision_on_cooldown_native_scalar, "remove_decision_on_cooldown=SYN_DECISION", "Remove Plan AAA\n");
-decision_description_case!(mission_timeout_negative_rounds_half_away, "add_days_mission_timeout={mission=SYN_DECISION days=-0.5}", "Subtract 1 from Plan AAA\n");
-decision_description_case!(mission_timeout_zero_is_native_empty, "add_days_mission_timeout={mission=SYN_DECISION days=0.49999}", "");
-decision_description_case!(mission_tooltip_appends_desc_to_name, "activate_mission_tooltip={mission=SYN_DECISION desc=TIP}", "Mission Plan AAAdetail\n\n");
+decision_description_case!(
+    remove_decision_on_cooldown_native_scalar,
+    "remove_decision_on_cooldown=SYN_DECISION",
+    "Remove Plan AAA\n"
+);
+decision_description_case!(
+    mission_timeout_negative_rounds_half_away,
+    "add_days_mission_timeout={mission=SYN_DECISION days=-0.5}",
+    "Subtract 1 from Plan AAA\n"
+);
+decision_description_case!(
+    mission_timeout_zero_is_native_empty,
+    "add_days_mission_timeout={mission=SYN_DECISION days=0.49999}",
+    ""
+);
+decision_description_case!(
+    mission_tooltip_appends_desc_to_name,
+    "activate_mission_tooltip={mission=SYN_DECISION desc=TIP}",
+    "Mission Plan AAAdetail\n\n"
+);
 
 #[test]
 fn unlock_decision_deterministic_body_needs_no_active_seed_row() {
     let (mut fixture, mut database, _folder) = event_fixture();
     set::<tables::Decisions>(&mut fixture, Vec::new());
-    let definition = database.entries.get_mut(b"syn_decision".as_slice()).unwrap();
+    let definition = database
+        .entries
+        .get_mut(b"syn_decision".as_slice())
+        .unwrap();
     definition.fixed_random_seed = false;
-    definition.complete_effect = installed_content::parser::parse(b"custom_effect_tooltip=TIP").unwrap().items;
+    definition.complete_effect = installed_content::parser::parse(b"custom_effect_tooltip=TIP")
+        .unwrap()
+        .items;
     let names = installed_content::key_names::KeyNames::default();
-    let output = fixture.render_native("unlock_decision_tooltip={decision=SYN_DECISION show_effect_tooltip=yes}", &mut super::super::tests::fresh(),
-        Content { decisions: Some(&database), key_names: Some(&names), ..Default::default() });
+    let output = fixture.render_native(
+        "unlock_decision_tooltip={decision=SYN_DECISION show_effect_tooltip=yes}",
+        &mut super::super::tests::fresh(),
+        Content {
+            decisions: Some(&database),
+            key_names: Some(&names),
+            ..Default::default()
+        },
+    );
     assert_eq!(output.text, "Unlock Plan AAA\nSelect:\ndetail\n");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
@@ -103,45 +189,105 @@ fn unlock_decision_deterministic_body_needs_no_active_seed_row() {
 fn unlock_decision_random_body_refuses_only_at_selection_without_seed_row() {
     let (mut fixture, mut database, _folder) = event_fixture();
     set::<tables::Decisions>(&mut fixture, Vec::new());
-    let definition = database.entries.get_mut(b"syn_decision".as_slice()).unwrap();
+    let definition = database
+        .entries
+        .get_mut(b"syn_decision".as_slice())
+        .unwrap();
     definition.fixed_random_seed = false;
     // Random-owned-state selection draws even for one candidate (1402F70C0).
     // Unlike a random_list description (141383AB0), it selects a member.
-    definition.complete_effect = installed_content::parser::parse(
-        b"random_owned_state={limit={state=1} custom_effect_tooltip=TIP}"
-    ).unwrap().items;
+    definition.complete_effect =
+        installed_content::parser::parse(b"random_owned_state={limit={state=1} custom_effect_tooltip=TIP}")
+            .unwrap()
+            .items;
     let names = installed_content::key_names::KeyNames::default();
-    let output = fixture.render_native("unlock_decision_tooltip={decision=SYN_DECISION show_effect_tooltip=yes}", &mut super::super::tests::fresh(),
-        Content { decisions: Some(&database), key_names: Some(&names), ..Default::default() });
+    let output = fixture.render_native(
+        "unlock_decision_tooltip={decision=SYN_DECISION show_effect_tooltip=yes}",
+        &mut super::super::tests::fresh(),
+        Content {
+            decisions: Some(&database),
+            key_names: Some(&names),
+            ..Default::default()
+        },
+    );
     assert_eq!(output.text, "Unlock Plan AAA\n");
     assert_eq!(output.refusals.values().sum::<usize>(), 1);
-    assert!(output.refusals.keys().next().unwrap().contains("CRandomOwnedStateEffect"));
-    assert!(output.refusals.keys().next().unwrap().contains(DECISION_RANDOM_COUNT_GAP));
+    assert!(
+        output
+            .refusals
+            .keys()
+            .next()
+            .unwrap()
+            .contains("CRandomOwnedStateEffect")
+    );
+    assert!(
+        output
+            .refusals
+            .keys()
+            .next()
+            .unwrap()
+            .contains(DECISION_RANDOM_COUNT_GAP)
+    );
 }
 
 #[test]
 fn unlock_decision_modifiers_use_full_mask_and_ordered_target_headings() {
     let (mut fixture, mut database, _folder) = event_fixture();
-    set::<tables::Politics>(&mut fixture, vec![
-        PoliticsRow { country: 100, ruling_party: Some(1), ..Default::default() },
-        PoliticsRow { country: 200, ..Default::default() },
-    ]);
-    set::<tables::LexicalTokens>(&mut fixture, vec![
-        replay::rows::LexicalTokenRow { token: 31, literal: b"political_power_gain".to_vec() },
-        replay::rows::LexicalTokenRow { token: 32, literal: b"political_power_cost".to_vec() },
-    ]);
-    set::<tables::ModifierDefinitions>(&mut fixture, vec![
-        replay::rows::ModifierDefinitionRow {
-            index: 0, token: 31, name_key: b"POWER".to_vec(), category_mask: 0x0100_0000,
-            precision: 2, flags: crate::modifier_text::POSITIVE_IS_GOOD, ..Default::default()
-        },
-        replay::rows::ModifierDefinitionRow {
-            index: 1, token: 32, name_key: b"COST".to_vec(), category_mask: 1,
-            precision: 2, flags: crate::modifier_text::POSITIVE_IS_GOOD, ..Default::default()
-        },
-    ]);
+    set::<tables::Politics>(
+        &mut fixture,
+        vec![
+            PoliticsRow {
+                country: 100,
+                ruling_party: Some(1),
+                ..Default::default()
+            },
+            PoliticsRow {
+                country: 200,
+                ..Default::default()
+            },
+        ],
+    );
+    set::<tables::LexicalTokens>(
+        &mut fixture,
+        vec![
+            replay::rows::LexicalTokenRow {
+                token: 31,
+                literal: b"political_power_gain".to_vec(),
+            },
+            replay::rows::LexicalTokenRow {
+                token: 32,
+                literal: b"political_power_cost".to_vec(),
+            },
+        ],
+    );
+    set::<tables::ModifierDefinitions>(
+        &mut fixture,
+        vec![
+            replay::rows::ModifierDefinitionRow {
+                index: 0,
+                token: 31,
+                name_key: b"POWER".to_vec(),
+                category_mask: 0x0100_0000,
+                precision: 2,
+                flags: crate::modifier_text::POSITIVE_IS_GOOD,
+                ..Default::default()
+            },
+            replay::rows::ModifierDefinitionRow {
+                index: 1,
+                token: 32,
+                name_key: b"COST".to_vec(),
+                category_mask: 1,
+                precision: 2,
+                flags: crate::modifier_text::POSITIVE_IS_GOOD,
+                ..Default::default()
+            },
+        ],
+    );
     let parse = |body: &[u8]| installed_content::parser::parse(body).unwrap().items;
-    let definition = database.entries.get_mut(b"syn_decision".as_slice()).unwrap();
+    let definition = database
+        .entries
+        .get_mut(b"syn_decision".as_slice())
+        .unwrap();
     definition.modifier = parse(b"political_power_gain=0.1 custom_modifier_tooltip=MOD_BODY");
     definition.targeted_modifier = vec![
         parse(b"tag=BBB political_power_gain=0.2 custom_modifier_tooltip=MOD_BODY"),
@@ -151,20 +297,36 @@ fn unlock_decision_modifiers_use_full_mask_and_ordered_target_headings() {
     // 140399821/140399BC9 use 0xffffffff, while the default raw list masks
     // out bit 24. 1403998AB skips every part of a nonpositive target block.
     let masked = installed_content::modifiers::values(&parse(b"political_power_gain=0.1"));
-    fixture.with_renderer(&mut super::super::tests::fresh(), Content::default(), |renderer| {
-        assert_eq!(renderer.modifier_description_with(&masked, "", Default::default()).unwrap(), "");
-    });
+    fixture.with_renderer(
+        &mut super::super::tests::fresh(),
+        Content::default(),
+        |renderer| {
+            assert_eq!(
+                renderer
+                    .modifier_description_with(&masked, "", Default::default())
+                    .unwrap(),
+                ""
+            );
+        },
+    );
     let names = installed_content::key_names::KeyNames::default();
     let output = fixture.render_native(
         "unlock_decision_tooltip={decision=SYN_DECISION show_modifiers=yes}",
         &mut super::super::tests::fresh(),
-        Content { decisions: Some(&database), key_names: Some(&names), ..Default::default() },
+        Content {
+            decisions: Some(&database),
+            key_names: Some(&names),
+            ..Default::default()
+        },
     );
-    assert_eq!(output.text, concat!(
-        "Unlock Plan AAA\nActive AAA\nPower: \u{11}G+0.10\u{11}!\nBody AAA\n",
-        "\u{11}H\u{12}BBB Beta\u{11}!\n  Power: \u{11}G+0.20\u{11}!\nBody AAA\n",
-        "\u{11}H\u{12}AAA Alpha\u{11}!\n  Cost: \u{11}R-0.30\u{11}!\n",
-    ));
+    assert_eq!(
+        output.text,
+        concat!(
+            "Unlock Plan AAA\nActive AAA\nPower: \u{11}G+0.10\u{11}!\nBody AAA\n",
+            "\u{11}H\u{12}BBB Beta\u{11}!\n  Power: \u{11}G+0.20\u{11}!\nBody AAA\n",
+            "\u{11}H\u{12}AAA Alpha\u{11}!\n  Cost: \u{11}R-0.30\u{11}!\n",
+        )
+    );
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
 
@@ -173,9 +335,18 @@ fn shared_decision_seed_self_from_is_mixed_twice() {
     let (fixture, database, _folder) = event_fixture();
     let mut graph = super::super::tests::fresh();
     let definition = &database.entries[b"syn_decision".as_slice()];
-    fixture.with_renderer(&mut graph, Content { decisions: Some(&database), ..Default::default() }, |renderer| {
-        renderer.decision_seeded_scope(definition, 1, None, 0, false).unwrap();
-    });
+    fixture.with_renderer(
+        &mut graph,
+        Content {
+            decisions: Some(&database),
+            ..Default::default()
+        },
+        |renderer| {
+            renderer
+                .decision_seeded_scope(definition, 1, None, 0, false)
+                .unwrap();
+        },
+    );
     let seed = decision_seed(0, definition, None, 0).unwrap();
     let mixed = random::scope_seed(seed);
     let own = graph.scopes.last().unwrap();
@@ -188,12 +359,25 @@ fn activate_targeted_decision_saved_target_without_active_instance() {
     // common/decisions/ast.txt:633, 140370080/1407290D0.
     let (mut fixture, mut database, _folder) = event_fixture();
     set::<tables::Decisions>(&mut fixture, Vec::new());
-    database.entries.get_mut(b"syn_decision".as_slice()).unwrap().fixed_random_seed = false;
+    database
+        .entries
+        .get_mut(b"syn_decision".as_slice())
+        .unwrap()
+        .fixed_random_seed = false;
     let names = installed_content::key_names::KeyNames::default();
     let mut scopes = super::super::tests::fresh();
-    scopes.saved_targets.insert(0, vec![(b"synthetic".to_vec(), EventObject::Country(2))]);
-    let output = fixture.render_native("activate_targeted_decision={target=event_target:synthetic decision=SYN_DECISION}", &mut scopes,
-        Content { decisions: Some(&database), key_names: Some(&names), ..Default::default() });
+    scopes
+        .saved_targets
+        .insert(0, vec![(b"synthetic".to_vec(), EventObject::Country(2))]);
+    let output = fixture.render_native(
+        "activate_targeted_decision={target=event_target:synthetic decision=SYN_DECISION}",
+        &mut scopes,
+        Content {
+            decisions: Some(&database),
+            key_names: Some(&names),
+            ..Default::default()
+        },
+    );
     assert_eq!(output.text, "Targeted Plan BBB\n");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
@@ -201,15 +385,24 @@ fn activate_targeted_decision_saved_target_without_active_instance() {
 #[test]
 fn activate_targeted_decision_random_title_needs_seed_only_on_native_default_draw() {
     let (mut fixture, mut database, _folder) = event_files_fixture(&[
-        ("common/scripted_localisation/random.txt", concat!(
-            "a={name=Pick text={random_list={1={localization_key=TIP} 1={localization_key=SYN_EVENT}}}} ",
-            "a={name=Single text={random_list={seed=unknown 0={localization_key=TIP}}}} ",
-            "a={name=Explicit text={random_list={seed=7 1={localization_key=TIP} 1={localization_key=TIP}}}}"
-        )),
-        ("localisation/random_l_english.yml", "\u{feff}l_english:\n RANDOM_NAME:0 \"[Pick]\"\n SINGLE_NAME:0 \"[Single]\"\n EXPLICIT_NAME:0 \"[Explicit]\"\n"),
+        (
+            "common/scripted_localisation/random.txt",
+            concat!(
+                "a={name=Pick text={random_list={1={localization_key=TIP} 1={localization_key=SYN_EVENT}}}} ",
+                "a={name=Single text={random_list={seed=unknown 0={localization_key=TIP}}}} ",
+                "a={name=Explicit text={random_list={seed=7 1={localization_key=TIP} 1={localization_key=TIP}}}}"
+            ),
+        ),
+        (
+            "localisation/random_l_english.yml",
+            "\u{feff}l_english:\n RANDOM_NAME:0 \"[Pick]\"\n SINGLE_NAME:0 \"[Single]\"\n EXPLICIT_NAME:0 \"[Explicit]\"\n",
+        ),
     ]);
     set::<tables::Decisions>(&mut fixture, Vec::new());
-    let definition = database.entries.get_mut(b"syn_decision".as_slice()).unwrap();
+    let definition = database
+        .entries
+        .get_mut(b"syn_decision".as_slice())
+        .unwrap();
     definition.fixed_random_seed = false;
     let names = installed_content::key_names::KeyNames::default();
     // 140A9CD8A skips seed for a sole entry; 140A9CF27 supplies an explicit
@@ -219,14 +412,31 @@ fn activate_targeted_decision_random_title_needs_seed_only_on_native_default_dra
         (b"SINGLE_NAME".as_slice(), "Targeted detail\n", false),
         (b"EXPLICIT_NAME".as_slice(), "Targeted detail\n", false),
     ] {
-        database.entries.get_mut(b"syn_decision".as_slice()).unwrap().name = name.to_vec();
-        let output = fixture.render_native("activate_targeted_decision={target=BBB decision=SYN_DECISION}", &mut super::super::tests::fresh(),
-            Content { decisions: Some(&database), key_names: Some(&names), ..Default::default() });
+        database
+            .entries
+            .get_mut(b"syn_decision".as_slice())
+            .unwrap()
+            .name = name.to_vec();
+        let output = fixture.render_native(
+            "activate_targeted_decision={target=BBB decision=SYN_DECISION}",
+            &mut super::super::tests::fresh(),
+            Content {
+                decisions: Some(&database),
+                key_names: Some(&names),
+                ..Default::default()
+            },
+        );
         assert_eq!(output.text, expected);
-        assert_eq!(output.refusals.values().sum::<usize>(), usize::from(refused));
+        assert_eq!(
+            output.refusals.values().sum::<usize>(),
+            usize::from(refused)
+        );
         if refused {
             let reason = output.refusals.keys().next().unwrap();
-            assert!(reason.contains("CActivateTargetedDecisionEffect"), "{reason}");
+            assert!(
+                reason.contains("CActivateTargetedDecisionEffect"),
+                "{reason}"
+            );
             assert!(reason.contains(DECISION_RANDOM_COUNT_GAP), "{reason}");
         }
     }
@@ -235,30 +445,64 @@ fn activate_targeted_decision_random_title_needs_seed_only_on_native_default_dra
 #[test]
 fn missing_decision_seed_propagates_through_event_title_lanes_without_refusing_plain_title() {
     let (mut fixture, mut database, _folder) = event_files_fixture(&[
-        ("common/scripted_localisation/random.txt", "a={name=Pick text={random_list={1={localization_key=TIP} 1={localization_key=SYN_EVENT}}}}"),
-        ("localisation/random_l_english.yml", "\u{feff}l_english:\n RANDOM_NAME:0 \"[Pick]\"\n"),
+        (
+            "common/scripted_localisation/random.txt",
+            "a={name=Pick text={random_list={1={localization_key=TIP} 1={localization_key=SYN_EVENT}}}}",
+        ),
+        (
+            "localisation/random_l_english.yml",
+            "\u{feff}l_english:\n RANDOM_NAME:0 \"[Pick]\"\n",
+        ),
     ]);
     set::<tables::Decisions>(&mut fixture, Vec::new());
-    let definition = database.entries.get_mut(b"syn_decision".as_slice()).unwrap();
+    let definition = database
+        .entries
+        .get_mut(b"syn_decision".as_slice())
+        .unwrap();
     definition.fixed_random_seed = false;
-    definition.complete_effect = installed_content::parser::parse(b"country_event={id=synthetic.1}").unwrap().items;
+    definition.complete_effect = installed_content::parser::parse(b"country_event={id=synthetic.1}")
+        .unwrap()
+        .items;
     let names = installed_content::key_names::KeyNames::default();
     // 14037BDC0's draw only derives the title's seed. 140A9CF9A/BD is the
     // first use that can change title text; do not refuse a plain title.
     for (title, expected, refused) in [
-        (b"title=SYN_EVENT".as_slice(), "Unlock Plan AAA\nSelect:\nEvent News Alpha\n", false),
+        (
+            b"title=SYN_EVENT".as_slice(),
+            "Unlock Plan AAA\nSelect:\nEvent News Alpha\n",
+            false,
+        ),
         (b"title=RANDOM_NAME".as_slice(), "Unlock Plan AAA\n", true),
     ] {
         let event = std::sync::Arc::new(installed_content::events::Event {
-            titles: installed_content::parser::parse(title).unwrap().items, ..Default::default()
+            titles: installed_content::parser::parse(title).unwrap().items,
+            ..Default::default()
         });
         let lookup = |_: &[u8]| Ok(event.clone());
-        let output = fixture.render_native("unlock_decision_tooltip={decision=SYN_DECISION show_effect_tooltip=yes}", &mut super::super::tests::fresh(),
-            Content { decisions: Some(&database), events: Some(&lookup), key_names: Some(&names), ..Default::default() });
+        let output = fixture.render_native(
+            "unlock_decision_tooltip={decision=SYN_DECISION show_effect_tooltip=yes}",
+            &mut super::super::tests::fresh(),
+            Content {
+                decisions: Some(&database),
+                events: Some(&lookup),
+                key_names: Some(&names),
+                ..Default::default()
+            },
+        );
         assert_eq!(output.text, expected);
-        assert_eq!(output.refusals.values().sum::<usize>(), usize::from(refused));
+        assert_eq!(
+            output.refusals.values().sum::<usize>(),
+            usize::from(refused)
+        );
         if refused {
-            assert!(output.refusals.keys().next().unwrap().contains(DECISION_RANDOM_COUNT_GAP));
+            assert!(
+                output
+                    .refusals
+                    .keys()
+                    .next()
+                    .unwrap()
+                    .contains(DECISION_RANDOM_COUNT_GAP)
+            );
         }
     }
 }
@@ -269,11 +513,19 @@ fn news_event_native_id_and_timing_fields() {
     let (fixture, _, _folder) = event_fixture();
     let names = installed_content::key_names::KeyNames::default();
     let event = std::sync::Arc::new(installed_content::events::Event {
-        titles: installed_content::parser::parse(b"title=SYN_EVENT").unwrap().items, ..Default::default()
+        titles: installed_content::parser::parse(b"title=SYN_EVENT").unwrap().items,
+        ..Default::default()
     });
     let lookup = |_: &[u8]| Ok(event.clone());
-    let output = fixture.render_native("news_event={id=synthetic.18 hours=12}", &mut super::super::tests::fresh(),
-        Content { events: Some(&lookup), key_names: Some(&names), ..Default::default() });
+    let output = fixture.render_native(
+        "news_event={id=synthetic.18 hours=12}",
+        &mut super::super::tests::fresh(),
+        Content {
+            events: Some(&lookup),
+            key_names: Some(&names),
+            ..Default::default()
+        },
+    );
     assert_eq!(output.text, "Event News Alpha");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
@@ -284,15 +536,27 @@ fn state_event_native_controller_keeps_state_and_from_root() {
     let (fixture, _, _folder) = event_fixture();
     let names = installed_content::key_names::KeyNames::default();
     let event = std::sync::Arc::new(installed_content::events::Event {
-        titles: installed_content::parser::parse(b"title=SYN_EVENT").unwrap().items, ..Default::default()
+        titles: installed_content::parser::parse(b"title=SYN_EVENT").unwrap().items,
+        ..Default::default()
     });
     let lookup = |_: &[u8]| Ok(event.clone());
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::State(2))]);
-    let output = fixture.render_native("state_event={id=synthetic.49 trigger_for=controller}", &mut scopes,
-        Content { events: Some(&lookup), key_names: Some(&names), ..Default::default() });
+    let output = fixture.render_native(
+        "state_event={id=synthetic.49 trigger_for=controller}",
+        &mut scopes,
+        Content {
+            events: Some(&lookup),
+            key_names: Some(&names),
+            ..Default::default()
+        },
+    );
     assert_eq!(output.text, "Event News Two");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
-    assert!(scopes.scopes.iter().any(|scope| scope.this == EventObject::CountryState { country: 1, state: 2 }));
+    assert!(scopes.scopes.iter().any(|scope| scope.this
+        == EventObject::CountryState {
+            country: 1,
+            state: 2
+        }));
 }
 
 #[test]
@@ -301,24 +565,209 @@ fn show_mio_template_name_initial_trait_and_no_line_feed() {
     let (fixture, _, _folder) = event_fixture();
     let names = installed_content::key_names::KeyNames::default();
     let mut database = installed_content::industrial_organisations::Database::default();
-    database.read_file(b"SYN_MIO={name=SYN_MIO_NAME initial_trait={}}", &names).unwrap();
-    let output = fixture.render_native("show_mio_tooltip=SYN_MIO", &mut super::super::tests::fresh(),
-        Content { industrial_organisations: Some(&database), key_names: Some(&names), ..Default::default() });
+    database
+        .read_file(b"SYN_MIO={name=SYN_MIO_NAME initial_trait={}}", &names)
+        .unwrap();
+    let output = fixture.render_native(
+        "show_mio_tooltip=SYN_MIO",
+        &mut super::super::tests::fresh(),
+        Content {
+            industrial_organisations: Some(&database),
+            key_names: Some(&names),
+            ..Default::default()
+        },
+    );
     assert_eq!(output.text, "Organisation Forge Trait Industry");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
 
+const UNLOCK_MIO_REFERENCE: u64 = 6 << 32 | 79;
+
+fn unlock_mio_fixture() -> (Fixture, Folder) {
+    use replay::rows::{
+        IndustrialOrganisationRow, LexicalTokenRow, ScriptVariableEntry, ScriptVariablesRow,
+    };
+    let (mut fixture, _, folder) = event_fixture();
+    set::<tables::LexicalTokens>(
+        &mut fixture,
+        vec![LexicalTokenRow {
+            token: 11,
+            literal: b"SYN_MIO".to_vec(),
+        }],
+    );
+    // The pool country selects the instance; its distinct owner selects the
+    // name environment. Native +0x130 roster order wins over recording order.
+    set::<tables::IndustrialOrganisations>(
+        &mut fixture,
+        vec![
+            IndustrialOrganisationRow {
+                country: 100,
+                owner: 100,
+                token: 11,
+                ordinal: 1,
+                organisation: 7 << 32 | 79,
+                name: b"wrong name".to_vec(),
+                ..Default::default()
+            },
+            IndustrialOrganisationRow {
+                country: 100,
+                owner: 200,
+                token: 11,
+                ordinal: 0,
+                organisation: UNLOCK_MIO_REFERENCE,
+                name: b"SYN_MIO_NAME".to_vec(),
+                ..Default::default()
+            },
+        ],
+    );
+    set::<tables::ScriptVariables>(
+        &mut fixture,
+        vec![ScriptVariablesRow {
+            scope_kind: 1,
+            scope_id: 100,
+            entries: vec![ScriptVariableEntry {
+                name: b"syn_carrier".to_vec(),
+                value_raw: 0x6000_0006,
+            }],
+        }],
+    );
+    (fixture, folder)
+}
+
 #[test]
-fn unlock_mio_reached_operand_preserves_named_core_scope_gap() {
-    // common/national_focus/austria.txt:15050; 1402FF9D0/140537750.
-    let (fixture, _, _folder) = event_fixture();
+fn unlock_mio_reached_operand_uses_recorded_instance_and_owner_name() {
+    // common/national_focus/austria.txt:15050; reach 171, 1402FF9D0/140537750.
+    let (fixture, _folder) = unlock_mio_fixture();
     let names = installed_content::key_names::KeyNames::default();
-    let output = fixture.render_native("unlock_military_industrial_organization_tooltip=mio:SYN_MIO", &mut super::super::tests::fresh(),
-        Content { key_names: Some(&names), ..Default::default() });
+    let output = fixture.render_native(
+        "unlock_military_industrial_organization_tooltip=mio:SYN_MIO",
+        &mut super::super::tests::fresh(),
+        Content {
+            key_names: Some(&names),
+            ..Default::default()
+        },
+    );
+    assert_eq!(output.text, "Unlock Forge BBB AAA\n");
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+}
+
+#[test]
+fn show_mio_instance_reuses_the_shared_owner_name_path() {
+    // 1402FEFE0 selects the caller's first template match, then 140DA44C0.
+    let (fixture, _folder) = unlock_mio_fixture();
+    let names = installed_content::key_names::KeyNames::default();
+    let mut database = installed_content::industrial_organisations::Database::default();
+    database
+        .read_file(b"SYN_MIO={name=SYN_MIO_NAME initial_trait={}}", &names)
+        .unwrap();
+    let output = fixture.render_native(
+        "show_mio_tooltip=mio:SYN_MIO",
+        &mut super::super::tests::fresh(),
+        Content {
+            industrial_organisations: Some(&database),
+            key_names: Some(&names),
+            ..Default::default()
+        },
+    );
+    assert_eq!(output.text, "Organisation Forge BBB Trait Industry");
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+}
+
+#[test]
+fn unlock_mio_carried_saved_and_variable_operands_share_the_native_name_path() {
+    let (fixture, _folder) = unlock_mio_fixture();
+    let names = installed_content::key_names::KeyNames::default();
+    for operand in ["FROM", "event_target:chosen", "var:syn_carrier"] {
+        let mut scopes = super::super::tests::fresh();
+        scopes.scopes[0].from = Link::Scope(1);
+        scopes
+            .scopes
+            .push(EventScope::of(EventObject::IndustrialOrganisation(
+                UNLOCK_MIO_REFERENCE,
+            )));
+        scopes.saved_targets.insert(
+            1,
+            vec![(
+                b"chosen".to_vec(),
+                EventObject::IndustrialOrganisation(UNLOCK_MIO_REFERENCE),
+            )],
+        );
+        let output = fixture.render_native(
+            &format!("unlock_military_industrial_organization_tooltip={operand}"),
+            &mut scopes,
+            Content {
+                key_names: Some(&names),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            output.text, "Unlock Forge BBB AAA\n",
+            "{operand}: {:?}",
+            output.refusals
+        );
+        assert!(
+            output.refusals.is_empty(),
+            "{operand}: {:?}",
+            output.refusals
+        );
+    }
+}
+
+#[test]
+fn unlock_mio_absent_or_non_mio_targets_keep_literal_fallback() {
+    let (fixture, _folder) = unlock_mio_fixture();
+    let names = installed_content::key_names::KeyNames::default();
+    for operand in ["mio:ABSENT", "SYN_MIO_NAME", "THIS"] {
+        let output = fixture.render_native(
+            &format!("unlock_military_industrial_organization_tooltip={operand}"),
+            &mut super::super::tests::fresh(),
+            Content {
+                key_names: Some(&names),
+                ..Default::default()
+            },
+        );
+        assert_eq!(output.text, format!("Unlock {operand} AAA\n"));
+        assert!(
+            output.refusals.is_empty(),
+            "{operand}: {:?}",
+            output.refusals
+        );
+    }
+}
+
+#[test]
+fn unlock_mio_missing_recorded_roster_is_named_and_counted() {
+    let (mut fixture, _folder) = unlock_mio_fixture();
+    *fixture.frame.tables[tables::IndustrialOrganisations::ID.index()] = TableView::Unavailable {
+        reason: "synthetic MIO roster gap".into(),
+    };
+    let names = installed_content::key_names::KeyNames::default();
+    let output = fixture.render_native(
+        "unlock_military_industrial_organization_tooltip=mio:SYN_MIO",
+        &mut super::super::tests::fresh(),
+        Content {
+            key_names: Some(&names),
+            ..Default::default()
+        },
+    );
     assert_eq!(output.text, "");
     assert_eq!(output.refusals.values().sum::<usize>(), 1);
-    assert!(output.refusals.keys().next().unwrap().contains("NIndustrialOrganisation::CUnlockIndustrialOrgTooltipEffect"));
-    assert!(output.refusals.keys().next().unwrap().contains("140E48790"));
+    assert!(
+        output
+            .refusals
+            .keys()
+            .next()
+            .unwrap()
+            .contains("NIndustrialOrganisation::CUnlockIndustrialOrgTooltipEffect")
+    );
+    assert!(
+        output
+            .refusals
+            .keys()
+            .next()
+            .unwrap()
+            .contains("synthetic MIO roster gap")
+    );
 }
 
 #[test]
@@ -326,23 +775,45 @@ fn unlock_mio_policy_reached_block_refuses_only_unrecorded_roster() {
     // common/national_focus/india_goe.txt:25014; 141396FF0/140E487D0.
     let (fixture, _, _folder) = event_fixture();
     let names = installed_content::key_names::KeyNames::default();
-    let output = fixture.render_native("unlock_mio_policy_tooltip={policy=SYN_POLICY}", &mut super::super::tests::fresh(),
-        Content { key_names: Some(&names), ..Default::default() });
+    let output = fixture.render_native(
+        "unlock_mio_policy_tooltip={policy=SYN_POLICY}",
+        &mut super::super::tests::fresh(),
+        Content {
+            key_names: Some(&names),
+            ..Default::default()
+        },
+    );
     assert_eq!(output.text, "");
     assert_eq!(output.refusals.values().sum::<usize>(), 1);
-    assert!(output.refusals.keys().next().unwrap().contains("policy-definition roster +0x148/+0x154"));
+    assert!(
+        output
+            .refusals
+            .keys()
+            .next()
+            .unwrap()
+            .contains("policy-definition roster +0x148/+0x154")
+    );
 }
 
 #[test]
 fn event_option_tooltip_reached_scalar_describes_option_effects() {
     // common/decisions/ast.txt:1843; ReadValue@141385570, lookup@1413832F0.
-    let (fixture, _, _folder) = event_files_fixture(&[("events/synthetic.txt", concat!(
-        "add_namespace=synthetic country_event={id=synthetic.3 ",
-        "option={name=synthetic.3.a custom_effect_tooltip=TIP}}"
-    ))]);
+    let (fixture, _, _folder) = event_files_fixture(&[(
+        "events/synthetic.txt",
+        concat!(
+            "add_namespace=synthetic country_event={id=synthetic.3 ",
+            "option={name=synthetic.3.a custom_effect_tooltip=TIP}}"
+        ),
+    )]);
     let names = installed_content::key_names::KeyNames::default();
-    let output = fixture.render_native("event_option_tooltip=synthetic.3.a", &mut super::super::tests::fresh(),
-        Content { key_names: Some(&names), ..Default::default() });
+    let output = fixture.render_native(
+        "event_option_tooltip=synthetic.3.a",
+        &mut super::super::tests::fresh(),
+        Content {
+            key_names: Some(&names),
+            ..Default::default()
+        },
+    );
     assert_eq!(output.text, "detail");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
@@ -350,18 +821,35 @@ fn event_option_tooltip_reached_scalar_describes_option_effects() {
 #[test]
 fn event_option_tooltip_matches_raw_name_in_native_registration_order() {
     let (fixture, _, _folder) = event_files_fixture(&[
-        ("events/a.txt", concat!(
-            "add_namespace=synthetic state_event={id=synthetic.1 option={name=Chosen custom_effect_tooltip=SYN_EVENT}} ",
-            "country_event={id=synthetic.90 option={name=chosen custom_effect_tooltip=SYN_EVENT} ",
-            "option={name=Chosen custom_effect_tooltip=TIP} option={name=Chosen custom_effect_tooltip=SYN_EVENT}} ",
-            "country_event={id=synthetic.2 option={name=Chosen custom_effect_tooltip=SYN_EVENT}}"
-        )),
-        ("events/z.txt", "news_event={id=synthetic.0 option={name=Chosen custom_effect_tooltip=SYN_EVENT}}"),
+        (
+            "events/a.txt",
+            concat!(
+                "add_namespace=synthetic state_event={id=synthetic.1 option={name=Chosen custom_effect_tooltip=SYN_EVENT}} ",
+                "country_event={id=synthetic.90 option={name=chosen custom_effect_tooltip=SYN_EVENT} ",
+                "option={name=Chosen custom_effect_tooltip=TIP} option={name=Chosen custom_effect_tooltip=SYN_EVENT}} ",
+                "country_event={id=synthetic.2 option={name=Chosen custom_effect_tooltip=SYN_EVENT}}"
+            ),
+        ),
+        (
+            "events/z.txt",
+            "news_event={id=synthetic.0 option={name=Chosen custom_effect_tooltip=SYN_EVENT}}",
+        ),
     ]);
     let names = installed_content::key_names::KeyNames::default();
-    for (name, expected) in [("Chosen", "detail"), ("chosen", "News Alpha"), ("CHOSEN", ""), ("missing", "")] {
-        let output = fixture.render_native(&format!("event_option_tooltip={name}"), &mut super::super::tests::fresh(),
-            Content { key_names: Some(&names), ..Default::default() });
+    for (name, expected) in [
+        ("Chosen", "detail"),
+        ("chosen", "News Alpha"),
+        ("CHOSEN", ""),
+        ("missing", ""),
+    ] {
+        let output = fixture.render_native(
+            &format!("event_option_tooltip={name}"),
+            &mut super::super::tests::fresh(),
+            Content {
+                key_names: Some(&names),
+                ..Default::default()
+            },
+        );
         assert_eq!(output.text, expected, "{name}");
         assert!(output.refusals.is_empty(), "{:?}", output.refusals);
     }
@@ -369,19 +857,28 @@ fn event_option_tooltip_matches_raw_name_in_native_registration_order() {
 
 #[test]
 fn event_option_tooltip_skips_recursive_effects_in_inactive_native_children() {
-    let (fixture, _, _folder) = event_files_fixture(&[("events/synthetic.txt", concat!(
-        "add_namespace=synthetic country_event={id=synthetic.1 ",
-        "option={name=chosen if={limit={always=no} event_option_tooltip=other}} ",
-        "option={name=chosen if={limit={always=yes} custom_effect_tooltip=SYN_EVENT} else={event_option_tooltip=other}} ",
-        "option={name=chosen random_list={0={event_option_tooltip=other}}} ",
-        "option={name=chosen ROOT={event_option_tooltip=other}} ",
-        "option={name=chosen custom_effect_tooltip=TIP} ",
-        "option={name=recursive hidden_effect={event_option_tooltip=other}}}"
-    ))]);
+    let (fixture, _, _folder) = event_files_fixture(&[(
+        "events/synthetic.txt",
+        concat!(
+            "add_namespace=synthetic country_event={id=synthetic.1 ",
+            "option={name=chosen if={limit={always=no} event_option_tooltip=other}} ",
+            "option={name=chosen if={limit={always=yes} custom_effect_tooltip=SYN_EVENT} else={event_option_tooltip=other}} ",
+            "option={name=chosen random_list={0={event_option_tooltip=other}}} ",
+            "option={name=chosen ROOT={event_option_tooltip=other}} ",
+            "option={name=chosen custom_effect_tooltip=TIP} ",
+            "option={name=recursive hidden_effect={event_option_tooltip=other}}}"
+        ),
+    )]);
     let names = installed_content::key_names::KeyNames::default();
     for (name, expected) in [("chosen", "detail"), ("recursive", "")] {
-        let output = fixture.render_native(&format!("event_option_tooltip={name}"), &mut super::super::tests::fresh(),
-            Content { key_names: Some(&names), ..Default::default() });
+        let output = fixture.render_native(
+            &format!("event_option_tooltip={name}"),
+            &mut super::super::tests::fresh(),
+            Content {
+                key_names: Some(&names),
+                ..Default::default()
+            },
+        );
         assert_eq!(output.text, expected);
         assert!(output.refusals.is_empty(), "{:?}", output.refusals);
     }
@@ -390,46 +887,98 @@ fn event_option_tooltip_skips_recursive_effects_in_inactive_native_children() {
 #[test]
 fn event_option_tooltip_copies_scope_and_swaps_root_from_without_a_new_session() {
     let (fixture, _, _folder) = event_files_fixture(&[
-        ("events/synthetic.txt", concat!(
-            "add_namespace=synthetic country_event={id=synthetic.1 option={name=chosen ",
-            "custom_effect_tooltip=SCOPE save_event_target_as=option_target}}"
-        )),
-        ("localisation/options_l_english.yml", "\u{feff}l_english:\n SCOPE:0 \"[THIS.GetTag]/[ROOT.GetTag]/[FROM.GetTag]/[PREV.GetTag]\"\n"),
+        (
+            "events/synthetic.txt",
+            concat!(
+                "add_namespace=synthetic country_event={id=synthetic.1 option={name=chosen ",
+                "custom_effect_tooltip=SCOPE save_event_target_as=option_target}}"
+            ),
+        ),
+        (
+            "localisation/options_l_english.yml",
+            "\u{feff}l_english:\n SCOPE:0 \"[THIS.GetTag]/[ROOT.GetTag]/[FROM.GetTag]/[PREV.GetTag]\"\n",
+        ),
     ]);
     let names = installed_content::key_names::KeyNames::default();
     let mut scopes = EventScopes::new(vec![
-        EventScope { root: Link::Scope(1), from: Link::Itself, prev: Link::Itself,
-            random_seed: 37, random_counter: 91, ..EventScope::of(EventObject::Country(1)) },
+        EventScope {
+            root: Link::Scope(1),
+            from: Link::Itself,
+            prev: Link::Itself,
+            random_seed: 37,
+            random_counter: 91,
+            ..EventScope::of(EventObject::Country(1))
+        },
         EventScope::of(EventObject::Country(2)),
     ]);
-    scopes.saved_targets.insert(0, vec![(b"prior".to_vec(), EventObject::Country(2))]);
-    scopes.tooltip_targets.insert(0, vec![(b"prior_tip".to_vec(), EventObject::Country(2))]);
+    scopes
+        .saved_targets
+        .insert(0, vec![(b"prior".to_vec(), EventObject::Country(2))]);
+    scopes
+        .tooltip_targets
+        .insert(0, vec![(b"prior_tip".to_vec(), EventObject::Country(2))]);
     let caller = scopes.scopes[0];
     let items = installed_content::effect_keys::read_body(b"event_option_tooltip=chosen", &names).unwrap();
-    fixture.with_renderer(&mut scopes, Content { key_names: Some(&names), ..Default::default() }, |renderer| {
-        let selected = renderer.evaluator().unwrap().event_scopes(0).unwrap();
-        assert_eq!(renderer.group(&items, selected, 0), "AAA/AAA/BBB/AAA");
-        assert!(renderer.out.refusals.is_empty(), "{:?}", renderer.out.refusals);
-    });
+    fixture.with_renderer(
+        &mut scopes,
+        Content {
+            key_names: Some(&names),
+            ..Default::default()
+        },
+        |renderer| {
+            let selected = renderer.evaluator().unwrap().event_scopes(0).unwrap();
+            assert_eq!(renderer.group(&items, selected, 0), "AAA/AAA/BBB/AAA");
+            assert!(
+                renderer.out.refusals.is_empty(),
+                "{:?}",
+                renderer.out.refusals
+            );
+        },
+    );
     assert_eq!(scopes.scopes[0], caller);
     let copied = &scopes.scopes[2];
-    assert_eq!((copied.root, copied.from, copied.prev), (Link::Scope(0), Link::Scope(1), Link::Scope(0)));
+    assert_eq!(
+        (copied.root, copied.from, copied.prev),
+        (Link::Scope(0), Link::Scope(1), Link::Scope(0))
+    );
     assert_eq!((copied.random_seed, copied.random_counter), (37, 91));
-    assert_eq!(scopes.saved_targets[&2], vec![(b"prior".to_vec(), EventObject::Country(2))]);
-    assert_eq!(scopes.tooltip_targets[&2], vec![(b"prior_tip".to_vec(), EventObject::Country(2))]);
+    assert_eq!(
+        scopes.saved_targets[&2],
+        vec![(b"prior".to_vec(), EventObject::Country(2))]
+    );
+    assert_eq!(
+        scopes.tooltip_targets[&2],
+        vec![(b"prior_tip".to_vec(), EventObject::Country(2))]
+    );
     // Nested BuildDescription does not clean the target just saved to its ROOT.
-    assert!(scopes.tooltip_targets[&1].iter().any(|(name, object)| name == b"option_target" && *object == EventObject::Country(1)));
+    assert!(
+        scopes.tooltip_targets[&1]
+            .iter()
+            .any(|(name, object)| name == b"option_target" && *object == EventObject::Country(1))
+    );
 }
 
 #[test]
 fn event_option_tooltip_trims_only_native_ascii_whitespace() {
     let (fixture, _, _folder) = event_files_fixture(&[
-        ("events/synthetic.txt", "add_namespace=synthetic country_event={id=synthetic.1 option={name=chosen custom_effect_tooltip=PAD}}"),
-        ("localisation/options_l_english.yml", "\u{feff}l_english:\n PAD:0 \" \\t\\n\u{a0}detail\u{a0}\\n\\t \"\n"),
+        (
+            "events/synthetic.txt",
+            "add_namespace=synthetic country_event={id=synthetic.1 option={name=chosen custom_effect_tooltip=PAD}}",
+        ),
+        (
+            "localisation/options_l_english.yml",
+            "\u{feff}l_english:\n PAD:0 \" \\t\\n\u{a0}detail\u{a0}\\n\\t \"\n",
+        ),
     ]);
     let names = installed_content::key_names::KeyNames::default();
-    let output = fixture.render_native("event_option_tooltip=chosen", &mut super::super::tests::fresh(),
-        Content { key_names: Some(&names), ..Default::default() });
+    let output = fixture.render_native(
+        "event_option_tooltip=chosen",
+        &mut super::super::tests::fresh(),
+        Content {
+            key_names: Some(&names),
+            ..Default::default()
+        },
+    );
     assert_eq!(output.text, "\u{a0}detail\u{a0}");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
@@ -437,13 +986,22 @@ fn event_option_tooltip_trims_only_native_ascii_whitespace() {
 #[test]
 fn event_option_tooltip_does_not_visit_scripted_templates_or_operand_text() {
     let (fixture, _, _folder) = event_files_fixture(&[
-        ("events/synthetic.txt", concat!(
-            "add_namespace=synthetic country_event={id=synthetic.1 ",
-            "option={name=chosen synthetic_call=yes} ",
-            "option={name=operand custom_effect_tooltip=event_option_tooltip}}"
-        )),
-        ("common/scripted_effects/synthetic.txt", "synthetic_call={event_option_tooltip=missing custom_effect_tooltip=TIP}"),
-        ("localisation/options_l_english.yml", "\u{feff}l_english:\n event_option_tooltip:0 \"operand text\"\n"),
+        (
+            "events/synthetic.txt",
+            concat!(
+                "add_namespace=synthetic country_event={id=synthetic.1 ",
+                "option={name=chosen synthetic_call=yes} ",
+                "option={name=operand custom_effect_tooltip=event_option_tooltip}}"
+            ),
+        ),
+        (
+            "common/scripted_effects/synthetic.txt",
+            "synthetic_call={event_option_tooltip=missing custom_effect_tooltip=TIP}",
+        ),
+        (
+            "localisation/options_l_english.yml",
+            "\u{feff}l_english:\n event_option_tooltip:0 \"operand text\"\n",
+        ),
     ]);
     let scripted = fixture.catalogue.scripted_content().unwrap();
     let names = scripted.layers.layers.key_names().unwrap();
@@ -451,8 +1009,15 @@ fn event_option_tooltip_does_not_visit_scripted_templates_or_operand_text() {
     // CScriptedEffect's traversal slot@14299F888 is 140535120; it does
     // not follow +0x60, unlike its description slot@141382080.
     for (name, expected) in [("chosen", "detail"), ("operand", "operand text")] {
-        let output = fixture.render_native(&format!("event_option_tooltip={name}"), &mut super::super::tests::fresh(),
-            Content { key_names: Some(&names), scripted_effects: Some(&effects), ..Default::default() });
+        let output = fixture.render_native(
+            &format!("event_option_tooltip={name}"),
+            &mut super::super::tests::fresh(),
+            Content {
+                key_names: Some(&names),
+                scripted_effects: Some(&effects),
+                ..Default::default()
+            },
+        );
         assert_eq!(output.text, expected);
         assert!(output.refusals.is_empty(), "{:?}", output.refusals);
     }
@@ -460,11 +1025,19 @@ fn event_option_tooltip_does_not_visit_scripted_templates_or_operand_text() {
 
 #[test]
 fn event_option_tooltip_empty_name_matches_the_native_default_option_name() {
-    let (fixture, _, _folder) = event_files_fixture(&[("events/synthetic.txt",
-        "add_namespace=synthetic country_event={id=synthetic.1 option={custom_effect_tooltip=TIP}}")]);
+    let (fixture, _, _folder) = event_files_fixture(&[(
+        "events/synthetic.txt",
+        "add_namespace=synthetic country_event={id=synthetic.1 option={custom_effect_tooltip=TIP}}",
+    )]);
     let names = installed_content::key_names::KeyNames::default();
-    let output = fixture.render_native("event_option_tooltip=\"\"", &mut super::super::tests::fresh(),
-        Content { key_names: Some(&names), ..Default::default() });
+    let output = fixture.render_native(
+        "event_option_tooltip=\"\"",
+        &mut super::super::tests::fresh(),
+        Content {
+            key_names: Some(&names),
+            ..Default::default()
+        },
+    );
     assert_eq!(output.text, "detail");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
@@ -474,8 +1047,14 @@ fn custom_effect_tooltip_reached_scalar_preserves_no_line_feed() {
     // common/bop/eth.txt:69; already-landed 1413832B0 path stays unchanged.
     let (fixture, _, _folder) = event_fixture();
     let names = installed_content::key_names::KeyNames::default();
-    let output = fixture.render_native("custom_effect_tooltip=TIP", &mut super::super::tests::fresh(),
-        Content { key_names: Some(&names), ..Default::default() });
+    let output = fixture.render_native(
+        "custom_effect_tooltip=TIP",
+        &mut super::super::tests::fresh(),
+        Content {
+            key_names: Some(&names),
+            ..Default::default()
+        },
+    );
     assert_eq!(output.text, "detail");
     assert!(output.refusals.is_empty());
 }

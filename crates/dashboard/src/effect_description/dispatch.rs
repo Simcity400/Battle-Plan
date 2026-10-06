@@ -285,11 +285,11 @@ impl Renderer<'_, '_, '_> {
             0x142728EE8 /* CDemoteLeaderEffect */ => self.char_change_rank(scopes, false),
             0x142728638 /* CRemoveUnitLeaderEffect */ => self.char_remove_unit_leader(item, scopes),
             0x142755D08 /* CRemoveMilitaryRoleEffect */ => self.char_remove_military_role(item, scopes),
-            0x142797B10 /* CAddDivisionalCommanderXpEffect */ => self.char_divisional_xp(),
-            0x1427978B0 /* CAddUnitMedalEffect */ => self.char_unit_medal(),
+            0x142797B10 /* CAddDivisionalCommanderXpEffect */ => self.char_divisional_xp(item, scopes),
+            0x1427978B0 /* CAddUnitMedalEffect */ => self.char_unit_medal(scopes),
             0x1427979F0 /* CAddRandomValidUnitLeaderTraitEffect */ => self.char_random_trait_from_unit(item, scopes),
-            0x1427314E8 /* NIndustrialOrganisation::CTraitTooltipEffect */ => self.char_mio_trait(),
-            0x14272FBF0 /* NIndustrialOrganisation::CUnlockTraitEffect */ => self.char_mio_trait(),
+            0x1427314E8 /* NIndustrialOrganisation::CTraitTooltipEffect */ => self.char_mio_trait(item, scopes, false),
+            0x14272FBF0 /* NIndustrialOrganisation::CUnlockTraitEffect */ => self.char_mio_trait(item, scopes, true),
             // politics — F
             0x1429A04C8 /* CLogScriptEffect */ => empty::describe(), // 140176EE0
             0x142759550 /* CAddPopularityEffect */ => self.politics_popularity(item, scopes), // 140376270

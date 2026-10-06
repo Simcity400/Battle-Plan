@@ -16,7 +16,9 @@ use std::{
     io,
 };
 
+mod output;
 mod token_set;
+pub use output::Output;
 pub use token_set::order as specialization_order;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -25,6 +27,9 @@ pub struct Project {
     pub name: Option<String>,
     pub icon: Option<String>,
     pub refusal: Option<String>,
+    prototype_time: Vec<crate::parser::Item>,
+    complexity: Vec<crate::parser::Item>,
+    pub output: Output,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -58,6 +63,8 @@ enum Node {
     Option,
     Output,
     DlcList,
+    EquipmentBonus,
+    EquipmentStats,
 }
 
 fn read(
@@ -150,13 +157,13 @@ fn read(
             },
             // SOutput::ReadToken 140A83400 -> 1409BFE50/14048FD40.
             Node::Output => match field.keyword().as_deref() {
-                Some(b"country_effects" | b"scientist_effects" | b"facility_state_effects") => {
-                    Shape::ByKey
-                }
+                Some(b"country_effects") => Shape::EffectIn(4),
+                Some(b"scientist_effects") => Shape::EffectIn(8),
+                Some(b"facility_state_effects") => Shape::EffectIn(2),
                 Some(b"enable_equipments" | b"enable_equipment_modules" | b"enable_subunits") => {
                     Shape::Statements(Node::DlcList)
                 }
-                Some(b"equipment_bonus") => Shape::Statements(Node::Body),
+                Some(b"equipment_bonus") => Shape::Statements(Node::EquipmentBonus),
                 Some(b"sub_unit_bonus") => Shape::Object(Node::Body),
                 _ => Shape::Skip,
             },
@@ -165,6 +172,19 @@ fn read(
                     Shape::Trigger
                 } else {
                     Shape::One
+                }
+            }
+            Node::EquipmentBonus => Shape::Object(Node::EquipmentStats),
+            Node::EquipmentStats => {
+                if field.keyword_is("instant")
+                    || field
+                        .keyword()
+                        .as_deref()
+                        .is_some_and(|key| crate::equipment::stat_index(key).is_some())
+                {
+                    Shape::One // ReadAndCombineStatToken 140625D00.
+                } else {
+                    Shape::Skip
                 }
             }
             // These fields do not supply project presentation. The shared
@@ -188,7 +208,9 @@ fn string(value: &Value) -> io::Result<String> {
 
 impl Catalog {
     pub fn specializations_in_order(&self) -> Result<&[String], String> {
-        if let Some(why) = &self.unsettled { return Err(why.clone()); }
+        if let Some(why) = &self.unsettled {
+            return Err(why.clone());
+        }
         Ok(&self.specialization_order)
     }
 
@@ -253,6 +275,13 @@ impl Catalog {
                     // 140130160 reuses the earlier template: scalars overwrite,
                     // omitted fields retain their previous value.
                     for field in item.value.items().unwrap_or_default() {
+                        if field.keyword_is("prototype_time") {
+                            project.prototype_time.push(field.clone());
+                        } else if field.keyword_is("complexity") {
+                            project.complexity.push(field.clone());
+                        } else if field.keyword_is("project_output") {
+                            project.output.read(field.value.items().unwrap_or_default());
+                        }
                         let destination = if field.keyword_is("specialization") {
                             Some(&mut project.specialization)
                         } else if field.keyword_is("icon") {

@@ -12,7 +12,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     // with that holder by ProcessCharacterStatus 1410DAE50 -> 1410DAC10.
     // An unrostered character's holder is not captured, so absence of a
     // Scientists row alone cannot prove the native null-pointer gate.
-    fn char_scientist(&self, scopes: Scopes) -> Result<Option<&'f CharacterRow>, String> {
+    pub(in crate::effect_description) fn char_scientist(
+        &self,
+        scopes: Scopes,
+    ) -> Result<Option<&'f CharacterRow>, String> {
         let Some(character) = self.effect_character(scopes.this)? else {
             return Ok(None);
         };
