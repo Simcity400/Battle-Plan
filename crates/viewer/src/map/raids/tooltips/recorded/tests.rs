@@ -42,10 +42,9 @@ fn facility_threshold_is_strict_and_first_program_controls_project_text() {
             required,
             ..Default::default()
         });
-        assets.tooltip.projects = Ok(installed_content::special_projects::Catalog {
-            projects: [("oilfield".into(), Default::default())].into(),
-            ..Default::default()
-        });
+        let mut projects = installed_content::special_projects::Catalog::default();
+        projects.projects = [("oilfield".into(), Default::default())].into();
+        assets.tooltip.projects = Ok(projects);
         let mut frame = frame();
         put::<tables::RaidFacilities>(
             &mut frame,
@@ -139,17 +138,16 @@ fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_
                 .specializations
                 .push("test".into());
             assets.tooltip.intel = Ok(intel::Defines::default());
-            assets.tooltip.projects = Ok(installed_content::special_projects::Catalog {
-                projects: [(
-                    "oilfield".into(),
-                    installed_content::special_projects::Project {
-                        name: narrative.map(Into::into),
-                        ..Default::default()
-                    },
-                )]
-                .into(),
-                ..Default::default()
-            });
+            let mut projects = installed_content::special_projects::Catalog::default();
+            projects.projects = [(
+                "oilfield".into(),
+                installed_content::special_projects::Project {
+                    name: narrative.map(Into::into),
+                    ..Default::default()
+                },
+            )]
+            .into();
+            assets.tooltip.projects = Ok(projects);
             let mut frame = frame();
             // The project owner's country supplies the naming scope, even when
             // its program occurs in the target controller's roster.
@@ -379,18 +377,17 @@ fn trigger_inversion_indentation_custom_override_and_named_unsupported_leaf() {
 fn raid_tooltip_regression_special_project_requirement_uses_native_name_and_inversion() {
     use super::super::super::tests::put;
     let mut assets = assets();
-    assets.tooltip.projects = Ok(installed_content::special_projects::Catalog {
-        projects: [(
-            "oilfield".into(),
-            installed_content::special_projects::Project {
-                name: Some("project_name".into()),
-                ..Default::default()
-            },
-        )]
-        .into_iter()
-        .collect(),
-        ..Default::default()
-    });
+    let mut projects = installed_content::special_projects::Catalog::default();
+    projects.projects = [(
+        "oilfield".into(),
+        installed_content::special_projects::Project {
+            name: Some("project_name".into()),
+            ..Default::default()
+        },
+    )]
+    .into_iter()
+    .collect();
+    assets.tooltip.projects = Ok(projects);
     let mut frame = frame();
     put::<tables::CountryAppearance>(
         &mut frame,

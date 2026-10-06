@@ -130,7 +130,7 @@ fn diplomacy_native_output_branches() {
                     id,
                     reference_type: leader_type,
                     character_id,
-                    exile_country,
+                    exile_country: exile_country.into(),
                     ..Default::default()
                 })
                 .collect(),

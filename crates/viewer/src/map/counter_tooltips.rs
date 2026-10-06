@@ -183,9 +183,15 @@ impl<'a> Context<'a> {
             .map_err(|_| format!("template {handle} country {} is unresolved", icon.country))?;
         let slot = self.slot(raw)?;
         // GetDisplayName@140B91170 -> 140BBA780: literal +20, else key with the raw +1D4 tag.
-        let name = if row.name.is_empty() && !row.name_key.is_empty() {
+        // A name_key older recordings lack refuses only the key fallback.
+        let name_key: &[u8] = if row.name.is_empty() {
+            row.name_key.require("DivisionTemplates.name_key")?
+        } else {
+            &[]
+        };
+        let name = if !name_key.is_empty() {
             let key =
-                std::str::from_utf8(&row.name_key).map_err(|_| "template name key is not UTF-8")?;
+                std::str::from_utf8(name_key).map_err(|_| "template name key is not UTF-8")?;
             let countries = self
                 .frame
                 .complete::<tables::Countries>()
@@ -1069,7 +1075,7 @@ mod tests {
             .unwrap()
             .to_vec();
         templates[0].name.clear();
-        templates[0].name_key = b"FORM".to_vec();
+        templates[0].name_key = b"FORM".to_vec().into();
         templates[0].owner = 10;
         put(&mut frame, TableRows::DivisionTemplates(templates));
         let mut icons = frame

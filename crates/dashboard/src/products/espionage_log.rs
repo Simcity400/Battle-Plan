@@ -1079,8 +1079,8 @@ mod tests {
                 .iter()
                 .map(|op| (
                     op.first_read,
-                    op.owner_tag.as_deref(),
-                    op.target_tag.as_deref()
+                    op.runs[0].owner_tag.as_deref(),
+                    op.runs[0].target_tag.as_deref()
                 ))
                 .collect::<Vec<_>>(),
             [

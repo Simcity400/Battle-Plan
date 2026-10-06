@@ -193,7 +193,11 @@ pub fn read_equipment(
     ))
 }
 
-fn read_templates(input: &[u8], registry: &units::Registry, names: &KeyNames) -> (native::Read, Vec<String>, Vec<String>) {
+fn read_templates(
+    input: &[u8],
+    registry: &units::Registry,
+    names: &KeyNames,
+) -> (native::Read, Vec<modifiers::Undecided>, Vec<String>) {
     use Node::*;
     let mut undecided = Vec::new();
     let mut refused = Vec::new();

@@ -353,14 +353,18 @@ fn random_lists_use_raw_fixed5_seed_scope_identity_and_native_fast_paths() {
     }]);
     // CRandomLocList 140A9CD8A returns a sole member before seed/weights;
     // 140A9CF27 uses an explicit seed, 140A9CF9A/BD read the default lanes.
-    assert_eq!(text.expand_in("[Default]", &missing).as_deref(),
-        Err("[Default]: scripted localisation Default: decision random-count is unrecorded"));
+    assert_eq!(
+        text.expand_in("[Default]", &missing),
+        Err("[Default]: scripted localisation Default: decision random-count is unrecorded".into())
+    );
     assert_eq!(text.expand_in("[Seeded]|[Single]|[Zero]|[Empty]|[Ordinary]", &missing).as_deref(),
         Ok("C|A|||A"));
     // An event-scoped invocation preserves its lanes (1410CDDF0 cases 0-2),
     // while an object promotion constructs a known seed from 424242.
-    assert_eq!(text.expand_in("[Promoted]", &missing).as_deref(),
-        Err("[Promoted]: scripted localisation Promoted: decision random-count is unrecorded"));
+    assert_eq!(
+        text.expand_in("[Promoted]", &missing),
+        Err("[Promoted]: scripted localisation Promoted: decision random-count is unrecorded".into())
+    );
     assert_eq!(text.expand_in("[SOV.Promoted]", &missing).as_deref(), Ok("B"));
 }
 

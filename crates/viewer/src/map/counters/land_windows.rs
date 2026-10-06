@@ -311,7 +311,7 @@ mod tests {
             let child = root
                 .children
                 .iter_mut()
-                .find(|child| child.name == b"mapicon_land_combat_frame")
+                .find(|child| child.name_bytes() == b"mapicon_land_combat_frame")
                 .unwrap();
             let native::Fields::Icon(icon) = &mut child.fields else {
                 panic!("frame icon");

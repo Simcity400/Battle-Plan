@@ -507,7 +507,7 @@ fn routes_mark_which_stack_kinds_are_native() {
         *frame.tables[index] = TableView::Complete(rows);
     }
     let timing = crate::map::division_eta::MovementContent {
-        map: MovementMap::from_parts(&[]),
+        map: MovementMap::from_parts::<ProvinceTerrain>(&[]),
         defines: Default::default(),
     };
     let etas = crate::map::division_eta::Etas::read(&frame, Some(&timing)).unwrap();

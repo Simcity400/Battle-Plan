@@ -90,7 +90,7 @@ impl Evaluator<'_, '_> {
             engine::craid_instance::REFERENCE_TYPE_VALUE => Ok(world.frame().complete::<tables::Raids>()
                 .map_err(|why| why.to_string())?.iter()
                 .find(|row| row.id == id && row.reference_type == kind)
-                .map(|row| Scope::Raid(u64::from(id) << 32 | u64::from(kind)))),
+                .map(|_| Scope::Raid(u64::from(id) << 32 | u64::from(kind)))),
             _ => unreachable!("native project/MIO/raid discriminator"),
         }
     }
