@@ -29,7 +29,7 @@ test('Scoreboard follows playback and uses the registry defaults with top ten', 
   assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
   const columnsOption = OPTIONS.find(option => option.key === 'columns');
   assert.ok(columnsOption?.kind === 'content-set');
-  assert.equal(columnsOption.max, Number.MAX_SAFE_INTEGER);
+  assert.equal('max' in columnsOption, false);
   assert.deepEqual(DEFAULT_SORT, { column: '', direction: 'descending' });
   assert.deepEqual(selectedColumns(registry, '', DEFAULT_COLUMNS).map(column => column.key), ['factories', 'armySize']);
   assert.deepEqual(selectedColumns(registry, 'stability factories', DEFAULT_COLUMNS).map(column => column.key), ['stability', 'factories']);

@@ -39,8 +39,8 @@ Choices where the specification is silent: default matching countries as owner,
 with target and either available; ongoing rows newest start first, with highest
 preparation available; type chips rather than outcome chips; the shared log's
 comfortable density, chips and Live entry motion on, month headers off. Identity
-and unknown-country rows remain visible under All countries. Content choices
-too long for saved settings say why they are unavailable.
+and unknown-country rows remain visible under All countries. Type settings
+retain every chosen content token, with no shared count or length cap.
 The widget starts in Campaign mode, with Live and a date range available; a
 range narrows the displayed read and ending dates. Its minimum is 4×6 grid
 units and default is 9×14. Category tags say Espionage, so the operation type

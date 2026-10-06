@@ -7,11 +7,29 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Plugin } from 'vite';
 import { listReplayFolder, savedReplayFolder, saveReplayFolder } from './replayLibrary.ts';
-import { BROWSER_BRIDGE_BUSY } from './src/generated/dashboard.ts';
+import { BROWSER_BRIDGE_BUSY, MAX_MESSAGE_BYTES } from './src/generated/dashboard.ts';
 import type { PartialRecording } from './src/generated/dashboard.ts';
 import type { ReplayLibrary } from './src/dashboard/client.ts';
 
 const runFile = promisify(execFile);
+
+export async function recordingRequestBody(request: AsyncIterable<Buffer | string>): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += buffer.length;
+    if (bytes > MAX_MESSAGE_BYTES) throw new Error('Recording request too large');
+    chunks.push(buffer);
+  }
+  return JSON.parse(Buffer.concat(chunks, bytes).toString('utf8'));
+}
+
+export function bridgeCommand(command: Record<string, unknown>): string {
+  const line = `${JSON.stringify(command)}\n`;
+  if (Buffer.byteLength(line) > MAX_MESSAGE_BYTES) throw new Error('Bridge command exceeds its byte budget');
+  return line;
+}
 
 export function browserBridge(root: string, recordingsRoot: string, gameDir: string, userDir: string): Plugin {
   const libraryRoot = savedReplayFolder(recordingsRoot).then(folder => { recordingsRoot = folder; });
@@ -63,19 +81,22 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     // Match the desktop service and native loader admission budget. A saved
     // dashboard can have more concurrent consumers than the old browser limit.
     if (pending.size >= 64) { reject(new Error(BROWSER_BRIDGE_BUSY)); return; }
-    const process = start();
     const id = `browser-${++next}`;
+    let line: string;
+    try { line = bridgeCommand({ ...command, id }); }
+    catch (error) { reject(error); return; }
+    const process = start();
     const cancel = () => {
       const entry = pending.get(id);
       if (!entry) return;
       clearTimeout(entry.timer); pending.delete(id); signal.removeEventListener('abort', cancel);
-      process.stdin.write(`${JSON.stringify({ type: 'cancel', id })}\n`);
+      process.stdin.write(bridgeCommand({ type: 'cancel', id }));
       reject(new Error('Recording request cancelled or timed out'));
     };
     const finish = (done: () => void) => { signal.removeEventListener('abort', cancel); done(); };
     pending.set(id, { resolve: value => finish(() => resolve(value)), reject: error => finish(() => reject(error)), parts: [], bytes: 0, sequence: 0, timer: setTimeout(cancel, 180_000) });
     signal.addEventListener('abort', cancel, { once: true });
-    process.stdin.write(`${JSON.stringify({ ...command, id })}\n`);
+    process.stdin.write(line);
   });
   const withinRoot = async (relative: string) => {
     if (importedPaths.has(relative)) return { target: await realpath(relative) };
@@ -138,9 +159,8 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
             return;
           }
           if (request.method !== 'POST' || !request.headers['content-type']?.startsWith('application/json')) throw new Error('Expected a JSON recording request');
-          let body = '';
-          for await (const chunk of request) { body += chunk; if (Buffer.byteLength(body) > 64 * 1024) throw new Error('Recording request too large'); }
-          const input = JSON.parse(body);
+          if (pending.size >= 64) throw new Error(BROWSER_BRIDGE_BUSY);
+          const input = await recordingRequestBody(request) as Record<string, any>;
           if (input.type === 'library') {
             response.end(JSON.stringify(await recordingSummaries(await listReplayFolder(recordingsRoot, controller.signal), controller.signal))); return;
           }
@@ -193,7 +213,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
           } else if (input.type === 'product') {
             command = { type: 'product', request: input.request };
           } else if (input.type === 'release') {
-            child?.stdin.write(`${JSON.stringify({ type: 'release', sourceId: input.sourceId })}\n`);
+            child?.stdin.write(bridgeCommand({ type: 'release', sourceId: input.sourceId }));
             response.end('{}'); return;
           } else throw new Error('Unknown recording operation');
           response.end(JSON.stringify(await send(command, controller.signal)));

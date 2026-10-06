@@ -3,7 +3,7 @@ import type { OptionField } from '../../dashboard/options';
 import { LOG_OPTIONS } from '../../charts/log/logOptions.ts';
 
 export const OPTIONS: readonly OptionField[] = [
-  { key: 'types', section: 'options', label: 'Building types', hint: 'Only these types; none chosen shows every type', kind: 'content-set', automatic: 'Every type', max: Number.MAX_SAFE_INTEGER, default: '' },
+  { key: 'types', section: 'options', label: 'Building types', hint: 'Only these types; none chosen shows every type', kind: 'content-set', automatic: 'Every type', default: '' },
   { key: 'projects', section: 'options', label: 'Projects', kind: 'choice', default: 'all',
     choices: [{ value: 'all', label: 'New and repairs' }, { value: 'new', label: 'New buildings' }, { value: 'repair', label: 'Repairs' }] },
   { key: 'order', section: 'options', label: 'Order', hint: 'Newest first by its latest change (started, a level built, finished) or by when it started', kind: 'choice', default: 'change',

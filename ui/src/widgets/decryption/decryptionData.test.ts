@@ -421,7 +421,7 @@ test('progress ordering is total when native wrapping and non-positive threshold
     ['Z positive', 'A zero', 'B negative', 'Z exact high', 'A exact low']);
 });
 
-test('5000-country sparse reply validates and windows; All persists and explicit country picks are bounded', () => {
+test('5000-country sparse reply validates and windows; All persists and every explicit country pick persists', () => {
   const data = reply();
   data.pairs = Array.from({ length: 5_000 }, (_, index) => ({ ...data.pairs[0], targetId: String(index + 1),
     tagRuns: [{ ...data.pairs[0].tagRuns[0], targetTag: `Mod country ${index} | spaces` }] }));
@@ -436,13 +436,11 @@ test('5000-country sparse reply validates and windows; All persists and explicit
   const template = defaultTemplate();
   template.widgets[0] = { ...widget, id: template.widgets[0].id };
   assert.deepEqual(parseTemplate(JSON.parse(JSON.stringify(template)))!.widgets[0].countries, { kind: 'all' });
-  template.widgets[0].countries = { kind: 'tags', tags: rows.slice(0, 256).map(row => row.tags.targetTag!) };
+  template.widgets[0].countries = { kind: 'tags', tags: rows.map(row => row.tags.targetTag!) };
   const restored = parseTemplate(JSON.parse(JSON.stringify(template)))!;
   const countrySelection = restored.widgets[0].countries;
   assert.equal(countrySelection.kind, 'tags');
-  if (countrySelection.kind === 'tags') assert.equal(countrySelection.tags.length, 256);
-  template.widgets[0].countries = { kind: 'tags', tags: rows.slice(0, 257).map(row => row.tags.targetTag!) };
-  assert.equal(parseTemplate(JSON.parse(JSON.stringify(template))), null);
+  if (countrySelection.kind === 'tags') assert.equal(countrySelection.tags.length, 5_000);
 });
 
 test('smart group selection changes with its recorded membership and keeps unknown apart from empty', () => {

@@ -12,7 +12,7 @@ import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
-import { contentSet, MAX_SET_TOKENS, resolveOptions, storableToken, toggleContentSet, UNSTORABLE } from '../../dashboard/options';
+import { contentSet, resolveOptions, storableToken, toggleContentSet, UNSTORABLE } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { OPTIONS } from './definition';
@@ -59,10 +59,8 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const country = useCallback((at: ProjectAt) => labelAt(at.project.firstRead)(at.project.tag), [labelAt]);
   const chips = useMemo(() => {
-    const chosen = contentSet(types);
-    return buildingChoices(data).map(choice => ({ ...choice, unavailable: !storableToken(choice.value) ? UNSTORABLE
-      : !chosen.includes(choice.value) && chosen.length >= MAX_SET_TOKENS ? `At most ${MAX_SET_TOKENS} can be chosen` : undefined }));
-  }, [data, types]);
+    return buildingChoices(data).map(choice => ({ ...choice, unavailable: storableToken(choice.value) ? undefined : UNSTORABLE }));
+  }, [data]);
   useEffect(() => {
     onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
@@ -105,7 +103,7 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
     ? 'No construction matches these settings yet.' : widget.countries.kind === 'all' ? 'No construction yet.' : 'No construction by these countries yet.';
   return <div className="log-widget construction-log">
     {log.chips && chips.length > 1 && <div className="log-chips">
-      <ChipSet label="Building types" selected={chosen.length ? chosen : ['']} max={Number.MAX_SAFE_INTEGER}
+      <ChipSet label="Building types" max={Number.MAX_SAFE_INTEGER} selected={chosen.length ? chosen : ['']}
         chips={[{ value: '', label: 'All types' }, ...chips]}
         onToggle={value => { if (value === '') { if (chosen.length) setOption?.('types', ''); } else toggle(value); }} />
     </div>}

@@ -7,7 +7,7 @@ export const OPTIONS: readonly OptionField[] = [
   { key: 'colour', section: 'options', label: 'Ribbon colour', kind: 'choice', default: 'resource',
     choices: [{ value: 'resource', label: 'By resource' }, { value: 'seller', label: 'By seller' }] },
   { key: 'resources', section: 'options', label: 'Resources', hint: 'From the campaign’s own content', kind: 'content-set',
-    automatic: 'All resources', max: Number.MAX_SAFE_INTEGER, default: '' },
+    automatic: 'All resources', default: '' },
   { key: 'between', section: 'options', label: 'With countries chosen, show', kind: 'choice', default: 'touching',
     choices: [{ value: 'touching', label: 'Their trade with anyone' }, { value: 'between', label: 'Only trade between them' }] },
   { key: 'perSide', section: 'options', label: 'Countries per side', hint: 'The rest are summed into one', kind: 'number', min: 1, max: Number.MAX_SAFE_INTEGER, step: 1, default: 12 },

@@ -22,8 +22,8 @@ while displayed rows tie by current tags.
 
 Country requests are not capped or batched. Manual picks, groups and Top N use
 one request; only the shared `MAX_PRODUCT_REPLY_BYTES` budget refuses an oversized
-reply by name. Country and column settings use the shared uncapped convention;
-the shared settings/storage limits still apply.
+reply by name. Country and column choices have no shared count or token-length
+cap, and large selections survive saved-layout reloads.
 
 `charts/table` owns the style-5 header, faint scaled bars, exact missing-last
 sorting, rank markers, moving rows and viewport windowing. Node fixtures cover

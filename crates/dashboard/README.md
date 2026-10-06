@@ -53,14 +53,14 @@ Current products: national focus order, decryption, research slot history, count
 
 The [`production-spending` product](src/products/production_spending.rs) supplies
 one country's domain → content equipment type → exact design hierarchy as
-bounded fixed5 running totals over recorded hours. It shares Equipment produced's
+complete fixed5 running totals over recorded hours. It shares Equipment produced's
 single per-source branch scan and cache in
 [`equipment/production.rs`](src/products/equipment/production.rs), including
 producer attribution, retained deleted-line output, ship-refit selection,
 naval and railway-gun delivery rules, recorded design names and content resolution.
-No country is excluded by player or AI status. Histories and replies refuse
-their budgets rather than truncate; large totals use decimal strings of checked
-128-bit integers.
+No country is excluded by player or AI status. Complete replies refuse
+`MAX_PRODUCT_REPLY_BYTES` rather than truncate; large totals use decimal strings
+of checked 128-bit integers.
 
 Its unit is **Delivered IC at read cost**: each new whole delivered unit in
 `ProductionLineOutput` is multiplied once by the matching producer, variant and
@@ -84,6 +84,12 @@ Unresolved equipment keeps its recorded token in the shared unresolved arm;
 the country's independent total can still be exact. See the
 [widget guide](../../ui/src/widgets/production-spending/README.md) for playback,
 settings and display rules.
+
+Smart country groups retain every recorded membership run, war start,
+capitulation and identity change. The complete localised reply is measured by
+`transport::json_len` and refused past `MAX_PRODUCT_REPLY_BYTES`. The per-source
+branch cache may evict a scan; requesting that branch again rescans its recording
+and returns the same complete history.
 
 The `occupied-states` product supplies the whole branch's active occupied-state
 inventory as equal-value runs, with separate daily read dates and gaps. Daily
@@ -182,6 +188,11 @@ refuse oversized histories as `RaidReplyTooLarge` or `NuclearReplyTooLarge`.
 with map hovers.
 
 ## Service
+
+`protocol::MAX_MESSAGE_BYTES` uses the reply transport's byte budget for requests
+too. The desktop host, native reader and browser bridge share that bound,
+including the forwarded command envelope, and refuse oversized requests without
+truncation. The desktop data queue can hold one complete request of that size.
 
 `Service` owns sources by canonical path and revision, hands the frontend independently releasable leases, and runs product and open jobs on a small loader pool. Requests for the same product on the same source serialise on that product's cache; different products and sources run in parallel. Replies are bounded, fragmented and cancellable at every step. The map process shares the same sources through `open_map`. [transport.rs](src/transport.rs) owns the retryable refusal catalogue, including the browser bridge and native command queue capacity messages; the generated frontend constants and desktop queue read that catalogue. A capacity refusal decides no country fact and is retried.
 

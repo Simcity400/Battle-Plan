@@ -81,7 +81,7 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   if (!runAt(data.available, hour) && !runAt(data.completionsAvailable, hour) && !rows.length) return <WidgetState kind="unavailable" message="Operations were not recorded at this hour. Gaps stay gaps." />;
 
   const chosen = contentSet(types);
-  const toggle = (value: string) => { const next = toggleContentSet(types, value, 16); if (next !== null) setOption?.('types', next); };
+  const toggle = (value: string) => { const next = toggleContentSet(types, value, Number.MAX_SAFE_INTEGER); if (next !== null) setOption?.('types', next); };
   const renderRow = (row: LogRow<OperationAt>) => {
     const at = row.item;
     const type = at.typeKey === null ? undefined : byType.get(at.typeKey);
@@ -108,7 +108,7 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   };
   return <div className="espionage-log">
     {log.chips && chips.length > 1 && <div className="log-chips">
-      <ChipSet label="Operation types" max={16} selected={chosen.length ? chosen : ['']}
+      <ChipSet label="Operation types" max={Number.MAX_SAFE_INTEGER} selected={chosen.length ? chosen : ['']}
         chips={[{ value: '', label: 'All types' }, ...chips]}
         onToggle={value => { if (value === '') { if (chosen.length) setOption?.('types', ''); } else toggle(value); }} />
     </div>}

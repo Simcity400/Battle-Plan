@@ -17,13 +17,10 @@ const object = (value: unknown): value is Record<string, unknown> => typeof valu
 const integer = (value: unknown, min = -4_294_967_296, max = 4_294_967_296): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= min && value <= max;
 const text = (value: unknown, max = 160): value is string => typeof value === 'string' && value.length > 0 && value.length <= max;
 const id = (value: unknown): value is string => text(value, 80) && /^[a-zA-Z0-9_-]+$/.test(value) && !['__proto__', 'constructor', 'prototype'].includes(value);
-/** Longest stored country tag, in UTF-8 bytes: the products' own bound (`validate_tag`). */
-export const MAX_TAG_BYTES = 128;
-const utf8 = new TextEncoder();
-/** A country tag as the engine takes one: any text but NUL (spaces, lower case and
- * dynamic `D01` tags included), bounded as the products bound it. */
+/** Request tags are opaque nonempty strings without NUL; content decides which
+ * tags exist. */
 export const storableTag = (value: unknown): value is string => typeof value === 'string' && value.length > 0
-  && !value.includes('\0') && utf8.encode(value).length <= MAX_TAG_BYTES;
+  && !value.includes('\0');
 
 function offsetWindow(value: unknown): OffsetWindow | null {
   return object(value) && integer(value.firstOffset) && integer(value.lastOffset) && value.firstOffset <= value.lastOffset
@@ -47,7 +44,7 @@ function countryGroup(value: unknown): CountryGroup | null {
   if (value.type === 'humans') return { type: 'humans' };
   if (value.type === 'faction' && typeof value.id === 'string' && /^\d{1,20}$/.test(value.id)) return { type: 'faction', id: value.id };
   if (value.type === 'war' && storableTag(value.tag)) return { type: 'war', tag: value.tag };
-  if (value.type === 'top' && integer(value.count, 1, 64)) return { type: 'top', count: value.count };
+  if (value.type === 'top' && integer(value.count, 1, Number.MAX_SAFE_INTEGER)) return { type: 'top', count: value.count };
   return null;
 }
 function selection(value: unknown, dropped?: (count: number) => void): CountrySelection | null {
@@ -59,7 +56,7 @@ function selection(value: unknown, dropped?: (count: number) => void): CountrySe
       ? { kind: 'group', group, membership: value.membership, aggregate: value.aggregate } : null;
   }
   // A tag that cannot be stored is dropped on its own; the widget and the layout stay.
-  if (value.kind !== 'tags' || !Array.isArray(value.tags) || value.tags.length > 256) return null;
+  if (value.kind !== 'tags' || !Array.isArray(value.tags)) return null;
   const tags = value.tags.filter(storableTag);
   dropped?.(value.tags.length - tags.length);
   return { kind: 'tags', tags: [...new Set(tags)] };

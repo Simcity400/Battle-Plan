@@ -52,7 +52,6 @@ test('factory selection and ranking accept every recorded country', () => {
   assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
   const field = OPTIONS.find(field => field.key === 'types')!;
   assert.ok(field.kind === 'content-set');
-  assert.equal(field.max, Number.MAX_SAFE_INTEGER);
   const tags = Array.from({ length: 5000 }, (_, index) => `mod country ${index}`);
   const chosen = resolveCountries({ kind: 'tags', tags }, [], undefined, 200, definition.countries.max);
   assert.deepEqual(factoriesRequest('1', chosen, 'built', []), { branchId: '1', tags, top: null });

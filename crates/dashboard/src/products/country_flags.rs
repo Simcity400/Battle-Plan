@@ -281,16 +281,15 @@ impl ShieldStyle {
 
 /// Whether a recorded flag key names a file this reader can resolve inside a
 /// flag folder. The engine's path is the folder, the key and `.tga` joined as
-/// `variants/red` names `gfx/flags/variants/red.tga`. A key is accepted when it
-/// is bounded and every `/`-separated part is non-empty, not `.` or `..`, and
+/// `variants/red` names `gfx/flags/variants/red.tga`. A key of any length is
+/// accepted when every `/`-separated part is non-empty, not `.` or `..`, and
 /// free of backslashes, NUL and drive colons: so it stays below the folder.
 /// Tags are otherwise opaque (spaces, lower case and other bytes are the
 /// country's own).
 fn safe_flag_key(key: &str) -> bool {
-    key.len() <= 256
-        && key.split('/').all(|part| {
-            !part.is_empty() && part != "." && part != ".." && !part.contains(['\\', '\0', ':'])
-        })
+    key.split('/').all(|part| {
+        !part.is_empty() && part != "." && part != ".." && !part.contains(['\\', '\0', ':'])
+    })
 }
 
 /// The flag the engine draws for one country from its candidate keys in order.

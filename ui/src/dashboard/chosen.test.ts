@@ -38,10 +38,16 @@ test('a chip toggles its own token, keeps other campaigns’ tokens and says why
   assert.deepEqual(toggleChosen(SOURCE, ['artillery_equipment'], ['artillery_equipment'], 'twice', 2), { reason: 'At most 2 lines can be drawn; TWICE adds 2' });
   assert.deepEqual(toggleChosen(SOURCE, ['artillery_equipment', 'twice'], ['artillery_equipment', 'twice'], 'twice', 2), { value: 'artillery_equipment' });
   // A token that cannot be stored never blocks choosing another, and its own chip says why.
-  const long = 'x'.repeat(161);
-  const source = { ...SOURCE, lines: (token: string) => token === long ? 1 : SOURCE.lines(token) };
-  assert.deepEqual(toggleChosen(source, [], [long], 'artillery_equipment', 8), { value: 'artillery_equipment' });
-  assert.deepEqual(toggleChosen(source, [], [long], long, 8), { reason: UNSTORABLE });
+  const invalid = 'two words';
+  const source = { ...SOURCE, lines: (token: string) => token === invalid ? 1 : SOURCE.lines(token) };
+  assert.deepEqual(toggleChosen(source, [], [invalid], 'artillery_equipment', 8), { value: 'artillery_equipment' });
+  assert.deepEqual(toggleChosen(source, [], [invalid], invalid, 8), { reason: UNSTORABLE });
+});
+
+test('uncapped callers can choose twenty tokens including a long content name', () => {
+  const tokens = Array.from({ length: 20 }, (_, index) => `mod_type_${index}`.padEnd(200, 'x'));
+  const source: ChoiceSource = { lines: token => tokens.includes(token) ? 1 : 0, name: token => token, noun: 'type' };
+  assert.deepEqual(toggleChosen(source, tokens.slice(0, 19), tokens.slice(0, 19), tokens[19], Number.MAX_SAFE_INTEGER), { value: tokens.join(' ') });
 });
 
 test('with no stored token in this campaign, a click toggles from the automatic choice shown', () => {

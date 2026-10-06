@@ -115,6 +115,10 @@ pub fn typescript_contract() -> String {
         );
         text.push('\n');
     }
+    text.push_str(&format!(
+        "/** The native command byte budget, including its envelope. */\nexport const MAX_MESSAGE_BYTES = {};\n",
+        protocol::MAX_MESSAGE_BYTES
+    ));
     // The refusals that say nothing of the product, only that a host or the service had
     // no room: a reader tries these again; other errors remain failures until retry
     // or a content/configuration change. Each is named, so a frontend producer and tests use

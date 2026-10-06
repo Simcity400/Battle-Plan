@@ -226,12 +226,11 @@ pub fn validate_countries(branch_id: &str, tags: &[String]) -> Result<(), &'stat
 }
 
 /// The one check for a requested country tag, shared by products and the map.
-/// Tags are lookup keys compared with recorded tags, never paths. The engine's
-/// tag loader (`CCountryDatabase` load_tags, `14070e900`) takes any non-NUL
-/// bytes, so no character set is assumed; only emptiness, NUL and a generous
-/// length bound are refused.
+/// Tags are lookup keys compared with recorded tags, never paths. Definition
+/// validity belongs to the content loader (`CCountryDatabase` load_tags,
+/// `14070e900`); requests refuse only emptiness and NUL.
 pub fn validate_tag(tag: &str) -> Result<(), &'static str> {
-    if tag.is_empty() || tag.len() > 128 || tag.contains('\0') {
+    if tag.is_empty() || tag.contains('\0') {
         return Err("Invalid country tag");
     }
     Ok(())
@@ -362,6 +361,24 @@ pub fn find(key: &str) -> Option<&'static Registered> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tag_validation_preserves_long_recorded_lookup_keys() {
+        for tag in ["x".repeat(129), "国".repeat(129)] {
+            assert_eq!(validate_tag(&tag), Ok(()));
+            assert_eq!(
+                CountryParams {
+                    branch_id: "1".into(),
+                    tag,
+                }
+                .validate(),
+                Ok(())
+            );
+        }
+        for tag in ["", "\0", "tag\0suffix"] {
+            assert_eq!(validate_tag(tag), Err("Invalid country tag"));
+        }
+    }
 
     #[test]
     fn recording_only_products_do_not_depend_on_content() {

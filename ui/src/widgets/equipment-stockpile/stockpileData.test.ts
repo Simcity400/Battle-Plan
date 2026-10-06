@@ -57,10 +57,9 @@ test('stockpile choices can exceed eight', () => {
   const field = OPTIONS.find(field => field.key === 'chosen')!;
   assert.equal(field.kind, 'content-set');
   if (field.kind !== 'content-set') return;
-  assert.equal(field.max, Number.MAX_SAFE_INTEGER);
   const tokens = Array.from({ length: 12 }, (_, index) => `type_${index}`);
   const source = { lines: () => 1, name: (token: string) => token, noun: 'type' };
-  assert.deepEqual(toggleChosen(source, tokens.slice(0, -1), tokens.slice(0, -1), tokens.at(-1)!, field.max), { value: tokens.join(' ') });
+  assert.deepEqual(toggleChosen(source, tokens.slice(0, -1), tokens.slice(0, -1), tokens.at(-1)!, Number.MAX_SAFE_INTEGER), { value: tokens.join(' ') });
 });
 
 test('the reply is validated and groups follow the game’s order, logistics-only types included', () => {

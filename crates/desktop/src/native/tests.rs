@@ -9,7 +9,7 @@ fn full_data_queues_refuse_transiently_and_accept_again_after_draining() {
         path: "fixture.battleplan".into(),
         revision: "1".into(),
     };
-    for (count, length) in [(128, 1), (64, 32 * 1024)] {
+    for (count, length) in [(128, 1), (64, MAX_QUEUED_DATA_BYTES / 64)] {
         let mut pending = Pending::default();
         for id in 0..count {
             pending.enqueue_data(request(id), length).unwrap();
@@ -21,6 +21,72 @@ fn full_data_queues_refuse_transiently_and_accept_again_after_draining() {
         pending.take_commands(false);
         pending.enqueue_data(request(count), length).unwrap();
     }
+}
+
+#[test]
+fn country_requests_fit_the_native_pipe_and_queue_until_the_shared_byte_budget() {
+    let mut request = DataCommand::Product {
+        id: "request-1".into(),
+        request: dashboard::transport::ProductRequest {
+            source_id: "source-1".into(),
+            revision: "1".into(),
+            product: "agency-comparison".into(),
+            params: serde_json::json!({
+                "branchId": "1",
+                "top": null,
+                "tags": (0..5000)
+                    .map(|index| format!("synthetic-country-{index:04}"))
+                    .collect::<Vec<_>>()
+            }),
+        },
+    };
+    let host = NativeHost::default();
+    let length = serde_json::to_vec(&NativeCommand::Data {
+        request: request.clone(),
+    })
+    .unwrap()
+    .len()
+        + 1;
+    assert!(length > 64 * 1024);
+    // A missing process is reached only after the request's byte admission.
+    assert_eq!(
+        host.enqueue_data(request.clone()).unwrap_err(),
+        "The native data connection closed"
+    );
+    let mut pending = Pending::default();
+    pending.enqueue_data(request.clone(), length).unwrap();
+    assert_eq!(pending.data.len(), 1);
+    if let DataCommand::Product { request, .. } = &mut request {
+        request.params["tags"] = serde_json::json!([""]);
+    }
+    let overhead = serde_json::to_vec(&NativeCommand::Data {
+        request: request.clone(),
+    })
+    .unwrap()
+    .len()
+        + 1;
+    if let DataCommand::Product { request, .. } = &mut request {
+        request.params["tags"] = serde_json::json!(["x".repeat(MAX_MESSAGE_BYTES - overhead)]);
+    }
+    assert_eq!(
+        host.enqueue_data(request.clone()).unwrap_err(),
+        "The native data connection closed"
+    );
+    Pending::default()
+        .enqueue_data(request.clone(), MAX_MESSAGE_BYTES)
+        .unwrap();
+    if let DataCommand::Product { request, .. } = &mut request {
+        request.params["tags"] = serde_json::json!(["x".repeat(MAX_MESSAGE_BYTES - overhead + 1)]);
+    }
+    assert_eq!(
+        host.enqueue_data(request.clone()).unwrap_err(),
+        "Dashboard request exceeds the native control message budget"
+    );
+    let refusal = Pending::default()
+        .enqueue_data(request, MAX_MESSAGE_BYTES + 1)
+        .unwrap_err();
+    assert_eq!(refusal, dashboard::transport::NATIVE_QUEUE_FULL);
+    assert!(dashboard::transport::transient_error(&refusal));
 }
 
 #[test]
@@ -71,7 +137,7 @@ fn resized_commands_coalesce_and_close_takes_priority() {
 
 #[test]
 fn oversized_lines_do_not_hide_the_next_message() {
-    let mut input = vec![b'x'; MAX_MESSAGE_BYTES * 3];
+    let mut input = vec![b'x'; MAX_MESSAGE_BYTES + 2];
     input.extend_from_slice(b"\nvalid\n");
     let mut lines = Vec::new();
     read_lines(input.as_slice(), |line| lines.push(line.to_owned()));

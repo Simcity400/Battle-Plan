@@ -11,7 +11,7 @@ export const OPTIONS: readonly OptionField[] = [
     kind: 'choice', default: 'free',
     choices: COUNT_MODES.map(mode => ({ value: mode.value, label: mode.label })) },
   { key: 'types', section: 'options', label: 'Factory types', hint: 'From the campaign’s own buildings', kind: 'content-set',
-    automatic: 'All types', max: Number.MAX_SAFE_INTEGER, default: '' },
+    automatic: 'All types', default: '' },
   { key: 'split', section: 'options', label: 'Split bars by type', hint: 'One segment per factory type instead of one total', kind: 'toggle', default: false,
     visibleWhen: options => view(options) === 'race' },
   DATE_OVERLAY_OPTION,

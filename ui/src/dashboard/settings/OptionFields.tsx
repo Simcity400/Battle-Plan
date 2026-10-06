@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ChipSet } from '../../components/ChipSet';
 import { Segmented } from '../../components/Segmented';
-import { contentSet, setLimit, storableToken, toggleContentSet, UNSTORABLE, validOption } from '../options';
+import { contentSet, storableToken, toggleContentSet, UNSTORABLE, validOption } from '../options';
 import type { OptionField, OptionValue } from '../options';
 import type { OptionChoices } from '../definitions';
 
@@ -53,12 +53,11 @@ function OptionRow({ field, value, choices, onChange }: {
       // Saved tokens this campaign lacks stay listed, so opening the panel never changes them.
       const listed = choices ?? [];
       const kept = chosen.filter(token => !listed.some(choice => choice.value === token)).map(token => ({ value: token, label: `${token} (not in this campaign)` }));
-      const limit = setLimit(field.max);
       const chips = [...listed, ...kept].map(chip => ({ ...chip, unavailable: storableToken(chip.value) ? undefined : UNSTORABLE }));
       return <div className="setting-row setting-row-stacked">
         <span>{field.label}<small>{chosen.length ? field.hint : `${field.automatic}${field.hint ? ` · ${field.hint}` : ''}`}</small></span>
-        <ChipSet label={field.label} chips={chips} selected={chosen} max={limit} full={chosen.length >= limit}
-          onToggle={token => { const next = toggleContentSet(value, token, field.max); if (next != null) onChange(next); }} />
+        <ChipSet label={field.label} chips={chips} selected={chosen} max={Number.MAX_SAFE_INTEGER}
+          onToggle={token => { const next = toggleContentSet(value, token, Number.MAX_SAFE_INTEGER); if (next != null) onChange(next); }} />
       </div>;
     }
     case 'number':

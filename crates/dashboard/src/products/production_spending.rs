@@ -33,7 +33,6 @@ use ts_rs::TS;
 
 pub struct ProductionSpending;
 use super::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
-const MAX_RUNS: usize = 300_000;
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -94,11 +93,7 @@ fn budget() -> io::Error {
     io::Error::other("The production spending reply exceeds its memory budget")
 }
 
-fn append(
-    runs: &mut Vec<ProductionSpendingRun>,
-    run: ProductionSpendingRun,
-    count: &mut usize,
-) -> io::Result<()> {
+fn append(runs: &mut Vec<ProductionSpendingRun>, run: ProductionSpendingRun) {
     if let Some(last) = runs.last_mut()
         && last.last_hour.checked_add(1) == Some(run.first_hour)
         && last.total_raw == run.total_raw
@@ -106,13 +101,8 @@ fn append(
     {
         last.last_hour = run.last_hour;
     } else {
-        *count += 1;
-        if *count > MAX_RUNS {
-            return Err(budget());
-        }
         runs.push(run);
     }
-    Ok(())
 }
 
 /// Delivered IC at each read that changed it.
@@ -124,14 +114,9 @@ fn histories(
     refits: bool,
 ) -> io::Result<(BTreeMap<u64, CostSeries>, CostSeries)> {
     let mut events: BTreeMap<u32, Vec<(Entry, CostTotal)>> = BTreeMap::new();
-    let mut count = 0;
     for (entry, list) in &track.cost_changes {
         if !refits && entry.1 {
             continue;
-        }
-        count += list.len();
-        if count > MAX_RUNS {
-            return Err(budget());
         }
         for &(sample, total) in list {
             events.entry(sample).or_default().push((*entry, total));
@@ -219,7 +204,6 @@ fn runs(
     track: &TagHistory,
     coverage: &[Coverage],
     values: &[(u32, CostTotal)],
-    count: &mut usize,
     cancel: &AtomicBool,
 ) -> io::Result<Vec<ProductionSpendingRun>> {
     let mut result = Vec::new();
@@ -252,8 +236,7 @@ fn runs(
                     total_raw: reason.is_none().then(|| value.raw.to_string()),
                     reason,
                 },
-                count,
-            )?;
+            );
             let Some(hour) = changed else {
                 break;
             };
@@ -333,7 +316,6 @@ pub(crate) fn reply(
     }
     let mut leaves = Vec::new();
     let mut total = Vec::new();
-    let mut count = 0;
     let mut size = Counter { bytes: 0, cancel };
     if let Some(track) = track {
         let coverage = coverage(scanned, track);
@@ -350,14 +332,6 @@ pub(crate) fn reply(
         });
         for variant in variants {
             cancelled(cancel)?;
-            if scanned
-                .variants
-                .versions
-                .get(&variant)
-                .is_some_and(|versions| versions.len() > MAX_RUNS)
-            {
-                return Err(budget());
-            }
             let Some(kind) = types.get(&variant) else {
                 continue;
             };
@@ -371,7 +345,6 @@ pub(crate) fn reply(
                     track,
                     &coverage,
                     history.get(&variant).map(Vec::as_slice).unwrap_or(&[]),
-                    &mut count,
                     cancel,
                 )?,
             };
@@ -379,7 +352,7 @@ pub(crate) fn reply(
                 .map_err(|error| io::Error::other(error.to_string()))?;
             leaves.push(leaf);
         }
-        total = runs(track, &coverage, &total_history, &mut count, cancel)?;
+        total = runs(track, &coverage, &total_history, cancel)?;
     } else {
         warnings.push(format!(
             "{}: no readable country production history in this branch",

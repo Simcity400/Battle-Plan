@@ -13,7 +13,7 @@ export const OPTIONS: readonly OptionField[] = [
   { key: 'grouping', section: 'options', label: 'Group by', kind: 'choice', default: 'type',
     choices: GROUPINGS.map(item => ({ value: item.value, label: item.label })) },
   { key: 'included', section: 'options', label: 'Included types', hint: 'From the campaign’s own content', kind: 'content-set',
-    automatic: 'All types', max: Number.MAX_SAFE_INTEGER, default: '' },
+    automatic: 'All types', default: '' },
   REFITS_OPTION,
   { key: 'split', section: 'options', label: 'Split bars by group', hint: 'One segment per type, variant or arm instead of one total', kind: 'toggle', default: false,
     visibleWhen: options => view(options) === 'race' },

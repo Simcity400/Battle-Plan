@@ -24,10 +24,11 @@
 //! JAP). An hour whose order-zero member the links cannot name has no known
 //! leader, and that faction's roster is incomplete then.
 
-use super::{LoadContext, Product};
+use super::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product};
 use crate::{
     Source, catalogue, content,
     metadata::{LinkTags, branch_bounds, validate_campaign},
+    transport::json_len,
 };
 use installed_content::localisation::Localisation;
 use replay::{container::Replay, frame::FrameDecoder, rows::tables};
@@ -44,10 +45,6 @@ use ts_rs::TS;
 
 pub struct CountryGroups;
 
-/// Runs kept per branch before the scan refuses.
-const MAX_RUNS: usize = 500_000;
-/// War starts and capitulations kept per branch.
-const MAX_EVENTS: usize = 100_000;
 /// Branches kept per source, so tracks on different branches do not evict each other.
 const CACHED_BRANCHES: usize = 4;
 
@@ -257,7 +254,7 @@ impl Product for CountryGroups {
             .collect();
         warnings.extend(refused.lines("faction names are"));
         warnings.extend(scan.warnings.iter().cloned());
-        Ok(CountryGroupReply {
+        let reply = CountryGroupReply {
             branch_id: params.branch_id.clone(),
             humans: scan.humans.clone(),
             factions,
@@ -267,7 +264,13 @@ impl Product for CountryGroups {
             identity_changes: scan.identity_changes.clone(),
             unobserved: scan.unobserved.clone(),
             warnings,
-        })
+        };
+        if json_len(&reply, MAX_PRODUCT_REPLY_BYTES).is_none() {
+            return Err(io::Error::other(
+                "The complete country group reply is too large; nothing was omitted",
+            ));
+        }
+        Ok(reply)
     }
 }
 
@@ -428,11 +431,9 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
     let mut war_starts: BTreeSet<WarStart> = BTreeSet::new();
     let mut capitulations: BTreeSet<Capitulation> = BTreeSet::new();
     // Each event is considered once, when first seen, keyed by raw ids and its hour:
-    // a later hour may map the same id to another identity. At most MAX_EVENTS are
-    // kept; past that, later ones are left out and the reply says so.
+    // a later hour may map the same id to another identity.
     let mut named_starts: BTreeSet<(u32, u32, i32)> = BTreeSet::new();
     let mut named_capitulations: BTreeSet<(u32, i32)> = BTreeSet::new();
-    let mut events_capped = false;
     // An event is named by the tags its ids had at the event's own hour. That is
     // known only when every hour since was recorded with the same tag for the id:
     // `named_since` holds each id's tag and the hour it has had it without a break,
@@ -451,7 +452,6 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
     let mut incomplete = 0_u32;
     let mut unreadable_blocks = 0_u32;
     let mut stopped = 0_u32;
-    let mut runs = 0_usize;
     // Hours before the first readable frame and after the last are unobserved too,
     // so a branch that starts or ends in a gap or an unreadable block shows no
     // false joins or leaves there.
@@ -516,10 +516,6 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                     changed.sort();
                     changed.dedup();
                     for change in changed {
-                        if identity_changes.len() >= MAX_EVENTS {
-                            events_capped = true;
-                            break;
-                        }
                         identity_changes.push(change);
                     }
                 }
@@ -555,15 +551,13 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                             incomplete = true;
                             continue;
                         };
-                        let started =
-                            extend(&mut human_open, &mut humans, tag.clone(), hour, || {
-                                MembershipRun {
-                                    tag: tag.clone(),
-                                    first_hour: hour,
-                                    last_hour: hour,
-                                }
-                            });
-                        runs += usize::from(started);
+                        extend(&mut human_open, &mut humans, tag.clone(), hour, || {
+                            MembershipRun {
+                                tag: tag.clone(),
+                                first_hour: hour,
+                                last_hour: hour,
+                            }
+                        });
                     }
                     if incomplete {
                         mark_unobserved(&mut unobserved.humans, hour, hour);
@@ -610,7 +604,7 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                             mark_unobserved(&mut faction.incomplete, hour, hour);
                         }
                         if let Some(tag) = tag {
-                            let started = extend(
+                            extend(
                                 &mut member_open,
                                 &mut faction.members,
                                 (member.faction, tag.clone()),
@@ -621,10 +615,9 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                                     last_hour: hour,
                                 },
                             );
-                            runs += usize::from(started);
                             // The member at order zero leads the faction (module notes).
                             if member.ordinal == 0 {
-                                let started = extend(
+                                extend(
                                     &mut leader_open,
                                     &mut faction.leaders,
                                     (member.faction, tag.clone()),
@@ -635,7 +628,6 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                                         last_hour: hour,
                                     },
                                 );
-                                runs += usize::from(started);
                             }
                         }
                     }
@@ -651,10 +643,6 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                     for row in rows.iter() {
                         let key = (row.first_country, row.second_country, row.start_hour);
                         if named_starts.contains(&key) {
-                            continue;
-                        }
-                        if named_starts.len() >= MAX_EVENTS {
-                            events_capped = true;
                             continue;
                         }
                         let (Some(_), Some(_)) = (
@@ -705,7 +693,7 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                         } else {
                             (second, first)
                         };
-                        let started = extend(
+                        extend(
                             &mut war_open,
                             &mut wars,
                             (first.clone(), second.clone()),
@@ -717,7 +705,6 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                                 last_hour: hour,
                             },
                         );
-                        runs += usize::from(started);
                     }
                     if incomplete {
                         mark_unobserved(&mut unobserved.wars, hour, hour);
@@ -744,10 +731,6 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                     if named_capitulations.contains(&key) {
                         continue;
                     }
-                    if named_capitulations.len() >= MAX_EVENTS {
-                        events_capped = true;
-                        continue;
-                    }
                     if tag_of(row.country, &mut unmapped).is_some() {
                         named_capitulations.insert(key);
                         let Some(tag) = tag_at(row.country, row.capitulated_hour) else {
@@ -766,11 +749,6 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
             }
             if missed {
                 incomplete += 1;
-            }
-            if runs > MAX_RUNS {
-                return Err(io::Error::other(
-                    "Country group history exceeds its memory budget",
-                ));
             }
         }
     }
@@ -800,11 +778,6 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
     if capitulations_unread > 0 {
         warnings.push(format!(
             "Capitulations could not be read at {capitulations_unread} recorded hours; some may be missing."
-        ));
-    }
-    if events_capped {
-        warnings.push(format!(
-            "War starts and capitulations exceed {MAX_EVENTS} each; later ones are left out."
         ));
     }
     if unattributed > 0 {

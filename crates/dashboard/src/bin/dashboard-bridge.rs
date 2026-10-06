@@ -38,6 +38,20 @@ enum Command {
     Data(DataCommand),
 }
 
+fn read_command(input: &mut impl BufRead) -> io::Result<Option<Command>> {
+    let mut line = Vec::new();
+    let read = input
+        .take((MAX_MESSAGE_BYTES + 1) as u64)
+        .read_until(b'\n', &mut line)?;
+    if read == 0 {
+        return Ok(None);
+    }
+    if read > MAX_MESSAGE_BYTES {
+        return Err(invalid("Bridge command exceeds its byte budget"));
+    }
+    serde_json::from_slice(&line).map(Some).map_err(Into::into)
+}
+
 fn emit(event: &DataEvent) -> bool {
     let mut output = io::stdout().lock();
     serde_json::to_writer(&mut output, event).is_ok()
@@ -88,19 +102,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service = Service::new(Arc::new(|event| emit(&event)))?;
     service.configure_content(&config, false);
     let mut input = io::stdin().lock();
-    loop {
-        let mut line = Vec::new();
-        let read = input
-            .by_ref()
-            .take((MAX_MESSAGE_BYTES + 1) as u64)
-            .read_until(b'\n', &mut line)?;
-        if read == 0 {
-            break;
-        }
-        if read > MAX_MESSAGE_BYTES {
-            return Err("Bridge command exceeds its byte budget".into());
-        }
-        let mut command = match serde_json::from_slice(&line)? {
+    while let Some(command) = read_command(&mut input)? {
+        let mut command = match command {
             Command::Data(command) => command,
             Command::Folders(FolderCommand::RecordingSummaries { id, paths }) => {
                 let partials: Vec<_> = paths
@@ -160,6 +163,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod folder_command_tests {
     use super::*;
+
+    #[test]
+    fn command_reader_accepts_all_5000_countries_and_refuses_past_the_byte_budget() {
+        let tags: Vec<_> = (0..5000)
+            .map(|index| format!("synthetic-country-{index:04}"))
+            .collect();
+        let command = serde_json::json!({
+            "type": "product", "id": "request-1", "request": {
+                "sourceId": "source-1", "revision": "1", "product": "agency-comparison",
+                "params": { "branchId": "1", "tags": tags, "top": null }
+            }
+        });
+        let mut line = serde_json::to_vec(&command).unwrap();
+        line.push(b'\n');
+        assert!(line.len() > 64 * 1024);
+        let Some(Command::Data(DataCommand::Product { request, .. })) =
+            read_command(&mut line.as_slice()).unwrap()
+        else {
+            panic!("wrong command");
+        };
+        assert_eq!(request.params["tags"], command["request"]["params"]["tags"]);
+        line.pop();
+        line.resize(MAX_MESSAGE_BYTES - 1, b' ');
+        line.push(b'\n');
+        assert!(read_command(&mut line.as_slice()).unwrap().is_some());
+        line.insert(line.len() - 1, b' ');
+        assert_eq!(
+            read_command(&mut line.as_slice())
+                .err()
+                .unwrap()
+                .to_string(),
+            "Bridge command exceeds its byte budget"
+        );
+    }
 
     #[test]
     fn local_folder_commands_do_not_shadow_shared_data_commands() {

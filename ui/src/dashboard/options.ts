@@ -26,27 +26,21 @@ export type OptionField = FieldBase & (
   | { kind: 'number'; min: number; max: number; step: number; unit?: string; default: number | null }
   /** A choice among things only the recording's content knows (such as its idea
    * categories): the widget lists them at run time (`useOptionChoices`). Any
-   * short token is kept, so a choice survives a campaign that lacks it. The empty
+   * token is kept, so a choice survives a campaign that lacks it. The empty
    * default lets the widget pick, shown as `automatic`. */
   | { kind: 'content-choice'; automatic: string; default: '' }
   /** Several things only the recording's content knows (such as its resources),
    * listed like a content choice and shown as chips. Stored as their tokens
-   * separated by spaces, at most `max` of them (never more than
-   * [`MAX_SET_TOKENS`]); the empty default lets the widget pick, shown as `automatic`. */
-  | { kind: 'content-set'; automatic: string; max: number; default: '' }
+   * separated by spaces; the empty default lets the widget pick, shown as `automatic`. */
+  | { kind: 'content-set'; automatic: string; default: '' }
 );
 
-/** The longest content token a content choice or set stores. */
-export const MAX_TOKEN = 160;
-/** The most tokens any content set stores. */
-export const MAX_SET_TOKENS = 16;
 /** The characters a stored content token may hold. A script token holds no
  * whitespace but may hold other characters, non-ASCII included (a mod's own
  * names), so only whitespace, control characters and commas are refused: spaces
  * separate a content set's tokens, and a comma-joined list is never one token. */
 const TOKEN_TEXT = /^[^\s\p{Cc},]*$/u;
-/** Bounded in UTF-16 units, as the stored text as a whole is. */
-const contentToken = (value: string) => value.length <= MAX_TOKEN && TOKEN_TEXT.test(value);
+const contentToken = (value: string) => TOKEN_TEXT.test(value);
 /** One token of a content set. */
 const setTokenText = (value: string) => value.length > 0 && contentToken(value);
 const ESCAPED_POINT = /:([0-9a-f]{1,6}):/g;
@@ -54,16 +48,16 @@ const unicodeScalar = (point: number) => point <= 0x10ffff && (point < 0xd800 ||
 const validEscapes = (token: string) => [...token.matchAll(ESCAPED_POINT)].every(([, hex]) => unicodeScalar(parseInt(hex, 16)));
 
 /** Whether a content token can be stored in a content set: some content names
- * cannot (too long, or with characters a stored token may not hold), and a control
+ * cannot (with characters a stored token may not hold), and a control
  * offering them says so rather than failing when picked. */
 export const storableToken = (token: string) => setTokenText(token) && validEscapes(token);
 /** Why a chip for a token that cannot be stored is disabled. */
-export const UNSTORABLE = 'Its content name is too long or holds characters a setting cannot store';
+export const UNSTORABLE = 'Its content name holds characters a setting cannot store';
 
 /** A content key as a storable token: each character a setting cannot store (and
  * `:` itself) is written as `:<hex code point>:`, so a key with any characters, such
  * as a type content does not resolve (`?token`), can still be chosen; plain keys are
- * unchanged. `contentKey` reads it back. Only its length, or a lone surrogate, can
+ * unchanged. `contentKey` reads it back. A lone surrogate can
  * still make it unstorable (`storableToken`). */
 export const setToken = (key: string) => key.replace(/[^\w.-]/gu, character => `:${character.codePointAt(0)!.toString(16)}:`);
 export const contentKey = (token: string) => token.replace(ESCAPED_POINT, (escape, hex: string) => {
@@ -71,8 +65,8 @@ export const contentKey = (token: string) => token.replace(ESCAPED_POINT, (escap
   return unicodeScalar(point) ? String.fromCodePoint(point) : escape;
 });
 
-/** The most tokens a content-set field really holds. */
-export const setLimit = (max: number) => Math.max(0, Math.min(MAX_SET_TOKENS, Math.floor(max)));
+/** The token limit an in-widget chip control requests. */
+export const setLimit = (max: number) => Math.max(0, Math.floor(max));
 
 /** The tokens of a stored content-set value, in the order chosen. */
 export function contentSet(value: OptionValue): string[] {
@@ -80,7 +74,7 @@ export function contentSet(value: OptionValue): string[] {
 }
 
 /** A content set with `token` added or removed; null when adding would pass the
- * field's limit (`max`, at most [`MAX_SET_TOKENS`]) or the token cannot be stored.
+ * caller's limit or the token cannot be stored.
  * Removing the last token returns to automatic. */
 export function toggleContentSet(value: OptionValue, token: string, max: number): string | null {
   const tokens = contentSet(value);
@@ -93,8 +87,6 @@ export const AFTER_PLAYHEAD_OPTION: OptionField = { key: 'afterPlayhead', sectio
   hint: 'Draws the chart, events and hover past the moment shown', kind: 'toggle', default: false, visibleWhen: options => options.playback === 'cursor' };
 
 export const MAX_OPTION_KEYS = 48;
-/** The longest stored text value: a full content set of the longest tokens. */
-const MAX_TEXT = MAX_SET_TOKENS * (MAX_TOKEN + 1) - 1;
 const KEY = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const RESERVED = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -109,7 +101,7 @@ export function parseStoredOptions(input: unknown): WidgetOptions | null {
   for (const [key, value] of entries) {
     if (!validKey(key)) return null;
     if (!(value === null || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))
-      || (typeof value === 'string' && value.length <= MAX_TEXT))) return null;
+      || typeof value === 'string')) return null;
     options[key] = value;
   }
   return options;
@@ -124,7 +116,7 @@ export function validOption(field: OptionField, value: unknown): value is Option
     case 'content-set': {
       if (typeof value !== 'string') return false;
       const tokens = contentSet(value);
-      return tokens.every(storableToken) && tokens.length <= setLimit(field.max) && new Set(tokens).size === tokens.length;
+      return tokens.every(storableToken) && new Set(tokens).size === tokens.length;
     }
     case 'number': return (value === null && field.default === null) || (typeof value === 'number' && Number.isFinite(value) && value >= field.min && value <= field.max
       && Math.abs((value - field.min) / field.step - Math.round((value - field.min) / field.step)) < 1e-9);

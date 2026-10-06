@@ -10,7 +10,8 @@ use std::{io, path::Path, time::UNIX_EPOCH};
 use ts_rs::TS;
 
 pub const EVENT_PREFIX: &str = "BATTLE_PLAN_DESKTOP ";
-pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+/// Requests share the reply transport's byte budget, including their envelope.
+pub const MAX_MESSAGE_BYTES: usize = crate::transport::MAX_REPLY_BYTES;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
@@ -648,11 +649,11 @@ mod tests {
         };
         // Every tag a product accepts is a tag the map accepts, with no
         // vanilla character set: modded and lower-case tags included.
-        for tag in ["Z01", "mod", "A_1", "Ä01", "LONG_MOD_TAG"] {
+        for tag in ["Z01", "mod", "A_1", "Ä01", "LONG_MOD_TAG", &"A".repeat(129)] {
             assert!(crate::products::validate_tag(tag).is_ok());
             assert!(configure(tag).validate().is_ok(), "{tag}");
         }
-        for tag in ["", "A\0B", &"A".repeat(129)] {
+        for tag in ["", "A\0B"] {
             assert!(crate::products::validate_tag(tag).is_err());
             assert!(configure(tag).validate().is_err());
         }

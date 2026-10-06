@@ -57,7 +57,7 @@ pub fn transient_error(message: &str) -> bool {
         .any(|refusal| message.starts_with(refusal))
 }
 /// JSON has already escaped control characters. Escaping its quotes/backslashes
-/// again uses at most twice this size, leaving room in the 64 KiB control frame.
+/// again uses at most twice this size, leaving room in the control frame.
 const FRAGMENT_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -384,6 +384,15 @@ mod tests {
     }
 
     #[test]
+    fn the_frontend_command_budget_matches_the_reply_transport() {
+        assert_eq!(crate::protocol::MAX_MESSAGE_BYTES, MAX_REPLY_BYTES);
+        assert!(crate::typescript_contract().contains(&format!(
+            "export const MAX_MESSAGE_BYTES = {};",
+            crate::protocol::MAX_MESSAGE_BYTES
+        )));
+    }
+
+    #[test]
     fn map_settings_targets_keep_legacy_campaign_scope_and_validate_widget_ids() {
         let legacy: DataCommand = serde_json::from_str(
             r#"{"type":"mapSettings","id":"r","sourceId":"s","revision":"v","settings":null}"#,
@@ -436,13 +445,6 @@ mod tests {
         let mut assembler = ReplyAssembler::default();
         let mut restored = None;
         for event in ReplyChunks::new("query-1".into(), payload.clone()).unwrap() {
-            // Include the actual enclosing NativeEvent budget, not just payload.
-            let envelope = crate::protocol::NativeEvent::Data {
-                response: event.clone(),
-            };
-            assert!(
-                serde_json::to_vec(&envelope).unwrap().len() < crate::protocol::MAX_MESSAGE_BYTES
-            );
             let DataEvent::Chunk {
                 sequence,
                 total_bytes,

@@ -85,10 +85,10 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
     </>;
   };
   return <div className="log-widget">
-    {log.chips && chips.length > 0 && <div className="log-chips"><ChipSet label="Raid types" max={16} selected={chosen.length ? chosen : ['']}
+    {log.chips && chips.length > 0 && <div className="log-chips"><ChipSet label="Raid types" max={Number.MAX_SAFE_INTEGER} selected={chosen.length ? chosen : ['']}
       chips={[{ value: '', label: 'All types' }, ...chips]} onToggle={value => {
         if (value === '') setOption?.('types', '');
-        else { const next = toggleContentSet(types, value, 16); if (next !== null) setOption?.('types', next); }
+        else { const next = toggleContentSet(types, value, Number.MAX_SAFE_INTEGER); if (next !== null) setOption?.('types', next); }
       }} /></div>}
     <LogList rows={rows} label="Raids" density={log.density} months={log.months} animate={log.animate && widget.time.mode === 'follow'}
       columns={COLUMNS} renderRow={renderRow} onVisible={setVisible}

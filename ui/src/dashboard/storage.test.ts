@@ -123,37 +123,124 @@ test('widget options round-trip, survive an uninstalled widget type and refuse u
   }
 });
 
+test('large explicit country selections survive saving and reloading without a count cap', () => {
+  const storage = memoryStorage();
+  const { library } = loadLayouts(storage);
+  const widget = library.layouts[0].template.widgets[0];
+  widget.kind = 'scoreboard';
+  for (const count of [300, 5000]) {
+    const tags = Array.from({ length: count }, (_, index) => `synthetic_country_${index}`);
+    widget.countries = { kind: 'tags', tags };
+    assert.equal(saveLayouts(library, storage), null);
+    const restored = loadLayouts(storage);
+    assert.equal(restored.warning, null);
+    assert.deepEqual(restored.library.layouts[0].template.widgets[0].countries, { kind: 'tags', tags });
+  }
+});
+
+test('a factions widget retains every stored choice past its definition maximum', () => {
+  const storage = memoryStorage();
+  const { library } = loadLayouts(storage);
+  const widget = library.layouts[0].template.widgets[0];
+  widget.kind = 'factions';
+  const tags = Array.from({ length: 300 }, (_, index) => `synthetic_country_${index}`);
+  widget.countries = { kind: 'tags', tags };
+  assert.equal(saveLayouts(library, storage), null);
+  assert.deepEqual(loadLayouts(storage).library.layouts[0].template.widgets[0].countries, { kind: 'tags', tags });
+});
+
+test('a saved Top-100 group reloads in every uncapped ranked widget', () => {
+  for (const kind of ['territory', 'scoreboard', 'agency-comparison']) {
+    const storage = memoryStorage();
+    const { library } = loadLayouts(storage);
+    const widget = library.layouts[0].template.widgets[0];
+    widget.kind = kind;
+    widget.countries = { kind: 'group', group: { type: 'top', count: 100 }, membership: 'hour', aggregate: false };
+    assert.equal(saveLayouts(library, storage), null, kind);
+    const restored = loadLayouts(storage);
+    assert.equal(restored.warning, null, kind);
+    assert.deepEqual(restored.library.layouts[0].template.widgets[0].countries, widget.countries, kind);
+    widget.countries = { ...widget.countries, group: { type: 'top', count: Number.MAX_SAFE_INTEGER } };
+    assert.deepEqual(parseLayoutLibrary(library)?.layouts[0].template.widgets[0].countries, widget.countries);
+  }
+});
+
+for (const [label, count] of Object.entries({ zero: 0, negative: -1, fractional: 1.5, NaN, Infinity, string: '100', null: null, object: {}, boolean: true })) {
+  test(`a stored top-N group refuses an invalid ${label} count`, () => {
+    const storage = memoryStorage();
+    const { library } = loadLayouts(storage);
+    const countries = { kind: 'group', group: { type: 'top', count }, membership: 'hour', aggregate: false };
+    Object.assign(library.layouts[0].template.widgets[0], { countries });
+    assert.equal(parseLayoutLibrary(library), null);
+    assert.match(saveLayouts(library, storage)!, /could not be saved/);
+  });
+}
+
+test('a long content-set selection persists with an uninstalled widget', () => {
+  const storage = memoryStorage();
+  const { library } = loadLayouts(storage);
+  const widget = library.layouts[0].template.widgets[0];
+  widget.kind = 'not-installed';
+  widget.options = { picked: Array.from({ length: 20 }, (_, index) => `modded_type_${index}`.padEnd(200, 'x')).join(' ') };
+  assert.equal(saveLayouts(library, storage), null);
+  assert.deepEqual(loadLayouts(storage).library.layouts[0].template.widgets[0].options, widget.options);
+});
+
 test('modded, dynamic and unusual country tags survive saving and reloading', () => {
   const storage = memoryStorage();
   const { library } = loadLayouts(storage);
   const template = library.layouts[0].template;
   // Tags are opaque: spaces, lower case, dynamic countries, long mod tags and non-ASCII text.
-  const tags = ['D01', 'ger', 'my tag', 'MOD_LONG_COUNTRY_TAG_FROM_A_TOTAL_CONVERSION_MOD', 'ÉTAT'];
+  const tags = ['D01', 'ger', 'my tag', 'MOD_LONG_COUNTRY_TAG_FROM_A_TOTAL_CONVERSION_MOD', 'ÉTAT', 'x'.repeat(300), '長'.repeat(100)];
   template.widgets[0].countries = { kind: 'tags', tags };
-  template.roles[0].selectedTag = 'my tag';
+  template.roles[0].selectedTag = 'x'.repeat(300);
   assert.equal(saveLayouts(library, storage), null);
   const restored = loadLayouts(storage).library.layouts[0].template;
   assert.deepEqual(restored.widgets[0].countries, { kind: 'tags', tags });
-  assert.equal(restored.roles[0].selectedTag, 'my tag');
+  assert.equal(restored.roles[0].selectedTag, 'x'.repeat(300));
   // A tag the products would refuse costs only itself, never the widget or the library.
   const raw = structuredClone(library);
   raw.layouts[0].template.widgets[0].countries = { kind: 'tags', tags: ['GER', 'a\0b', 'x'.repeat(129), ''] };
-  raw.layouts[0].template.roles[0].selectedTag = 'x'.repeat(129);
+  raw.layouts[0].template.roles[0].selectedTag = 'a\0b';
   const parsed = parseLayoutLibraryWithNotes(raw);
   assert.ok(parsed);
-  assert.equal(parsed.droppedTags, 4);
-  assert.deepEqual(parsed.library.layouts[0].template.widgets[0].countries, { kind: 'tags', tags: ['GER'] });
+  assert.equal(parsed.droppedTags, 3);
+  assert.deepEqual(parsed.library.layouts[0].template.widgets[0].countries, { kind: 'tags', tags: ['GER', 'x'.repeat(129)] });
   assert.equal(parsed.library.layouts[0].template.roles[0].selectedTag, null);
   storage.setItem('hoi4-replay.workspace-layouts.v1', JSON.stringify(raw));
   const loaded = loadLayouts(storage);
-  assert.equal(loaded.droppedTags, 4);
-  assert.match(loaded.warning!, /4 country tag entries were left out/);
+  assert.equal(loaded.droppedTags, 3);
+  assert.match(loaded.warning!, /3 country tag entries were left out/);
   assert.deepEqual(loaded.library, parsed.library);
   const before = storage.getItem('hoi4-replay.workspace-layouts.v1');
-  assert.match(saveLayouts(raw, storage)!, /4 country tag entries could not be saved/);
+  assert.match(saveLayouts(raw, storage)!, /3 country tag entries could not be saved/);
   assert.equal(storage.getItem('hoi4-replay.workspace-layouts.v1'), before);
   storage.values.delete('hoi4-replay.workspace-layouts.v1');
   storage.setItem('hoi4-replay.workspace-template.v1', JSON.stringify(raw.layouts[0].template));
-  assert.equal(loadLayouts(storage).droppedTags, 4);
-  assert.match(loadLayouts(storage).warning!, /4 country tag entries were left out/);
+  assert.equal(loadLayouts(storage).droppedTags, 3);
+  assert.match(loadLayouts(storage).warning!, /3 country tag entries were left out/);
+});
+
+test('restoration drops non-string tag entries and counts notes across layouts', () => {
+  const storage = memoryStorage();
+  const { library } = loadLayouts(storage);
+  library.layouts.push({ id: 'other', template: { ...defaultTemplate(), name: 'Other choices' } });
+  for (const entry of library.layouts) {
+    Object.assign(entry.template.widgets[0], { countries: { kind: 'tags', tags: ['valid', 42, null, {}, true] } });
+    entry.template.roles[0].selectedTag = '';
+  }
+  const parsed = parseLayoutLibraryWithNotes(library);
+  assert.ok(parsed);
+  assert.equal(parsed.droppedTags, 10);
+  for (const entry of parsed.library.layouts) {
+    assert.deepEqual(entry.template.widgets[0].countries, { kind: 'tags', tags: ['valid'] });
+    assert.equal(entry.template.roles[0].selectedTag, null);
+  }
+  const saved = JSON.stringify(library);
+  storage.setItem('hoi4-replay.workspace-layouts.v1', saved);
+  const loaded = loadLayouts(storage);
+  assert.equal(loaded.droppedTags, 10);
+  assert.match(loaded.warning!, /10 country tag entries were left out/);
+  assert.deepEqual(loaded.library, parsed.library);
+  assert.equal(storage.getItem('hoi4-replay.workspace-layouts.v1'), saved);
 });

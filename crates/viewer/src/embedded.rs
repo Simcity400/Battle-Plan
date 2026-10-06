@@ -1431,6 +1431,49 @@ mod tests {
     }
 
     #[test]
+    fn command_reader_keeps_all_5000_countries_and_refuses_past_the_byte_budget() {
+        let command = NativeCommand::Data {
+            request: dashboard::transport::DataCommand::Product {
+                id: "request-1".into(),
+                request: dashboard::transport::ProductRequest {
+                    source_id: "source-1".into(),
+                    revision: "1".into(),
+                    product: "agency-comparison".into(),
+                    params: serde_json::json!({
+                        "branchId": "1",
+                        "top": null,
+                        "tags": (0..5000)
+                            .map(|index| format!("synthetic-country-{index:04}"))
+                            .collect::<Vec<_>>()
+                    }),
+                },
+            },
+        };
+        let mut line = serde_json::to_vec(&command).unwrap();
+        line.push(b'\n');
+        assert!(line.len() > 64 * 1024);
+        let mut bytes = Vec::new();
+        let restored = read_command(&mut line.as_slice(), &mut bytes)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(restored).unwrap(),
+            serde_json::to_value(command).unwrap()
+        );
+        line.pop();
+        line.resize(MAX_MESSAGE_BYTES - 1, b' ');
+        line.push(b'\n');
+        assert!(
+            read_command(&mut line.as_slice(), &mut bytes)
+                .unwrap()
+                .is_some()
+        );
+        line.insert(line.len() - 1, b' ');
+        assert!(read_command(&mut line.as_slice(), &mut bytes).is_err());
+        assert_eq!(bytes.len(), MAX_MESSAGE_BYTES + 1);
+    }
+
+    #[test]
     fn command_reader_bounds_partial_lines_and_accepts_crlf() {
         let mut bytes = Vec::new();
         assert!(matches!(

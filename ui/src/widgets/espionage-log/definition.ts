@@ -3,7 +3,7 @@ import type { OptionField } from '../../dashboard/options';
 import { LOG_OPTIONS } from '../../charts/log/logOptions.ts';
 
 export const OPTIONS: readonly OptionField[] = [
-  { key: 'types', section: 'options', label: 'Operation types', hint: 'Names and artwork from this campaign’s content; none chosen shows every type', kind: 'content-set', automatic: 'Every type', max: 16, default: '' },
+  { key: 'types', section: 'options', label: 'Operation types', hint: 'Names and artwork from this campaign’s content; none chosen shows every type', kind: 'content-set', automatic: 'Every type', default: '' },
   { key: 'countryRole', section: 'options', label: 'Match chosen countries as', kind: 'choice', default: 'owner',
     choices: [{ value: 'owner', label: 'Owner' }, { value: 'target', label: 'Target' }, { value: 'either', label: 'Owner or target' }] },
   { key: 'runningOrder', section: 'options', label: 'Running operations', hint: 'While Live, preparing and running operations precede finished operations', kind: 'choice', default: 'start',

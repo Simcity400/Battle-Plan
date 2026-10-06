@@ -36,6 +36,8 @@ bash tools/build-slot.sh "dev/dashboard" "cargo build -p dashboard --bin dashboa
 
 Set `BATTLE_PLAN_RECORDINGS_DIR` to a scratch folder outside Git in ignored `ui/.env.local`; `BATTLE_PLAN_GAME_DIR` and `BATTLE_PLAN_USER_DIR` add real artwork. Folders saved in Settings take precedence. `browserBridge.ts` is a development-only Vite middleware that starts the adapter on demand, forwards data commands and cancels them with the request. Production builds use the desktop transport.
 
+Browser JSON request bodies and forwarded commands use the native transport's generated `MAX_MESSAGE_BYTES` budget. Country selections travel intact, and an oversized body or command is refused before forwarding.
+
 ## Data
 
 Widgets read history products through `useProduct` in [products.ts](src/dashboard/products.ts). These replies cover the whole branch, so playback reads them locally. Hour-specific flags and formula details use `loadTransientProduct`, keeping them out of the history cache. Identical cached requests share one native round trip; closing a campaign forgets its products. A product whose values change at nearly every read of a long campaign is instead asked for one fixed window of hours at a time (`useProductWindows` in [productWindows.ts](src/dashboard/productWindows.ts)): the widget names the windows it wants (the one shown and the next during playback, or the one a tooltip needs), each is loaded through the same cache and held while wanted, so a reply stays bounded and playback never waits at a window's edge. The client contract is [client.ts](src/dashboard/client.ts); [nativeClient.ts](src/dashboard/nativeClient.ts) and [browserClient.ts](src/dashboard/browserClient.ts) are its transports. The desktop host passes replies through as raw JSON; the frontend parses them once.
@@ -45,6 +47,8 @@ Widgets read history products through `useProduct` in [products.ts](src/dashboar
 ## Layouts and playback
 
 [model.ts](src/dashboard/model.ts) defines templates, tracks, widget specs and time modes; [storage.ts](src/dashboard/storage.ts) saves a bounded, versioned library of templates with semantic country choices and no runtime handles. [playback.ts](src/dashboard/playback.ts) is the one clock; widgets subscribe to hour changes only when they follow it, and animations read `positionAt` to move smoothly between its ticks. At high speeds a tick skips many hours, so the map is sent only the latest hour and widgets look hours up locally. Overview and Campaign map share the selected country, clock and speed. A widget follows playback, holds its branch end, or pins a moment; the choice is saved per widget. The Live switch and every choice in a widget's settings panel save to the active layout immediately; adding, moving, resizing and removing widgets are edit-mode actions and wait for Save.
+
+Stored country lists, Top N and content sets have no shared choice-count or token-length caps. An unstorable country tag is dropped on its own with a restoration warning; an unstorable selected country clears to none. The widget and layout stay, and the saved data is left untouched.
 
 Each widget follows the default campaign or one chosen in its gear menu. Choosing a recording that is not open opens it exactly as the sidebar does: it takes a campaign slot, is read once and is shared by every widget and map that uses it, so data products stay cached per campaign rather than per widget. It stays open until it is unloaded from the sidebar.
 

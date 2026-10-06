@@ -547,3 +547,64 @@ fn production_spending_many_retired_designs_have_sparse_runs_over_long_history()
     assert_eq!(result.total.len(), 1);
     assert_eq!(result.total[0].total_raw.as_deref(), Some("100000000"));
 }
+
+#[test]
+fn production_spending_keeps_more_than_300000_changes_and_runs_within_reply_budget() {
+    let samples = 150_001u32;
+    let mut track = TagHistory::default();
+    for sample in 0..samples {
+        track.hours.push(sample as i32);
+        track.last_hours.push(sample as i32);
+        track.identities.push((1, 1, 0));
+    }
+    for refit in [false, true] {
+        track.cost_changes.insert(
+            (1, refit),
+            (0..samples)
+                .map(|sample| {
+                    (
+                        sample,
+                        CostTotal {
+                            raw: i128::from(sample + 1),
+                            reason: None,
+                        },
+                    )
+                })
+                .collect(),
+        );
+    }
+    let mut scanned = ScannedProduced::default();
+    scanned.tags.insert("opaque|tag".into(), track);
+    let result = reply(
+        &scanned,
+        &params(true),
+        Named::default(),
+        Vec::new(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(result.leaves[0].runs.len(), samples as usize);
+    assert_eq!(result.total.len(), samples as usize);
+    assert_eq!(
+        result.total.last().unwrap().total_raw.as_deref(),
+        Some("300002")
+    );
+    assert!(crate::transport::json_len(&result, MAX_REPLY_BYTES).is_some());
+}
+
+#[test]
+fn production_spending_refuses_complete_reply_past_byte_budget() {
+    let error = reply(
+        &ScannedProduced::default(),
+        &params(false),
+        Named::default(),
+        vec!["x".repeat(MAX_REPLY_BYTES)],
+        &AtomicBool::new(false),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("reply exceeds its memory budget")
+    );
+}

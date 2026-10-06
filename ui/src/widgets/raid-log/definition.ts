@@ -5,7 +5,7 @@ import { LOG_OPTIONS } from '../../charts/log/logOptions.ts';
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'types', section: 'options', label: 'Raid types', hint: 'The recording’s content types; none chosen shows every type',
-    kind: 'content-set', automatic: 'Every type', max: 16, default: '' },
+    kind: 'content-set', automatic: 'Every type', default: '' },
   ...LOG_OPTIONS,
 ];
 export const definition = {

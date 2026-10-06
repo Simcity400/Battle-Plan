@@ -301,10 +301,15 @@ fn a_cosmetic_flag_in_a_subfolder_is_drawn_and_an_unresolvable_one_never_falls_t
         }
         other => panic!("{other:?}"),
     }
-    // A missing preferred file still falls through, as the engine does.
-    match search(&["variants/blue", "AAA"]) {
-        FlagSearch::Found { asset, .. } => assert_eq!(asset, "gfx/flags/AAA.tga"),
-        other => panic!("{other:?}"),
+    // A missing preferred file still falls through, as the engine does, and a
+    // key past 256 bytes inside the flag folder is accepted like any other.
+    let long = format!("variants/{}/red", vec!["a".repeat(60); 5].join("/"));
+    assert!(long.len() > 256);
+    for key in ["variants/blue", long.as_str()] {
+        match search(&[key, "AAA"]) {
+            FlagSearch::Found { asset, .. } => assert_eq!(asset, "gfx/flags/AAA.tga"),
+            other => panic!("{key}: {other:?}"),
+        }
     }
     for key in ["variants\\red", "../AAA", "variants/../AAA", "/AAA"] {
         match search(&[key, "AAA"]) {
@@ -618,13 +623,22 @@ fn a_refused_sprite_override_shows_no_art_and_says_why() {
 }
 
 /// Country selection: tags are opaque lookup keys, dynamic and modded ones
-/// included; only emptiness, NUL and the length bound are refused.
+/// included; only emptiness and NUL are refused.
 #[test]
 fn unusual_and_dynamic_tags_are_valid_country_keys() {
-    for tag in ["D01", "ger", "my tag", "MOD_TAG", "Z99", "ÉTAT", "A-B.C"] {
+    for tag in [
+        "D01",
+        "ger",
+        "my tag",
+        "MOD_TAG",
+        "Z99",
+        "ÉTAT",
+        "A-B.C",
+        &"x".repeat(129),
+    ] {
         assert_eq!(validate_tag(tag), Ok(()), "{tag}");
     }
-    for tag in ["", "a\0b", &"x".repeat(129)] {
+    for tag in ["", "a\0b"] {
         assert!(validate_tag(tag).is_err(), "{tag:?}");
     }
 }

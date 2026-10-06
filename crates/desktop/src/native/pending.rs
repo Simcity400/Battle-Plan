@@ -46,7 +46,7 @@ pub(super) struct Pending {
 
 /// Data requests queued for the native pipe at most, by count and by bytes.
 pub(super) const MAX_QUEUED_DATA: usize = 128;
-pub(super) const MAX_QUEUED_DATA_BYTES: usize = 2 * 1024 * 1024;
+pub(super) const MAX_QUEUED_DATA_BYTES: usize = dashboard::protocol::MAX_MESSAGE_BYTES;
 /// Map actions queued at most.
 pub(super) const MAX_QUEUED_ACTIONS: usize = 16;
 

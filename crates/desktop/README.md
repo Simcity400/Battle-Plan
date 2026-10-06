@@ -70,6 +70,8 @@ The host launches its sibling viewer, contains it in a Windows job object and re
 
 `native.rs` selects the active geometry owner before tabs mount or unmount. Late cleanup from the dashboard cannot hide the standalone map, and vice versa. Map layouts are replacement snapshots; data commands have their own bounded queue. Its count and byte refusals use `NATIVE_QUEUE_FULL`, and busy map controls use `MAP_CONTROLS_BUSY`, from the dashboard’s [retryable refusal catalogue](../dashboard/src/transport.rs), so country facts are retried once the queue drains. Native process failure terminates pending requests rather than leaving widgets loading indefinitely. A restarted process requires sources to be reopened; old source handles are not valid in it. Lease IDs include a fresh service namespace so delayed releases cannot close sources in a restarted process.
 
+Native commands and the data queue use [the shared message byte budget](../dashboard/src/protocol.rs), matching the reply transport budget. A request naming every country can travel intact; requests past the byte budget are refused.
+
 The native data service opens one shared source for a canonical path and revision and returns independently releasable client bindings. Several maps and charts may reference it. Closing one widget cannot cancel another consumer's shared query. See the [dashboard architecture](../../docs/dashboard.md) for the ownership model and limits.
 
 ## Where to work

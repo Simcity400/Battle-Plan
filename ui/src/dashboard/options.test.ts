@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { contentKey, contentSet, MAX_OPTION_KEYS, MAX_SET_TOKENS, MAX_TOKEN, parseStoredOptions, resolveOptions, sectionFields, setLimit, setOption, setToken, storableToken,
+import { contentKey, contentSet, MAX_OPTION_KEYS, parseStoredOptions, resolveOptions, sectionFields, setLimit, setOption, setToken, storableToken,
   toggleContentSet } from './options.ts';
 import type { OptionField } from './options';
 import { settingsSections, SETTINGS_SECTIONS } from './settingsSections.ts';
@@ -16,12 +16,11 @@ const FIELDS: readonly OptionField[] = [
   { key: 'yMax', section: 'axes', label: 'Y maximum', kind: 'number', min: 0, max: 1e9, step: 1, default: null },
 ];
 
-test('stored options are bounded generically, so an uninstalled widget keeps its choices', () => {
+test('stored options validate shape while keeping every choice for an uninstalled widget', () => {
   assert.deepEqual(parseStoredOptions({ a: true, b: 3, c: 'x', d: null }), { a: true, b: 3, c: 'x', d: null });
-  // The longest stored text is a full content set of the longest tokens.
-  const fullSet = Array.from({ length: MAX_SET_TOKENS }, (_, index) => `${index}`.padEnd(MAX_TOKEN, 'x')).join(' ');
+  const fullSet = Array.from({ length: 20 }, (_, index) => `${index}`.padEnd(200, 'x')).join(' ');
   assert.deepEqual(parseStoredOptions({ picked: fullSet }), { picked: fullSet });
-  for (const bad of [null, [], 'x', { 'bad key': 1 }, { __proto__x: 1, constructor: 1 }, { a: NaN }, { a: {} }, { a: `${fullSet}x` }]) {
+  for (const bad of [null, [], 'x', { 'bad key': 1 }, { __proto__x: 1, constructor: 1 }, { a: NaN }, { a: Infinity }, { a: {} }]) {
     assert.equal(parseStoredOptions(bad), null, JSON.stringify(bad));
   }
   const many = Object.fromEntries(Array.from({ length: MAX_OPTION_KEYS + 1 }, (_, index) => [`k${index}`, 1]));
@@ -55,43 +54,41 @@ const META: WidgetMeta = { kind: 'test-options', version: 2, title: 'Test', icon
   migrate: (from, widget) => from === 1 ? { ...widget, options: { order: 'size' } } : null };
 registerWidgets([META]);
 
-test('a content set stores distinct tokens up to its limit and empties back to automatic', () => {
-  const fields: readonly OptionField[] = [{ key: 'picked', section: 'options', label: 'Picked', kind: 'content-set', automatic: 'Automatic', max: 2, default: '' }];
+test('a content set stores distinct tokens and empties back to automatic', () => {
+  const fields: readonly OptionField[] = [{ key: 'picked', section: 'options', label: 'Picked', kind: 'content-set', automatic: 'Automatic', default: '' }];
   assert.deepEqual(resolveOptions(fields, { picked: 'steel mod_ore' }), { picked: 'steel mod_ore' });
-  for (const bad of ['steel steel', 'a b c', 'steel  oil', ' steel', 'steel,oil', 3]) {
+  for (const bad of ['steel steel', 'steel  oil', ' steel', 'steel,oil', 3]) {
     assert.deepEqual(resolveOptions(fields, { picked: bad }), { picked: '' }, String(bad));
   }
   assert.deepEqual(contentSet('steel oil'), ['steel', 'oil']);
   assert.deepEqual(contentSet(''), []);
-  assert.equal(toggleContentSet('', 'steel', 2), 'steel');
-  assert.equal(toggleContentSet('steel', 'oil', 2), 'steel oil');
-  assert.equal(toggleContentSet('steel oil', 'coal', 2), null);
-  assert.equal(toggleContentSet('steel oil', 'steel', 2), 'oil');
-  assert.equal(toggleContentSet('oil', 'oil', 2), '');
-  assert.equal(toggleContentSet('', 'x'.repeat(161), 8), null);
+  assert.equal(toggleContentSet('', 'steel', Number.MAX_SAFE_INTEGER), 'steel');
+  assert.equal(toggleContentSet('steel', 'oil', Number.MAX_SAFE_INTEGER), 'steel oil');
+  assert.equal(toggleContentSet('steel oil', 'coal', Number.MAX_SAFE_INTEGER), 'steel oil coal');
+  assert.equal(toggleContentSet('steel oil', 'steel', Number.MAX_SAFE_INTEGER), 'oil');
+  assert.equal(toggleContentSet('oil', 'oil', Number.MAX_SAFE_INTEGER), '');
+  assert.equal(toggleContentSet('', 'two words', Number.MAX_SAFE_INTEGER), null);
 });
 
-test('a content set holds its whole limit of long tokens, and says which tokens it cannot hold', () => {
-  const eight: readonly OptionField[] = [{ key: 'picked', section: 'options', label: 'Picked', kind: 'content-set', automatic: 'Automatic', max: 8, default: '' }];
-  // Eight 20-character tokens are 167 characters with their separators.
-  const tokens = Array.from({ length: 8 }, (_, index) => `modded_resource_${index}`.padEnd(20, 'x'));
+test('a content set accepts more than sixteen long tokens through choosing, storage and validation', () => {
+  const fields: readonly OptionField[] = [{ key: 'picked', section: 'options', label: 'Picked', kind: 'content-set', automatic: 'Automatic', default: '' }];
+  const tokens = Array.from({ length: 20 }, (_, index) => `modded_resource_${index}`.padEnd(200, 'x'));
   let stored = '';
   for (const token of tokens) {
-    const next = toggleContentSet(stored, token, 8);
+    const next = toggleContentSet(stored, token, Number.MAX_SAFE_INTEGER);
     assert.notEqual(next, null, token);
     stored = next!;
   }
-  assert.equal(stored.length, 167);
-  // It survives the generic bounds on load and the field's own check.
-  assert.deepEqual(resolveOptions(eight, parseStoredOptions({ picked: stored })!), { picked: stored });
-  assert.deepEqual(setOption(eight, undefined, 'picked', stored), { picked: stored });
-  // The limit is the field's, and never past what any set stores.
-  assert.equal(toggleContentSet(stored, 'one_more', 8), null);
+  assert.deepEqual(contentSet(stored), tokens);
+  assert.deepEqual(resolveOptions(fields, parseStoredOptions({ picked: stored })!), { picked: stored });
+  assert.deepEqual(setOption(fields, undefined, 'picked', stored), { picked: stored });
+  assert.equal(toggleContentSet(stored, 'one_more', Number.MAX_SAFE_INTEGER), `${stored} one_more`);
+  // Explicit in-widget limits stay the caller's, without a shared clamp.
   assert.equal(setLimit(8), 8);
-  assert.equal(setLimit(40), MAX_SET_TOKENS);
-  // The longest token fits; a longer or unusual one cannot be stored, and chips say so.
-  assert.equal(storableToken('x'.repeat(MAX_TOKEN)), true);
-  assert.equal(storableToken('x'.repeat(MAX_TOKEN + 1)), false);
+  assert.equal(setLimit(40), 40);
+  assert.equal(toggleContentSet(stored, 'one_more', 20), null);
+  assert.equal(toggleContentSet(stored, 'one_more', 40), `${stored} one_more`);
+  assert.equal(storableToken('x'.repeat(300)), true);
   assert.equal(storableToken('two words'), false);
   assert.equal(storableToken(''), false);
   // A mod's script tokens may hold any non-space character, non-ASCII included.
@@ -134,7 +131,7 @@ test('view preferences save settings but leave unknown campaigns and pins as dra
 });
 
 test('any content key round-trips through a storable token, plain keys unchanged', () => {
-  for (const key of ['infantry_equipment', 'mod.type-1', '?mod_gun', '?#77', 'a:b', 'Ärmel', 'x y', '🙂']) {
+  for (const key of ['infantry_equipment', 'mod.type-1', '?mod_gun', '?#77', 'a:b', 'Ärmel', 'x y', '🙂', '長'.repeat(200)]) {
     const token = setToken(key);
     assert.ok(storableToken(token), `${key} → ${token}`);
     assert.equal(contentKey(token), key);
@@ -145,7 +142,7 @@ test('any content key round-trips through a storable token, plain keys unchanged
 
 test('stored content escapes accept only Unicode scalar values and invalid choices default safely', () => {
   const fields: readonly OptionField[] = [
-    { key: 'included', section: 'options', label: 'Included', kind: 'content-set', automatic: 'All', max: 8, default: '' },
+    { key: 'included', section: 'options', label: 'Included', kind: 'content-set', automatic: 'All', default: '' },
     { key: 'picked', section: 'options', label: 'Picked', kind: 'content-choice', automatic: 'Automatic', default: '' },
   ];
   for (const token of [':ffffff:', ':110000:', ':d800:', ':dfff:', 'valid:41::dabc:']) {

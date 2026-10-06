@@ -102,7 +102,7 @@ test('a chip toggles only its own resource and keeps resources this campaign lac
 });
 
 test('an automatic resource that cannot be stored never blocks choosing another', () => {
-  const long = 'x'.repeat(161);
+  const long = 'un,obtainium';
   const modded: ResourceBalanceReply = { ...REPLY, resources: [{ id: 1, token: long, ordinal: 1, name: 'Unobtainium', icon: null }, ...REPLY.resources],
     series: [{ id: 1, runs: [pools(100, 130, { producedRaw: 5000 })] }, ...REPLY.series] };
   // It is the largest, so it is shown until something is chosen.
@@ -118,14 +118,13 @@ test('an automatic resource that cannot be stored never blocks choosing another'
 test('resource choices exceed eight within shared settings bounds', () => {
   const field = OPTIONS.find(field => field.key === 'resources')!;
   assert.ok(field.kind === 'content-set');
-  assert.equal(field.max, Number.MAX_SAFE_INTEGER);
   const tokens = Array.from({ length: 12 }, (_, index) => `mod_resource_${index}`);
   const modded: ResourceBalanceReply = { ...REPLY, resources: tokens.map((token, id) => ({ id, token, ordinal: 1, name: null, icon: null })),
     series: tokens.map((_, id) => ({ id, runs: [STEEL] })) };
   const value = tokens.join(' ');
   assert.deepEqual(contentSet(resolveOptions(OPTIONS, parseStoredOptions({ resources: value })!).resources), tokens);
   assert.equal(chosenLines(modded, tokens).length, tokens.length);
-  assert.deepEqual(toggleChosen(modded, tokens.slice(0, -1), tokens.slice(0, -1), tokens.at(-1)!, field.max), { value });
+  assert.deepEqual(toggleChosen(modded, tokens.slice(0, -1), tokens.slice(0, -1), tokens.at(-1)!, Number.MAX_SAFE_INTEGER), { value });
 });
 
 test('long deal lists keep their largest deals, sum the rest and always show the totals', () => {

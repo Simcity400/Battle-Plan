@@ -2349,6 +2349,8 @@ defenseLabel: string | null,
  * One recording-level reason, rather than repeating it at every agency read.
  */
 upgradesUnrecorded: string | null, warnings: Array<string>, };
+/** The native command byte budget, including its envelope. */
+export const MAX_MESSAGE_BYTES = 33554432;
 /** Refusals for want of room: a message starting with one may be tried again. */
 export const CAPACITY_REACHED = "Dashboard request capacity reached";
 export const TOO_MANY_SOURCES = "Too many open dashboard source bindings";

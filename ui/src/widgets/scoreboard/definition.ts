@@ -6,7 +6,7 @@ import { TOP_COUNTRIES } from '../../charts/race/options.ts';
 /** The recorded registry supplies the default measure; no second measure catalogue. */
 export const DEFAULT_SORT = { column: '', direction: 'descending' } as const;
 export const OPTIONS: readonly OptionField[] = [
-  { key: 'columns', section: 'options', label: 'Columns', kind: 'content-set', default: '', max: Number.MAX_SAFE_INTEGER,
+  { key: 'columns', section: 'options', label: 'Columns', kind: 'content-set', default: '',
     automatic: 'Default columns', hint: 'The registry supplies the defaults. Columns follow the order you choose. A dash means the value is unavailable, never zero.' },
   ...TABLE_OPTIONS, ...tableSortOptions([], DEFAULT_SORT, true),
   { key: 'topMeasure', section: 'countries', label: 'Top N by', kind: 'content-choice', default: '', automatic: 'Default measure',

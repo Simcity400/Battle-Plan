@@ -4,7 +4,125 @@ use replay::{
     frame::{DecodedFrame, TableView},
     rows::{TableId, TableRows},
 };
-use std::sync::atomic::AtomicBool;
+use std::{
+    path::PathBuf,
+    sync::{Arc, atomic::AtomicBool},
+};
+
+fn group_source(replay: Replay) -> crate::Source {
+    crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: "groups-test".into(),
+            revision: "1".into(),
+        },
+        PathBuf::from("synthetic.battleplan"),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap()
+}
+
+#[test]
+fn country_groups_keep_every_event_and_run_then_refuse_oversized_replies() {
+    use super::{CountryGroupParams, CountryGroups, scan_branch};
+    use crate::{
+        products::{LoadContext, Product},
+        test_fixtures::scale_frame,
+    };
+    for entries in [100_001, 500_001] {
+        let countries = 5_000;
+        let mut frame = scale_frame(1, 100, countries);
+        let wars = (0..countries)
+            .flat_map(|first| {
+                (first + 1..countries).map(move |second| replay::rows::WarRelationRow {
+                    first_country: 100_000 + first,
+                    second_country: 100_000 + second,
+                    start_hour: 100,
+                    ..Default::default()
+                })
+            })
+            .take(entries)
+            .collect();
+        *frame.tables[TableId::WarRelations.index()] =
+            TableView::Complete(TableRows::WarRelations(wars));
+        let source = group_source(
+            Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap(),
+        );
+        let cancelled = AtomicBool::new(false);
+        let scan = Arc::new(scan_branch(source.replay_ref(), 1, &cancelled).unwrap());
+        assert_eq!(scan.wars.len(), entries);
+        assert_eq!(scan.war_starts.len(), entries);
+        assert!(
+            !scan
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("exceed"))
+        );
+        source
+            .state::<Vec<(u64, Arc<super::Scan>)>>()
+            .lock()
+            .unwrap()
+            .push((1, scan));
+        let reply = CountryGroups::load(
+            &source,
+            &CountryGroupParams {
+                branch_id: "1".into(),
+            },
+            &LoadContext { content: None },
+            &cancelled,
+        );
+        if entries == 100_001 {
+            let reply = reply.unwrap();
+            assert_eq!(reply.wars.len(), entries);
+            assert_eq!(reply.war_starts.len(), entries);
+        } else {
+            assert_eq!(
+                reply.unwrap_err().to_string(),
+                "The complete country group reply is too large; nothing was omitted"
+            );
+        }
+    }
+}
+
+#[test]
+fn country_groups_rescan_evicted_branches_without_losing_reply_data() {
+    use super::{CACHED_BRANCHES, CountryGroupParams, CountryGroups, Scan};
+    use crate::products::{LoadContext, Product};
+    let branches = (1..=CACHED_BRANCHES as u64 + 1)
+        .map(|branch| {
+            let mut frame = group_frame(100, &[9001], &[(5, "Pact", &[9001, 44])], &[(44, 9001)]);
+            frame.branch = branch;
+            records(branch, vec![frame])
+        })
+        .collect::<Vec<_>>();
+    let source = group_source(Replay::from_records(CAMPAIGN.into(), &branches).unwrap());
+    let load = |branch: u64| {
+        CountryGroups::load(
+            &source,
+            &CountryGroupParams {
+                branch_id: branch.to_string(),
+            },
+            &LoadContext { content: None },
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    };
+    let first = serde_json::to_value(load(1)).unwrap();
+    let cache = source.state::<Vec<(u64, Arc<Scan>)>>();
+    let original = Arc::clone(&cache.lock().unwrap()[0].1);
+    for branch in 2..=CACHED_BRANCHES as u64 + 1 {
+        load(branch);
+    }
+    {
+        let cached = cache.lock().unwrap();
+        assert_eq!(cached.len(), CACHED_BRANCHES);
+        assert!(cached.iter().all(|(branch, _)| *branch != 1));
+    }
+    assert_eq!(serde_json::to_value(load(1)).unwrap(), first);
+    let cached = cache.lock().unwrap();
+    let rescanned = &cached.iter().find(|(branch, _)| *branch == 1).unwrap().1;
+    assert!(!Arc::ptr_eq(&original, rescanned));
+}
 
 /// Countries GER (link 9001), FRA (44), CTL (55) and MOD (66), with the given
 /// human countries, factions (id, name, members) and wars at this hour.
