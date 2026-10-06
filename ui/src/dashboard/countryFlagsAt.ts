@@ -50,11 +50,13 @@ export type CountryLabel = (tag: string) => { name: string; flag?: string };
 /** Countries named and flagged as the recording showed them at their hours (such as
  * a trade partner at the read behind a tooltip), never a later identity. Only the
  * countries `wanted` are asked for; until their names arrive, or where the
- * recording has none, a country shows by its tag and without a flag. `revision`
+ * recording has none, a country shows by its tag and without a flag. Callers with
+ * more distinct drawn hours can pass their own `maxHours`. `revision`
  * changes as names and flags arrive, for a chart to redraw. */
-export function useCountryLabelsAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean) {
-  const names = useCountryNamesAt(client, track, wanted, active);
-  const flags = useCountryFlagsAt(client, track, wanted, active);
+export function useCountryLabelsAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
+  maxHours = MAX_NAME_HOURS) {
+  const names = useCountryNamesAt(client, track, wanted, active, maxHours);
+  const flags = useCountryFlagsAt(client, track, wanted, active, 'small', maxHours);
   const labelAt = useCallback((hour: number): CountryLabel => tag => ({ name: names.get(nameKey(hour, tag)) ?? tag, flag: flags.get(nameKey(hour, tag)) }), [names, flags]);
   return { labelAt, revision: names.size + flags.size };
 }

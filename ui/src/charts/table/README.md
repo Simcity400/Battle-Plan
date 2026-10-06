@@ -93,7 +93,7 @@ in both densities. Column `width` accepts a CSS grid track (e.g. `92px` or
 `minmax(190px, 2fr)`), including the cell's 12px padding on each side.
 Use `minmax(0, 1fr)` for names that should truncate and `max-content` for
 numbers that keep their natural width. Content-sized columns measure the header
-and mounted cells, share the widest measurement across rows, and grow as new
+and mounted cells in fractional layout pixels (also under widget zoom), share the widest measurement across rows, and grow as new
 virtual rows appear. Density, font or column-label changes remeasure them. `CountryCell`
 exposes the full country name through its title; custom name cells should do
 the same. Column minimums, rather than full name text, determine overflow.

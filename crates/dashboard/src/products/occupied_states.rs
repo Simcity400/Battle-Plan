@@ -137,23 +137,12 @@ fn name_of(
 ) -> Result<String, String> {
     let cat =
         cat.ok_or_else(|| "State names need the recorded content stack and language".to_owned())?;
-    scripted_text::state_name_from(
+    scripted_text::state_display_name(
         state,
-        |bytes, what| {
-            scripted_text::stored_text(&cat.localisation, &cat.recorded_language, bytes, what)
-        },
-        |id| {
-            let key = names
-                .get(&id)
-                .ok_or_else(|| "No recorded-content state template".to_owned())?
-                .as_ref()
-                .map_err(Clone::clone)?;
-            cat.localisation
-                .localise(key.as_bytes())
-                .map_err(|refusal| refusal.to_string())
-        },
+        cat,
+        Ok(names),
+        scripted_text::StateNameUsage::Occupation,
     )
-    .and_then(|text| catalogue::plain_text(&text))
 }
 
 /// P: GetOccupationLaw 140F84BB0 -> 140FE2FE0: state override (+0xB0,

@@ -154,3 +154,16 @@ export function logDate(hour: number): { day: string; year: string } {
   if (!date) return { day: `Hour ${Math.floor(hour)}`, year: '' };
   return { day: `${date.day} ${monthNames[date.month - 1].slice(0, 3)}`, year: String(date.year) };
 }
+
+/** Retained-window logs keep the first visible row in place as off-screen rows
+ * arrive or are released. At the top, new entries remain immediately visible. */
+export function anchoredScrollTop<T>(previous: readonly LogItem<T>[], before: readonly number[],
+  next: readonly LogItem<T>[], after: readonly number[], top: number): number {
+  if (top <= 0) return 0;
+  let at = before.length - 1;
+  while (at > 0 && before[at] > top) at--;
+  at = Math.max(0, at);
+  const key = previous[at]?.key;
+  const index = key === undefined ? -1 : next.findIndex(item => item.key === key);
+  return index < 0 ? top : Math.max(0, after[index] + top - before[at]);
+}

@@ -44,26 +44,37 @@ impl<'a> Scan<'a> {
             strength_missing: STRENGTH_MISSING.into(),
             warnings: Vec::new(),
         };
-        let content = cat
-            .map(|cat| scripted_text::read_state_content(&cat.content.layers))
-            .transpose();
-        let (names, defines) = match content {
-            Ok(Some(content)) => {
-                result.warnings.extend(
-                    scripted_text::live_state_warnings(&content.warnings).map(str::to_owned),
-                );
-                (content.names, Some(content.defines))
-            }
-            Ok(None) => (BTreeMap::new(), None),
-            Err(e) => {
-                result
-                    .warnings
-                    .push(format!("State template names unavailable: {e}"));
-                (
-                    BTreeMap::new(),
-                    cat.and_then(|cat| installed_content::defines::read(&cat.content.layers).ok()),
-                )
-            }
+        let names = cat
+            .and_then(|cat| match cat.cached_states() {
+                Ok(content) => Some(content.names.clone()),
+                Err(error) => {
+                    result
+                        .warnings
+                        .push(format!("State template names unavailable: {error}"));
+                    None
+                }
+            })
+            .unwrap_or_default();
+        // The threshold needs only the defines: read them directly when the cached
+        // state content (names, provinces) is unavailable.
+        let fallback;
+        let defines = match cat {
+            None => None,
+            Some(cat) => match cat.cached_states() {
+                Ok(content) => Some(&content.defines),
+                Err(_) => match installed_content::defines::read(&cat.content.layers) {
+                    Ok(defines) => {
+                        fallback = defines;
+                        Some(&fallback)
+                    }
+                    Err(error) => {
+                        result
+                            .warnings
+                            .push(format!("Garrison defines unavailable: {error}"));
+                        None
+                    }
+                },
+            },
         };
         // P: occupied-state row 14155CC50 compares the displayed strength fraction
         // with NInterface.GARRISON_STRENGTH_TO_SHOW_RED at 14331F240.
@@ -782,5 +793,31 @@ mod tests {
             scan.finish().trend.series["Changed opaque tag"][0].read_hour,
             100
         );
+    }
+
+    #[test]
+    fn occupied_states_state_name_failure_keeps_exact_text_and_one_diagnostic() {
+        let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[]);
+        let mut scan = Scan::new(1, Some(&cat));
+        let state = StateRow {
+            id: 41,
+            ..Default::default()
+        };
+        assert_eq!(
+            scan.name(&state).1.as_deref(),
+            Some("No recorded-content state template")
+        );
+        let reply = scan.finish().states;
+        assert_eq!(
+            reply
+                .warnings
+                .iter()
+                .filter(|line| line.contains("No recorded-content state template"))
+                .count(),
+            1
+        );
+        assert!(reply.warnings.iter().all(|line| {
+            !line.contains("State template names unavailable: State template names unavailable:")
+        }));
     }
 }

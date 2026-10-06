@@ -34,7 +34,8 @@ use replay::{
 mod balance;
 mod entries;
 pub(crate) use entries::{
-    Environment, StateNames, live_state_warnings, read_state_content, state_name_from,
+    Environment, StateContent, StateNameUsage, StateNames, live_state_warnings, read_state_content,
+    state_display_name,
 };
 mod properties;
 pub(crate) mod random;
@@ -375,6 +376,8 @@ pub struct ScriptedContent {
     /// state names read ([`entries`]).
     pub layers: std::sync::Arc<installed_content::content::ResolvedContent>,
     pub(crate) environment: std::sync::OnceLock<Result<entries::Environment, String>>,
+    pub(crate) state_content:
+        std::sync::Arc<std::sync::OnceLock<Result<entries::StateContent, String>>>,
     pub(crate) template_names: std::sync::OnceLock<Result<Localisation, String>>,
     event_index: std::sync::OnceLock<installed_content::events::LazyEvents>,
     pub(crate) effects:
@@ -408,6 +411,7 @@ impl ScriptedContent {
             recorded_language,
             layers: content,
             environment: std::sync::OnceLock::from(Ok(environment)),
+            state_content: std::sync::Arc::new(std::sync::OnceLock::new()),
             template_names: std::sync::OnceLock::new(),
             event_index: std::sync::OnceLock::new(),
             effects: std::sync::OnceLock::new(),

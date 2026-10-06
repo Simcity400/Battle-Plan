@@ -203,10 +203,10 @@ impl Environment {
         self.leader_traits.as_ref().map_err(Clone::clone)
     }
 
-    fn inputs(&self, layers: &installed_content::ResolvedLayers) -> Result<&EnvironmentInputs, String> {
+    fn inputs(&self, content: &ScriptedContent) -> Result<&EnvironmentInputs, String> {
         self.inputs
             .get_or_init(|| {
-                EnvironmentInputs::read(layers, self)
+                EnvironmentInputs::read(content, self)
                     .map_err(|why| format!("scripted localisation content: {why}"))
             })
             .as_ref()
@@ -242,9 +242,15 @@ pub(super) struct EnvironmentInputs {
 }
 
 impl EnvironmentInputs {
-    fn read(layers: &installed_content::ResolvedLayers, environment: &Environment) -> std::io::Result<Self> {
+    fn read(content: &ScriptedContent, environment: &Environment) -> std::io::Result<Self> {
+        let layers = &content.layers.layers;
         let defines = environment.defines();
-        let (states, state_names, warnings) = read_state_templates(layers, defines)?;
+        let StateContent {
+            states,
+            names: state_names,
+            warnings,
+            ..
+        } = content.cached_states().map_err(crate::invalid)?;
         let states = states.definitions();
         let state_provinces = states
             .iter()
@@ -255,13 +261,13 @@ impl EnvironmentInputs {
             .and_then(|(graph, _)| graph.neighbor_states(&state_provinces))
             .map_err(|e| e.to_string());
         Ok(Self {
-            warnings: live_state_warnings(&warnings).map(str::to_owned).collect(),
+            warnings: live_state_warnings(warnings).map(str::to_owned).collect(),
             state_provinces,
             impassable: states
                 .iter()
                 .filter_map(|(&id, s)| s.impassable.then_some(id))
                 .collect(),
-            state_names,
+            state_names: state_names.clone(),
             neighbors,
             terrain: environment.terrain().ok().and_then(|terrain| {
                 installed_content::movement::MovementMap::read_with_terrain(layers, defines, terrain).ok()
@@ -327,11 +333,64 @@ impl EnvironmentInputs {
     }
 }
 
+impl ScriptedContent {
+    pub(crate) fn cached_states(&self) -> Result<&StateContent, &str> {
+        self.state_content
+            .get_or_init(|| {
+                read_state_content(&self.layers.layers).map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map_err(String::as_str)
+    }
+}
+
+/// Preserve each caller's established diagnostics without registering a second refusal.
+#[derive(Clone, Copy)]
+pub(crate) enum StateNameUsage {
+    Place,
+    Occupation,
+    Raid,
+}
+
+/// State tables and place labels share stored-language and template precedence.
+pub(crate) fn state_display_name(
+    state: &replay::rows::StateRow,
+    cat: &crate::catalogue::Catalogue,
+    names: Result<&StateNames, &str>,
+    usage: StateNameUsage,
+) -> Result<String, String> {
+    state_name_from(
+        state,
+        |bytes, what| super::stored_text(&cat.localisation, &cat.recorded_language, bytes, what),
+        |id| {
+            let key = names
+                .map_err(str::to_owned)?
+                .get(&id)
+                .ok_or_else(|| match usage {
+                    StateNameUsage::Place => {
+                        format!("state {id}: No recorded-content state template")
+                    }
+                    StateNameUsage::Occupation => "No recorded-content state template".into(),
+                    StateNameUsage::Raid => format!("state {id} has no content name"),
+                })?
+                .as_ref()
+                .map_err(Clone::clone)?;
+            if matches!(usage, StateNameUsage::Raid) {
+                crate::catalogue::localised(&cat.localisation, key, crate::catalogue::View::Plain)
+                    .map_err(|_| format!("state {id} name {key} is refused"))
+            } else {
+                cat.localisation
+                    .localise(key.as_bytes())
+                    .map_err(|error| error.to_string())
+            }
+        },
+    )
+    .and_then(|text| crate::catalogue::plain_text(&text))
+}
+
 impl<'a> ScriptedText<'a> {
     fn environment(&self) -> Result<&'a EnvironmentInputs, String> {
-        self.content
-            .environment()?
-            .inputs(&self.content.layers.layers)
+        self.content.environment()?.inputs(self.content)
     }
 
     /// The hour's trigger inputs, read on first use.
@@ -481,7 +540,7 @@ impl<'a> ScriptedText<'a> {
     }
 
     /// GetDisplayName (140E67930), as province GetName calls it (141A83DD0).
-    pub(super) fn province_name(&self, id: u32) -> Result<String, String> {
+    pub(crate) fn province_name(&self, id: u32) -> Result<String, String> {
         if let Some(raw) = self.province_name_override(id)? {
             let text = self.localisation.localise(raw).map_err(|e| e.to_string())?;
             if !text.is_empty() {
@@ -491,17 +550,29 @@ impl<'a> ScriptedText<'a> {
         self.province_victory_point_name(id)
     }
 
-    /// Effect/map display (140E69320), distinct from province GetName.
-    pub(crate) fn province_display_name(&self, id: u32) -> Result<String, String> {
+    /// First two rungs of 140E69320, also used by the combat-history location.
+    pub(crate) fn province_display_name_primary(&self, id: u32) -> Result<Option<String>, String> {
         if let Some(raw) = self
             .province_name_override(id)?
             .filter(|raw| !raw.is_empty())
         {
             // Native tests raw length, then returns even an empty localisation.
-            return self.localisation.localise(raw).map_err(|e| e.to_string());
+            return self
+                .localisation
+                .localise(raw)
+                .map(Some)
+                .map_err(|e| e.to_string());
         }
         let text = self.province_victory_point_name(id)?;
         if !text.is_empty() {
+            return Ok(Some(text));
+        }
+        Ok(None)
+    }
+
+    /// Effect/map display (140E69320), distinct from province GetName.
+    pub(crate) fn province_display_name(&self, id: u32) -> Result<String, String> {
+        if let Some(text) = self.province_display_name_primary(id)? {
             return Ok(text);
         }
         let (provinces, gap) = rows::<tables::Provinces>(self.frame);

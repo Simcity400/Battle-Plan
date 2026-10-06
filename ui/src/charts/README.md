@@ -98,3 +98,8 @@ segments. Layout room comes from `CHART_LAYOUT` in [tokens.ts](tokens.ts).
 - **No fixed colours or sizes.** Draw with `ChartTokens`. Countries use their recorded map colours; categories take their content colour, else the palette in its fixed order. Content may have any number of categories, so none is hidden for want of a colour: lines past the eighth repeat the colours with dashes of their own (`lineStyles`), and bands repeat them in order.
 - **Sharp at any Size.** Size the backing store with `backingSize` and draw in layout pixels; never stretch a canvas.
 - **Zoom holds during playback.** A zoomed axis keeps its range until the user resets it.
+
+Windowed logs may pass `LogList.anchorRows`: when an off-screen window arrives
+or is released, the first visible keyed item keeps its scroll position. At the
+top, new rows remain visible immediately. `logData.anchoredScrollTop` supplies
+the pure calculation.

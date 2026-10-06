@@ -175,6 +175,52 @@ pixels: Array<number>, };
 export type CountryFlagParams = { branchId: string, hour: number, tags: Array<string>, size: CountryFlagSize, };
 export type CountryFlagReply = { branchId: string, hour: number, size: CountryFlagSize, flags: Array<CountryFlagImage>, warnings: Array<string>, };
 export type LandOwnersParams = Record<string, never>;
+export type BattleWindow = { firstHour: number, lastHour: number, };
+export type BattleWarning = { hour: number, reason: string, count: number, };
+export type BattleBound = "exact" | "by";
+export type BattleMoment = { hour: number, bound: BattleBound, };
+export type BattleEnd = BattleMoment | { unknown: string, };
+export type BattlePlace = { name: string | null, hour: number, };
+export type BattleCountry = { tag: string, hour: number, };
+export type BattleValue = { label: string, value: number, atLeast?: boolean, } | { label: string, value: null, unknown: string, };
+export type BattleSide = { label: string, countries: Array<BattleCountry>, countriesUnknown?: string, counts: Array<BattleValue>, losses: Array<BattleValue>, };
+export type BattleWinner = { side: number, } | { unknown: string, };
+export type BattleRow = { id: string, place: BattlePlace, start: BattleMoment | null, end: BattleEnd | null, sides: Array<BattleSide>, winner: BattleWinner, };
+export type LandBattlesParams = { branchId: string, window: number, };
+export type LandBattlePeak = { value: number, hour: number, };
+export type LandBattleRun = { firstHour: number, lastHour: number, counts: [number, number], countries: [Array<string>, Array<string>], countriesUnknown: [boolean, boolean],
+/**
+ * Exact native counter at first_hour; every subsequent recorded read steps by one.
+ */
+duration: number, };
+export type LandBattleLossRead = { hour: number,
+/**
+ * True only for the post-flush FinalizeCombat read, never inferred from absence.
+ */
+terminal: boolean,
+/**
+ * Attacker then defender; equipment totals and named variant values stay separate.
+ */
+sides: [Array<BattleValue>, Array<BattleValue>], };
+export type LandBattleHistory = { id: string, provinceId: number, start: BattleMoment, end: BattleEnd | null, endUnknownHour: number | null, counterBase: number, priorPeak: LandBattlePeak | null, runs: Array<LandBattleRun>, losses: Array<LandBattleLossRead>, };
+export type LandBattlesReply = { window: number, interval: BattleWindow, rows: Array<LandBattleHistory>, observed: Array<[number, number]>, warnings: Array<BattleWarning>, contentWarnings: Array<string>, };
+export type LandBattlesManifestParams = { branchId: string, };
+export type LandBattlesManifestReply = {
+/**
+ * Windows come from this recording's replay blocks, never a chosen duration.
+ */
+windows: Array<BattleWindow>, available: boolean, unavailable: string | null, contentWarnings: Array<string>, };
+export type LandBattleCountryFilter = { tags: Array<string> | null, membership: Array<MembershipRun> | null, unobserved: Array<HourSpan>, };
+export type LandBattlesRankingParams = { branchId: string, firstHour: number, lastHour: number, topN: number, measure: string, countries: LandBattleCountryFilter, };
+export type LandBattlesRankingReply = { rows: Array<LandBattleHistory>, censusHour: number | null, effectiveMeasure: string, warnings: Array<BattleWarning>, contentWarnings: Array<string>, };
+export type PlaceNamesParams = { branchId: string, places: Array<PlaceNameRequest>, };
+export type PlaceNameRequest = { provinceId: number, hour: number, };
+export type PlaceName = { provinceId: number, hour: number,
+/**
+ * Native province display name; null when no name resolves.
+ */
+name: string | null, missing: string | null, };
+export type PlaceNamesReply = { places: Array<PlaceName>, warnings: Array<string>, };
 export type CountryStyleParams = { branchId: string, hour: number, tags: Array<string>, };
 export type CountryStyle = { tag: string,
 /**
@@ -2360,4 +2406,4 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "war-casualties", "country-factories", "scoreboard", "country-nukes", "raids", "occupied-states", "occupation-trend", "idea-history", "party-history", "resource-balance", "decryption", "production-lines", "production-line-detail", "equipment-stockpile", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "equipment-losses", "construction-spending", "espionage-log", "agency-comparison"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "place-names", "country-styles", "country-groups", "country-stability", "stability-parts", "war-casualties", "country-factories", "scoreboard", "country-nukes", "raids", "occupied-states", "occupation-trend", "idea-history", "party-history", "resource-balance", "decryption", "production-lines", "production-line-detail", "equipment-stockpile", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "equipment-losses", "construction-spending", "espionage-log", "agency-comparison"] as const;

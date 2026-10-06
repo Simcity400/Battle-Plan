@@ -127,7 +127,8 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
       const readings = elements.map(element => {
         const cell = element.closest('th, td')!;
         const css = getComputedStyle(cell);
-        return { key: element.dataset.tableNatural!, width: element.offsetWidth + parseFloat(css.paddingLeft) + parseFloat(css.paddingRight) };
+        // Keep fractional layout pixels; offsetWidth rounds down and can trigger ellipsis.
+        return { key: element.dataset.tableNatural!, width: parseFloat(getComputedStyle(element).width) + parseFloat(css.paddingLeft) + parseFloat(css.paddingRight) };
       });
       setNatural(before => {
         const previous = before.scope === widthScope ? before.widths : new Map<string, number>();

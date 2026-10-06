@@ -34,6 +34,7 @@ widgets/<name>/
 
 Anything a second widget would need belongs in the shared kit, not in a widget folder: fix it once there and every widget, present and future, has the fix. A widget folder keeps only what is about its own content (what its values mean, its rows and wording). Before writing a helper, look in the kit; when a widget grows one that another could use, move it to the kit with its tests. The kit so far:
 
+- **Battle rows** ([battles/](battles/README.md)): `BattleLog` composes the log and table kits with caller-supplied sides, wording and label-keyed measures; `battleRows.ts` keeps bounds, unknown values, dated country facts and start-based Jump shared.
 - **Reply shapes** ([dashboard/validation.ts](../dashboard/validation.ts)): `object` (a JSON object, excluding arrays and null), `int` (a safe integer without coercion), `signed64` (a recorded decimal string within the signed 64-bit range) and `opaqueTag` (nonempty country text without NUL), shared by product validators.
 - **Product batches** ([dashboard/products.ts](../dashboard/products.ts)): `useProducts` shares, validates and caches several independent product requests without a request on each playback tick; every content-dependent request uses the same current content revision.
 - **Feature availability** ([dashboard/definitions.ts](../dashboard/definitions.ts)): `WidgetMeta.availability` names a lightweight product request. The picker enables a feature only when it reports `available: true`; widgets use `WidgetState` for loading, empty, error and **Not in this recording**.

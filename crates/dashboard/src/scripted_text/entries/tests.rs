@@ -57,3 +57,101 @@ fn description_append_preserves_active_cursor_graph_and_guard_state() {
     }
     assert!(expanded.valid_links.get());
 }
+
+#[test]
+fn scripted_text_cached_state_diagnostics_are_filtered_and_reported_once() {
+    use installed_content::states::{Diagnostic, MisreadCause};
+    let (cat, _folder) = crate::scripted_text::tests::catalogue("", "");
+    let warnings = vec![
+        Diagnostic {
+            kind: installed_content::DiagnosticKind::Warning,
+            message: "native template skip".into(),
+            cause: None,
+        },
+        Diagnostic {
+            kind: installed_content::DiagnosticKind::Misread,
+            message: "proven state recovery".into(),
+            cause: Some(MisreadCause::InvalidImpassable),
+        },
+        Diagnostic {
+            kind: installed_content::DiagnosticKind::Misread,
+            message: "unproven state recovery".into(),
+            cause: None,
+        },
+        Diagnostic {
+            kind: installed_content::DiagnosticKind::Unsupported,
+            message: "unsupported state content".into(),
+            cause: None,
+        },
+    ];
+    assert!(
+        cat.state_content
+            .set(Ok(StateContent {
+                defines: installed_content::defines::read(&cat.content.layers).unwrap(),
+                states: Default::default(),
+                names: StateNames::new(),
+                warnings: warnings.clone(),
+            }))
+            .is_ok()
+    );
+    let expected = ["unproven state recovery", "unsupported state content"];
+    assert_eq!(cat.reader_warning_lines(), expected);
+    assert_eq!(cat.refusal_lines(), expected);
+    let content = cat.scripted_content().unwrap();
+    assert!(std::ptr::eq(
+        cat.cached_states().unwrap(),
+        content.cached_states().unwrap(),
+    ));
+    assert_eq!(cat.refusal_lines(), expected);
+    let mut inputs = EnvironmentInputs::synthetic();
+    inputs.warnings = live_state_warnings(&warnings).map(str::to_owned).collect();
+    assert!(
+        content
+            .environment()
+            .unwrap()
+            .inputs
+            .set(Ok(inputs))
+            .is_ok()
+    );
+    assert_eq!(cat.reader_warning_lines(), expected);
+    assert_eq!(cat.refusal_lines(), expected);
+    cat.refuse("unrelated text failure", "synthetic text");
+    assert_eq!(cat.reader_warning_lines(), expected);
+    assert_eq!(cat.refusal_lines().len(), expected.len() + 1);
+}
+
+#[test]
+fn scripted_text_state_display_shares_precedence_language_and_cached_failures() {
+    let (mut cat, _folder) =
+        crate::scripted_text::tests::catalogue("", " MOD_STATE:0 \"Mod state\"\n");
+    let content = cat.scripted_content().unwrap();
+    assert!(content.state_content.get().is_none());
+    let first_error = cat.cached_states().err().unwrap();
+    assert!(content.state_content.get().is_some());
+    assert_eq!(cat.cached_states().err().unwrap(), first_error);
+    let names = BTreeMap::from([(64, Ok("MOD_STATE".into()))]);
+    let mut state = replay::rows::StateRow {
+        id: 64,
+        ..Default::default()
+    };
+    assert_eq!(
+        state_display_name(&state, &cat, Ok(&names), StateNameUsage::Place).unwrap(),
+        "Mod state"
+    );
+    state.owner_name = b"Owner state".to_vec();
+    assert_eq!(
+        state_display_name(&state, &cat, Err("unread content"), StateNameUsage::Place).unwrap(),
+        "Owner state"
+    );
+    state.custom_name = b"Custom state".to_vec();
+    assert_eq!(
+        state_display_name(&state, &cat, Ok(&names), StateNameUsage::Place).unwrap(),
+        "Custom state"
+    );
+    cat.recorded_language = "other-language".into();
+    assert!(
+        state_display_name(&state, &cat, Ok(&names), StateNameUsage::Place)
+            .unwrap_err()
+            .contains("other-language")
+    );
+}

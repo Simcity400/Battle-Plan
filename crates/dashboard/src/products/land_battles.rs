@@ -1,0 +1,904 @@
+//! Recording-window land census; names resolve only for drawn rows.
+//!
+//! CCombat ctor 0x1413CB400 initializes signed i32 +0x40 day=-1 and
+//! +0x44 duration=0. ResolveCombatRound 0x1412A3110 increments duration;
+//! CheckRoundTermination 0x1412A3E70 advances day on continued rounds.
+//! Save/load 0x1413CEE30/0x1413CDD20 stores these counters, not dates.
+//! Neither establishes an absolute start. Dates below are observation bounds.
+//!
+//! CreateCombatants 0x141299730 creates attacker then defender. AddUnit
+//! 0x1413CC2B0 and RemoveUnit 0x1413CE340 author the complete side roster
+//! (+0x20 pointer, +0x2C signed count), including committed, reserve and
+//! neither-role participants. LandCombats records its full u64 army handles.
+//! Country-set writer 0x1413CC0D0 keeps logical owners (+0x38 primary) and
+//! distinct positive roster owners (+0x50 secondary): both identify recorded
+//! participants, never a winner. Raw u32 references resolve at that read.
+//!
+//! RegisterIdentity 0x1422097C0 writes the complete u64 identity (+0x18);
+//! creation 0x140BA8B00 uses 0x1401E3FF0, border combat 0x140BA7920 uses
+//! 0x14220A450. Branch and observed episode keep reused handles separate.
+//! Province setter/getter 0x1413CEA50/0x140F1C390 store/read +0x38;
+//! 0x1413CEE30 saves the pointed province's u32 ID (+0xA4).
+//! LandCombats/LandCombatSides are hourly (replay::cadence); slot_read dates
+//! successful reads. Heavy detail/progress tables supply no result and are
+//! deliberately not needed. Winner has one adapter for future recorded results.
+//! Finalizer 0x1412A43A0 uses side +0x498 bit 1 and signed qword +0x418;
+//! these result operands are absent. Disappearance never selects a winner.
+
+//! Round dispatch: HourlyGamestate@0x1401DEF80 calls manager@0x140BA9890
+//! once per game hour. Its 0x140BA9B71 call through vtable +0x78 selects
+//! ResolveCombatRound@0x1412A3110, once per valid unfinished combat. +0x44
+//! therefore counts resolved hourly rounds; +0x40 counts continued rounds
+//! (CheckRoundTermination@0x1412A3E70), not elapsed days. Length uses the
+//! recorded duration counter as a minimum; after a gap its baseline resets
+//! at the new segment's first read, so neither counter bridges the gap.
+//!
+//! Casualties are not recorded: side damage@0x1412A4BE0/0x14129E240 is
+//! strength/organisation damage, not killed manpower. Strength@0x1412A26B0
+//! and progress@0x1413CCB10 are current combat capability/organisation ratios.
+//! The capture/mil-land Results and DestroyedDivisions schemas contain no
+//! per-battle manpower losses. Native loss candidate: participant_lifecycle
+//! @0x141299850 passes remaining CArmyManpower::GetTotal@0x140C5A040;
+//! active_damage@0x140C7BFC0 passes removed manpower from 0x140C7FD50 ->
+//! 0x140C5B350. AccumulateCombatLogDamage@0x140CCB010 adds that i32 to
+//! CLandCombatant+0x1B0's observer +0x60. A future LandCombatLosses table
+//! must copy this per-side counter with combat identity and read/end hour,
+//! including terminal/deletion coverage. Retained SCombatData stores the two
+//! i32 losses at +0x10/+0x220 (copy 0x140CC96C0), with role selected by
+//! +0x447; it has no stable live-combat reference. No current replay table
+//! captures either source, and war-wide totals cannot attribute it.
+//! Loss reads below are a normalized adapter for the incoming hourly and
+//! post-flush terminal capture; no provisional replay schema is imported.
+use super::{
+    LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, ReplyWarnings,
+    battles::{
+        self, BattleBound, BattleEnd, BattleMoment, BattleValue, BattleWarning, BattleWindow,
+    },
+};
+use crate::{
+    Source,
+    metadata::{LinkTags, check_cancel, slot_read, validate_campaign},
+    transport::json_len,
+};
+use replay::{
+    container::Replay,
+    frame::{DecodedFrame, FrameDecoder},
+    rows::{TableId, tables},
+};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    io,
+    sync::{Arc, atomic::AtomicBool},
+};
+use ts_rs::TS;
+
+pub struct LandBattles;
+pub struct LandBattlesManifest;
+pub struct LandBattlesRanking;
+const CENSUS_TABLES: [TableId; 5] = [
+    TableId::Campaign,
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::LandCombats,
+    TableId::LandCombatSides,
+];
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LandBattlesParams {
+    pub branch_id: String,
+    pub window: usize,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LandBattlesManifestParams {
+    pub branch_id: String,
+}
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LandBattlePeak {
+    #[ts(type = "number")]
+    pub value: u64,
+    pub hour: i32,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LandBattleRun {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub counts: [u32; 2],
+    pub countries: [Vec<String>; 2],
+    pub countries_unknown: [bool; 2],
+    /// Exact native counter at first_hour; every subsequent recorded read steps by one.
+    pub duration: i32,
+}
+impl LandBattleRun {
+    fn duration_at(&self, hour: i32) -> i64 {
+        i64::from(self.duration) + i64::from(hour) - i64::from(self.first_hour)
+    }
+    fn clipped(&self, first: i32, last: i32) -> Self {
+        Self {
+            first_hour: first,
+            last_hour: last,
+            duration: self.duration_at(first) as i32,
+            ..self.clone()
+        }
+    }
+}
+/// Normalized cumulative reads, supplied by the casualty capture adapter at merge.
+/// Deltas must first be accumulated within complete coverage of this episode.
+#[derive(Clone, Debug, Serialize, TS)]
+pub struct LandBattleLossRead {
+    pub hour: i32,
+    /// True only for the post-flush FinalizeCombat read, never inferred from absence.
+    pub terminal: bool,
+    /// Attacker then defender; equipment totals and named variant values stay separate.
+    pub sides: [Vec<BattleValue>; 2],
+}
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LandBattleHistory {
+    pub id: String,
+    pub province_id: u32,
+    pub start: BattleMoment,
+    pub end: Option<BattleEnd>,
+    pub end_unknown_hour: Option<i32>,
+    pub counter_base: i32,
+    pub prior_peak: Option<LandBattlePeak>,
+    pub runs: Vec<LandBattleRun>,
+    pub losses: Vec<LandBattleLossRead>,
+}
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LandBattlesManifestReply {
+    /// Windows come from this recording's replay blocks, never a chosen duration.
+    pub windows: Vec<BattleWindow>,
+    pub available: bool,
+    pub unavailable: Option<String>,
+    pub content_warnings: Vec<String>,
+}
+impl ReplyWarnings for LandBattlesManifestReply {
+    fn warnings_mut(&mut self) -> &mut Vec<String> {
+        &mut self.content_warnings
+    }
+}
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LandBattlesReply {
+    pub window: usize,
+    pub interval: BattleWindow,
+    pub rows: Vec<LandBattleHistory>,
+    pub observed: Vec<(i32, i32)>,
+    pub warnings: Vec<BattleWarning>,
+    pub content_warnings: Vec<String>,
+}
+impl ReplyWarnings for LandBattlesReply {
+    fn warnings_mut(&mut self) -> &mut Vec<String> {
+        &mut self.content_warnings
+    }
+}
+/// Same dated country predicate as client countryMatch, needed before server top-N.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LandBattleCountryFilter {
+    pub tags: Option<Vec<String>>,
+    pub membership: Option<Vec<super::country_groups::MembershipRun>>,
+    pub unobserved: Vec<super::country_groups::HourSpan>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LandBattlesRankingParams {
+    pub branch_id: String,
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub top_n: f64,
+    pub measure: String,
+    pub countries: LandBattleCountryFilter,
+}
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LandBattlesRankingReply {
+    pub rows: Vec<LandBattleHistory>,
+    pub census_hour: Option<i32>,
+    pub effective_measure: String,
+    pub warnings: Vec<BattleWarning>,
+    pub content_warnings: Vec<String>,
+}
+impl ReplyWarnings for LandBattlesRankingReply {
+    fn warnings_mut(&mut self) -> &mut Vec<String> {
+        &mut self.content_warnings
+    }
+}
+struct Episode {
+    id: String,
+    province: u32,
+    start: BattleMoment,
+    end: Option<(i32, BattleEnd)>,
+    counter_base: i32,
+    runs: Vec<LandBattleRun>,
+    losses: Vec<LandBattleLossRead>,
+}
+impl Episode {
+    fn history(
+        &self,
+        runs: Vec<LandBattleRun>,
+        last: i32,
+        prior_peak: Option<LandBattlePeak>,
+    ) -> LandBattleHistory {
+        let end = self.end.as_ref().filter(|(hour, _)| *hour <= last);
+        LandBattleHistory {
+            id: self.id.clone(),
+            province_id: self.province,
+            start: self.start.clone(),
+            end: end.map(|(_, end)| end.clone()),
+            end_unknown_hour: end
+                .and_then(|(hour, end)| matches!(end, BattleEnd::Unknown { .. }).then_some(*hour)),
+            losses: self.loss_reads(runs[0].first_hour, last),
+            counter_base: self.counter_base,
+            prior_peak,
+            runs,
+        }
+    }
+    fn loss_at(&self, hour: i32) -> Option<&LandBattleLossRead> {
+        self.losses.iter().rev().find(|read| read.hour <= hour)
+    }
+    fn loss_reads(&self, first: i32, last: i32) -> Vec<LandBattleLossRead> {
+        // Carry one prior supplying read, not the entire casualty history.
+        self.loss_at(first)
+            .into_iter()
+            .chain(
+                self.losses
+                    .iter()
+                    .filter(|read| read.hour > first && read.hour <= last),
+            )
+            .cloned()
+            .collect()
+    }
+    fn casualties_at(&self, hour: i32) -> Option<f64> {
+        let read = self.loss_at(hour)?;
+        let mut total = 0.0;
+        for side in &read.sides {
+            match side.iter().find(|value| match value {
+                BattleValue::Known { label, .. } | BattleValue::Unknown { label, .. } => {
+                    label == "Manpower lost"
+                }
+            })? {
+                BattleValue::Known { value, .. } if value.is_finite() => total += *value,
+                _ => return None,
+            }
+        }
+        total.is_finite().then_some(total)
+    }
+    fn peak_before(&self, hour: i32) -> Option<LandBattlePeak> {
+        self.runs
+            .iter()
+            .take_while(|run| run.first_hour <= hour)
+            .fold(None, |peak: Option<LandBattlePeak>, run| {
+                let value = u64::from(run.counts[0]) + u64::from(run.counts[1]);
+                if peak.as_ref().is_none_or(|peak| value > peak.value) {
+                    Some(LandBattlePeak {
+                        value,
+                        hour: run.first_hour,
+                    })
+                } else {
+                    peak
+                }
+            })
+    }
+}
+#[derive(Default)]
+struct Census {
+    episodes: Vec<Episode>,
+    open: HashMap<u64, usize>,
+    links: LinkTags,
+    observed: Vec<(i32, i32)>,
+    warnings: BTreeMap<(i32, String), usize>,
+}
+impl Census {
+    fn warn(&mut self, hour: i32, reason: impl Into<String>) {
+        *self.warnings.entry((hour, reason.into())).or_default() += 1;
+    }
+    fn gap(&mut self, hour: i32) {
+        for (_, at) in self.open.drain() {
+            self.episodes[at].end = Some((
+                hour,
+                BattleEnd::Unknown {
+                    unknown: "Ending not recorded".into(),
+                },
+            ));
+        }
+    }
+    fn observe(&mut self, frame: &DecodedFrame) -> io::Result<()> {
+        let hour = frame.hour;
+        let previous = self.observed.last().map(|(_, last)| *last);
+        let adjacent = previous.and_then(|last| last.checked_add(1)) == Some(hour);
+        if previous.is_some() && !adjacent {
+            self.gap(
+                previous
+                    .and_then(|last| last.checked_add(1))
+                    .unwrap_or(hour),
+            );
+        }
+        if !slot_read(&frame.metrics, TableId::LandCombats, hour) {
+            self.gap(hour);
+            return Ok(());
+        }
+        let Ok(rows) = frame.complete::<tables::LandCombats>() else {
+            self.warn(
+                hour,
+                "LandCombats unavailable or incomplete; ending not recorded",
+            );
+            self.gap(hour);
+            return Ok(());
+        };
+        // The decoder refuses tables without unique keys, so ids are distinct.
+        let ids: HashSet<u64> = rows.iter().map(|row| row.id).collect();
+        if let Some((_, last)) = self
+            .observed
+            .last_mut()
+            .filter(|(_, last)| last.checked_add(1) == Some(hour))
+        {
+            *last = hour;
+        } else {
+            self.observed.push((hour, hour));
+        }
+        let labels = self.links.update(frame).is_ok();
+        let sides = slot_read(&frame.metrics, TableId::LandCombatSides, hour)
+            .then(|| frame.complete::<tables::LandCombatSides>().ok())
+            .flatten();
+        let side_index: HashMap<u64, _> = sides
+            .into_iter()
+            .flatten()
+            .map(|side| (side.combat, side))
+            .collect();
+        let absent: Vec<_> = self
+            .open
+            .keys()
+            .filter(|id| !ids.contains(id))
+            .copied()
+            .collect();
+        for id in absent {
+            let at = self.open.remove(&id).expect("open battle");
+            // A gap already closes open episodes as unknown; only adjacent absence reaches here.
+            self.episodes[at].end = Some((
+                hour,
+                BattleEnd::Moment(BattleMoment {
+                    hour,
+                    bound: BattleBound::Exact,
+                }),
+            ));
+        }
+        for row in rows {
+            let side = side_index.get(&row.id);
+            let mut countries = [Vec::new(), Vec::new()];
+            let mut countries_unknown = [!labels || side.is_none(); 2];
+            if labels && let Some(side) = side {
+                for (index, (primary, secondary)) in [
+                    (&side.attacker_primary, &side.attacker_secondary),
+                    (&side.defender_primary, &side.defender_secondary),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    countries_unknown[index] = primary.is_empty() && secondary.is_empty();
+                    for raw in primary.iter().chain(secondary) {
+                        match self.links.get(*raw) {
+                            Some(tag) => countries[index].push(tag.clone()),
+                            None => {
+                                countries_unknown[index] = true;
+                                self.warn(
+                                    hour,
+                                    format!("Participant country reference {raw} unresolved"),
+                                );
+                            }
+                        }
+                    }
+                    countries[index].sort_unstable();
+                    countries[index].dedup();
+                }
+            }
+            if countries_unknown.contains(&true) {
+                self.warn(
+                    hour,
+                    "Participant countries not completely recorded at supplying read",
+                );
+            }
+            let distinct = |handles: &[u64]| -> io::Result<u32> {
+                u32::try_from(handles.iter().collect::<HashSet<_>>().len())
+                    .map_err(|_| io::Error::other("Recorded roster exceeds its native count"))
+            };
+            let counts = [distinct(&row.attackers)?, distinct(&row.defenders)?];
+            let continuing = self.open.get(&row.id).copied().filter(|at| {
+                let episode = &self.episodes[*at];
+                episode.province == row.province
+                    && episode
+                        .runs
+                        .last()
+                        .is_none_or(|run| i64::from(row.duration) >= run.duration_at(run.last_hour))
+            });
+            let at = match continuing {
+                Some(at) => at,
+                None => {
+                    if let Some(old) = self.open.remove(&row.id) {
+                        self.episodes[old].end = Some((
+                            hour,
+                            BattleEnd::Moment(BattleMoment {
+                                hour,
+                                bound: BattleBound::Exact,
+                            }),
+                        ));
+                    }
+                    let at = self.episodes.len();
+                    self.episodes.push(Episode {
+                        id: format!("{}:{}:{hour}", frame.branch, row.id),
+                        province: row.province,
+                        start: BattleMoment {
+                            hour,
+                            bound: if adjacent {
+                                BattleBound::Exact
+                            } else {
+                                BattleBound::By
+                            },
+                        },
+                        end: None,
+                        counter_base: if adjacent { 0 } else { row.duration },
+                        runs: Vec::with_capacity(1),
+                        losses: Vec::new(),
+                    });
+                    self.open.insert(row.id, at);
+                    at
+                }
+            };
+            let runs = &mut self.episodes[at].runs;
+            if let Some(run) = runs.last_mut().filter(|run| {
+                run.last_hour.checked_add(1) == Some(hour)
+                    && run.counts == counts
+                    && run.countries == countries
+                    && run.countries_unknown == countries_unknown
+                    && run.duration_at(hour) == i64::from(row.duration)
+            }) {
+                run.last_hour = hour;
+            } else {
+                runs.push(LandBattleRun {
+                    first_hour: hour,
+                    last_hour: hour,
+                    counts,
+                    countries,
+                    countries_unknown,
+                    duration: row.duration,
+                });
+            }
+        }
+        Ok(())
+    }
+    fn warnings_in(&self, first: i32, last: i32) -> Vec<BattleWarning> {
+        self.warnings
+            .iter()
+            .filter(|((hour, _), _)| *hour >= first && *hour <= last)
+            .map(|((hour, reason), count)| BattleWarning {
+                hour: *hour,
+                reason: reason.clone(),
+                count: *count,
+            })
+            .collect()
+    }
+    fn reply(
+        &self,
+        params: &LandBattlesParams,
+        windows: &[BattleWindow],
+    ) -> io::Result<LandBattlesReply> {
+        let window = windows
+            .get(params.window)
+            .ok_or_else(|| crate::invalid("Battle window not in this recording"))?;
+        let mut rows = Vec::new();
+        let observed = self
+            .observed
+            .iter()
+            .filter(|(first, last)| *first <= window.last_hour && *last >= window.first_hour)
+            .map(|(first, last)| {
+                (
+                    (*first).max(window.first_hour),
+                    (*last).min(window.last_hour),
+                )
+            })
+            .collect();
+        for episode in &self.episodes {
+            if episode.start.hour > window.last_hour {
+                continue;
+            }
+            let end_in_window = episode
+                .end
+                .as_ref()
+                .is_some_and(|(hour, _)| *hour >= window.first_hour && *hour <= window.last_hour);
+            let mut runs: Vec<_> = episode
+                .runs
+                .iter()
+                .filter(|run| {
+                    run.first_hour <= window.last_hour && run.last_hour >= window.first_hour
+                })
+                .map(|run| {
+                    run.clipped(
+                        run.first_hour.max(window.first_hour),
+                        run.last_hour.min(window.last_hour),
+                    )
+                })
+                .collect();
+            if runs.is_empty() && end_in_window {
+                let last = episode.runs.last().expect("observed episode");
+                runs.push(last.clipped(last.last_hour, last.last_hour));
+            }
+            if runs.is_empty() {
+                continue;
+            }
+            rows.push(
+                episode.history(
+                    runs,
+                    window.last_hour,
+                    window
+                        .first_hour
+                        .checked_sub(1)
+                        .and_then(|hour| episode.peak_before(hour)),
+                ),
+            );
+        }
+        bounded(LandBattlesReply {
+            window: params.window,
+            interval: window.clone(),
+            rows,
+            observed,
+            warnings: self.warnings_in(window.first_hour, window.last_hour),
+            content_warnings: Vec::new(),
+        })
+    }
+    fn ranked(
+        &self,
+        params: &LandBattlesRankingParams,
+        cancelled: &AtomicBool,
+    ) -> io::Result<LandBattlesRankingReply> {
+        let tags: Option<HashSet<_>> = params
+            .countries
+            .tags
+            .as_ref()
+            .map(|tags| tags.iter().map(String::as_str).collect());
+        let mut membership: HashMap<&str, Vec<(i32, i32)>> = HashMap::new();
+        if let Some(runs) = &params.countries.membership {
+            for run in runs {
+                membership
+                    .entry(&run.tag)
+                    .or_default()
+                    .push((run.first_hour, run.last_hour));
+            }
+        }
+        let matches = |run: &LandBattleRun, read: i32| {
+            run.countries_unknown.contains(&true)
+                || run.countries.iter().flatten().any(|tag| {
+                    tags.as_ref().is_none_or(|tags| tags.contains(tag.as_str()))
+                        && (params.countries.membership.is_none()
+                            || !params
+                                .countries
+                                .unobserved
+                                .iter()
+                                .any(|span| span.first_hour <= read && span.last_hour >= read)
+                                && membership.get(tag.as_str()).is_some_and(|runs| {
+                                    runs.iter()
+                                        .any(|(first, last)| *first <= read && *last >= read)
+                                }))
+                })
+        };
+        let mut ranked = Vec::new();
+        for episode in &self.episodes {
+            check_cancel(cancelled)?;
+            let Some(run) = episode
+                .runs
+                .iter()
+                .rev()
+                .find(|run| run.first_hour <= params.last_hour)
+            else {
+                continue;
+            };
+            let read = run.last_hour.min(params.last_hour);
+            let end_in_range = episode
+                .end
+                .as_ref()
+                .is_some_and(|(hour, _)| *hour >= params.first_hour && *hour <= params.last_hour);
+            if read < params.first_hour && !end_in_range || !matches(run, read) {
+                continue;
+            }
+            let peak = episode
+                .peak_before(params.last_hour)
+                .expect("observed episode");
+            let length = (i64::from(read) - i64::from(episode.start.hour))
+                .max(run.duration_at(read) - i64::from(episode.counter_base))
+                .max(0) as u64;
+            ranked.push((
+                episode.casualties_at(params.last_hour),
+                length,
+                episode,
+                run,
+                read,
+                peak,
+            ));
+        }
+        let effective = match params.measure.as_str() {
+            "Casualties" if ranked.iter().any(|entry| entry.0.is_some()) => "Casualties",
+            "Length" => "Length",
+            _ => "Peak size",
+        };
+        let value = |entry: &(
+            Option<f64>,
+            u64,
+            &Episode,
+            &LandBattleRun,
+            i32,
+            LandBattlePeak,
+        )| match effective {
+            "Casualties" => entry.0,
+            "Length" => Some(entry.1 as f64),
+            _ => Some(entry.5.value as f64),
+        };
+        ranked.sort_unstable_by(|a, b| {
+            value(b)
+                .partial_cmp(&value(a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.2.id.cmp(&b.2.id))
+        });
+        // A huge user N saturates at usize::MAX, which cannot omit any Vec entry.
+        let rows = ranked
+            .into_iter()
+            .take(params.top_n as usize)
+            .map(|(_, _, episode, run, read, peak)| {
+                episode.history(vec![run.clipped(read, read)], params.last_hour, Some(peak))
+            })
+            .collect();
+        let census_hour = self
+            .observed
+            .iter()
+            .filter(|(first, _)| *first <= params.last_hour)
+            .map(|(_, last)| (*last).min(params.last_hour))
+            .max();
+        bounded(LandBattlesRankingReply {
+            rows,
+            census_hour,
+            effective_measure: effective.into(),
+            content_warnings: Vec::new(),
+            warnings: {
+                let mut summary: BTreeMap<&str, (i32, usize)> = BTreeMap::new();
+                for ((hour, reason), count) in &self.warnings {
+                    if *hour >= params.first_hour && *hour <= params.last_hour {
+                        let entry = summary.entry(reason).or_insert((*hour, 0));
+                        entry.1 += count;
+                    }
+                }
+                summary
+                    .into_iter()
+                    .map(|(reason, (hour, count))| BattleWarning {
+                        hour,
+                        reason: reason.into(),
+                        count,
+                    })
+                    .collect()
+            },
+        })
+    }
+}
+fn bounded<T: Serialize>(reply: T) -> io::Result<T> {
+    json_len(&reply, MAX_PRODUCT_REPLY_BYTES).ok_or_else(|| crate::invalid(format!(
+        "Battle reply exceeds MAX_PRODUCT_REPLY_BYTES ({MAX_PRODUCT_REPLY_BYTES} bytes); no battles were omitted."
+    )))?;
+    Ok(reply)
+}
+fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Census> {
+    let mut census = Census::default();
+    for block in replay.index.iter().filter(|block| block.branch == branch) {
+        check_cancel(cancelled)?;
+        let mut decoder = FrameDecoder::for_tables(&CENSUS_TABLES);
+        let Ok(frames) = replay.read_block_selected(block, &CENSUS_TABLES) else {
+            census.gap(block.first_hour);
+            census.warn(block.first_hour, "Unread replay block; ending not recorded");
+            continue;
+        };
+        for frame in frames {
+            check_cancel(cancelled)?;
+            let Ok(decoded) = decoder.advance(&frame) else {
+                census.gap(frame.hour);
+                census.warn(frame.hour, "Unread replay frame; ending not recorded");
+                break;
+            };
+            validate_campaign(decoded, replay)?;
+            census.observe(decoded)?;
+        }
+    }
+    Ok(census)
+}
+fn recording_available(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<bool> {
+    let selected = [TableId::Campaign, TableId::LandCombats];
+    for block in replay.index.iter().filter(|block| block.branch == branch) {
+        check_cancel(cancelled)?;
+        let mut decoder = FrameDecoder::for_tables(&selected);
+        let Ok(frames) = replay.read_block_selected(block, &selected) else {
+            continue;
+        };
+        for frame in frames {
+            check_cancel(cancelled)?;
+            let Ok(decoded) = decoder.advance(&frame) else {
+                break;
+            };
+            if validate_campaign(decoded, replay).is_err() {
+                break;
+            }
+            // A complete empty read also proves that this recording has the battle census.
+            if slot_read(&decoded.metrics, TableId::LandCombats, decoded.hour)
+                && decoded.complete::<tables::LandCombats>().is_ok()
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+fn branch_id(source: &Source, branch: &str) -> io::Result<u64> {
+    let branch = branch
+        .parse::<u64>()
+        .map_err(|_| crate::invalid("Invalid battle branch"))?;
+    if !source
+        .replay_ref()
+        .branches
+        .iter()
+        .any(|entry| entry.id == branch)
+    {
+        return Err(crate::invalid("Branch not in this recording"));
+    }
+    Ok(branch)
+}
+fn windows(replay: &Replay, branch: u64) -> Vec<BattleWindow> {
+    replay
+        .index
+        .iter()
+        .filter(|block| block.branch == branch)
+        .map(|block| BattleWindow {
+            first_hour: block.first_hour,
+            last_hour: block.last_hour,
+        })
+        .collect()
+}
+#[derive(Default)]
+struct Cache {
+    branches: VecDeque<(u64, Arc<Census>)>,
+}
+impl Cache {
+    fn get(&mut self, branch: u64) -> Option<Arc<Census>> {
+        let at = self.branches.iter().position(|(id, _)| *id == branch)?;
+        let entry = self.branches.remove(at).expect("cached branch");
+        let census = Arc::clone(&entry.1);
+        self.branches.push_back(entry);
+        Some(census)
+    }
+    fn insert(&mut self, branch: u64, census: Arc<Census>) {
+        self.branches.retain(|(id, _)| *id != branch);
+        self.branches.push_back((branch, census));
+        while self.branches.len() > 2 {
+            self.branches.pop_front();
+        }
+    }
+}
+fn census(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Result<Arc<Census>> {
+    let state = source.state::<Cache>();
+    let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(census) = cache.get(branch) {
+        return Ok(census);
+    }
+    let census = Arc::new(scan(source.replay_ref(), branch, cancelled)?);
+    cache.insert(branch, Arc::clone(&census));
+    Ok(census)
+}
+impl Product for LandBattles {
+    const KEY: &'static str = "land-battles";
+    const CONTENT_DEPENDENT: bool = false;
+    type Params = LandBattlesParams;
+    type Reply = LandBattlesReply;
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        params
+            .branch_id
+            .parse::<u64>()
+            .map_err(|_| "Invalid battle branch")?;
+        Ok(())
+    }
+    fn types() -> Vec<String> {
+        let mut types = battles::types();
+        types.extend([
+            LandBattlesParams::decl(),
+            LandBattlePeak::decl(),
+            LandBattleRun::decl(),
+            LandBattleLossRead::decl(),
+            LandBattleHistory::decl(),
+            LandBattlesReply::decl(),
+        ]);
+        types
+    }
+    fn load(
+        source: &Source,
+        params: &Self::Params,
+        _: &LoadContext,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Self::Reply> {
+        let branch = branch_id(source, &params.branch_id)?;
+        census(source, branch, cancelled)?.reply(params, &windows(source.replay_ref(), branch))
+    }
+}
+impl Product for LandBattlesManifest {
+    const KEY: &'static str = "land-battles-manifest";
+    const CONTENT_DEPENDENT: bool = false;
+    type Params = LandBattlesManifestParams;
+    type Reply = LandBattlesManifestReply;
+    fn types() -> Vec<String> {
+        vec![
+            LandBattlesManifestParams::decl(),
+            LandBattlesManifestReply::decl(),
+        ]
+    }
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        params
+            .branch_id
+            .parse::<u64>()
+            .map_err(|_| "Invalid battle branch")?;
+        Ok(())
+    }
+    fn load(
+        source: &Source,
+        params: &Self::Params,
+        _: &LoadContext,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Self::Reply> {
+        let branch = branch_id(source, &params.branch_id)?;
+        let available = recording_available(source.replay_ref(), branch, cancelled)?;
+        bounded(LandBattlesManifestReply {
+            windows: windows(source.replay_ref(), branch),
+            available,
+            unavailable: (!available).then(|| "Not in this recording".into()),
+            content_warnings: Vec::new(),
+        })
+    }
+}
+impl Product for LandBattlesRanking {
+    const KEY: &'static str = "land-battles-ranking";
+    const CONTENT_DEPENDENT: bool = false;
+    type Params = LandBattlesRankingParams;
+    type Reply = LandBattlesRankingReply;
+    fn types() -> Vec<String> {
+        vec![
+            LandBattleCountryFilter::decl(),
+            LandBattlesRankingParams::decl(),
+            LandBattlesRankingReply::decl(),
+        ]
+    }
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        params
+            .branch_id
+            .parse::<u64>()
+            .map_err(|_| "Invalid battle branch")?;
+        if params.first_hour > params.last_hour
+            || !params.top_n.is_finite()
+            || params.top_n < 1.0
+            || params.top_n.fract() != 0.0
+        {
+            return Err("Invalid battle ranking range or top N");
+        }
+        if !["Casualties", "Peak size", "Length"].contains(&params.measure.as_str()) {
+            return Err("Unknown battle measure");
+        }
+        Ok(())
+    }
+    fn load(
+        source: &Source,
+        params: &Self::Params,
+        _: &LoadContext,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Self::Reply> {
+        let branch = branch_id(source, &params.branch_id)?;
+        check_cancel(cancelled)?;
+        census(source, branch, cancelled)?.ranked(params, cancelled)
+    }
+}
+#[cfg(test)]
+mod tests;

@@ -7,6 +7,11 @@ Production detail windows carry warnings too, so a cached history cannot hide a
 later content read. The [installed-content contract](../installed-content/README.md) owns this
 reporting opt-in and the strict default for other readers.
 
+State templates, names and defines share one lazy catalogue cache with scripted
+text. Plain state names do not require scripted-localisation defines. Live replies
+filter the producer's typed state diagnostics and report each failure once;
+offline corpus readers retain the native template-skip diagnostic kinds.
+
 Everything a widget needs natively: opened recordings, data products, the host/viewer protocol and the data service that answers the frontend. No map pixels are drawn here and no live game memory is read.
 
 Opened metadata carries the replay's terminal partial marker separately from branch gaps. The verified prefix remains readable; the marker keeps the failure reason and an optional attempted hour. An unknown failed hour adds no inferred gap. Recording-library summaries read only the validated replay trailer, leaving frame blocks to the normal source-open path.
@@ -190,6 +195,32 @@ receive native phase/outcome IDs from the product. The complete JSON replies
 refuse oversized histories as `RaidReplyTooLarge` or `NuclearReplyTooLarge`.
 [Raid target resolution](../installed-content/README.md#map-movement-and-raids) is shared
 with map hovers.
+
+Land battles uses the cached hourly census in
+[`land_battles.rs`](src/products/land_battles.rs), returned as recording-block
+windows. The manifest checks only through the first complete census read;
+the UI window hook retains the playhead and drawn log windows. Biggest battles
+uses one server-ranked top-N summary reply, filtering before ranking with the
+same dated predicate as client `countryMatch`. Counter runs store exact +1
+steps, splitting on any different step. The cache retains the two most recently
+used branches. Gaps split episodes, adjacent complete
+censuses establish exact observation dates, and missing endings stay visible.
+Side counts include distinct reserve participants; peaks retain their read hour.
+Native hourly-round duration supplies a minimum length. Dated cumulative and
+post-flush terminal casualty reads have a normalized product adapter; main
+still records neither casualties nor winners. Supplied side losses project into
+the shared row unchanged, with running losses marked so far. Default casualty
+ranking uses manpower lost on both sides and falls back to peak size while no
+eligible total is known. Shared recording windows and dated warnings also live
+in `battles.rs`. Only the shared reply budget refuses oversized
+responses, never truncating. Generic wire values live in
+[`battles.rs`](src/products/battles.rs); [`place_names.rs`](src/products/place_names.rs)
+resolves drawn province/hour names, including state-less sea regions. Places,
+Occupied states and Raids share `scripted_text::state_display_name` and its
+cached state-content read. Callers own state-name failure reporting, preserving
+Occupied states / Raids diagnostics without also registering a catalogue refusal;
+Occupied states reuses the cached defines. See the [widget guide](../../ui/src/widgets/land-battles/README.md)
+and [shared battle module](../../ui/src/widgets/battles/README.md).
 
 ## Service
 

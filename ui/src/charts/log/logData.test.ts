@@ -121,3 +121,14 @@ test('a tooltip follows what its row is about across the row’s keys, and goes 
   assert.equal(tipRow({ id: 'p' }, new Map()), null);
   assert.equal(tipRow(null, after), null);
 });
+
+
+test('window release preserves a scrolled row while the top follows new entries', async () => {
+  const { anchoredScrollTop, logItems, logOffsets } = await import('./logData.ts');
+  const rows = Array.from({ length: 100 }, (_, i) => ({ key: String(i), hour: 100 - i, item: i }));
+  const before = logItems(rows, false), after = logItems(rows.slice(20), false);
+  const oldOffsets = logOffsets(before, 'compact'), newOffsets = logOffsets(after, 'compact');
+  Object.defineProperty(oldOffsets, 'findLastIndex', { value: undefined });
+  assert.equal(anchoredScrollTop(before, oldOffsets, after, newOffsets, oldOffsets[30] + 3), newOffsets[10] + 3);
+  assert.equal(anchoredScrollTop(before, oldOffsets, after, newOffsets, 0), 0);
+});

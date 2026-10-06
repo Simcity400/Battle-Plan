@@ -309,6 +309,8 @@ pub struct Catalogue {
     /// Scripted localisation names and the recursion limit, read on first
     /// use ([`Catalogue::scripted_content`]).
     scripted: OnceLock<Result<crate::scripted_text::ScriptedContent, String>>,
+    /// State templates are usable without the scripted-localisation inputs.
+    pub(crate) state_content: Arc<OnceLock<Result<crate::scripted_text::StateContent, String>>>,
 }
 
 impl Catalogue {
@@ -392,6 +394,7 @@ impl Catalogue {
             refused: Mutex::default(),
             findings: None,
             scripted: OnceLock::new(),
+            state_content: Arc::new(OnceLock::new()),
         })
     }
 
@@ -493,6 +496,20 @@ impl Catalogue {
                     Arc::clone(&self.content),
                     self.recorded_language.clone(),
                 )
+                .map(|mut scripted| {
+                    scripted.state_content = Arc::clone(&self.state_content);
+                    scripted
+                })
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    pub(crate) fn cached_states(&self) -> Result<&crate::scripted_text::StateContent, String> {
+        self.state_content
+            .get_or_init(|| {
+                crate::scripted_text::read_state_content(&self.content.layers)
+                    .map_err(|error| error.to_string())
             })
             .as_ref()
             .map_err(Clone::clone)
@@ -531,7 +548,7 @@ impl Catalogue {
     /// product's accumulated text/artwork refusals.
     pub(crate) fn reader_warning_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
-        if let Some(Ok(scripted)) = self.scripted.get() {
+        let environment_warnings = if let Some(Ok(scripted)) = self.scripted.get() {
             lines.extend(
                 scripted
                     .names
@@ -539,9 +556,26 @@ impl Catalogue {
                     .iter()
                     .map(|(_, message)| message.clone()),
             );
-            if let Some(Ok(environment)) = scripted.environment.get() {
-                lines.extend(environment.warnings().iter().cloned());
-            }
+            let environment_warnings = scripted
+                .environment
+                .get()
+                .and_then(|environment| environment.as_ref().ok())
+                .map_or(&[][..], |environment| environment.warnings());
+            lines.extend(environment_warnings.iter().cloned());
+            environment_warnings
+        } else {
+            &[]
+        };
+        if let Some(Ok(states)) = self.state_content.get() {
+            lines.extend(
+                crate::scripted_text::live_state_warnings(&states.warnings)
+                    .filter(|warning| {
+                        !environment_warnings
+                            .iter()
+                            .any(|line| line.as_str() == *warning)
+                    })
+                    .map(str::to_owned),
+            );
         }
         self.content.layers.read_warnings().append_to(&mut lines);
         lines
@@ -978,6 +1012,7 @@ pub(crate) mod tests {
             refused: Mutex::default(),
             findings: None,
             scripted: OnceLock::new(),
+            state_content: Arc::new(OnceLock::new()),
         }
     }
 

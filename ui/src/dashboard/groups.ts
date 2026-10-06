@@ -227,3 +227,14 @@ export function worldRequestTags(selection: CountrySelection, fallback: string[]
   const resolved = resolveCountries(selection, fallback, groups, lastHour, Number.MAX_SAFE_INTEGER);
   return { tags: resolved.tags, ready: resolved.reason === null && resolved.tags.length > 0, reason: resolved.reason };
 }
+
+/** Serializable countryMatch predicate for a server-ranked top N. Filtering after
+ * top N could discard the actual leaders; logs continue to filter locally. */
+export function countryMatchFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined, lastHour: number) {
+  if (selection.kind === 'group' && selection.membership === 'hour') {
+    return { tags: null, membership: groups ? groupRuns(groups, selection.group) ?? [] : [],
+      unobserved: groups ? groupUnobserved(groups, selection.group) : [] };
+  }
+  const { tags } = worldFilter(selection, fallback, groups, lastHour, lastHour);
+  return { tags: tags === null ? null : [...tags], membership: null, unobserved: [] };
+}

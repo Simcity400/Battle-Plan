@@ -6,7 +6,7 @@ import { fitTooltip, hideTooltip, showTooltip, tooltipStore, tooltipText } from 
 import type { TooltipContent } from '../tooltip';
 import { useRowMotion, movingRowClass } from '../useRowMotion';
 import { useViewportHeight } from '../useChartTokens';
-import { keyTarget, logDate, logItems, logOffsets, logRowColumns, MONTH_HEIGHT, ROW_HEIGHT, rowId, scrollToShow, shownMotion, tipRow, visibleRange } from './logData.ts';
+import { anchoredScrollTop, keyTarget, logDate, logItems, logOffsets, logRowColumns, MONTH_HEIGHT, ROW_HEIGHT, rowId, scrollToShow, shownMotion, tipRow, visibleRange } from './logData.ts';
 import type { LogColumns, LogDensity, LogItem, LogRow, LogTip } from './logData';
 import '../charts.css';
 import './log.css';
@@ -38,6 +38,8 @@ export interface LogListProps<T> {
   /** The rows drawn now (in view, with a margin), for a widget that names only
    * those, such as countries and flags as recorded at each row's hour. */
   onVisible?: (rows: readonly LogRow<T>[]) => void;
+  /** Preserve the first visible row while recording windows are released. */
+  anchorRows?: boolean;
 }
 
 /** A log (spec 2.2d, mock-up style-5): HTML rows newest first, each with its date,
@@ -48,7 +50,7 @@ export interface LogListProps<T> {
  * between pointer and keys), and it follows what its row is about (`rowId`) across
  * the row's keys, kept current or hidden as playback changes the rows. Right-click,
  * the context-menu key or Enter opens the row's menu. */
-export default function LogList<T>({ rows, label, density, months, animate, renderRow, columns, describe, tooltip, menu, empty, onVisible }: LogListProps<T>) {
+export default function LogList<T>({ rows, label, density, months, animate, renderRow, columns, describe, tooltip, menu, empty, onVisible, anchorRows = false }: LogListProps<T>) {
   const owner = useId();
   const listId = useId();
   const viewportHeight = useViewportHeight();
@@ -65,6 +67,15 @@ export default function LogList<T>({ rows, label, density, months, animate, rend
   const motionItems = useMemo(() => items.map(item => ({ key: item.key, item })), [items]);
   const moving = useRowMotion<LogItem<T>>(motionItems);
   const offsets = useMemo(() => logOffsets(items, density), [items, density]);
+  const priorLayout = useRef<{ items: readonly LogItem<T>[]; offsets: readonly number[]; top: number } | null>(null);
+  useLayoutEffect(() => {
+    const previous = priorLayout.current;
+    if (anchorRows && scroller && previous && previous.items !== items) {
+      const top = anchoredScrollTop(previous.items, previous.offsets, items, offsets, previous.top);
+      if (top !== scroller.scrollTop) { scroller.scrollTop = top; setView({ top, height: scroller.clientHeight }); }
+    }
+    priorLayout.current = { items, offsets, top: scroller?.scrollTop ?? 0 };
+  }, [items, offsets, anchorRows, scroller]);
   const indexById = useMemo(() => new Map(items.flatMap((item, index) => item.kind === 'row' ? [[rowId(item.row), index] as const] : [])), [items]);
   const rowIds = useMemo(() => items.flatMap(item => item.kind === 'row' ? [rowId(item.row)] : []), [items]);
   const byId = useMemo(() => new Map(rows.map(row => [rowId(row), row])), [rows]);
@@ -166,7 +177,11 @@ export default function LogList<T>({ rows, label, density, months, animate, rend
     {topMonth && <div className="log-month is-sticky" aria-hidden="true">{topMonth.label}</div>}
     <div ref={setScroller} className="log-scroll" role="listbox" aria-label={label} tabIndex={0}
       aria-activedescendant={current ? optionId(current) : undefined}
-      onScroll={event => setView({ top: event.currentTarget.scrollTop, height: event.currentTarget.clientHeight })}
+      onScroll={event => {
+        const top = event.currentTarget.scrollTop;
+        if (priorLayout.current) priorLayout.current.top = top;
+        setView({ top, height: event.currentTarget.clientHeight });
+      }}
       onKeyDown={onKeyDown}
       onFocus={event => { if (event.target === event.currentTarget && !current && rowIds.length) setActive(rowIds[0]); }}
       onBlur={clearTip}>

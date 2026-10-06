@@ -365,12 +365,8 @@ fn read_content(cat: Arc<Catalogue>) -> io::Result<Content> {
         refused.note(&kind.reason, &kind.name);
     }
     warnings.extend(refused.lines("raid types"));
-    let names = match scripted_text::read_state_content(&cat.content.layers) {
-        Ok(states) => {
-            warnings
-                .extend(scripted_text::live_state_warnings(&states.warnings).map(str::to_owned));
-            states.names
-        }
+    let names = match cat.cached_states() {
+        Ok(states) => states.names.clone(),
         Err(error) => {
             warnings.push(format!("Raid target state names are unavailable: {error}"));
             StateNames::new()
@@ -446,26 +442,11 @@ fn target_name(
                 .ok()
                 .map(|at| &rows[at])
                 .ok_or_else(|| format!("raid target state {state} is absent"))?;
-            scripted_text::state_name_from(
+            scripted_text::state_display_name(
                 row,
-                |bytes, what| {
-                    scripted_text::stored_text(
-                        &cat.localisation,
-                        &cat.recorded_language,
-                        bytes,
-                        what,
-                    )
-                },
-                |id| {
-                    let key = content
-                        .names
-                        .get(&id)
-                        .ok_or_else(|| format!("state {id} has no content name"))?
-                        .as_ref()
-                        .map_err(Clone::clone)?;
-                    cat.localised(key, View::Plain)
-                        .ok_or_else(|| format!("state {id} name {key} is refused"))
-                },
+                cat,
+                Ok(&content.names),
+                scripted_text::StateNameUsage::Raid,
             )
         },
     )
@@ -1335,7 +1316,11 @@ impl Product for Raids {
             if let Some(scan) = &log_scan {
                 reply.artwork = log_artwork(content, &scan.episodes);
             }
-            reply.warnings.extend(content.catalogue.refusal_lines());
+            for warning in content.catalogue.refusal_lines() {
+                if !reply.warnings.contains(&warning) {
+                    reply.warnings.push(warning);
+                }
+            }
         }
         measure_reply(
             &reply,

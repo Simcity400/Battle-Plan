@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply } from '../generated/dashboard';
-import { countryMatch, groupLabel, groupMembers, groupRuns, groupUnobserved, membershipChanges, worldFilter } from './groups.ts';
+import type { CountrySelection } from './model';
+import { countryMatch, countryMatchFilter, groupLabel, groupMembers, groupRuns, groupUnobserved, membershipChanges, worldFilter } from './groups.ts';
 import { createWidget } from './model.ts';
 import { parseTemplate } from './storage.ts';
 import { defaultTemplate } from './model.ts';
@@ -170,4 +171,23 @@ test('a whole-world widget narrowed to a group honours its membership setting', 
   assert.match(axis('hour', 195).reason!, /not recorded at this moment/);
   // Before any member joined, the group is empty at that moment.
   assert.match(axis('hour', 90).reason!, /no members at this moment/);
+});
+
+test('server top-N country predicate matches the dated client country rule without a chosen country cap', () => {
+  const selections: CountrySelection[] = [
+    { kind: 'all' }, { kind: 'tags', tags: ['GER', 'ITA'] },
+    ...(['hour', 'end', 'ever'] as const).map((membership): CountrySelection => ({ kind: 'group', group: { type: 'faction', id: '5' }, membership, aggregate: false })),
+  ];
+  for (const selection of selections) {
+    const client = countryMatch(selection, [], REPLY, 200);
+    const filter = countryMatchFilter(selection, [], REPLY, 200);
+    for (const hour of [100, 125, 175, 190, 200]) for (const tag of ['GER', 'ITA', 'HUN', 'ENG']) {
+      const matches = (filter.tags === null || filter.tags.includes(tag)) && (filter.membership === null ||
+        !filter.unobserved.some(span => span.firstHour <= hour && span.lastHour >= hour) &&
+        filter.membership.some(run => run.tag === tag && run.firstHour <= hour && run.lastHour >= hour));
+      assert.equal(matches, client.matches(tag, hour));
+    }
+  }
+  const tags = Array.from({ length: 5000 }, (_, i) => `opaque ${i}`);
+  assert.equal(countryMatchFilter({ kind: 'tags', tags }, [], undefined, 200).tags?.length, 5000);
 });

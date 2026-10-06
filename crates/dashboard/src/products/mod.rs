@@ -33,11 +33,14 @@ pub mod idea_history;
 pub mod identity;
 pub mod intelligence_content;
 pub use identity::civil_war;
+pub mod battles;
+pub mod land_battles;
 pub mod land_owners;
 pub mod national_focus;
 pub mod occupation_trend;
 pub mod occupied_states;
 pub mod party_history;
+pub mod place_names;
 pub mod politics_content;
 pub mod production_lines;
 pub mod production_spending;
@@ -131,6 +134,7 @@ reply_warnings!(
     occupation_trend::OccupationTrendReply,
     occupied_states::OccupiedStatesReply,
     party_history::PartyHistoryReply,
+    place_names::PlaceNamesReply,
     production_lines::ProductionLinesReply,
     production_lines::ProductionLineDetailReply,
     production_spending::ProductionSpendingReply,
@@ -319,6 +323,10 @@ pub static PRODUCTS: &[Registered] = &[
     register::<research::Research>(),
     register::<country_flags::CountryFlags>(),
     register::<land_owners::LandOwnersProduct>(),
+    register::<land_battles::LandBattles>(),
+    register::<land_battles::LandBattlesManifest>(),
+    register::<land_battles::LandBattlesRanking>(),
+    register::<place_names::PlaceNames>(),
     register::<country_styles::CountryStyles>(),
     register::<country_groups::CountryGroups>(),
     register::<country_stability::CountryStability>(),

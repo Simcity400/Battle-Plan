@@ -711,13 +711,20 @@ fn raids_live_reply_warns_only_for_unproven_state_reading() {
     )
     .unwrap();
     let catalogue = catalogue::catalogue(&source, &options).unwrap();
-    let state_content = scripted_text::read_state_content(&catalogue.content.layers).unwrap();
+    let mut state_content = scripted_text::read_state_content(&catalogue.content.layers).unwrap();
     assert!(
         state_content
             .warnings
             .iter()
             .any(|note| note.message.contains("state 41 is defined by both"))
     );
+    state_content.warnings.push(installed_content::states::Diagnostic {
+        kind: installed_content::DiagnosticKind::Unsupported,
+        message: "fixture state form is unsupported".into(),
+        cause: None,
+    });
+    assert!(catalogue.state_content.set(Ok(state_content)).is_ok());
+    let state_content = catalogue.cached_states().unwrap();
     let proven: Vec<_> = state_content
         .warnings
         .iter()
@@ -749,6 +756,14 @@ fn raids_live_reply_warns_only_for_unproven_state_reading() {
             .all(|note| !note.contains("state 41 is defined by both")),
         "{:?}",
         reply.warnings
+    );
+    assert_eq!(
+        reply
+            .warnings
+            .iter()
+            .filter(|note| note.as_str() == "fixture state form is unsupported")
+            .count(),
+        1
     );
     for note in proven {
         assert!(
