@@ -851,7 +851,14 @@ mod tests {
         set(&mut frame, TableRows::LandCombatSides(sides.clone()));
         let owners = BTreeMap::from([(7, 100)]);
         let links = BTreeMap::from([(100, 1), (101, 1), (200, 2)]);
-        let actions = standing_attacks(&frame, &[movement.clone()], &owners, &links, None).unwrap();
+        let actions = standing_attacks(
+            &frame,
+            std::slice::from_ref(&movement),
+            &owners,
+            &links,
+            None,
+        )
+        .unwrap();
         assert_eq!(actions[&7], Some(true));
         assert_eq!(
             action_code(&movement, actions[&7], Err("hostility"), None),
@@ -866,7 +873,14 @@ mod tests {
 
         sides[1].attacker_primary = vec![200];
         set(&mut frame, TableRows::LandCombatSides(sides.clone()));
-        let actions = standing_attacks(&frame, &[movement.clone()], &owners, &links, None).unwrap();
+        let actions = standing_attacks(
+            &frame,
+            std::slice::from_ref(&movement),
+            &owners,
+            &links,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             actions[&7],
             Some(false),
@@ -876,7 +890,14 @@ mod tests {
             rows: TableRows::LandCombats(combats),
             missing: 1,
         };
-        let actions = standing_attacks(&frame, &[movement.clone()], &owners, &links, None).unwrap();
+        let actions = standing_attacks(
+            &frame,
+            std::slice::from_ref(&movement),
+            &owners,
+            &links,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             actions[&7], None,
             "a prefix cannot prove every reference absent"
