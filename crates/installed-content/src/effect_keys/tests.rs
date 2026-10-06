@@ -4,6 +4,42 @@ use crate::parser::{
     native::{self, Read},
 };
 
+#[test]
+fn native_class_metadata_covers_the_reader_registry_and_aliases() {
+    assert!(
+        classes::CLASS_IDENTITIES
+            .windows(2)
+            .all(|pair| pair[0].0 < pair[1].0)
+    );
+    assert_eq!(classes::CLASS_IDENTITIES.len(), EFFECT_CLASSES.len());
+    for ((token, _), (class_token, name, vtable)) in
+        REGISTERED_EFFECTS.iter().zip(classes::CLASS_IDENTITIES)
+    {
+        assert_eq!(*token, class_token);
+        assert!(!name.is_empty());
+        assert_ne!(vtable, 0);
+    }
+    assert_eq!(
+        native_class(b"set_unit_leader_flag").map(|class| class.name),
+        Some("CSetCharacterFlagEffect")
+    );
+    assert_eq!(
+        native_class(b"SET_CHARACTER_FLAG"),
+        native_class(b"set_unit_leader_flag")
+    );
+    assert_eq!(native_class(b"else_if"), native_class(b"if"));
+    assert_eq!(native_class(b"else"), native_class(b"if"));
+    assert_eq!(native_class(b"synthetic_unknown"), None);
+    assert_ne!(
+        native_class(b"add_stability"),
+        native_class(b"add_war_support")
+    );
+    assert_eq!(
+        class(registered(b"add_stability").unwrap()),
+        class(registered(b"add_war_support").unwrap())
+    );
+}
+
 pub(super) fn read(text: &[u8], names: &KeyNames) -> Read {
     native::read(
         text,

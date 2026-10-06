@@ -1,4 +1,20 @@
 //! CEffect::BuildDescription (140532780), shared by event and balance tooltips.
+//!
+//! Stable domain entry points (core changes go through lead I):
+//! - `Renderer::{line, localised, expanded}` localise keys/arguments and expand in
+//!   the caller's scope/session (1410CF560); `line` appends LF.
+//! - `Renderer::{country_target, state_target, current_country, country_name, tag}`
+//!   resolve scoped operands and names; `state_name` uses GetStateName (1409CC380).
+//! - `Renderer::evaluator` is the shared trigger/variable/saved-target evaluator;
+//!   `scoped_value` evaluates fixed5 operands (1405382B0).
+//! - `Renderer::modifier_list`, `crate::modifier_text::value_text`, localisation
+//!   `Argument`, and `installed_content::fixed5::{fixed5_to_string, fixed5_percent}` retain
+//!   native modifier/number formatting (14054FE50, 142230F20).
+//! - `Renderer::group`, `append_description`, `indent_nonempty_lines`,
+//!   `trim_description`, and `Context::{with_variable_session,
+//!   with_expansion_scopes, variable_session}` retain indentation/session rules.
+//! - `Renderer::refuse(class, reason)` counts a named failure; the class-keyed
+//!   dispatch is in `dispatch.rs`. Each lead edits only its own domain and rows.
 use std::{
     cell::{OnceCell, RefCell},
     collections::BTreeMap,
@@ -6,6 +22,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::triggers::{NULL_STATE, Scope};
 use crate::{
     scripted_text::{EventScopes, ExpansionScopes, ScriptedText},
     triggers::{Evaluator, Scopes, World},
@@ -15,12 +32,22 @@ use installed_content::{
     parser::Item,
 };
 
-mod controls;
-mod decision;
-mod leaves;
+mod characters {}
+mod diplomacy;
+mod dispatch;
+mod empty;
+mod events;
+mod lists;
+mod modifiers;
+mod numeric;
+mod politics {}
+mod scopes;
+mod states;
+mod technology;
 #[cfg(test)]
 mod tests;
-mod timed_idea;
+mod units;
+mod variables;
 
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct Description {
@@ -242,7 +269,7 @@ pub fn trim_description(text: &str) -> &str {
 }
 
 /// 1424B7850 prefixes one space per level, leaving empty lines untouched.
-fn indent_nonempty_lines(text: &str, indent: usize) -> String {
+pub(super) fn indent_nonempty_lines(text: &str, indent: usize) -> String {
     let prefix = " ".repeat(indent);
     let mut out = String::new();
     for line in text.split_inclusive('\n') {
@@ -254,7 +281,7 @@ fn indent_nonempty_lines(text: &str, indent: usize) -> String {
     out
 }
 
-fn append_description(text: &mut String, child: &str) {
+pub(super) fn append_description(text: &mut String, child: &str) {
     if child.len() as i32 <= 1 {
         return;
     }
@@ -276,7 +303,79 @@ fn key(item: &Item) -> String {
 }
 
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
-    fn evaluator(&self) -> Result<&Evaluator<'c, 'f>, String> {
+    pub(super) fn tag(&self, country: u32) -> Result<&str, String> {
+        self.context
+            .text
+            .recorded()
+            .tag(country)
+            .ok_or_else(|| format!("Countries lacks tag for country {country}"))
+    }
+
+    pub(super) fn country_name(&self, country: u32, definite: bool) -> Result<String, String> {
+        self.context.text.country_name(country, definite)
+    }
+
+    pub(super) fn current_country(&self, scopes: Scopes) -> Result<u32, String> {
+        match scopes.this {
+            Scope::Country(country) => Ok(country),
+            _ => Err("current scope has no country (1405336C0)".into()),
+        }
+    }
+
+    pub(super) fn country_target(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<Option<u32>, String> {
+        let operand = item
+            .value
+            .scalar()
+            .or_else(|| field(children(item), "target").and_then(|field| field.value.scalar()));
+        match operand {
+            Some(value) => self.evaluator()?.scoped_country(value, scopes),
+            None => Ok(match scopes.this {
+                Scope::Country(country) => Some(country),
+                _ => None,
+            }),
+        }
+    }
+
+    pub(super) fn state_target(&self, item: &Item, scopes: Scopes) -> Result<u32, String> {
+        let state = match item.value.scalar() {
+            Some(value) => self.evaluator()?.scoped_state_id(value, scopes)? as u32,
+            None => 0,
+        };
+        if state == 0 {
+            Ok(match scopes.this {
+                Scope::State(state) => state,
+                _ => NULL_STATE,
+            })
+        } else {
+            Ok(state)
+        }
+    }
+
+    pub(super) fn line(
+        &self,
+        key: &[u8],
+        args: &[(&str, Argument<'_>)],
+        scopes: Scopes,
+        expand: bool,
+    ) -> Result<String, String> {
+        let mut text = self.localised(key, args, scopes, expand)?;
+        text.push('\n');
+        Ok(text)
+    }
+
+    pub(super) fn state_name(&self, state: u32) -> Result<String, String> {
+        self.context.text.state_name(state) // GetStateName@1409CC380.
+    }
+
+    pub(super) fn scoped_value(&self, operand: &[u8], scopes: Scopes) -> Result<i64, String> {
+        self.evaluator()?.scoped_value(operand, scopes) // CScopedVariable::Evaluate@1405382B0.
+    }
+
+    pub(super) fn evaluator(&self) -> Result<&Evaluator<'c, 'f>, String> {
         self.evaluator
             .get_or_init(|| {
                 let mut evaluator = Evaluator::new(self.context.world()?, None)
@@ -291,7 +390,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .map_err(Clone::clone)
     }
 
-    fn refuse(&mut self, key: &str, why: String) {
+    pub(super) fn refuse(&mut self, key: &str, why: String) {
         *self
             .out
             .refusals
@@ -299,7 +398,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .or_default() += 1;
     }
 
-    fn expanded(&self, text: &str, scopes: Scopes) -> Result<String, String> {
+    pub(super) fn expanded(&self, text: &str, scopes: Scopes) -> Result<String, String> {
         let session = self
             .evaluator
             .get()
@@ -331,7 +430,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .unwrap_or_else(|| format!("{name} content unavailable"))
     }
 
-    fn localised(
+    pub(super) fn localised(
         &self,
         key: &[u8],
         args: &[(&str, Argument<'_>)],
@@ -354,25 +453,23 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         match self.leaf(item, scopes) {
             Ok(text) => text,
             Err(why) => {
-                self.refuse(&key(item), why);
+                let class = self
+                    .effect_class(item)
+                    .map(|class| class.name)
+                    .unwrap_or("unknown key");
+                self.refuse(class, format!("key {}: {why}", key(item)));
                 String::new()
             }
         }
     }
 
     fn builder(&mut self, item: &Item, scopes: Scopes, indent: usize) -> String {
-        if item.keyword_is("every_state") {
-            return self.every_state(item, scopes, indent);
-        }
-        if self.is_context(item) {
-            return self.context_effect(item, scopes, indent);
-        }
-        if item.keyword_is("effect_tooltip") {
-            return self.group(children(item), scopes, indent);
-        }
-        if item.keyword_is("hidden_effect") {
-            self.group(children(item), scopes, indent);
-            return String::new();
+        match self.effect_class(item).map(|class| class.vtable) {
+            Some(0x1427576E8) /* CEveryStateEffect */ => return self.every_state(item, scopes, indent),
+            Some(0x14299F6F8) /* CContextEffect */ => return self.context_effect(item, scopes, indent),
+            Some(0x14299FD88) /* CEffectTooltipEffect */ => return self.tooltip_group(item, scopes, indent),
+            Some(0x14299FCB8) /* CHiddenEffect */ => return self.hidden_group(item, scopes, indent),
+            _ => {}
         }
         let own = self.own(item, scopes);
         if own.len() as i32 <= 1 {
@@ -397,7 +494,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     .is_some_and(|desc| !desc.is_empty()))
     }
 
-    fn group(&mut self, items: &[Item], scopes: Scopes, indent: usize) -> String {
+    pub(super) fn group(&mut self, items: &[Item], scopes: Scopes, indent: usize) -> String {
         let mut text = String::new();
         for (item, branches) in self.attached(items, true) {
             let line = if item.keyword_is("if") {

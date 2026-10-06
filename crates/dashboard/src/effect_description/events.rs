@@ -1,4 +1,4 @@
-//! Targeted-decision descriptions, 14038BF60 / 140720D40.
+//! Event and targeted-decision descriptions, 14037BDC0 / 14038BF60 / 140720D40.
 
 use super::*;
 use crate::{
@@ -98,6 +98,75 @@ fn name_key(
 }
 
 impl Renderer<'_, '_, '_> {
+    pub(super) fn custom_tooltip(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
+        // 1413832B0
+        let key = item
+            .value
+            .read_string()
+            .ok_or("custom_effect_tooltip bound localisation block is not ported (1413832B0)")?;
+        if key.contains(&b'|') {
+            return Err(format!(
+                "custom_effect_tooltip {} bound formatter is not ported (1413832B0)",
+                String::from_utf8_lossy(key)
+            ));
+        }
+        self.localised(key, &[], scopes, true)
+    }
+
+    // 14037BDC0: fresh seeded title scope; FROM is the caller's ROOT.
+    pub(super) fn country_event(&mut self, item: &Item, scopes: Scopes) -> Result<String, String> {
+        if let Some(desc) = field(children(item), "desc")
+            .and_then(|item| item.value.read_string())
+            .filter(|desc| !desc.is_empty())
+        {
+            return self.line(desc, &[], scopes, true);
+        }
+        let id = item
+            .value
+            .scalar()
+            .or_else(|| field(children(item), "id").and_then(|item| item.value.scalar()))
+            .ok_or("country_event has no id (14037BDC0)")?;
+        let event = (self
+            .context
+            .content
+            .events
+            .ok_or("referenced event lookup unavailable")?)(id)?;
+        if let Some(why) = &event.refused {
+            return Err(why.clone());
+        }
+        let mut title_scope = EventScope::of(EventObject::Country(self.current_country(scopes)?));
+        let cursor = scopes.cursor.unwrap_or(0);
+        let at = {
+            let mut graph = self.graph.borrow_mut();
+            title_scope.from = graph.scopes[cursor].root;
+            if title_scope.from == Link::Itself {
+                title_scope.from = Link::Scope(cursor);
+            }
+            let parent = &mut graph.scopes[cursor];
+            let seed = crate::scripted_text::random::scoped_draw(
+                parent.random_seed,
+                parent.random_counter,
+            ) as u32;
+            parent.random_seed = parent.random_seed.wrapping_add(1); // 14037BDC0 advances +0x0C.
+            title_scope.random_seed = crate::scripted_text::random::scope_seed(seed);
+            title_scope.random_counter = crate::scripted_text::random::scope_counter(seed);
+            let at = graph.scopes.len();
+            graph.scopes.push(title_scope);
+            at
+        };
+        let selected = self.evaluator()?.event_scopes(at)?;
+        let title = match event.sole_title_key()? {
+            Some(key) => self.localised(key, &[], selected, true)?,
+            None => String::new(),
+        };
+        self.localised(
+            b"EFFECT_COUNTRY_EVENT",
+            &[("EVENT", Argument::Text(&title))],
+            scopes,
+            true,
+        )
+    }
+
     pub(super) fn removed_decision(
         &mut self,
         item: &Item,

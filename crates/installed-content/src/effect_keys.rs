@@ -21,6 +21,7 @@ use crate::{
     trigger_keys::ScopeStep,
 };
 
+mod classes;
 pub(crate) mod key_readers;
 #[cfg(test)]
 mod tests;
@@ -1169,6 +1170,31 @@ pub fn class(token: u32) -> Option<(u64, u64)> {
         .binary_search_by_key(&token, |(id, _, _)| *id)
         .ok()
         .map(|index| (EFFECT_CLASSES[index].1, EFFECT_CLASSES[index].2))
+}
+
+/// Most-derived vtable identity distinguishes template specializations whose
+/// shortened RTTI names or value/key readers are shared.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeClass {
+    pub name: &'static str,
+    pub vtable: u64,
+}
+
+/// Conditional tails are CIfEffect aliases before registry lookup (1405345D0).
+pub fn native_class(keyword: &[u8]) -> Option<NativeClass> {
+    let token = if keyword.eq_ignore_ascii_case(b"else") || keyword.eq_ignore_ascii_case(b"else_if")
+    {
+        IF_TOKEN
+    } else {
+        registered(keyword)?
+    };
+    classes::CLASS_IDENTITIES
+        .binary_search_by_key(&token, |(id, _, _)| *id)
+        .ok()
+        .map(|index| {
+            let (_, name, vtable) = classes::CLASS_IDENTITIES[index];
+            NativeClass { name, vtable }
+        })
 }
 
 /// Whether ReadEffect adds a child. Conditional tails attach to the last

@@ -90,7 +90,7 @@ impl Renderer<'_, '_, '_> {
             IdeaName::Key(key) => self.localised(key.as_bytes(), &[], scopes, true)?,
             IdeaName::Generated(name) => name,
         };
-        let mut modifiers = self.idea_modifiers(&idea.modifiers, "", scopes)?;
+        let mut modifiers = self.modifier_list(&idea.modifiers, "", scopes)?;
         if !modifiers.is_empty() {
             modifiers.push('\n');
         }
@@ -115,7 +115,7 @@ impl Renderer<'_, '_, '_> {
                 selected,
                 false,
             )?;
-            modifiers.push_str(&self.idea_modifiers(&target.modifiers, &prefix, selected)?);
+            modifiers.push_str(&self.modifier_list(&target.modifiers, &prefix, selected)?);
             modifiers.push('\n');
         }
         let description = clean_modifiers(&modifiers);
@@ -143,9 +143,7 @@ impl Renderer<'_, '_, '_> {
             let Some(item) = field(fields, name) else {
                 continue;
             };
-            let raw = self
-                .evaluator()?
-                .scoped_value(item.value.scalar().unwrap_or_default(), scopes)?;
+            let raw = self.scoped_value(item.value.scalar().unwrap_or_default(), scopes)?;
             let whole = raw.div_euclid(100_000) as i32;
             if whole <= 0 {
                 continue;
@@ -165,7 +163,7 @@ impl Renderer<'_, '_, '_> {
         Ok(text)
     }
 
-    fn idea_modifiers(
+    pub(super) fn modifier_list(
         &self,
         modifiers: &Modifiers,
         prefix: &str,

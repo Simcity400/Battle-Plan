@@ -152,7 +152,11 @@ and the same value formatter. Wrappers and custom tooltips expand in a fresh
 country scope. Feature gates use the recorded simulation mask; missing masks and
 ambiguous range identities remain named, counted refusals.
 Activation/deactivation and the viewer's border-war event tails use one
-[effect description dispatcher](src/effect_description.rs). It ports the reached
+[effect description dispatcher](src/effect_description.rs). Native `effect_keys`
+class identities make aliases share a dispatcher row; unknown keys and unported
+classes are counted by name. Domain rows are grouped in
+`effect_description/dispatch.rs`; the core's module documentation defines the
+shared porting entry points. It ports the reached
 country/state leaves, numeric fixed5 values, faction and doctrine descriptions,
 targeted decisions and timed ideas, with the native conditional/context/state-list
 builders. Own lines use three spaces per level; `IndentNonEmptyLines` uses one.
