@@ -173,7 +173,9 @@ fn custom_only_balance_effects_do_not_require_world_or_environment() {
     let content = catalogue.scripted_content().unwrap();
     assert!(
         content
-            .environment
+            .environment()
+            .unwrap()
+            .inputs
             .set(Err("synthetic unavailable environment".into()))
             .is_ok()
     );

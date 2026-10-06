@@ -4,10 +4,51 @@ use super::*;
 use crate::character_scope::{Tables, UnitLeader};
 use replay::rows::{CharacterRow, TableSchema, UnitLeaderRow, tables};
 
+mod content;
+mod military;
+mod mio;
+mod operatives;
+mod peace;
+mod roles;
+mod scientists;
+mod traits;
+pub(super) use content::CharacterContent;
+
 #[cfg(test)]
 mod tests;
 
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
+    // Executable localisation names must exist in the recorded content stack.
+    // Authored name keys keep each native caller's ordinary raw-key fallback.
+    pub(super) fn char_native_text(
+        &self,
+        key: &[u8],
+        args: &[(&str, Argument<'_>)],
+        scopes: Scopes,
+        expand: bool,
+    ) -> Result<String, String> {
+        let name = std::str::from_utf8(key)
+            .map_err(|_| "native character localisation key is not UTF-8")?;
+        if self.context.localisation.get(name).is_none() {
+            return Err(format!(
+                "native character localisation key {name} is not defined"
+            ));
+        }
+        self.localised(key, args, scopes, expand)
+    }
+
+    pub(super) fn char_native_line(
+        &self,
+        key: &[u8],
+        args: &[(&str, Argument<'_>)],
+        scopes: Scopes,
+        expand: bool,
+    ) -> Result<String, String> {
+        let mut text = self.char_native_text(key, args, scopes, expand)?;
+        text.push('\n');
+        Ok(text)
+    }
+
     fn character_table<T: TableSchema>(&self) -> Result<&'f [T::Row], String> {
         self.context
             .text
@@ -46,7 +87,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
     // ResolveCharacter 140536B10: evaluated scope, named lookup 140536BB0,
     // then current character. The named lookup takes the country's first
-    // active character of the token (1410D6BF0); its native roster is recorded.
+    // active character of the token, then retired (1410D6BF0, include_retired=1).
     pub(super) fn effect_character_target(
         &self,
         operand: Option<&[u8]>,
@@ -86,33 +127,39 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 let world = self.context.world()?;
                 if let Some(token) = world.token_of(operand)? {
                     let characters = self.character_table::<tables::Characters>()?;
-                    let roster = self.character_table::<tables::CountryCharacters>()?;
-                    let mut selected: Option<(u32, &CharacterRow)> = None;
-                    for row in roster {
-                        let owner = world.slot(row.country).ok_or_else(|| {
-                            format!(
-                                "CountryLinks lacks character roster country {}",
-                                row.country
-                            )
-                        })?;
-                        if owner != country {
-                            continue;
-                        }
-                        let Some(id) = row.character else {
-                            continue;
+                    let active = self.character_table::<tables::CountryCharacters>()?;
+                    for roster in [Some(active), None] {
+                        let roster = match roster {
+                            Some(rows) => rows,
+                            None => self.character_table::<tables::CountryRetiredCharacters>()?,
                         };
-                        let character =
-                            characters.iter().find(|row| row.id == id).ok_or_else(|| {
-                                format!("CountryCharacters references missing character {id}")
+                        let mut selected: Option<(u32, &CharacterRow)> = None;
+                        for row in roster {
+                            let owner = world.slot(row.country).ok_or_else(|| {
+                                format!(
+                                    "CountryLinks lacks character roster country {}",
+                                    row.country
+                                )
                             })?;
-                        if character.name_token_id as u32 == token
-                            && selected.is_none_or(|(ordinal, _)| row.ordinal < ordinal)
-                        {
-                            selected = Some((row.ordinal, character));
+                            if owner != country {
+                                continue;
+                            }
+                            let Some(id) = row.character else {
+                                continue;
+                            };
+                            let character =
+                                characters.iter().find(|row| row.id == id).ok_or_else(|| {
+                                    format!("CountryCharacters references missing character {id}")
+                                })?;
+                            if character.name_token_id as u32 == token
+                                && selected.is_none_or(|(ordinal, _)| row.ordinal < ordinal)
+                            {
+                                selected = Some((row.ordinal, character));
+                            }
                         }
-                    }
-                    if let Some((_, character)) = selected {
-                        return Ok(Some(character));
+                        if let Some((_, character)) = selected {
+                            return Ok(Some(character));
+                        }
                     }
                 }
             }
@@ -150,6 +197,33 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             &row.inherited_text_b,
             &format!("unit leader {} name (+0x40)", row.id),
         )
+    }
+
+    // 140F8A840 may select a registry-only role. Text rows join the full
+    // reference without inventing a direct CCharacter+0xA8 association.
+    pub(super) fn effect_resolved_leader_name(
+        &self,
+        leader: UnitLeader<'f>,
+    ) -> Result<String, String> {
+        match leader {
+            UnitLeader::Direct(row) => self.effect_leader_name(row),
+            UnitLeader::Referenced(row) => {
+                let named = self
+                    .character_table::<tables::UnitLeaders>()?
+                    .iter()
+                    .find(|leader| {
+                        (u64::from(leader.id) << 32) | u64::from(leader.reference_type)
+                            == row.reference
+                    })
+                    .ok_or_else(|| {
+                        format!(
+                            "character {} referenced unit leader name (+0x40) is unrecorded",
+                            row.character
+                        )
+                    })?;
+                self.effect_leader_name(named)
+            }
+        }
     }
 
     // Own 140391DB0; reader 1403AB590. NAME@142727E7C, COUNTRYDEF@142764D78;
@@ -222,6 +296,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
     // Own 1402F8130: ResolveArmyLeader 1405292D0 accepts categories <2.
     // NAME@142727E7C copies +0x40; COUNTRY_NAME_DEF@14272BA20; no LF/expansion.
+    // ReadEffect 1402F8640 reads country, not target; vf7 requires country >0.
     pub(in crate::effect_description) fn character_capture_by(
         &self,
         item: &Item,
@@ -233,7 +308,15 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         if leader.category() as u32 >= 2 {
             return Ok(String::new());
         }
-        let Some(country) = self.country_target(item, scopes)? else {
+        let operand = if item.value.scalar().is_some() {
+            Some(item)
+        } else {
+            field(children(item), "country")
+        };
+        let Some(operand) = operand else {
+            return Ok(String::new());
+        };
+        let Some(country) = self.country_target(operand, scopes)? else {
             return Ok(String::new());
         };
         let name = match leader {

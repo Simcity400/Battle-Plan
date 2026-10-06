@@ -46,7 +46,7 @@ use installed_content::{
 };
 use replay::rows::{GlobalSavedEventTargetRow, StateRow, tables};
 
-mod characters {}
+mod characters;
 mod diplomacy;
 mod dispatch;
 mod empty;
@@ -93,9 +93,12 @@ pub struct Content<'a> {
 /// Per recorded content stack. Event bodies use the caller's lazy ID cache.
 pub struct CachedContent {
     politics: politics::PoliticsContent,
+    characters: characters::CharacterContent,
     doctrines: Option<installed_content::doctrines::Database>,
     decisions: Option<installed_content::decisions::Database>,
     ideas: Option<installed_content::ideas::IdeaContent>,
+    /// Advisor templates from the same ideas read (140FC0B30 -> 1406B0490).
+    pub advisor_templates: Option<installed_content::characters::Characters>,
     name_lists: Option<installed_content::names::NameLists>,
     key_names: Option<installed_content::key_names::KeyNames>,
     scripted_effects: Option<installed_content::scripted_effects::ScriptedEffects>,
@@ -109,7 +112,10 @@ pub struct CachedContent {
 }
 
 impl CachedContent {
-    pub fn read(layers: &installed_content::ResolvedLayers) -> std::io::Result<Self> {
+    pub(crate) fn read(
+        layers: &installed_content::ResolvedLayers,
+        environment: &crate::scripted_text::Environment,
+    ) -> std::io::Result<Self> {
         fn keep<T>(
             read: std::io::Result<T>,
             key: &'static str,
@@ -123,35 +129,32 @@ impl CachedContent {
         let mut gaps = BTreeMap::new();
         let doctrines = keep(installed_content::doctrines::read(layers), "doctrines", &mut gaps);
         let decisions = keep(installed_content::decisions::read(layers), "decisions", &mut gaps);
-        let defines = installed_content::defines::read(layers);
-        let read_ideas = || match &defines {
-            Ok(defines) => {
-                let officers =
-                    defines.strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")?;
-                installed_content::ideas::read(layers, &officers)
-            }
-            Err(why) => Err(std::io::Error::new(why.kind(), why.to_string())),
+        let defines = environment.defines();
+        let read_ideas = || {
+            let officers = defines.strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")?;
+            installed_content::ideas::read(layers, &officers)
         };
         let ideas = keep(read_ideas(), "ideas", &mut gaps);
-        let maximum = match &defines {
-            Ok(defines) => defines.int32("NSupply", "MAX_RAILWAY_LEVEL"),
-            Err(why) => Err(std::io::Error::new(why.kind(), why.to_string())),
-        };
+        let maximum = defines.int32("NSupply", "MAX_RAILWAY_LEVEL");
         let max_railway_level = keep(maximum, "MAX_RAILWAY_LEVEL", &mut gaps);
         let mut notes = doctrines
             .as_ref()
             .map(|db| db.notes.clone())
             .unwrap_or_default();
+        notes.extend(environment.catalogue_notes.iter().cloned());
         notes.extend(
             decisions
                 .as_ref()
                 .map(|db| db.notes.clone())
                 .unwrap_or_default(),
         );
-        let ideas = ideas.map(|(ideas, _, warnings)| {
-            notes.extend(warnings.into_iter().map(|(_, why)| why));
-            ideas
-        });
+        let (ideas, advisor_templates) = match ideas {
+            Some((ideas, templates, warnings)) => {
+                notes.extend(warnings.into_iter().map(|(_, why)| why));
+                (Some(ideas), Some(templates))
+            }
+            None => (None, None),
+        };
         let name_lists = keep(installed_content::names::read(layers), "name lists", &mut gaps);
         let key_names = keep(
             installed_content::key_names::KeyNames::read(layers),
@@ -213,11 +216,19 @@ impl CachedContent {
         );
         let politics = politics::PoliticsContent::read(layers);
         notes.extend(politics.notes.iter().cloned());
+        let characters = characters::CharacterContent::read(
+            layers,
+            environment,
+            advisor_templates.as_ref().ok_or_else(|| gaps["ideas"].clone()),
+        );
+        notes.extend(characters.notes.iter().cloned());
         Ok(Self {
+            characters,
             politics,
             doctrines,
             decisions,
             ideas,
+            advisor_templates,
             name_lists,
             key_names,
             scripted_effects,
@@ -254,7 +265,7 @@ impl crate::scripted_text::ScriptedContent {
     pub fn effects(&self) -> Result<&CachedContent, String> {
         self.effects
             .get_or_init(|| {
-                CachedContent::read(&self.layers.layers)
+                CachedContent::read(&self.layers.layers, self.environment()?)
                     .map_err(|why| format!("effect description content: {why}"))
             })
             .as_ref()

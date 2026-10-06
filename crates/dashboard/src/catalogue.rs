@@ -376,7 +376,7 @@ impl Catalogue {
                     .map(|(_, message)| message.clone()),
             );
             if let Some(Ok(environment)) = scripted.environment.get() {
-                lines.extend(environment.warnings.iter().cloned());
+                lines.extend(environment.warnings().iter().cloned());
             }
         }
         lines

@@ -7,7 +7,6 @@ mod tests;
 
 pub(in crate::effect_description) struct PoliticsContent {
     pub(in crate::effect_description) notes: Vec<String>,
-    ideologies: Result<installed_content::ideologies::Ideologies, String>,
     focuses: Result<installed_content::focus::Focuses, String>,
     tactics: Result<installed_content::combat_tactics::Database, String>,
     upgrades: Result<installed_content::intelligence::AgencyUpgrades, String>,
@@ -20,12 +19,6 @@ pub(in crate::effect_description) struct PoliticsContent {
 impl PoliticsContent {
     pub(in crate::effect_description) fn read(layers: &ResolvedLayers) -> Self {
         let mut notes = Vec::new();
-        let ideologies = installed_content::ideologies::read(layers)
-            .map(|(db, diagnostics)| {
-                notes.extend(diagnostics.into_iter().map(|(_, why)| why));
-                db
-            })
-            .map_err(|why| why.to_string());
         let focuses = installed_content::focus::read_national(layers)
             .map(|(db, diagnostics)| {
                 notes.extend(diagnostics.into_iter().map(|(_, why)| why));
@@ -52,6 +45,7 @@ impl PoliticsContent {
                 notes.extend(db.warnings.iter().cloned());
             })
             .map_err(|why| why.to_string());
+        // Relation titles need bindings (141395B30/1413931A0) stripped from the predicate copy.
         let triggers = installed_content::scripted_triggers::read_descriptions(layers)
             .inspect(|db| {
                 notes.extend(db.logged.iter().cloned());
@@ -59,13 +53,13 @@ impl PoliticsContent {
             .map_err(|why| why.to_string());
         Self {
             notes,
-            ideologies,
             focuses,
             tactics,
             upgrades,
             tokens,
             sharing,
             triggers,
+            // Continents retain authored name spelling; Environment's map facts have no such catalogue.
             continents: installed_content::terrain::read_default_map(layers)
                 .and_then(|map| layers.read(&map.file("continent")?))
                 .and_then(|bytes| installed_content::equipment_graphics::context::continent_names(&bytes))
@@ -75,6 +69,12 @@ impl PoliticsContent {
 }
 
 impl Renderer<'_, '_, '_> {
+    pub(in crate::effect_description) fn politics_ideologies(
+        &self,
+    ) -> Result<&installed_content::ideologies::Ideologies, String> {
+        self.context.text.content().environment()?.ideologies()
+    }
+
     pub(in crate::effect_description) fn politics_content(
         &self,
     ) -> Result<&PoliticsContent, String> {
@@ -91,8 +91,7 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
     ) -> Result<String, String> {
         let country = self.current_country(scopes)?;
-        let content = self.politics_content()?;
-        let (groups, gap) = content.ideologies.as_ref().map_err(Clone::clone)?.groups();
+        let (groups, gap) = self.politics_ideologies()?.groups();
         if let Some(gap) = gap {
             return Err(gap.to_string());
         }
@@ -200,11 +199,15 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
         action: u8,
     ) -> Result<String, String> {
-        let id = item
-            .value
-            .scalar()
-            .or_else(|| field(children(item), "focus").and_then(|item| item.value.scalar()))
-            .unwrap_or_default();
+        // Complete 1403A9B50/1403B1040 accepts scalar or focus; unlock's
+        // 141385570 is scalar-only; uncomplete 1403B64F0 reads block focus.
+        let focus = || field(children(item), "focus").and_then(|item| item.value.scalar());
+        let id = match action {
+            0 => item.value.scalar().or_else(focus),
+            1 => item.value.scalar(),
+            _ => focus(),
+        }
+        .unwrap_or_default();
         let id = std::str::from_utf8(installed_content::parser::c_string(id))
             .map_err(|_| "national-focus ID is not UTF-8 (1402D1D60)")?;
         let content = self.politics_content()?;
@@ -219,13 +222,13 @@ impl Renderer<'_, '_, '_> {
         let country = self.politics_focus_country(scopes)?;
         let name = self.politics_focus_name(id, definition, country)?;
         let who = self.country_name(country, false)?; // 140BA5960.
-        // 1403A9B50/1403B1040 read originator_name at +0x80; 14037B7B0 localises it.
-        if action == 0
-            && let Some(tooltip) = field(children(item), "originator_name")
-                .and_then(|item| item.value.scalar())
-                .filter(|value| !value.is_empty())
-        {
-            let tooltip = self.localised(tooltip, &[], scopes, true)?; // 1402F19A0.
+        if action == 0 && let Some(tooltip) = field(children(item), "originator_name") {
+            // +0x80 is CBoundLocalization (1403B1040 -> 1402F19A0), not ReadString.
+            // The corpus reaches scalar keys; blocks need the core bound formatter.
+            let tooltip = tooltip.value.scalar().ok_or(
+                "originator_name bound localisation block requires core formatter (1402F19A0)",
+            )?;
+            let tooltip = self.localised(tooltip, &[], scopes, true)?; // +0x80; 14037B7B0.
             return self.localised(
                 b"UNLOCK_COMPLETE_EFFECT_FOR",
                 &[
@@ -290,6 +293,86 @@ impl Renderer<'_, '_, '_> {
             ],
             scopes,
             false,
+        )
+    }
+
+    // Own 140321840: +0x58 is ReadTokenId (140323D40), matched against
+    // group+8 by 140EBFF80. Group+8 is its template token (140ED0641,
+    // 140ED0A65), already recorded by TechSharingGroups; members retain the
+    // recorded freshness. GetName 140ED0950 -> 1413BCF50 expands in caller.
+    // EFFECT_MODIFY_COUNTRY_TECH_SHARING_BONUS@14273C3E8;
+    // COUNTRY@142728968, GROUPNAME@14273C0C8, BONUS@14273BC2C.
+    pub(in crate::effect_description) fn politics_sharing_bonus(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let Scope::Country(country) = scopes.this else {
+            return empty::describe();
+        };
+        if country == 0 {
+            return empty::describe();
+        }
+        let fields = children(item);
+        let Some(id) = field(fields, "id").and_then(|item| item.value.scalar()) else {
+            return empty::describe();
+        };
+        let world = self.context.world()?;
+        let Some(token) = world.token_of(installed_content::parser::c_string(id))? else {
+            return empty::describe();
+        };
+        if token == 0x165 {
+            // Native unset token (140321876).
+            return empty::describe();
+        }
+        let frame = self.context.text.frame();
+        let groups = frame
+            .complete::<tables::TechSharingGroups>()
+            .map_err(|why| why.to_string())?;
+        let Some(group) = groups.iter().find(|group| group.id == token) else {
+            return empty::describe();
+        };
+        if group.member_count == 0 {
+            return empty::describe();
+        }
+        let members = frame
+            .complete::<tables::TechSharingMembers>()
+            .map_err(|why| why.to_string())?;
+        if !members.iter().any(|member| {
+            member.group == token
+                && self.context.text.recorded().slot(member.country) == Some(country)
+        }) {
+            return empty::describe();
+        }
+        let id = std::str::from_utf8(installed_content::parser::c_string(id))
+            .map_err(|_| "technology-sharing ID is not UTF-8 (140323D40)")?;
+        let group = self
+            .politics_content()?
+            .sharing
+            .as_ref()
+            .map_err(Clone::clone)?
+            .group(id)?
+            .ok_or_else(|| {
+                format!(
+                    "technology-sharing group {id} is absent from recorded content (1413BCF50)"
+                )
+            })?;
+        let name = self.localised(group.name.as_bytes(), &[], scopes, true)?;
+        let country = self.country_name(country, false)?;
+        // ReadFixed5 1424ABB10 -> 1424B0480, not a scoped variable.
+        let bonus = field(fields, "bonus")
+            .and_then(|item| item.value.scalar())
+            .and_then(installed_content::fixed5::script_fixed5)
+            .unwrap_or(0);
+        self.line(
+            b"EFFECT_MODIFY_COUNTRY_TECH_SHARING_BONUS",
+            &[
+                ("COUNTRY", Argument::Text(&country)),
+                ("GROUPNAME", Argument::Text(&name)),
+                ("BONUS", Argument::Fixed5(bonus)),
+            ],
+            scopes,
+            false, // 14031DEB0: plain outer localisation, then explicit LF.
         )
     }
 

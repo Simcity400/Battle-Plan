@@ -279,9 +279,13 @@ existing cadence; decision definition seeds derive from the authored identifier.
 Content databases are cached per stack, with independent reader failures refused
 only by dependent leaves. Referenced event titles load by ID and never recursively
 describe their event bodies. Corpus-only effect classes, bound custom tooltip
-forms, nonempty timed-idea research/equipment/trait forms and operative-event
-descriptions remain named, counted refusals; doctrine technology operands are
+forms and nonempty timed-idea research/equipment/trait forms remain named,
+counted refusals; doctrine technology operands are
 also refused by name rather than dropped from a folder-only description.
+Character effects resolve names and roles through the cached content stack and
+recorded character/leader rosters. Operative-event titles use the ordinary event
+catalogue; missing caller inputs and nested option readers requiring an unavailable
+scope helper remain named, counted refusals.
 Balance callers keep their strict
 refusal policy; event tails retain known native lines alongside refusal counts.
 Neither balance effect entrypoint is called by the installed localisation corpus.

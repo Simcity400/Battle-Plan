@@ -23,26 +23,31 @@ pub struct Event {
 }
 
 impl Event {
+    // CTriggeredText::vf4 14116C100: text/key share the last string field.
+    fn title_key(item: &Item) -> &[u8] {
+        crate::parser::c_string(
+            item.value
+                .scalar()
+                .or_else(|| {
+                    item.value
+                        .items()?
+                        .iter()
+                        .rev()
+                        .find(|field| field.keyword_is("text") || field.keyword_is("key"))?
+                        .value
+                        .scalar()
+                })
+                .unwrap_or_default(),
+        )
+    }
+
     /// 14116C180 returns its sole candidate before evaluating its trigger.
-    /// Several candidates need the unrecorded high-resolution seed.
+    /// Without a caller evaluator, multiple candidates remain a named refusal.
     pub fn sole_title_key(&self) -> Result<Option<&[u8]>, String> {
         match self.titles.as_slice() {
             [] => Ok(None),
             [item] => {
-                let key = item
-                    .value
-                    .scalar()
-                    .or_else(|| {
-                        item.value
-                            .items()?
-                            .iter()
-                            .rev()
-                            .find(|item| item.keyword_is("text"))?
-                            .value
-                            .scalar()
-                    })
-                    .unwrap_or_default();
-                let key = crate::parser::c_string(key);
+                let key = Self::title_key(item);
                 Ok((!key.is_empty()).then_some(key))
             }
             _ => Err(format!(
@@ -51,6 +56,50 @@ impl Event {
                 String::from_utf8_lossy(&self.id)
             )),
         }
+    }
+
+    /// 14116C180 bypasses a sole candidate's trigger, otherwise evaluates
+    /// all candidates and falls back to the first when none pass. Only
+    /// differing eligible keys depend on the transient performance-clock seed.
+    pub fn deterministic_title_key(
+        &self,
+        mut matches: impl FnMut(&[Item]) -> Result<bool, String>,
+    ) -> Result<Option<&[u8]>, String> {
+        let Some(first) = self.titles.first() else {
+            return Ok(None);
+        };
+        if self.titles.len() == 1 {
+            return self.sole_title_key();
+        }
+        let mut eligible = Vec::new();
+        for item in &self.titles {
+            // CTrigger::LoadBody 1405431C0 appends each authored block to
+            // the candidate's CAndTrigger (+0x28), in declaration order.
+            let triggers: Vec<_> = item
+                .value
+                .items()
+                .unwrap_or_default()
+                .iter()
+                .filter(|field| field.keyword_is("trigger"))
+                .flat_map(|field| field.value.items().unwrap_or_default())
+                .cloned()
+                .collect();
+            if matches(&triggers)? {
+                eligible.push(Self::title_key(item));
+            }
+        }
+        let key = eligible
+            .first()
+            .copied()
+            .unwrap_or_else(|| Self::title_key(first));
+        if eligible.iter().any(|candidate| *candidate != key) {
+            return Err(format!(
+                "{} event {} has different eligible title keys; 14116C180 selects with an unrecorded high-resolution seed",
+                self.source,
+                String::from_utf8_lossy(&self.id)
+            ));
+        }
+        Ok((!key.is_empty()).then_some(key))
     }
 }
 #[derive(Clone, Debug, Default)]
@@ -62,8 +111,8 @@ pub struct Events {
 #[derive(Clone, Copy)]
 enum Node {
     File,
-    Event,
-    Option,
+    Event(Option<u32>),
+    Option(Option<u32>),
     Title,
     Mtth,
 }
@@ -154,23 +203,30 @@ fn parse_selected(bytes: &[u8], source: &str, names: &KeyNames, wanted: Option<&
                     | b"news_event"
                     | b"state_event"
                     | b"unit_leader_event"
+                    // 140A01920 token 0x4B41 constructs the same CEvent
+                    // (140A01E53, mask 8; chrome store 140A01E60), read by
+                    // 14116B730 / 14116BDB0, with no subtype token reader.
                     | b"operative_leader_event",
                 ) => {
                     lines.push(field.key.line);
-                    Shape::Object(Node::Event)
+                    let scope = field
+                        .keyword_is("operative_leader_event")
+                        .then_some(crate::scope::ScopeKind::Character.bit());
+                    Shape::Object(Node::Event(scope))
                 }
                 Some(b"add_namespace") => Shape::One,
                 _ => Shape::Skip,
             },
-            Node::Event => match field.keyword().as_deref() {
+            Node::Event(scope) => match field.keyword().as_deref() {
                 Some(b"id") => Shape::One,
                 Some(b"title" | b"desc") if field.opens() => Shape::Object(Node::Title),
                 Some(b"title" | b"desc") => Shape::One,
-                Some(b"immediate") => Shape::Effect,
-                Some(b"option") => Shape::Object(Node::Option),
+                // 14116BDB0 forwards CEvent+0x60 to ReadScript for both
+                // immediate (+0x380) and after (+0x310).
+                Some(b"immediate" | b"after") => scope.map_or(Shape::Effect, Shape::EffectIn),
+                Some(b"option") => Shape::Object(Node::Option(scope)),
                 Some(b"trigger" | b"show_major") => Shape::Trigger,
                 Some(b"mean_time_to_happen") => Shape::Object(Node::Mtth),
-                Some(b"after") => Shape::Effect,
                 Some(
                     b"picture" | b"is_triggered_only" | b"major" | b"hidden" | b"fire_only_once"
                     | b"timeout_days" | b"exclusive" | b"fire_for_sender" | b"minor_flavor",
@@ -178,15 +234,25 @@ fn parse_selected(bytes: &[u8], source: &str, names: &KeyNames, wanted: Option<&
                 _ => Shape::Skip,
             },
             Node::Title => match field.keyword().as_deref() {
-                Some(b"text") => Shape::One,
+                Some(b"text" | b"key") => Shape::One,
                 Some(b"trigger") => Shape::Trigger,
                 _ => Shape::Skip,
             },
-            Node::Option => match field.keyword().as_deref() {
+            Node::Option(scope) => match field.keyword().as_deref() {
                 Some(b"name" | b"original_recipient_only") => Shape::One,
                 Some(b"trigger") => Shape::Trigger,
                 Some(b"ai_chance") => Shape::Object(Node::Mtth),
-                _ => crate::effect_keys::shape(Some(names), field).map(|_| Node::Option),
+                _ => {
+                    // 14116A610 stores the event mask at option+0x8;
+                    // 1415279D0 passes it to ReadEffect at option+0x120.
+                    // This supplies direct fields only. Nested value readers
+                    // retain named scope refusals until scoped Object lands.
+                    let field = native::Field {
+                        effect_scope: scope.or(field.effect_scope),
+                        ..*field
+                    };
+                    crate::effect_keys::shape(Some(names), &field).map(|_| Node::Option(scope))
+                }
             },
             Node::Mtth => native::mean_time_to_happen(field),
         },
@@ -251,25 +317,36 @@ fn parse_selected(bytes: &[u8], source: &str, names: &KeyNames, wanted: Option<&
                         | crate::DiagnosticKind::Refused
                 )
             })
-            .map(ToString::to_string)
+            .map(|note| {
+                let description = note.to_string();
+                if item.keyword_is("operative_leader_event")
+                    && (note.what.contains("parse scope unavailable")
+                        || note.what.starts_with("Deferred effect `remove_unit_leader_role`"))
+                {
+                    format!(
+                        "COperativeLeaderEventEffect needs the scoped-object parser helper for option+0x8 (1415279D0): {description}"
+                    )
+                } else {
+                    description
+                }
+            })
             .collect();
         if !blockers.is_empty() {
             event.refused = Some(format!("{}: {}", event.source, blockers.join("; ")));
         }
-        if item.keyword_is("operative_leader_event") {
-            event.refused = Some(format!(
-                "{}: operative_leader_event reader is not ported (event loader 140A03E00)",
-                event.source
-            ));
-            result.refused.push(event.refused.clone().unwrap());
-        }
         if index + 1 == lines.len()
             && let Some(why) = &read.unsettled
         {
-            event.refused = Some(format!(
-                "{}: partial native event read: {why}",
-                event.source
-            ));
+            let partial = format!("{}: partial native event read: {why}", event.source);
+            event.refused = Some(
+                if item.keyword_is("operative_leader_event")
+                    && let Some(blockers) = event.refused.take()
+                {
+                    format!("{blockers}; {partial}")
+                } else {
+                    partial
+                },
+            );
         }
         for field in fields {
             if field.keyword_is("title") {

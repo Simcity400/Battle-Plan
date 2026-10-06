@@ -26,8 +26,10 @@ fn temp_variables_drive_localisation_conditions_and_text_weights() {
     let content = catalogue.scripted_content().unwrap();
     assert!(
         content
-            .environment
-            .set(Ok(entries::Environment::synthetic()))
+            .environment()
+            .unwrap()
+            .inputs
+            .set(Ok(entries::EnvironmentInputs::synthetic()))
             .is_ok()
     );
     let mut frame = frame();

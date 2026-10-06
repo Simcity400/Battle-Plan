@@ -39,8 +39,10 @@ fn entry_invocations_detect_cycles_and_render_finite_scope_changes() {
     let content = catalogue.scripted_content().unwrap();
     assert!(
         content
-            .environment
-            .set(Ok(entries::Environment::synthetic()))
+            .environment()
+            .unwrap()
+            .inputs
+            .set(Ok(entries::EnvironmentInputs::synthetic()))
             .is_ok()
     );
     let f = frame();
@@ -165,8 +167,10 @@ fn province_text_uses_native_members_name_precedence_and_recorded_perspective() 
     ]);
     assert!(
         content
-            .environment
-            .set(Ok(entries::Environment::synthetic()
+            .environment()
+            .unwrap()
+            .inputs
+            .set(Ok(entries::EnvironmentInputs::synthetic()
                 .with_terrain(terrain, vec![b"mod_terrain".to_vec()])))
             .is_ok()
     );
@@ -319,8 +323,10 @@ fn random_lists_use_raw_fixed5_seed_scope_identity_and_native_fast_paths() {
     let content = catalogue.scripted_content().unwrap();
     assert!(
         content
-            .environment
-            .set(Ok(entries::Environment::synthetic()))
+            .environment()
+            .unwrap()
+            .inputs
+            .set(Ok(entries::EnvironmentInputs::synthetic()))
             .is_ok()
     );
     let f = frame();
@@ -352,8 +358,10 @@ fn recorded_factory_counts_wrap_convert_and_drive_a_seeded_pick() {
     let content = catalogue.scripted_content().unwrap();
     assert!(
         content
-            .environment
-            .set(Ok(entries::Environment::synthetic()))
+            .environment()
+            .unwrap()
+            .inputs
+            .set(Ok(entries::EnvironmentInputs::synthetic()))
             .is_ok()
     );
     let mut f = frame();
@@ -407,8 +415,10 @@ fn scriptable_random_weights_use_the_unified_operands_and_ignore_modifier_condit
     let content = catalogue.scripted_content().unwrap();
     assert!(
         content
-            .environment
-            .set(Ok(entries::Environment::synthetic()))
+            .environment()
+            .unwrap()
+            .inputs
+            .set(Ok(entries::EnvironmentInputs::synthetic()))
             .is_ok()
     );
     let f = frame();
@@ -456,8 +466,10 @@ fn seeded_random_lists_use_canonical_slots_across_five_thousand_countries() {
     let content = catalogue.scripted_content().unwrap();
     assert!(
         content
-            .environment
-            .set(Ok(entries::Environment::synthetic()))
+            .environment()
+            .unwrap()
+            .inputs
+            .set(Ok(entries::EnvironmentInputs::synthetic()))
             .is_ok()
     );
     let mut f = frame();
@@ -848,8 +860,10 @@ fn scripted_entries_order_triggers_replacements_and_gaps() {
     let content = catalogue.scripted_content().unwrap();
     assert!(
         content
-            .environment
-            .set(Ok(entries::Environment::synthetic()))
+            .environment()
+            .unwrap()
+            .inputs
+            .set(Ok(entries::EnvironmentInputs::synthetic()))
             .is_ok()
     );
     let mut f = frame();
@@ -877,13 +891,15 @@ fn state_names_prefer_the_stored_custom_and_owner_names_to_the_template() {
         "",
         " MOD_STATE:0 \"A $PART$\"\n PART:0 \"state\"\n TEST:0 \"[ROOT.Capital.GetName]\"\n",
     );
-    let mut environment = entries::Environment::synthetic();
+    let mut environment = entries::EnvironmentInputs::synthetic();
     environment.state_names.insert(64, Ok("MOD_STATE".into()));
     assert!(
         catalogue
             .scripted_content()
             .unwrap()
-            .environment
+            .environment()
+            .unwrap()
+            .inputs
             .set(Ok(environment))
             .is_ok()
     );
@@ -1068,8 +1084,10 @@ fn promoted_entry_binds_this_and_preserves_root_and_from() {
         catalogue
             .scripted_content()
             .unwrap()
-            .environment
-            .set(Ok(entries::Environment::synthetic()))
+            .environment()
+            .unwrap()
+            .inputs
+            .set(Ok(entries::EnvironmentInputs::synthetic()))
             .is_ok()
     );
     assert_eq!(rendered(&catalogue, &frame(), "TEST").unwrap(), "pass|pass");
@@ -1139,8 +1157,10 @@ fn raid_text_follows_the_active_event_scope_through_chains_and_entries() {
     let content = catalogue.scripted_content().unwrap();
     assert!(
         content
-            .environment
-            .set(Ok(entries::Environment::synthetic()))
+            .environment()
+            .unwrap()
+            .inputs
+            .set(Ok(entries::EnvironmentInputs::synthetic()))
             .is_ok()
     );
     let f = raid_frame();
@@ -1229,8 +1249,10 @@ fn unknown_scope_parts_refuse_only_where_they_are_read() {
     let content = catalogue.scripted_content().unwrap();
     assert!(
         content
-            .environment
-            .set(Ok(entries::Environment::synthetic()))
+            .environment()
+            .unwrap()
+            .inputs
+            .set(Ok(entries::EnvironmentInputs::synthetic()))
             .is_ok()
     );
     let mut f = raid_frame();
@@ -1353,8 +1375,10 @@ fn promoted_character_entry_evaluates_in_a_character_scope() {
         catalogue
             .scripted_content()
             .unwrap()
-            .environment
-            .set(Ok(entries::Environment::synthetic()))
+            .environment()
+            .unwrap()
+            .inputs
+            .set(Ok(entries::EnvironmentInputs::synthetic()))
             .is_ok()
     );
     assert_eq!(

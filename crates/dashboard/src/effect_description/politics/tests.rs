@@ -45,11 +45,12 @@ pub(super) fn fixture() -> (Fixture, Folder) {
             "localisation/test_l_english.yml",
             concat!(
                 "\u{feff}l_english:\n",
-                " syn_ideology:0 \"Ideology [Root.GetTag]\"\n syn_ideology_noun:0 \"Noun [Root.GetTag]\"\n syn_other:0 \"Other\"\n SYN_PARTY:0 \"Party [Root.GetTag]\"\n",
+                " syn_ideology:0 \"Ideology [Root.GetTag]\"\n syn_ideology_noun:0 \"Noun [Root.GetTag]\"\n syn_other:0 \"Other\"\n SYN_PARTY:0 \"Party [Root.GetTag]\"\n SYN_LONG:0 \"Long party [Root.GetTag]\"\n",
                 " EFFECT_SET_POPULARITIES:0 \"Set popularities [Root.GetTag]:\"\n",
                 " SYN_FOCUS_NAME:0 \"Focus [THIS.GetTag]/[ROOT.GetTag]/[FROM.GetTag]/[PREV.GetTag]\"\n",
                 " SYN_FOCUS_TOOLTIP:0 \"for [FROM.GetTag]\"\n UNLOCK_COMPLETE_EFFECT:0 \"Complete $WHO$:$LIST$\"\n UNLOCK_COMPLETE_EFFECT_FOR:0 \"Complete $WHO$/$FOR$:$FOCUS$\"\n UNLOCK_FOCUS_EFFECT:0 \"Unlock $WHO$:$LIST$\"\n UNCOMPLETE_FOCUS_EFFECT:0 \"Uncomplete $WHO$:$LIST$\"\n",
                 " SYN_GROUP_NAME:0 \"Group [FROM.GetTag]\"\n EFFECT_ADD_COUNTRY_TO_TECH_SHARING_GROUP:0 \"Join $TAG$/$COUNTRY$:$GROUPNAME$ [Root.GetTag]\"\n EFFECT_REMOVE_COUNTRY_FROM_TECH_SHARING_GROUP:0 \"Leave $TAG$/$COUNTRY$:$GROUPNAME$ [Root.GetTag]\"\n",
+                " EFFECT_MODIFY_COUNTRY_TECH_SHARING_BONUS:0 \"Sharing $COUNTRY$/$GROUPNAME$:$BONUS|2%$ [Root.GetTag]\"\n",
                 " SYN_UPGRADE:0 \"Upgrade [FROM.GetTag]\"\n EFFECT_UPGRADE_INTELLIGENCE_AGENCY:0 \"Agency $UPGRADE$\"\n",
                 " SYN_TOKEN_NAME:0 \"Token [Root.GetTag]\"\n OPERATION_TOKEN_RECEIVE:0 \"Receive $TOKEN$/$COUNTRY$\"\n OPERATION_TOKEN_REMOVE:0 \"Remove $TOKEN$/$COUNTRY$\"\n SYN_TACTIC:0 \"Tactic [Root.GetTag]\"\n UNLOCK_TACTIC_EFFECT:0 \"Unlock tactic $NAME$\"\n SYN_TARGET_TITLE:0 \"Eligible [FROM.GetTag]\"\n",
                 " POLITICS_IDEOLOGY_POPULARITY_CHANGE:0 \"Popularity $IDEOLOGY$: $VALUE|2$\"\n POLITICS_PARTY_NAME_CHANGE:0 \"Party name $IDEOLOGY$ => $NAME$\"\n",
@@ -73,6 +74,9 @@ pub(super) fn fixture() -> (Fixture, Folder) {
                 " SYN_MIO:0 \"Foundry [Root.GetTag]\"\n EFFECT_MIO_SET_NAME_KEY:0 \"Rename $NAME$\"\n EFFECT_MIO_SET_ICON:0 \"Icon [Root.GetTag]\"\n",
                 " EFFECT_RELEASE_FROM_CAPTIVITY:0 \"Free [Root.GetTag]\"\n EFFECT_RELEASE_GENERALS:0 \"Generals $COUNTRY_NAME_DEF$ [Root.GetTag]\"\n",
                 " EFFECT_CREATE_INTELLIGENCE_AGENCY:0 \"Agency [Root.GetTag]\"\n",
+                " EFFECT_ADD_ARMY_EXPERIENCE:0 \"XP$VAL|0$\"\n",
+                " EFFECT_ADD_CONTESTED_OWNER:0 \"Add contested [Country.GetTag]/[State.GetName]/[ROOT.GetTag]/[FROM.GetTag]/[PREV.GetTag]\"\n",
+                " EFFECT_REMOVE_CONTESTED_OWNER:0 \"Remove contested [Country.GetTag]/[State.GetName]/[ROOT.GetTag]/[FROM.GetTag]/[PREV.GetTag]\"\n",
                 " SYN_FOCUS_ONE:0 \"First [Root.GetTag]\"\n SYN_FOCUS_TWO:0 \"Second\"\n",
                 " REDUCE_FOCUS_DAYS_EFFECT_NEGATIVE:0 \"Extend $FOCUS$ $DAYS|0$\"\n REDUCE_FOCUS_DAYS_EFFECT:0 \"Reduce $FOCUS$ $DAYS|0$\"\n",
                 " REDUCE_FOCUS_DAYS_MULTIPLE_HEADER_NEGATIVE:0 \"Extend $DAYS|0$ [Root.GetTag]\"\n REDUCE_FOCUS_DAYS_MULTIPLE_HEADER:0 \"Reduce $DAYS|0$ [Root.GetTag]\"\n",
@@ -134,6 +138,23 @@ pub(super) fn fixture() -> (Fixture, Folder) {
                 ..Default::default()
             },
         ]));
+    *fixture.frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 0x10010,
+            literal: b"SYN_GROUP".to_vec(),
+        }]));
+    *fixture.frame.tables[TableId::TechSharingGroups.index()] =
+        TableView::Complete(TableRows::TechSharingGroups(vec![TechSharingGroupRow {
+            id: 0x10010,
+            member_count: 1,
+            ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::TechSharingMembers.index()] =
+        TableView::Complete(TableRows::TechSharingMembers(vec![TechSharingMemberRow {
+            group: 0x10010,
+            country: 100,
+            ..Default::default()
+        }]));
     (fixture, folder)
 }
 
@@ -213,6 +234,25 @@ ported!(
     "Change Alpha AAA\n",
     fresh()
 );
+#[test]
+fn change_tag_from_state_keeps_the_native_source_name_refusal_counted() {
+    let (fixture, _folder) = fixture();
+    // Target 14052B6A0 resolves THIS to the state's owner, but own 14037B2B0
+    // names scope.country, which remains zero for a state scope.
+    let output = fixture.render(
+        "change_tag_from=THIS change_tag_from=THIS",
+        &mut state_from_root(),
+        Content::default(),
+    );
+    assert_eq!(output.text, "");
+    assert_eq!(
+        output.refusals,
+        BTreeMap::from([(
+            "synthetic effect CChangeTagEffect: key change_tag_from: current scope has no country (1405336C0)".to_owned(),
+            2,
+        )]),
+    );
+}
 ported!(
     remove_claim_by,
     "remove_claim_by=ROOT",
@@ -353,8 +393,14 @@ ported!(
 );
 ported!(
     captured_generals_block,
-    "release_captured_generals_from={all=yes captured_by=BBB}",
+    "release_captured_generals_from={province=2 target=BBB}",
     "Generals beta [Root.GetTag]",
+    fresh()
+);
+ported!(
+    captured_generals_ignores_non_native_captured_by,
+    "release_captured_generals_from={captured_by=BBB}",
+    "",
     fresh()
 );
 
@@ -418,6 +464,25 @@ fn missing_agency_facts_are_named_and_counted() {
 }
 
 #[test]
+fn empty_agency_own_text_uses_core_projection_and_child_walk() {
+    let (mut fixture, _folder) = fixture();
+    *fixture.frame.tables[TableId::IntelligenceAgencies.index()] =
+        TableView::Complete(TableRows::IntelligenceAgencies(vec![IntelligenceAgencyRow {
+            country: 100,
+            created: 1,
+            ..Default::default()
+        }]));
+    // 1403B1480 keeps name/icon as own fields and forwards the effect child.
+    let output = fixture.render(
+        "create_intelligence_agency={name=SYN_NAME icon=SYN_ICON army_experience=2}",
+        &mut fresh(),
+        Content::default(),
+    );
+    assert_eq!(output.text, "XP2\n");
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+}
+
+#[test]
 fn country_targets_support_five_thousand_synthetic_countries() {
     let (mut fixture, _folder) = fixture();
     let countries = (1..=5_000)
@@ -464,6 +529,14 @@ fn country_targets_support_five_thousand_synthetic_countries() {
     let output = fixture.render("hold_election=ROOT", &mut scopes, Content::default());
     assert_eq!(output.text, "Election Beta\n");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+    for (key, action) in [
+        ("add_contested_owner", "Add"),
+        ("remove_contested_owner", "Remove"),
+    ] {
+        let output = fixture.render(&format!("{key}=2"), &mut scopes, Content::default());
+        assert_eq!(output.text, format!("{action} contested BBB/Two/BBB/BBB/BBB"));
+        assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+    }
 }
 
 // Each unavailable dependency remains a class-specific, counted refusal.
@@ -487,24 +560,98 @@ macro_rules! refused {
         }
     };
 }
-// Authored witness: common/national_focus/australia.txt:3225.
-refused!(
-    modify_tech_sharing_bonus,
-    "modify_tech_sharing_bonus={id=SYN_GROUP bonus=0.03}",
-    "runtime technology-sharing template identity (+0x48) is unrecorded (140321840 / 1413BCF50)"
-);
 // Authored witness: common/decisions/jap2.txt:172.
-refused!(
+ported!(
     add_contested_owner,
     "add_contested_owner=2",
-    "fresh country/state localisation scope API unavailable (1404A5070 / 1404A5160)"
+    "Add contested AAA/Two/AAA/AAA/AAA",
+    fresh()
 );
 // Authored witness: common/decisions/ser.txt:2115.
-refused!(
+ported!(
     remove_contested_owner,
     "remove_contested_owner=BBB",
-    "fresh country/state localisation scope API unavailable (1404A5070 / 1404A5160)"
+    "Remove contested BBB/Two/BBB/BBB/BBB",
+    state_from_root()
 );
+
+#[test]
+fn contested_owner_uses_both_native_operand_branches_and_fresh_links() {
+    let (fixture, _folder) = fixture();
+    for (body, object, expected) in [
+        (
+            "add_contested_owner=BBB",
+            EventObject::State(2),
+            "Add contested BBB/Two/BBB/BBB/BBB",
+        ),
+        (
+            "remove_contested_owner=3",
+            EventObject::Country(2),
+            "Remove contested BBB/Three/BBB/BBB/BBB",
+        ),
+        (
+            "remove_contested_owner=BBB",
+            EventObject::CountryState { country: 1, state: 3 },
+            "Remove contested BBB/Three/BBB/BBB/BBB",
+        ),
+    ] {
+        let mut graph = EventScopes::new(vec![EventScope {
+            root: Link::Unknown,
+            from: Link::Unknown,
+            prev: Link::Unknown,
+            random_seed: 99,
+            random_counter: 100,
+            ..EventScope::of(object)
+        }]);
+        let output = fixture.render(body, &mut graph, Content::default());
+        assert_eq!(output.text, expected, "{body}");
+        assert!(output.refusals.is_empty(), "{body}: {:?}", output.refusals);
+        let selected = graph.scopes.last().unwrap();
+        assert_eq!(
+            (selected.root, selected.from, selected.prev),
+            (Link::Itself, Link::Itself, Link::Itself)
+        );
+        assert_eq!((selected.random_seed, selected.random_counter), (1, 0x5ea6_ba9e));
+    }
+}
+
+#[test]
+fn contested_owner_evaluates_scoped_operands() {
+    let (mut fixture, _folder) = fixture();
+    *fixture.frame.tables[TableId::ScriptVariables.index()] =
+        TableView::Complete(TableRows::ScriptVariables(vec![
+            ScriptVariablesRow {
+                scope_kind: 1,
+                scope_id: 100,
+                entries: vec![ScriptVariableEntry {
+                    name: b"chosen_state".to_vec(),
+                    value_raw: 300_000,
+                }],
+            },
+            ScriptVariablesRow {
+                scope_kind: 2,
+                scope_id: 2,
+                entries: vec![ScriptVariableEntry {
+                    name: b"chosen_country".to_vec(),
+                    value_raw: i64::from(u32::from_le_bytes(*b"BBB\0") | 0x4000_0000),
+                }],
+            },
+        ]));
+    let output = fixture.render(
+        "add_contested_owner=var:chosen_state",
+        &mut fresh(),
+        Content::default(),
+    );
+    assert_eq!(output.text, "Add contested AAA/Three/AAA/AAA/AAA");
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+    let output = fixture.render(
+        "remove_contested_owner=var:chosen_country",
+        &mut state_from_root(),
+        Content::default(),
+    );
+    assert_eq!(output.text, "Remove contested BBB/Two/BBB/BBB/BBB");
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+}
 ported!(
     add_popularity,
     "add_popularity={ideology=ROOT popularity=-0.05}",
@@ -514,9 +661,42 @@ ported!(
 ported!(
     set_party_name,
     "set_party_name={ideology=SYN_IDEOLOGY long_name=SYN_LONG name=SYN_PARTY}",
-    "Party name Ideology AAA => Party AAA\n",
+    "Party name Ideology AAA => Long party AAA\n",
     fresh()
 );
+ported!(
+    set_party_name_short_name_does_not_fill_long_name,
+    "set_party_name={ideology=SYN_IDEOLOGY name=SYN_PARTY}",
+    "Party name Ideology AAA => \n",
+    fresh()
+);
+
+#[test]
+fn absent_ideology_uses_native_null_object_without_evaluating_an_operand() {
+    let (mut fixture, _folder) = fixture();
+    // An absent specifier is not numeric zero, even if that ID names a group.
+    if let TableView::Complete(TableRows::PoliticalParties(parties)) =
+        &mut *fixture.frame.tables[TableId::PoliticalParties.index()]
+    {
+        parties[0].id = 0;
+    }
+    *fixture.frame.tables[TableId::ScriptVariables.index()] = TableView::Unavailable {
+        reason: "absent ideology has no variable object".into(),
+    };
+    let content = fixture.catalogue.scripted_content().unwrap().effects().unwrap();
+    for (class, key, body) in [
+        ("CAddPopularityEffect", "add_popularity", "add_popularity={popularity=0.03}"),
+        ("CSetPartyNameEffect", "set_party_name", "set_party_name={name=SYN_PARTY}"),
+        ("CSetPartyRuleEffect", "set_party_rule", "set_party_rule={can_send_volunteers=yes}"),
+    ] {
+        let output = fixture.render(body, &mut fresh(), content.view(None));
+        assert_eq!(output.text, "");
+        assert_eq!(output.refusals, BTreeMap::from([(
+            format!("synthetic effect {class}: key {key}: ideology database null-object identity (+0x78, 1402EE8E0) is unrecorded"),
+            1,
+        )]));
+    }
+}
 ported!(
     set_cosmetic_tag,
     "set_cosmetic_tag=SYN_COSMETIC",
@@ -559,4 +739,9 @@ ported!(
     "add_relation_rule_override={target=BBB can_send_volunteers=no}",
     "Relation Alpha->Beta:[no]Volunteers",
     fresh()
+);
+refused!(
+    remove_relation_rule_does_not_accept_add_only_usage_desc,
+    "remove_relation_rule_override={target=BBB usage_desc=SYN_DESC can_send_volunteers=yes}",
+    "unknown relation rule usage_desc (1403AF060/1403B4150)"
 );

@@ -3,7 +3,6 @@
 use super::*;
 use replay::rows::tables;
 
-mod characters;
 mod content;
 mod rules;
 pub(super) use content::PoliticsContent;
@@ -20,7 +19,9 @@ impl Renderer<'_, '_, '_> {
         operand: Option<&[u8]>,
         scopes: Scopes,
     ) -> Result<Vec<u8>, String> {
-        let operand = operand.unwrap_or_default();
+        let operand = operand.ok_or(
+            "ideology database null-object identity (+0x78, 1402EE8E0) is unrecorded",
+        )?;
         let names = self
             .context
             .content
@@ -118,7 +119,8 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // 140392160: name (+0x88), not long_name, expands before NAME substitution;
+    // 140392160: long_name (+0x88), written by 1403B5280 token 0x34EB;
+    // name (0x1B) writes +0x68. Expand +0x88 before NAME substitution;
     // ideology +0x18 name 140616BC0 remains plain until the outer expansion.
     // POLITICS_PARTY_NAME_CHANGE@142750EF8.
     pub(super) fn politics_party_name(
@@ -132,7 +134,7 @@ impl Renderer<'_, '_, '_> {
         )?;
         let ideology = self.localised(&ideology, &[], scopes, false)?;
         let name = self.localised(
-            field(children(item), "name")
+            field(children(item), "long_name")
                 .and_then(|item| item.value.scalar())
                 .unwrap_or_default(),
             &[],
@@ -163,11 +165,10 @@ impl Renderer<'_, '_, '_> {
         if base.is_empty() {
             return Ok(String::new());
         }
-        let names = installed_content::country_names::CountryNames::read(
-            self.context.text.frame(),
-            self.context.localisation,
-        );
-        let operands = names
+        let operands = self
+            .context
+            .text
+            .country_names()
             .operands(country)
             .ok_or("country naming operands are absent (1403900D0)")?
             .as_ref()
@@ -252,6 +253,53 @@ impl Renderer<'_, '_, '_> {
             scopes,
             false,
         )
+    }
+
+    // Own 1404A4F10/1404A4FC0: a positive carried state (+0xA8) selects
+    // the country operand; otherwise keep scope.country (+8) and select a state.
+    // 1404A4750 parses selectors first, then CScopedVariable; the core target
+    // helpers share vf15/vf16 and EvaluateCountryTag/StateId. No explicit LF.
+    pub(super) fn politics_contested_owner(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+        key: &[u8],
+    ) -> Result<String, String> {
+        let current = match scopes.cursor {
+            Some(at) => self
+                .graph
+                .borrow()
+                .scopes
+                .get(at)
+                .ok_or("contested-owner caller scope is absent (1404A4F10/1404A4FC0)")?
+                .this,
+            None => match scopes.this {
+                Scope::Country(country) => EventObject::Country(country),
+                Scope::State(state) => EventObject::State(state),
+                _ => return Err(
+                    "contested-owner scope lacks native country/state fields (1404A4F10/1404A4FC0)".into(),
+                ),
+            },
+        };
+        let carried_state = match current {
+            EventObject::State(state) | EventObject::CountryState { state, .. } => state,
+            EventObject::Country(_) => 0,
+            _ => return Err(
+                "contested-owner scope lacks native country/state fields (1404A4F10/1404A4FC0)".into(),
+            ),
+        };
+        let (country, state) = if (carried_state as i32) > 0 {
+            (self.country_target(item, scopes)?.unwrap_or(0), carried_state)
+        } else {
+            let country = match current {
+                EventObject::Country(country) | EventObject::CountryState { country, .. } => country,
+                _ => 0,
+            };
+            (country, self.state_target(item, scopes)?)
+        };
+        // 1404A5070/1404A5160 set country, then state in a default scope;
+        // EFFECT_ADD_CONTESTED_OWNER@1427AF660 / REMOVE@1427AF6B8 have no arguments.
+        self.localised(key, &[], self.fresh_country_state_scope(country, state)?, true)
     }
 
     // 14037B2B0 gates on the operand but describes the CURRENT country.
@@ -412,6 +460,7 @@ impl Renderer<'_, '_, '_> {
     }
 
     // 1402F8420: COUNTRY_NAME_DEF@14272BA20, EFFECT_RELEASE_GENERALS@14272BB70.
+    // Block reader 1402F8680 consumes target (+0x58), not captured_by.
     // No ProcessString and no LF; captive counts do not enter the description.
     pub(super) fn politics_release_generals(
         &self,
@@ -421,7 +470,7 @@ impl Renderer<'_, '_, '_> {
         let target = item
             .value
             .scalar()
-            .or_else(|| field(children(item), "captured_by").and_then(|item| item.value.scalar()));
+            .or_else(|| field(children(item), "target").and_then(|item| item.value.scalar()));
         let Some(country) = target
             .map(|target| self.evaluator()?.scoped_country(target, scopes))
             .transpose()?

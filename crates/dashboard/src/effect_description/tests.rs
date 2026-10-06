@@ -10,6 +10,120 @@ use replay::{
 };
 use std::{collections::BTreeSet, sync::Arc};
 
+#[test]
+fn advisor_templates_and_idea_notes_share_one_read() {
+    let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/test.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={\"synthetic_slot\"}},NSupply={MAX_RAILWAY_LEVEL=5}}",
+        ),
+        (
+            "common/idea_tags/test.txt",
+            "idea_categories={country={type=national_spirit} other={type=national_spirit}}",
+        ),
+        (
+            "common/ideas/a.txt",
+            "ideas={country={synthetic_idea={}} synthetic_slot={synthetic_advisor={name=synthetic_name}}}",
+        ),
+        (
+            "common/ideas/b.txt",
+            // Same-group redeclarations replace in place (140FC0E90);
+            // different groups retain duplicate tokens (140A31B70).
+            "ideas={other={synthetic_idea={}}}",
+        ),
+        (
+            "common/ideologies/test.txt",
+            "ideologies={synthetic_ideology={color=16711680}}",
+        ),
+        (
+            "common/terrain/test.txt",
+            "categories={synthetic_terrain={movement_cost=bad}}",
+        ),
+        (
+            "common/country_leader/test.txt",
+            "leader_traits={synthetic_trait={unregistered_modifier={}}}",
+        ),
+    ]);
+    let scripted = catalogue.scripted_content().unwrap();
+    let environment = scripted.environment().unwrap();
+    // Later consumers use the retained Lua values, including the officer slots.
+    std::fs::write(
+        folder.0.join("common/defines/test.lua"),
+        "error('duplicate defines read')",
+    )
+    .unwrap();
+    let content = scripted.effects().unwrap();
+    let warning = "1 ideas are defined more than once; the last definition in load order is used.";
+    assert_eq!(content.notes.iter().filter(|note| *note == warning).count(), 1);
+    for catalogue_name in [
+        "Ideology synthetic_ideology",
+        "terrain category synthetic_terrain",
+        "Leader traits unavailable",
+    ] {
+        assert!(
+            environment
+                .catalogue_notes
+                .iter()
+                .any(|note| note.contains(catalogue_name)),
+            "{catalogue_name}: {:?}",
+            environment.catalogue_notes
+        );
+    }
+    for warning in &environment.catalogue_notes {
+        assert_eq!(
+            content.notes.iter().filter(|note| *note == warning).count(),
+            1,
+            "{warning}"
+        );
+    }
+    assert_eq!(
+        scripted.recursion,
+        environment
+            .defines()
+            .int32("NGame", "MAX_SCRIPTED_LOC_RECURSION")
+            .unwrap()
+    );
+    assert_eq!(content.max_railway_level, Some(5));
+    assert!(std::ptr::eq(environment, scripted.environment().unwrap()));
+    assert!(std::ptr::eq(content, scripted.effects().unwrap()));
+    let templates = content.advisor_templates.as_ref().unwrap();
+    assert_eq!(
+        templates.advisor("synthetic_advisor").unwrap().unwrap().slot,
+        "synthetic_slot"
+    );
+    assert_eq!(
+        templates.name("synthetic_advisor").unwrap(),
+        Some(&installed_content::characters::Authored::Asset("synthetic_name".to_owned()))
+    );
+}
+
+#[test]
+fn effect_catalogues_remain_available_without_map_inputs() {
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        ("common/defines/test.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}"),
+        ("common/ideologies/test.txt", "ideologies={synthetic={}}"),
+        ("common/terrain/test.txt", "categories={synthetic={movement_cost=2}}"),
+    ]);
+    let scripted = catalogue.scripted_content().unwrap();
+    let environment = scripted.environment().unwrap();
+    assert!(
+        environment
+            .ideologies()
+            .unwrap()
+            .get("synthetic")
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        environment.terrain().unwrap().categories[0].movement_cost,
+        200_000
+    );
+    assert!(scripted.effects().unwrap().ideas.is_some());
+    let fixture = Fixture::new();
+    let text = ScriptedText::new(&fixture.frame, &catalogue.localisation, scripted, 1);
+    assert!(text.world().err().unwrap().contains("default.map"));
+}
+
 pub(super) struct Fixture {
     pub frame: DecodedFrame,
     pub catalogue: Catalogue,

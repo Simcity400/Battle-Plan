@@ -33,7 +33,7 @@ use replay::{
 
 mod balance;
 mod entries;
-pub(crate) use entries::{StateNames, read_state_content, state_name_from};
+pub(crate) use entries::{Environment, StateNames, read_state_content, state_name_from};
 mod properties;
 pub(crate) mod random;
 
@@ -369,8 +369,11 @@ impl ScriptedContent {
         let layers = &content.layers;
         let names = installed_content::scripted_localisation::names(layers)
             .map_err(|error| format!("common/scripted_localisation is unreadable: {error}"))?;
-        let recursion = installed_content::defines::read(layers)
-            .and_then(|defines| defines.int32("NGame", "MAX_SCRIPTED_LOC_RECURSION"))
+        let environment = Environment::read(layers)
+            .map_err(|error| format!("NGame.MAX_SCRIPTED_LOC_RECURSION is unavailable: {error}"))?;
+        let recursion = environment
+            .defines()
+            .int32("NGame", "MAX_SCRIPTED_LOC_RECURSION")
             .map_err(|error| format!("NGame.MAX_SCRIPTED_LOC_RECURSION is unavailable: {error}"))?;
         let tag_aliases = installed_content::tag_aliases::read(layers)
             .map_err(|error| format!("common/country_tag_aliases is unreadable: {error}"))?;
@@ -380,10 +383,20 @@ impl ScriptedContent {
             tag_aliases: std::sync::Arc::new(tag_aliases),
             recorded_language,
             layers: content,
-            environment: std::sync::OnceLock::new(),
+            environment: std::sync::OnceLock::from(Ok(environment)),
             template_names: std::sync::OnceLock::new(),
             effects: std::sync::OnceLock::new(),
         })
+    }
+
+    pub(crate) fn environment(&self) -> Result<&Environment, String> {
+        self.environment
+            .get_or_init(|| {
+                Environment::read(&self.layers.layers)
+                    .map_err(|why| format!("scripted localisation content: {why}"))
+            })
+            .as_ref()
+            .map_err(Clone::clone)
     }
 }
 
@@ -393,12 +406,18 @@ impl ScriptedContent {
         &self,
         state_names: std::collections::BTreeMap<u32, String>,
     ) {
-        let mut environment = entries::Environment::synthetic();
+        let mut environment = entries::EnvironmentInputs::synthetic();
         environment.state_names = state_names
             .into_iter()
             .map(|(id, name)| (id, Ok(name)))
             .collect();
-        assert!(self.environment.set(Ok(environment)).is_ok());
+        assert!(
+            self.environment()
+                .unwrap()
+                .inputs
+                .set(Ok(environment))
+                .is_ok()
+        );
     }
 }
 
@@ -586,6 +605,10 @@ impl<'a> ScriptedText<'a> {
 
     pub(crate) fn content(&self) -> &'a ScriptedContent {
         self.content
+    }
+
+    pub(crate) fn country_names(&self) -> &CountryNames<'_> {
+        &self.names
     }
 
     #[cfg(test)]

@@ -1,0 +1,246 @@
+use super::*;
+use crate::catalogue::tests::{Folder, folder_catalogue};
+use crate::effect_description::tests::Fixture;
+use crate::scripted_text::Link;
+use replay::{frame::TableView, rows::*};
+
+fn fixture() -> (Fixture, Folder) {
+    let mut fixture = Fixture::new();
+    let (catalogue, folder) = folder_catalogue(&[
+        (
+            "common/defines/test.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}, NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+        ),
+        (
+            "common/special_projects/specialization/test.txt",
+            "specialization_nuclear={} specialization_air={}",
+        ),
+        (
+            "common/scientist_traits/test.txt",
+            concat!(
+                "scientist_trait_bright={name=BRIGHT_NAME} ",
+                "scientist_trait_fast_learner={modifier={custom_modifier_tooltip=TRAIT_TOOLTIP}}"
+            ),
+        ),
+        (
+            "localisation/test_l_english.yml",
+            concat!(
+                "\u{feff}l_english:\n AAA:0 \"Alpha\"\n BBB:0 \"Beta\"\n",
+                " specialization_nuclear:0 \"Physics\"\n AAA_specialization_nuclear:0 \"Alpha physics\"\n specialization_air:0 \"Air\"\n",
+                " SCIENTIST_ADD_XP_SPECIALIZATION_EFFECT:0 \"XP$XP|0$/$SPECIALIZATION$ [Root.GetTag]\"\n",
+                " SCIENTIST_ADD_LEVEL_SPECIALIZATION_EFFECT:0 \"Level$LEVELS|0$/$SPECIALIZATION$ [Root.GetTag]\"\n",
+                " SPECIAL_PROJECT_INJURE_SCIENTIST_FOR_DAYS:0 \"Injury$DAYS|0$/[Root.GetName]/[From.GetName]/[Prev.GetName]\"\n",
+                " SCIENTIST_ADD_TRAIT_EFFECT:0 \"Trait$TRAIT_NAME$ [Root.GetTag]\"\n",
+                " EFFECT_GENERATE_SCIENTIST_CHARACTER:0 \"Generate$TRAITS$/[Root.GetTag]\"\n",
+                " EFFECT_GENERATE_SCIENTIST_CHARACTER_TRAIT:0 \"$TRAIT_NAME$\"\n",
+                " EFFECT_REMOVE_SCIENTIST_ROLE:0 \"Remove $NAME$/[Root.GetTag]\"\n",
+                " EFFECT_ADD_SCIENTIST_ROLE:0 \"Add $CHARACTER$/[Root.GetTag]\"\n",
+                " BRIGHT_NAME:0 \"Bright\"\n scientist_trait_fast_learner:0 \"Quick\"\n TRAIT_TOOLTIP:0 \"Tooltip[Root.GetTag]\"\n"
+            ),
+        ),
+    ]);
+    catalogue
+        .scripted_content()
+        .unwrap()
+        .set_synthetic_environment(Default::default());
+    fixture.catalogue = catalogue;
+    *fixture.frame.tables[TableId::Characters.index()] =
+        TableView::Complete(TableRows::Characters(vec![
+            CharacterRow {
+                id: 7,
+                country: 100,
+                name: b"Alice".to_vec(),
+                name_token_id: 10,
+                ..Default::default()
+            },
+            CharacterRow {
+                id: 8,
+                country: 100,
+                name: b"Ben".to_vec(),
+                name_token_id: 11,
+                ..Default::default()
+            },
+        ]));
+    *fixture.frame.tables[TableId::CountryCharacters.index()] =
+        TableView::Complete(TableRows::CountryCharacters(vec![
+            CountryCharacterRow {
+                country: 100,
+                ordinal: 0,
+                character: Some(7),
+            },
+            CountryCharacterRow {
+                country: 100,
+                ordinal: 1,
+                character: Some(8),
+            },
+        ]));
+    *fixture.frame.tables[TableId::Scientists.index()] =
+        TableView::Complete(TableRows::Scientists(vec![ScientistRow {
+            country: 100,
+            character: 7,
+            ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![
+            LexicalTokenRow {
+                token: 10,
+                literal: b"synthetic_alice".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 11,
+                literal: b"synthetic_ben".to_vec(),
+            },
+        ]));
+    crate::effect_description::characters::tests::empty_variable_stores(&mut fixture);
+    (fixture, folder)
+}
+
+fn caller() -> EventScopes {
+    let mut scientist = EventScope::of(EventObject::Character(7));
+    scientist.root = Link::Scope(1);
+    scientist.from = Link::Scope(2);
+    scientist.prev = Link::Scope(2);
+    EventScopes::new(vec![
+        scientist,
+        EventScope::of(EventObject::Country(1)),
+        EventScope::of(EventObject::Country(2)),
+    ])
+}
+
+// Authored witness: common/national_focus/czechoslovakia_mu.txt:15139.
+#[test]
+fn add_scientist_xp() {
+    let (fixture, _folder) = fixture();
+    let out = fixture.render(
+        "add_scientist_xp={experience=500 specialization=specialization_nuclear}",
+        &mut caller(),
+        Content::default(),
+    );
+    assert_eq!(out.text, "Alice XP500/Alpha physics [Root.GetTag]");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+// Authored witness: common/national_focus/germany.txt:19061.
+#[test]
+fn add_scientist_level() {
+    let (fixture, _folder) = fixture();
+    let out = fixture.render(
+        "add_scientist_level={specialization=specialization_air level=1}",
+        &mut caller(),
+        Content::default(),
+    );
+    assert_eq!(out.text, "Level1/Air [Root.GetTag]");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+// Authored witness: common/special_projects/projects/land_projects.txt:1464.
+#[test]
+fn injure_scientist_for_days() {
+    let (fixture, _folder) = fixture();
+    let out = fixture.render(
+        "injure_scientist_for_days=60",
+        &mut caller(),
+        Content::default(),
+    );
+    assert_eq!(out.text, "Injury60/Alice/Alice/Alice\n");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+// Authored witness: common/national_focus/china_nationalist_sea.txt:14313.
+#[test]
+fn generate_scientist_character() {
+    let (fixture, _folder) = fixture();
+    let out = fixture.render("generate_scientist_character={portrait_tag_override=AAA traits={scientist_trait_bright scientist_trait_fast_learner} skills={specialization_naval=2}}", &mut caller(), Content::default());
+    assert_eq!(out.text, "Generate(Bright, Quick)/AAA");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+// Authored witness: common/special_projects/projects/land_projects.txt:1506.
+#[test]
+fn add_scientist_trait() {
+    let (fixture, _folder) = fixture();
+    let out = fixture.render(
+        "add_scientist_trait=scientist_trait_fast_learner",
+        &mut caller(),
+        Content::default(),
+    );
+    assert_eq!(
+        out.text,
+        "TraitQuick [Root.GetTag]\n  TooltipAAA",
+        "{:?}",
+        out.refusals
+    );
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+// Authored witness: common/special_projects/prototype_rewards/generic_nuclear_prototype_rewards.txt:200.
+#[test]
+fn remove_scientist_role() {
+    let (fixture, _folder) = fixture();
+    let out = fixture.render(
+        "remove_scientist_role=yes",
+        &mut caller(),
+        Content::default(),
+    );
+    assert_eq!(out.text, "Remove Alice/AAA");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+// Authored witness: mod 1826643372/common/decisions/KTZ_decisions.txt:2487.
+#[test]
+fn add_scientist_role() {
+    let (fixture, _folder) = fixture();
+    let out = fixture.render("add_scientist_role={scientist={traits={scientist_trait_bright} skills={specialization_nuclear=3}}}", &mut caller(), Content::default());
+    assert_eq!(out.text, "Add Alice/AAA");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+#[test]
+fn active_non_scientists_keep_native_empty_gates() {
+    let (fixture, _folder) = fixture();
+    let mut scopes = caller();
+    scopes.scopes[0].this = EventObject::Character(8);
+    let out = fixture.render("add_scientist_xp={specialization=specialization_nuclear experience=500} add_scientist_level={specialization=specialization_air level=1} injure_scientist_for_days=60 add_scientist_trait=scientist_trait_fast_learner", &mut scopes, Content::default());
+    assert_eq!(out.text, "");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+#[test]
+fn unrostered_scientist_presence_is_named_and_counted() {
+    let (mut fixture, _folder) = fixture();
+    *fixture.frame.tables[TableId::Scientists.index()] =
+        TableView::Complete(TableRows::Scientists(vec![]));
+    *fixture.frame.tables[TableId::CountryCharacters.index()] =
+        TableView::Complete(TableRows::CountryCharacters(vec![]));
+    *fixture.frame.tables[TableId::CountryRetiredCharacters.index()] =
+        TableView::Complete(TableRows::CountryRetiredCharacters(vec![
+            CountryCharacterRow {
+                country: 100,
+                ordinal: 0,
+                character: Some(7),
+            },
+        ]));
+    let out = fixture.render(
+        "injure_scientist_for_days=60",
+        &mut caller(),
+        Content::default(),
+    );
+    assert_eq!(out.text, "");
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect CInjureScientistEffect@?A0x9898cfbe@NProject: key injure_scientist_for_days: unrostered character 7 scientist holder (CCharacter+0xC0, 1404909E0) is unrecorded".to_owned(), 1)]));
+}
+
+#[test]
+fn scientist_role_targets_use_named_character_and_current_fallback() {
+    let (fixture, _folder) = fixture();
+    let out = fixture.render("add_scientist_role={character=synthetic_ben scientist={}} remove_scientist_role={character=synthetic_ben}", &mut caller(), Content::default());
+    assert_eq!(out.text, "Add Ben/AAA\nRemove Ben/AAA");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+#[test]
+fn missing_and_reserved_trait_ids_keep_native_empty() {
+    let (fixture, _folder) = fixture();
+    let out = fixture.render("add_scientist_trait=missing_trait add_scientist_trait=\"scientist_trait_bright\" add_scientist_trait=3 add_scientist_xp={specialization=missing_specialization experience=500}", &mut caller(), Content::default());
+    assert_eq!(out.text, "");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}

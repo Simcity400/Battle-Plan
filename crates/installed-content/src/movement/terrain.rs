@@ -10,20 +10,26 @@
 //! which stores it as the i32 at `+0x88`), so a mod may declare any number of
 //! categories.
 
-use std::io;
+use std::{borrow::Cow, io};
 
 use crate::{ResolvedLayers, terrain::TerrainDefinitions};
 
 #[derive(Debug, Default)]
-pub(crate) struct TerrainDatabase {
-    definitions: TerrainDefinitions,
+pub(crate) struct TerrainDatabase<'a> {
+    definitions: Cow<'a, TerrainDefinitions>,
 }
 
-impl TerrainDatabase {
+impl<'a> TerrainDatabase<'a> {
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         Ok(Self {
-            definitions: crate::terrain::read_definitions(layers)?,
+            definitions: Cow::Owned(crate::terrain::read_definitions(layers)?),
         })
+    }
+
+    pub fn from_definitions(definitions: &'a TerrainDefinitions) -> Self {
+        Self {
+            definitions: Cow::Borrowed(definitions),
+        }
     }
 
     /// The one-based ordinal the name resolves to; zero is the null terrain.
@@ -49,12 +55,14 @@ impl TerrainDatabase {
 }
 
 #[cfg(test)]
-pub(crate) fn database(sources: &[&str]) -> TerrainDatabase {
+pub(crate) fn database(sources: &[&str]) -> TerrainDatabase<'static> {
     let mut definitions = TerrainDefinitions::default();
     for source in sources {
         definitions.append(source.as_bytes()).unwrap();
     }
-    TerrainDatabase { definitions }
+    TerrainDatabase {
+        definitions: Cow::Owned(definitions),
+    }
 }
 
 #[cfg(test)]
@@ -83,6 +91,13 @@ mod tests {
         assert_eq!(costs.ordinal(b"first"), 1);
         assert_eq!(costs.ordinal(b"LATER"), 3);
         assert_eq!(costs.ordinal(b"missing"), 0);
+        let shared = TerrainDatabase::from_definitions(costs.definitions.as_ref());
+        for index in 0..=u8::MAX {
+            assert_eq!(shared.cost(index), costs.cost(index));
+        }
+        for name in [b"first".as_slice(), b"LATER", b"missing"] {
+            assert_eq!(shared.ordinal(name), costs.ordinal(name));
+        }
         let invalid =
             database(&["categories={bad={movement_cost=bad}} terrain={a={type=bad color={0}}}"]);
         // A cost that does not convert keeps the constructor's zero, which

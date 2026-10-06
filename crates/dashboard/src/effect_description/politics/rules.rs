@@ -78,9 +78,10 @@ impl Renderer<'_, '_, '_> {
                     .scalar()
                     .and_then(installed_content::parser::read_bool)
                     .unwrap_or(false);
-            } else if !["target", "trigger", "usage_desc"]
-                .iter()
-                .any(|name| item.keyword_is(name))
+            } else if !(item.keyword_is("target")
+                || item.keyword_is("trigger")
+                // Only the add reader consumes usage_desc (+0x98, 1403AF060).
+                || (!remove && item.keyword_is("usage_desc")))
             {
                 return Err(format!(
                     "unknown relation rule {} (1403AF060/1403B4150)",

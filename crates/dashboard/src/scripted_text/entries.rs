@@ -94,23 +94,108 @@ pub(crate) fn read_state_content(
     layers: &installed_content::ResolvedLayers,
 ) -> std::io::Result<StateContent> {
     let defines = installed_content::defines::read(layers)?;
+    let (states, names, warnings) = read_state_templates(layers, &defines)?;
+    Ok(StateContent {
+        defines,
+        states,
+        names,
+        warnings,
+    })
+}
+
+fn read_state_templates(
+    layers: &installed_content::ResolvedLayers,
+    defines: &installed_content::defines::Defines,
+) -> std::io::Result<(installed_content::states::States, StateNames, Vec<String>)> {
     let map = installed_content::terrain::read_default_map(layers)?;
     let provinces = installed_content::map::parse_definitions(&layers.read(&map.file("definitions")?)?)?;
-    let (states, warnings) = installed_content::states::read(layers, &defines, &provinces)?;
+    let (states, warnings) = installed_content::states::read(layers, defines, &provinces)?;
     let names = states
         .definitions()
         .iter()
         .map(|(&id, state)| (id, state.name_key.clone()))
         .collect();
-    Ok(StateContent {
-        defines,
+    Ok((
         states,
         names,
-        warnings: warnings.into_iter().map(|(_, message)| message).collect(),
-    })
+        warnings.into_iter().map(|(_, message)| message).collect(),
+    ))
 }
 
 pub(crate) struct Environment {
+    // LoadGameDefines 14073DDA0; shared content stays independent of lazy map inputs.
+    defines: installed_content::defines::Defines,
+    ideologies: Result<installed_content::ideologies::Ideologies, String>,
+    terrain_definitions: Result<installed_content::terrain::TerrainDefinitions, String>,
+    leader_traits: Result<installed_content::leader_traits::LeaderTraits, String>,
+    pub(crate) catalogue_notes: Vec<String>,
+    pub(super) inputs: std::sync::OnceLock<Result<EnvironmentInputs, String>>,
+}
+
+impl Environment {
+    pub(super) fn read(layers: &installed_content::ResolvedLayers) -> std::io::Result<Self> {
+        let defines = installed_content::defines::read(layers)?;
+        let mut catalogue_notes = Vec::new();
+        let ideologies = installed_content::ideologies::read(layers)
+            .map(|(db, notes)| {
+                catalogue_notes.extend(notes.into_iter().map(|(_, why)| why));
+                db
+            })
+            .map_err(|why| why.to_string());
+        let terrain_definitions = installed_content::terrain::read_definitions(layers)
+            .inspect(|db| catalogue_notes.extend(db.skipped.iter().cloned()))
+            .map_err(|why| why.to_string());
+        let leader_traits = installed_content::leader_traits::read(layers)
+            .map(|(db, notes)| {
+                catalogue_notes.extend(notes.into_iter().map(|(_, why)| why));
+                db
+            })
+            .map_err(|why| why.to_string());
+        Ok(Self {
+            defines,
+            ideologies,
+            terrain_definitions,
+            leader_traits,
+            catalogue_notes,
+            inputs: std::sync::OnceLock::new(),
+        })
+    }
+
+    pub(crate) fn defines(&self) -> &installed_content::defines::Defines {
+        &self.defines
+    }
+
+    pub(crate) fn ideologies(&self) -> Result<&installed_content::ideologies::Ideologies, String> {
+        self.ideologies.as_ref().map_err(Clone::clone)
+    }
+
+    pub(crate) fn terrain(&self) -> Result<&installed_content::terrain::TerrainDefinitions, String> {
+        self.terrain_definitions.as_ref().map_err(Clone::clone)
+    }
+
+    pub(crate) fn leader_traits(&self) -> Result<&installed_content::leader_traits::LeaderTraits, String> {
+        self.leader_traits.as_ref().map_err(Clone::clone)
+    }
+
+    fn inputs(&self, layers: &installed_content::ResolvedLayers) -> Result<&EnvironmentInputs, String> {
+        self.inputs
+            .get_or_init(|| {
+                EnvironmentInputs::read(layers, self)
+                    .map_err(|why| format!("scripted localisation content: {why}"))
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    pub(crate) fn warnings(&self) -> &[String] {
+        self.inputs
+            .get()
+            .and_then(|inputs| inputs.as_ref().ok())
+            .map_or(&[], |inputs| inputs.warnings.as_slice())
+    }
+}
+
+pub(super) struct EnvironmentInputs {
     pub warnings: Vec<String>,
     pub(super) state_names: BTreeMap<u32, Result<String, String>>,
     state_provinces: BTreeMap<u32, Vec<u32>>,
@@ -126,25 +211,14 @@ pub(crate) struct Environment {
     roles: Result<LeaderRoles, String>,
     invasion_days: Result<i32, String>,
     constants: Result<installed_content::script_constants::Constants, String>,
-    /// The unit-leader and country-leader trait databases a character's
-    /// `has_trait` reads.
-    traits: Result<
-        (
-            installed_content::unit_leader::Traits,
-            installed_content::leader_traits::LeaderTraits,
-        ),
-        String,
-    >,
+    /// Registered unit-leader traits; country-leader traits stay in Environment.
+    traits: Result<installed_content::unit_leader::Traits, String>,
 }
 
-impl Environment {
-    fn read(layers: &installed_content::ResolvedLayers) -> std::io::Result<Self> {
-        let StateContent {
-            defines,
-            states,
-            names: state_names,
-            warnings,
-        } = read_state_content(layers)?;
+impl EnvironmentInputs {
+    fn read(layers: &installed_content::ResolvedLayers, environment: &Environment) -> std::io::Result<Self> {
+        let defines = environment.defines();
+        let (states, state_names, warnings) = read_state_templates(layers, defines)?;
         let states = states.definitions();
         let state_provinces = states
             .iter()
@@ -163,28 +237,30 @@ impl Environment {
                 .collect(),
             state_names,
             neighbors,
-            terrain: installed_content::movement::MovementMap::read(layers, &defines).ok(),
-            terrain_names: installed_content::terrain::read_definitions(layers)
-                .map(|definitions| {
-                    definitions
-                        .categories
-                        .into_iter()
-                        .map(|category| category.name)
-                        .collect()
-                })
-                .map_err(|e| e.to_string()),
+            terrain: environment.terrain().ok().and_then(|terrain| {
+                installed_content::movement::MovementMap::read_with_terrain(layers, defines, terrain).ok()
+            }),
+            terrain_names: environment.terrain().map(|definitions| {
+                definitions
+                    .categories
+                    .iter()
+                    .map(|category| category.name.clone())
+                    .collect()
+            }),
             dlcs: layers.dlc_names()?,
             triggers: installed_content::trigger_keys::TriggerNames::new(
+                // Predicate-only copy; relation descriptions retain bindings (141395B30/1413931A0).
                 installed_content::scripted_triggers::read(layers)?,
                 installed_content::trigger_keys::CountTriggerNames::new(
                     &buildings,
-                    &installed_content::ideologies::read(layers)?.0,
+                    environment.ideologies().map_err(std::io::Error::other)?,
                     &installed_content::resources::read(layers)?.0,
                 ),
             ),
             aliases: std::sync::Arc::new(installed_content::tag_aliases::read(layers)?),
             buildings,
-            bonuses: crate::state_resources::resource_bonuses(&defines)?,
+            bonuses: crate::state_resources::resource_bonuses(defines)?,
+            // Visible-trigger templates differ from the full character role/name projections.
             roles: installed_content::characters::leader_templates(layers)
                 .map(LeaderRoles::new)
                 .map_err(|e| e.to_string()),
@@ -192,13 +268,12 @@ impl Environment {
                 .int32("NNavy", "NAVAL_INVASION_PREPARE_DAYS")
                 .map_err(|e| e.to_string()),
             constants: installed_content::script_constants::read(layers).map_err(|e| e.to_string()),
-            traits: installed_content::unit_leader::Traits::registered(layers)
-                .and_then(|units| Ok((units, installed_content::leader_traits::read(layers)?.0)))
-                .map_err(|e| e.to_string()),
+            // Registration alone decides has_trait; the full description/skills read stays separate.
+            traits: installed_content::unit_leader::Traits::registered(layers).map_err(|e| e.to_string()),
         })
     }
 
-    fn facts(&self) -> ContentFacts<'_> {
+    fn facts<'a>(&'a self, environment: &'a Environment) -> ContentFacts<'a> {
         ContentFacts {
             state_provinces: &self.state_provinces,
             impassable: &self.impassable,
@@ -215,29 +290,30 @@ impl Environment {
             character_traits: self
                 .traits
                 .as_ref()
-                .map(|(units, country_leaders)| (units, country_leaders))
+                .and_then(|units| {
+                    environment
+                        .leader_traits
+                        .as_ref()
+                        .map(|country| (units, country))
+                })
                 .map_err(String::as_str),
         }
     }
 }
 
 impl<'a> ScriptedText<'a> {
-    fn environment(&self) -> Result<&'a Environment, String> {
+    fn environment(&self) -> Result<&'a EnvironmentInputs, String> {
         self.content
-            .environment
-            .get_or_init(|| {
-                Environment::read(&self.content.layers.layers)
-                    .map_err(|e| format!("scripted localisation content: {e}"))
-            })
-            .as_ref()
-            .map_err(Clone::clone)
+            .environment()?
+            .inputs(&self.content.layers.layers)
     }
 
     /// The hour's trigger inputs, read on first use.
     pub(crate) fn world(&self) -> Result<&World<'a>, String> {
         self.world
             .get_or_init(|| {
-                World::new(self.frame, self.environment()?.facts()).map(|world| {
+                let facts = self.environment()?.facts(self.content.environment()?);
+                World::new(self.frame, facts).map(|world| {
                     world.with_template_names(
                         &self.content.template_names,
                         &self.content.layers.layers,
@@ -636,7 +712,7 @@ fn entry_invocations_keep_the_original_bounds_of_unresolved_links() {
 }
 
 #[cfg(test)]
-impl Environment {
+impl EnvironmentInputs {
     pub(super) fn synthetic() -> Self {
         Self {
             warnings: Vec::new(),

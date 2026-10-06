@@ -9,6 +9,7 @@ use crate::{
         native::{self, Mode, Shape},
     },
     script_files,
+    tokens::Token,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -27,6 +28,10 @@ pub struct Project {
 pub struct Catalog {
     pub projects: BTreeMap<String, Project>,
     pub specializations: BTreeSet<String>,
+    /// First registered token spelling, before any repeated definition is
+    /// skipped (1401698B0). The public raw-name set remains for its existing
+    /// consumers; effect display names use this token-identity projection.
+    specialization_tokens: BTreeMap<Token, String>,
     pub warnings: Vec<String>,
     /// An unreadable stream may override prior tokens; none are assumed valid.
     pub unsettled: Option<String>,
@@ -54,22 +59,30 @@ fn read(
     bytes: &[u8],
     specialization: bool,
     names: Option<&crate::key_names::KeyNames>,
+    earlier: Option<&BTreeSet<Token>>,
 ) -> io::Result<Vec<crate::parser::Item>> {
-    // Loaders 140141670/140130160: mode 0, keyed ReadObject and reuse the
-    // persistent object on repeated tokens. Template dispatch 140A85D70;
-    // specialization dispatch 140AAC100; narrative dispatch 140A82E90.
+    let mut registered = earlier.cloned().unwrap_or_default();
+    // Projects 140141670/140130160: mode 0, reuse repeated templates.
+    // Specializations 14018ABD0 -> 14016A5B0/1401698B0: mode 0, first
+    // token only, repeated bodies skipped. Dispatch 140AAC100/140A85D70.
     let read = native::read(
         bytes,
         Mode::KeepMark,
-        native::Top::File(if specialization {
-            Node::Specializations
+        if specialization {
+            native::Top::Persistent(Node::Specializations)
         } else {
-            Node::Projects
-        }),
+            native::Top::File(Node::Projects)
+        },
         names,
         &mut |node, field| match node {
             Node::Projects => Shape::Object(Node::Project),
-            Node::Specializations => Shape::Object(Node::Specialization),
+            Node::Specializations => {
+                if registered.insert(Token::c_str(field.key.c_str())) {
+                    Shape::Object(Node::Specialization)
+                } else {
+                    Shape::Skip
+                }
+            }
             Node::Project => match field.keyword().as_deref() {
                 Some(b"specialization" | b"icon" | b"blueprint_image" | b"prototype_time") => {
                     Shape::One
@@ -169,6 +182,16 @@ fn string(value: &Value) -> io::Result<String> {
 }
 
 impl Catalog {
+    /// Native token match (14022F320), with the first registered spelling
+    /// used by get_token_string (1424A7300) in specialization names
+    /// (140AABD40). An unsettled stream cannot prove a lookup's answer.
+    pub fn specialization(&self, token: &Token) -> Result<Option<&str>, String> {
+        if let Some(why) = &self.unsettled {
+            return Err(why.clone());
+        }
+        Ok(self.specialization_tokens.get(token).map(String::as_str))
+    }
+
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         let mut result = Self::default();
         // CBuildingDatabase::load 14018B610 loads project bodies after buildings.
@@ -177,8 +200,14 @@ impl Catalog {
             ("common/special_projects/specialization/", true),
             ("common/special_projects/projects/", false),
         ] {
+            let mut registered = BTreeSet::new();
             for path in script_files::paths(layers, folder, Some(".txt")) {
-                let items = match read(&layers.read(&path)?, specialization, Some(&names)) {
+                let items = match read(
+                    &layers.read(&path)?,
+                    specialization,
+                    Some(&names),
+                    Some(&registered),
+                ) {
                     Ok(items) => items,
                     Err(error) => {
                         let reason = format!("Special projects: refused 1 file {path}: {error}");
@@ -198,6 +227,12 @@ impl Catalog {
                         }
                     };
                     if specialization {
+                        let identity = Token::c_str(token.as_bytes());
+                        registered.insert(identity.clone());
+                        result
+                            .specialization_tokens
+                            .entry(identity)
+                            .or_insert_with(|| token.clone());
                         result.specializations.insert(token);
                         continue;
                     }
@@ -254,18 +289,58 @@ mod tests {
     use super::*;
     #[test]
     fn native_scalar_consumption_variables_and_narrative_dispatch() {
-        let items = read(br#"@kind = mod_science p = { SPECIALIZATION = @kind icon = GFX_mod narrative = { name = mod_name desc = x unknown = {name=no} } }"#, false, None).unwrap();
+        let items = read(br#"@kind = mod_science p = { SPECIALIZATION = @kind icon = GFX_mod narrative = { name = mod_name desc = x unknown = {name=no} } }"#, false, None, None).unwrap();
         let fields = items[0].value.items().unwrap();
         assert_eq!(string(&fields[0].value).unwrap(), "mod_science");
         assert_eq!(
             fields[2].value.items().unwrap()[0].value.scalar_str(),
             Some("mod_name")
         );
-        let items = read(b"p={icon={specialization=mod_kind}}", false, None).unwrap();
+        let items = read(b"p={icon={specialization=mod_kind}}", false, None, None).unwrap();
         assert_eq!(
             items[0].value.items().unwrap()[1].value.scalar_str(),
             Some("mod_kind")
         );
+    }
+
+    #[test]
+    fn specialization_tokens_keep_first_spelling_and_skip_repeated_bodies() {
+        let root = std::env::temp_dir().join(format!(
+            "installed-content-specialization-tokens-{}",
+            std::process::id()
+        ));
+        let folder = root.join("common/special_projects/specialization");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("a.txt"),
+            "mod_kind = { icon = first } MOD_KIND = { @skip = changed } after = { icon = @skip }",
+        )
+        .unwrap();
+        std::fs::write(folder.join("b.txt"), "MOD_KIND = { icon = later }").unwrap();
+        let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let catalog = Catalog::read(&layers).unwrap();
+        assert_eq!(
+            catalog.specialization(&Token::c_str(b"MOD_KIND")).unwrap(),
+            Some("mod_kind")
+        );
+        // Preserve the public raw-name set used by existing consumers.
+        assert!(catalog.specializations.contains("MOD_KIND"));
+        assert_eq!(
+            catalog.specialization(&Token::c_str(b"missing")).unwrap(),
+            None
+        );
+        let items = read(
+            b"kind = { } KIND = { @skip = wrong } after = { icon = @skip }",
+            true,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            items[2].value.items().unwrap()[0].value.scalar_str(),
+            Some("@skip")
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// Read-only audit of the installed vanilla and Workshop corpus. No game.
@@ -290,7 +365,12 @@ mod tests {
                     walk(&path, specialization, files, definitions, refusals, names);
                 } else if path.extension().is_some_and(|ext| ext == "txt") {
                     *files += 1;
-                    match read(&std::fs::read(&path).unwrap(), specialization, Some(names)) {
+                    match read(
+                        &std::fs::read(&path).unwrap(),
+                        specialization,
+                        Some(names),
+                        None,
+                    ) {
                         Ok(items) => *definitions += items.len(),
                         Err(reason) => refusals.push(format!("{}: {reason}", path.display())),
                     }

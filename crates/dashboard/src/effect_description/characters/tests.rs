@@ -4,6 +4,20 @@ use crate::effect_description::tests::Fixture;
 use crate::scripted_text::{EventObject, EventScope, Link};
 use replay::{frame::TableView, rows::*};
 
+pub(super) fn empty_variable_stores(fixture: &mut Fixture) {
+    *fixture.frame.tables[TableId::ScriptVariables.index()] =
+        TableView::Complete(TableRows::ScriptVariables(
+            [(1, 100), (1, 200), (1, 300), (3, 7), (3, 8)]
+                .into_iter()
+                .map(|(scope_kind, scope_id)| ScriptVariablesRow {
+                    scope_kind,
+                    scope_id,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+}
+
 fn fixture() -> (Fixture, Folder) {
     let mut fixture = Fixture::new();
     let (catalogue, folder) = folder_catalogue(&[
@@ -78,12 +92,7 @@ fn fixture() -> (Fixture, Folder) {
                 character: Some(8),
             },
         ]));
-    *fixture.frame.tables[TableId::ScriptVariables.index()] =
-        TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
-            scope_kind: 3,
-            scope_id: 7,
-            ..Default::default()
-        }]));
+    empty_variable_stores(&mut fixture);
     (fixture, folder)
 }
 
@@ -148,6 +157,65 @@ fn capture_by() {
         Content::default(),
     );
     assert_eq!(out.text, "Capture Army name/beta [Root.GetTag]");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+// CCaptureGeneralEffect::ReadEffect 1402F8640 consumes country/province;
+// the province is execution-only, and target is an unexpected native key.
+#[test]
+fn capture_by_block_reads_country_without_target_leak() {
+    let (fixture, _folder) = fixture();
+    for (body, expected) in [
+        ("capture_by={country=BBB province=17}", "Capture Army name/beta [Root.GetTag]"),
+        ("capture_by={target=BBB province=17}", ""),
+    ] {
+        let out = fixture.render(body, &mut character_scopes(), Content::default());
+        assert_eq!(out.text, expected, "{body}");
+        assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals);
+    }
+}
+
+// 1402F8130 and 140374C60 require a signed positive capturer/nationality.
+// Selectors capital/random keep country zero (1405336C0); linked states
+// instead supply their owner through 14052B6A0, state +0xC8.
+#[test]
+fn country_target_zero_and_state_owner_follow_native_character_gates() {
+    let (mut fixture, _folder) = fixture();
+    for category in [0, 3] {
+        if let TableView::Complete(TableRows::UnitLeaders(rows)) =
+            &mut *fixture.frame.tables[TableId::UnitLeaders.index()]
+        {
+            rows[0].category = category;
+        }
+        let key = if category == 0 {
+            "capture_by"
+        } else {
+            "add_nationality"
+        };
+        for selector in ["capital", "random"] {
+            let out = fixture.render(
+                &format!("{key}={selector}"),
+                &mut character_scopes(),
+                Content::default(),
+            );
+            assert_eq!(out.text, "", "{key}={selector}");
+            assert!(out.refusals.is_empty(), "{key}={selector}: {:?}", out.refusals);
+        }
+    }
+    if let TableView::Complete(TableRows::UnitLeaders(rows)) =
+        &mut *fixture.frame.tables[TableId::UnitLeaders.index()]
+    {
+        rows[0].category = 0;
+    }
+    let mut graph = EventScopes::new(vec![
+        EventScope {
+            root: Link::Scope(1),
+            ..EventScope::of(EventObject::Character(7))
+        },
+        EventScope::of(EventObject::State(2)),
+    ]);
+    let out = fixture.render("capture_by=ROOT", &mut graph, Content::default());
+    assert_eq!(out.text, "Capture Army name/alpha [Root.GetTag]");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
@@ -332,4 +400,97 @@ fn character_and_leader_names_keep_recording_language_rule() {
             out.refusals
         );
     }
+}
+
+#[test]
+fn named_character_selector_uses_retired_roster_after_active() {
+    let (mut fixture, _folder) = fixture();
+    *fixture.frame.tables[TableId::CountryCharacters.index()] =
+        TableView::Complete(TableRows::CountryCharacters(vec![]));
+    *fixture.frame.tables[TableId::CountryRetiredCharacters.index()] =
+        TableView::Complete(TableRows::CountryRetiredCharacters(vec![
+            CountryCharacterRow {
+                country: 100,
+                ordinal: 0,
+                character: Some(8),
+            },
+        ]));
+    let out = fixture.render(
+        "set_nationality={character=synthetic_other target_country=BBB}",
+        &mut character_scopes(),
+        Content::default(),
+    );
+    assert_eq!(out.text, "Nationality Other name/beta AAA\n");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+#[test]
+fn missing_executable_localisation_name_is_named_and_counted() {
+    let fixture = Fixture::new();
+    let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
+    let out = fixture.render(
+        "add_ace={name=First surname=Last callsign=Nick type=synthetic_ace}",
+        &mut scopes,
+        Content::default(),
+    );
+    assert_eq!(out.text, "");
+    assert_eq!(
+        out.refusals,
+        BTreeMap::from([(
+            "synthetic effect CAddAceEffect: key add_ace: native character localisation key EFFECT_ADD_ACE is not defined".into(),
+            1,
+        )]),
+    );
+}
+
+#[test]
+fn character_lookup_keeps_country_five_thousand() {
+    let (mut fixture, _folder) = fixture();
+    let TableView::Complete(TableRows::Countries(countries)) =
+        &mut *fixture.frame.tables[TableId::Countries.index()]
+    else {
+        unreachable!()
+    };
+    for slot in 4_u32..=5_000 {
+        let tag_index = slot + 7_996;
+        countries.push(CountryRow {
+            id: slot + 1_000,
+            canonical_slot: slot,
+            tag: vec![
+                b'A' + (tag_index / 676) as u8,
+                b'A' + ((tag_index / 26) % 26) as u8,
+                b'A' + (tag_index % 26) as u8,
+            ],
+            ..Default::default()
+        });
+    }
+    let links = countries
+        .iter()
+        .map(|row| CountryLinkRow {
+            id: row.id,
+            canonical_slot: row.canonical_slot,
+        })
+        .collect();
+    *fixture.frame.tables[TableId::CountryLinks.index()] =
+        TableView::Complete(TableRows::CountryLinks(links));
+    *fixture.frame.tables[TableId::CountryCharacters.index()] =
+        TableView::Complete(TableRows::CountryCharacters(vec![CountryCharacterRow {
+            country: 6_000,
+            ordinal: 0,
+            character: Some(8),
+        }]));
+    let TableView::Complete(TableRows::ScriptVariables(stores)) =
+        &mut *fixture.frame.tables[TableId::ScriptVariables.index()]
+    else {
+        unreachable!()
+    };
+    stores.push(ScriptVariablesRow { scope_kind: 1, scope_id: 6_000, ..Default::default() });
+    let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(5_000))]);
+    let out = fixture.render(
+        "set_nationality={character=synthetic_other target_country=BBB}",
+        &mut scopes,
+        Content::default(),
+    );
+    assert_eq!(out.text, "Nationality Other name/beta TFW\n");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
