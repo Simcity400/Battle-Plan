@@ -189,11 +189,6 @@ use ts_rs::TS;
 
 pub struct ConstructionLog;
 
-/// Projects kept per branch before the scan refuses, far above a long
-/// campaign's construction.
-const MAX_PROJECTS: usize = 500_000;
-/// Runs and level events kept per branch before the scan refuses.
-const MAX_ENTRIES: usize = 4_000_000;
 /// Longest side of a returned building icon.
 const ICON_EDGE: u32 = 48;
 /// The fixed5 scale of `cost`.
@@ -757,7 +752,6 @@ struct Scan {
     dictionary: Option<SharedView>,
     /// Lines whose country the links do not resolve, each counted once.
     unresolved: BTreeSet<u64>,
-    entries: usize,
 }
 
 impl Scan {
@@ -790,16 +784,6 @@ impl Scan {
                 *token = literal(view, *id);
             }
         }
-    }
-
-    fn count(&mut self, entries: usize) -> io::Result<()> {
-        self.entries += entries;
-        if self.entries > MAX_ENTRIES || self.log.projects.len() > MAX_PROJECTS {
-            return Err(io::Error::other(
-                "Construction history exceeds its memory budget",
-            ));
-        }
-        Ok(())
     }
 }
 
@@ -847,7 +831,7 @@ fn record_run(
     factories: i32,
     remaining: i32,
     repair_levels: i32,
-) -> usize {
+) {
     let same = project.runs.last().is_some_and(|run| {
         line.carried
             && run.factories == factories
@@ -861,7 +845,6 @@ fn record_run(
         if let Some(run) = project.runs.last_mut() {
             run.last_hour = hour;
         }
-        0
     } else {
         project.runs.push(ProjectRun {
             first_hour: hour,
@@ -870,7 +853,6 @@ fn record_run(
             remaining,
             repair_levels,
         });
-        1
     }
 }
 
@@ -999,17 +981,16 @@ fn by_read(count: u32, known_at: i32, repair: bool) -> LevelsBuilt {
 
 /// A line that left the queue unknowably may have built any of the `left` levels
 /// its last read showed (all of them, in a gap): whatever this read did not show
-/// built is unaccounted, never read as unbuilt. Returns the entries added.
+/// built is unaccounted, never read as unbuilt.
 fn leave_unaccounted(
     project: &mut ConstructionProject,
     end: &ProjectEnd,
     left: &[(bool, i32)],
     hour: i32,
-) -> usize {
+) {
     if end.kind != EndKind::Unknown {
-        return 0;
+        return;
     }
-    let mut entries = 0;
     for &(repair, left) in left {
         let shown: u32 = project
             .built
@@ -1020,10 +1001,8 @@ fn leave_unaccounted(
         let rest = u32::try_from(left).unwrap_or(0).saturating_sub(shown);
         if rest > 0 {
             project.unaccounted.push(by_read(rest, hour, repair));
-            entries += 1;
         }
     }
-    entries
 }
 
 fn ended(
@@ -1064,32 +1043,29 @@ enum Seen<'a> {
 }
 
 /// Pushes a count of levels read at `known_at` onto `list` when positive.
-fn push_read(list: &mut Vec<LevelsBuilt>, count: i64, known_at: i32, repair: bool) -> usize {
-    match u32::try_from(count) {
-        Ok(count) if count > 0 => {
-            list.push(by_read(count, known_at, repair));
-            1
-        }
-        _ => 0,
+fn push_read(list: &mut Vec<LevelsBuilt>, count: i64, known_at: i32, repair: bool) {
+    if let Ok(count) = u32::try_from(count)
+        && count > 0
+    {
+        list.push(by_read(count, known_at, repair));
     }
 }
 
 /// The module notes' claim algorithm for one building line over the stretch from
 /// its last read to this read at `hour`, where `row` is this read's
 /// value of it (none once it left the queue). Records what it built, what was added
-/// to it and what cannot be told, and returns the entries added and its ending.
+/// to it and what cannot be told, and returns its ending.
 fn settle(
     project: &mut ConstructionProject,
     line: &Open,
     row: Option<&BuildingConstructionRow>,
     seen: Seen<'_>,
     hour: i32,
-) -> (usize, Option<ProjectEnd>) {
+) -> Option<ProjectEnd> {
     let (repair_left, new_left) = (line.repair_levels.max(0), line.remaining.max(0));
     let (repair_now, new_now) =
         row.map_or((0, 0), |row| (row.repair_levels.max(0), row.amount.max(0)));
     let left = [(true, repair_left), (false, new_left)];
-    let mut entries = 0;
     let stretch = match seen {
         Seen::Clear(track, newcomer) => Stretch::of(&track.changes, newcomer),
         Seen::Lost | Seen::Shared => {
@@ -1098,14 +1074,14 @@ fn settle(
                 for (repair, left, now) in
                     [(true, repair_left, repair_now), (false, new_left, new_now)]
                 {
-                    entries += push_read(
+                    push_read(
                         &mut project.unaccounted,
                         i64::from(left - now),
                         hour,
                         repair,
                     );
                 }
-                return (entries, None);
+                return None;
             }
             let why = if repair_left == 0 && new_left == 0 {
                 UnknownEnd::NothingLeft
@@ -1115,13 +1091,13 @@ fn settle(
                 UnknownEnd::SharedTarget
             };
             let end = ended(EndKind::Unknown, None, hour, Some(why));
-            entries += leave_unaccounted(project, &end, &left, hour);
-            return (entries, Some(end));
+            leave_unaccounted(project, &end, &left, hour);
+            return Some(end);
         }
     };
     if row.is_none() && repair_left == 0 && new_left == 0 {
         let end = ended(EndKind::Unknown, None, hour, Some(UnknownEnd::NothingLeft));
-        return (entries, Some(end));
+        return Some(end);
     }
     let candidates: u32 = stretch.levels.iter().map(|rise| rise.count).sum();
     let damaged = |until: Option<i32>| -> u32 {
@@ -1188,10 +1164,9 @@ fn settle(
         } else {
             0
         });
-        entries += repaired.len() + built.len();
         project.built.extend(repaired);
         project.built.extend(built);
-        entries += push_read(&mut project.added, i64::from(added), hour, true);
+        push_read(&mut project.added, i64::from(added), hour, true);
         let end = if finished {
             ended(EndKind::Finished, until, hour, None)
         } else if stretch.doubtful {
@@ -1201,8 +1176,8 @@ fn settle(
         } else {
             ended(EndKind::Removed, None, hour, None)
         };
-        entries += leave_unaccounted(project, &end, &left, hour);
-        return (entries, Some(end));
+        leave_unaccounted(project, &end, &left, hour);
+        return Some(end);
     };
     // Listed at both reads. New levels: as many as it shows it completed (its
     // count fell, or its progress fell by a level's cost: a completion that a
@@ -1223,16 +1198,15 @@ fn settle(
     } else {
         Vec::new()
     };
-    entries += built.len();
     project.built.extend(built);
     // Extra possible completions may have been built and had added. A fall beyond
     // what it built was dropped, or is unknown in a doubtful stretch.
     let net = i64::from(new_now) - i64::from(new_left) + i64::from(completions);
-    entries += push_read(&mut project.added, net, hour, false);
+    push_read(&mut project.added, net, hour, false);
     if stretch.doubtful {
-        entries += push_read(&mut project.unaccounted, -net, hour, false);
+        push_read(&mut project.unaccounted, -net, hour, false);
     } else {
-        entries += push_read(
+        push_read(
             &mut project.possible,
             i64::from(candidates - completions),
             hour,
@@ -1243,17 +1217,16 @@ fn settle(
     // line had the repair work), even when neither read shows any.
     let repairs: Vec<Rise> = stretch.repairs.iter().map(|(rise, _)| *rise).collect();
     let repaired: u32 = repairs.iter().map(|rise| rise.count).sum();
-    entries += repairs.len();
     project.built.extend(claim(&repairs, hour, true));
     let added = i64::from(damaged(None))
         .max(i64::from(repair_now) - i64::from(repair_left) + i64::from(repaired));
-    entries += push_read(&mut project.added, added, hour, true);
+    push_read(&mut project.added, added, hour, true);
     if stretch.doubtful {
         let lost =
             i64::from(repair_left) + added.max(0) - i64::from(repaired) - i64::from(repair_now);
-        entries += push_read(&mut project.unaccounted, lost, hour, true);
+        push_read(&mut project.unaccounted, lost, hour, true);
     }
-    (entries, None)
+    None
 }
 
 /// One read of the building queue at `hour`.
@@ -1263,7 +1236,7 @@ fn read_buildings(
     rows: &[BuildingConstructionRow],
     states: Option<&[BuildingRow]>,
     provinces: Option<&[BuildingRow]>,
-) -> io::Result<()> {
+) {
     let hour = frame.hour;
     let present: BTreeMap<u64, &BuildingConstructionRow> =
         rows.iter().map(|row| (row.id, row)).collect();
@@ -1294,7 +1267,6 @@ fn read_buildings(
             .or_insert(row.created_hour);
     }
     let ids: Vec<u64> = scan.buildings.open.keys().copied().collect();
-    let mut entries = 0;
     for id in ids {
         let Some(line) = scan.buildings.open.get_mut(&id) else {
             continue;
@@ -1327,8 +1299,7 @@ fn read_buildings(
                 }
             }
         };
-        let (added, end) = settle(project, line, row, seen, hour);
-        entries += added;
+        let end = settle(project, line, row, seen, hour);
         match row {
             Some(row) => {
                 // Spending, for a stretch with new levels to build: `produced`
@@ -1365,9 +1336,9 @@ fn read_buildings(
                         building_now.get(&key).copied().unwrap_or(0) > 1,
                         finished,
                     );
-                    entries += scan.log.spending[index].record(hour, stretch);
+                    scan.log.spending[index].record(hour, stretch);
                 }
-                entries += record_run(
+                record_run(
                     project,
                     line,
                     hour,
@@ -1386,7 +1357,7 @@ fn read_buildings(
                     && line.remaining > 0
                 {
                     let gap = spending::ending(end.kind, line.missed);
-                    entries += scan.log.spending[index].record(hour, Err(gap));
+                    scan.log.spending[index].record(hour, Err(gap));
                 }
                 project.end = end;
                 scan.buildings.open.remove(&id);
@@ -1438,7 +1409,7 @@ fn read_buildings(
                 )),
             };
             match first {
-                Some(first) => entries += spent.record(hour, first),
+                Some(first) => spent.record(hour, first),
                 None => spent.before_first_read = true,
             }
         }
@@ -1475,7 +1446,7 @@ fn read_buildings(
             missed: None,
             keys: vec![key],
         };
-        entries += record_run(
+        record_run(
             &mut project,
             &mut line,
             hour,
@@ -1494,7 +1465,6 @@ fn read_buildings(
     scan.buildings.last_read = Some(hour);
     scan.buildings.unrecorded = false;
     scan.changes.reset(false);
-    scan.count(entries)
 }
 
 fn building_progress(row: &BuildingConstructionRow) -> SpendProgress {
@@ -1513,7 +1483,7 @@ fn read_railways(
     rows: &[RailwayConstructionRow],
     states: Option<&[BuildingRow]>,
     provinces: Option<&[BuildingRow]>,
-) -> io::Result<()> {
+) {
     let hour = frame.hour;
     let present: BTreeMap<u64, &RailwayConstructionRow> =
         rows.iter().map(|row| (row.id, row)).collect();
@@ -1544,7 +1514,6 @@ fn read_railways(
         }
     }
     let ids: Vec<u64> = scan.railways.open.keys().copied().collect();
-    let mut entries = 0;
     for id in ids {
         let Some(line) = scan.railways.open.get_mut(&id) else {
             continue;
@@ -1556,12 +1525,11 @@ fn read_railways(
                 let fell = line.remaining.saturating_sub(row.amount);
                 if fell > 0 {
                     project.built.push(by_read(fell as u32, hour, false));
-                    entries += 1;
                 }
                 let stretch =
                     spending::railway_stretch(line.progress(), railway_progress(row), line.missed);
-                entries += scan.log.spending[index].record(hour, stretch);
-                entries += record_run(project, line, hour, row.active_factories, row.amount, 0);
+                scan.log.spending[index].record(hour, stretch);
+                record_run(project, line, hour, row.active_factories, row.amount, 0);
                 line.produced = row.produced;
                 line.cost = row.cost;
                 line.missed = None;
@@ -1612,15 +1580,14 @@ fn read_railways(
                             project
                                 .built
                                 .push(by_read(line.remaining as u32, hour, false));
-                            entries += 1;
                             ended(EndKind::Finished, Some(rose), hour, None)
                         }
                         _ => ended(EndKind::Unknown, None, hour, Some(UnknownEnd::RouteUnclear)),
                     }
                 };
                 let gap = spending::ending(end.kind, line.missed);
-                entries += scan.log.spending[index].record(hour, Err(gap));
-                entries += leave_unaccounted(project, &end, &[(false, line.remaining)], hour);
+                scan.log.spending[index].record(hour, Err(gap));
+                leave_unaccounted(project, &end, &[(false, line.remaining)], hour);
                 project.end = Some(end);
                 scan.railways.open.remove(&id);
             }
@@ -1691,7 +1658,7 @@ fn read_railways(
             missed: None,
             keys: keys.clone(),
         };
-        entries += record_run(
+        record_run(
             &mut project,
             &mut line,
             hour,
@@ -1710,7 +1677,7 @@ fn read_railways(
             Some(_) => Some(Ok(row.produced)),
         };
         match first {
-            Some(first) => entries += spent.record(hour, first),
+            Some(first) => spent.record(hour, first),
             None => spent.before_first_read = true,
         }
         scan.log.projects.push(project);
@@ -1726,7 +1693,6 @@ fn read_railways(
     scan.railways.last_read = Some(hour);
     scan.railways.unrecorded = false;
     scan.changes.reset(true);
-    scan.count(entries)
 }
 
 fn railway_progress(row: &RailwayConstructionRow) -> SpendProgress {
@@ -1771,7 +1737,6 @@ fn scan_with_reads(
         type_index: BTreeMap::new(),
         dictionary: None,
         unresolved: BTreeSet::new(),
-        entries: 0,
     };
     let mut last: Option<i32> = None;
     for block in replay.index.iter().filter(|block| block.branch == branch) {
@@ -1814,7 +1779,7 @@ fn scan_with_reads(
             scan.railways.watch.observe(hour, states, provinces);
             let read = read_queue(decoded, TableId::BuildingConstruction);
             match (read, decoded.complete::<tables::BuildingConstruction>()) {
-                (true, Ok(rows)) => read_buildings(&mut scan, decoded, rows, states, provinces)?,
+                (true, Ok(rows)) => read_buildings(&mut scan, decoded, rows, states, provinces),
                 // A read that failed: its values are unknown, so nothing is carried,
                 // and the spending stretch across it is unknown.
                 (true, Err(_)) => scan.buildings.open.values_mut().for_each(|line| {
@@ -1825,7 +1790,7 @@ fn scan_with_reads(
             }
             let read = read_queue(decoded, TableId::RailwayConstruction);
             match (read, decoded.complete::<tables::RailwayConstruction>()) {
-                (true, Ok(rows)) => read_railways(&mut scan, decoded, rows, states, provinces)?,
+                (true, Ok(rows)) => read_railways(&mut scan, decoded, rows, states, provinces),
                 (true, Err(_)) => scan.railways.open.values_mut().for_each(|line| {
                     line.carried = false;
                     line.missed.get_or_insert(SpendingGap::ReadFailed);
@@ -1995,7 +1960,7 @@ pub fn named(
                 });
         // A building's name is its own key in the localisation.
         let key = declaration.map_or(token.as_str(), |building| building.name.as_str());
-        let name = (content.localise)(key).filter(|name| !name.is_empty() && name.len() <= 256);
+        let name = (content.localise)(key).filter(|name| !name.is_empty());
         if name.is_none() {
             unnamed.push(token.clone());
         }
@@ -2146,7 +2111,7 @@ pub fn named(
             // A key whose reading cannot be followed names nothing.
             .and_then(|state| state.name_key.as_deref().ok())
             .and_then(|key| (content.localise)(key))
-            .filter(|name| !name.is_empty() && name.len() <= 256);
+            .filter(|name| !name.is_empty());
         if definitions.is_some() && name.is_none() {
             unnamed_states.push(id.to_string());
         }

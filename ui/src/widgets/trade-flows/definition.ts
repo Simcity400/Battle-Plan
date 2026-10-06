@@ -1,21 +1,16 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 
-/** Most countries chosen by hand or by a group: what one product request may name. */
-export const MAX_COUNTRIES = 256;
-/** Most resources the filter may choose; none chosen shows every resource. */
-export const MAX_RESOURCES = 16;
-
 export const OPTIONS: readonly OptionField[] = [
   { key: 'measure', section: 'options', label: 'Measure', kind: 'choice', default: 'current',
     choices: [{ value: 'current', label: 'Current (per day)' }, { value: 'total', label: 'Total so far' }, { value: 'average', label: 'Campaign average (per day)' }] },
   { key: 'colour', section: 'options', label: 'Ribbon colour', kind: 'choice', default: 'resource',
     choices: [{ value: 'resource', label: 'By resource' }, { value: 'seller', label: 'By seller' }] },
   { key: 'resources', section: 'options', label: 'Resources', hint: 'From the campaign’s own content', kind: 'content-set',
-    automatic: 'All resources', max: MAX_RESOURCES, default: '' },
+    automatic: 'All resources', max: Number.MAX_SAFE_INTEGER, default: '' },
   { key: 'between', section: 'options', label: 'With countries chosen, show', kind: 'choice', default: 'touching',
     choices: [{ value: 'touching', label: 'Their trade with anyone' }, { value: 'between', label: 'Only trade between them' }] },
-  { key: 'perSide', section: 'options', label: 'Countries per side', hint: 'The rest are summed into one', kind: 'number', min: 2, max: 40, step: 1, default: 12 },
+  { key: 'perSide', section: 'options', label: 'Countries per side', hint: 'The rest are summed into one', kind: 'number', min: 1, max: Number.MAX_SAFE_INTEGER, step: 1, default: 12 },
   { key: 'scale', section: 'options', label: 'Ribbon width', kind: 'choice', default: 'campaign',
     choices: [{ value: 'campaign', label: 'Same scale all campaign' }, { value: 'moment', label: 'Fit the moment shown' }] },
 ];
@@ -25,6 +20,6 @@ export const definition = {
   description: 'Who sells which resources to whom, as ribbons from sellers to buyers that grow and shrink with the trade.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 12 },
-  countries: { max: MAX_COUNTRIES, all: true },
+  countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   options: OPTIONS,
 } as const satisfies WidgetMeta;

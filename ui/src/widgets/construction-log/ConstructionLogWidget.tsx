@@ -12,7 +12,7 @@ import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
-import { contentSet, resolveOptions, storableToken, toggleContentSet, UNSTORABLE } from '../../dashboard/options';
+import { contentSet, MAX_SET_TOKENS, resolveOptions, storableToken, toggleContentSet, UNSTORABLE } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { OPTIONS } from './definition';
@@ -58,7 +58,11 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   const wanted = useMemo(() => logCountryRequests(visible, row => ({ hour: row.item.project.firstRead, tags: [row.item.project.tag] })), [visible]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const country = useCallback((at: ProjectAt) => labelAt(at.project.firstRead)(at.project.tag), [labelAt]);
-  const chips = useMemo(() => buildingChoices(data).map(choice => ({ ...choice, unavailable: storableToken(choice.value) ? undefined : UNSTORABLE })), [data]);
+  const chips = useMemo(() => {
+    const chosen = contentSet(types);
+    return buildingChoices(data).map(choice => ({ ...choice, unavailable: !storableToken(choice.value) ? UNSTORABLE
+      : !chosen.includes(choice.value) && chosen.length >= MAX_SET_TOKENS ? `At most ${MAX_SET_TOKENS} can be chosen` : undefined }));
+  }, [data, types]);
   useEffect(() => {
     onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
@@ -73,7 +77,7 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the campaign’s recorded branch." />;
 
   const chosen = contentSet(types);
-  const toggle = (token: string) => { const next = toggleContentSet(types, token, 16); if (next != null) setOption?.('types', next); };
+  const toggle = (token: string) => { const next = toggleContentSet(types, token, Number.MAX_SAFE_INTEGER); if (next != null) setOption?.('types', next); };
   const renderRow = (row: LogRow<ProjectAt>) => {
     const at = row.item;
     const type = projectType(data, at.project);
@@ -101,7 +105,7 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
     ? 'No construction matches these settings yet.' : widget.countries.kind === 'all' ? 'No construction yet.' : 'No construction by these countries yet.';
   return <div className="log-widget construction-log">
     {log.chips && chips.length > 1 && <div className="log-chips">
-      <ChipSet label="Building types" max={16} selected={chosen.length ? chosen : ['']}
+      <ChipSet label="Building types" selected={chosen.length ? chosen : ['']} max={Number.MAX_SAFE_INTEGER}
         chips={[{ value: '', label: 'All types' }, ...chips]}
         onToggle={value => { if (value === '') { if (chosen.length) setOption?.('types', ''); } else toggle(value); }} />
     </div>}

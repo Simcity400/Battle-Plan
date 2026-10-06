@@ -90,7 +90,7 @@ export default function CasualtiesWidget({ widget, runtime, active, onDiagnostic
       countryTags={tags} countryLookHours={hours} segmentAt={segmentAt}
       label="Losses taken" empty="No taken total is available at this moment." formatValue={formatAxisValue}
       labels={{ race: 'Race of losses taken', actions: 'Casualty actions' }}
-      presentation={{ exact: false, raceTooltip: 'sampled' }}
+      presentation={{ exact: false }}
       tooltip={(tag, _hour, name) => { const row = rowsByTag.get(tag); return row ? [casualtyTooltip(row, name, includeUnknown, data.unknownLabel, data.hasGap)] : null; }} />
     {selected.some(row => row.taken === null) && <p className="chart-line-key casualties-unknown themed-scrollbar">Taken is unknown for {selected.filter(row => row.taken === null)
       .map(row => looks.name(row.tag, row.readHour ?? row.hour)).join(', ')}; losses with no recorded attacker cannot be recovered exactly.</p>}

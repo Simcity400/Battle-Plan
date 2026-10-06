@@ -3,9 +3,6 @@ import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { COUNT_MODES } from './factoriesData.ts';
 
-/** Most countries one widget ranks or draws. */
-export const MAX_COUNTRIES = 30;
-
 const view = (options: Readonly<Record<string, OptionValue>>) => options.view ?? 'race';
 
 export const OPTIONS: readonly OptionField[] = [
@@ -14,7 +11,7 @@ export const OPTIONS: readonly OptionField[] = [
     kind: 'choice', default: 'free',
     choices: COUNT_MODES.map(mode => ({ value: mode.value, label: mode.label })) },
   { key: 'types', section: 'options', label: 'Factory types', hint: 'From the campaign’s own buildings', kind: 'content-set',
-    automatic: 'All types', max: 8, default: '' },
+    automatic: 'All types', max: Number.MAX_SAFE_INTEGER, default: '' },
   { key: 'split', section: 'options', label: 'Split bars by type', hint: 'One segment per factory type instead of one total', kind: 'toggle', default: false,
     visibleWhen: options => view(options) === 'race' },
   DATE_OVERLAY_OPTION,
@@ -28,7 +25,7 @@ export const definition = {
   description: 'Factory counts per country: a race re-ranked every hour, lines over time or one country by type.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 },
-  countries: { max: MAX_COUNTRIES, ranked: true },
+  countries: { max: Number.MAX_SAFE_INTEGER, ranked: true },
   defaultCountries: TOP_COUNTRIES,
   options: OPTIONS,
 } as const satisfies WidgetMeta;

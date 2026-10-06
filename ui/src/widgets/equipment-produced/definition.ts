@@ -4,11 +4,6 @@ import { REFITS_OPTION } from '../../dashboard/equipment.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { GROUPINGS, MEASURES } from './producedData.ts';
 
-/** Most countries one widget ranks or draws. */
-export const MAX_COUNTRIES = 30;
-/** Most types the included set can pick (a content set's limit). */
-export const MAX_INCLUDED = 16;
-
 const view = (options: Readonly<Record<string, OptionValue>>) => options.view ?? 'race';
 
 export const OPTIONS: readonly OptionField[] = [
@@ -18,7 +13,7 @@ export const OPTIONS: readonly OptionField[] = [
   { key: 'grouping', section: 'options', label: 'Group by', kind: 'choice', default: 'type',
     choices: GROUPINGS.map(item => ({ value: item.value, label: item.label })) },
   { key: 'included', section: 'options', label: 'Included types', hint: 'From the campaign’s own content', kind: 'content-set',
-    automatic: 'All types', max: MAX_INCLUDED, default: '' },
+    automatic: 'All types', max: Number.MAX_SAFE_INTEGER, default: '' },
   REFITS_OPTION,
   { key: 'split', section: 'options', label: 'Split bars by group', hint: 'One segment per type, variant or arm instead of one total', kind: 'toggle', default: false,
     visibleWhen: options => view(options) === 'race' },
@@ -33,7 +28,7 @@ export const definition = {
   description: 'Equipment each country has produced: a race re-ranked every hour, lines over time or one country by type.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 },
-  countries: { max: MAX_COUNTRIES, ranked: true },
+  countries: { max: Number.MAX_SAFE_INTEGER, ranked: true },
   defaultCountries: TOP_COUNTRIES,
   options: OPTIONS,
 } as const satisfies WidgetMeta;

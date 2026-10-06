@@ -16,6 +16,72 @@ fn hour(year: i64, month: usize, day: i64, hour: i64) -> i32 {
 }
 
 #[test]
+fn produced_selections_follow_the_recorded_countries_and_types() {
+    let types: HashMap<_, _> = (0..65)
+        .map(|variant| {
+            (
+                variant,
+                VariantType {
+                    key: format!("type_{variant}"),
+                    ordinal: Some(variant as usize),
+                    domain: Some(Domain::Land),
+                },
+            )
+        })
+        .collect();
+    let scanned = ScannedProduced {
+        tags: (0..5_000)
+            .map(|country| {
+                (
+                    format!("T{country}"),
+                    TagHistory {
+                        hours: vec![10],
+                        last_hours: vec![10],
+                        starts: vec![true],
+                        identities: vec![(country, country, 0)],
+                        changes: BTreeMap::from([(
+                            (u64::from(country) % types.len() as u64, false),
+                            vec![(
+                                0,
+                                Total {
+                                    units: 1,
+                                    inexact: 0,
+                                },
+                            )],
+                        )]),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let mut params = ProducedParams {
+        tags: scanned.tags.keys().cloned().collect(),
+        included: types.values().map(|kind| kind.key.clone()).collect(),
+        ..produced_params(&[], None, ProducedMeasure::Total, ProducedGrouping::Type)
+    };
+    assert!(EquipmentProduced::validate(&params).is_ok());
+    let mut long_key = params.clone();
+    long_key.included = vec!["equipment_type_".repeat(30)];
+    assert!(EquipmentProduced::validate(&long_key).is_ok());
+    let groups = grouped(&scanned, &types, Named::default(), &params);
+    let requested = requested(&scanned, &groups, &params, &AtomicBool::new(false)).unwrap();
+    assert_eq!(requested.series.len(), scanned.tags.len());
+    assert_eq!(requested.keys.len(), types.len());
+    params.tags.clear();
+    params.top = Some(scanned.tags.len() as u32);
+    assert!(EquipmentProduced::validate(&params).is_ok());
+    assert_eq!(
+        super::requested(&scanned, &groups, &params, &AtomicBool::new(false))
+            .unwrap()
+            .series
+            .len(),
+        scanned.tags.len()
+    );
+}
+
+#[test]
 fn a_month_before_is_the_same_moment_of_the_month_before_or_its_last_day() {
     assert_eq!(
         month_before(hour(1940, 3, 15, 7)),

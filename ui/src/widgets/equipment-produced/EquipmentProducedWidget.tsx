@@ -17,8 +17,8 @@ import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { EquipmentProducedReply } from '../../generated/dashboard';
-import { MAX_COUNTRIES, OPTIONS } from './definition';
-import { bandLabel, bandValue, emptyRace, foldsPerCountry, formatUnits, keyBands, MEASURES, mixBands, producedAt, producedModel, producedRequest, producedTooltips,
+import { definition, OPTIONS } from './definition';
+import { bandLabel, bandValue, foldsPerCountry, emptyRace, formatUnits, keyBands, MEASURES, mixBands, producedAt, producedModel, producedRequest, producedTooltips,
   raceEntries, rankProduced, seriesBands, totalRuns, validateProducedReply } from './producedData';
 import type { Grouping, KeyBand, Measure } from './producedData';
 import './equipmentProduced.css';
@@ -48,7 +48,7 @@ export default function EquipmentProducedWidget({ widget, runtime, active, onDia
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const groupReply = useCountryGroups(runtime, track, active && grouped);
   const fallback = defaultCountryTag(track);
-  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groupReply.data, lastHour, MAX_COUNTRIES),
+  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groupReply.data, lastHour, definition.countries.max),
     [widget.countries, fallback, groupReply.data, lastHour]);
   // Only what the widget draws is asked for: the chosen countries, or the top N, which
   // the product ranks at every hour and cuts to the hours each was among them.
@@ -84,11 +84,10 @@ export default function EquipmentProducedWidget({ widget, runtime, active, onDia
   const shownTags = view === 'race' ? ranked.map(entry => entry.tag) : view === 'lines' ? lineTags : mixTag ? [mixTag] : [];
 
   useEffect(() => {
-    const warnings = [...(data?.warnings ?? []), ...(groupReply.data?.warnings ?? []),
-      ...(resolved.dropped ? [`${resolved.dropped} more countries are left out; this widget shows at most ${MAX_COUNTRIES}.`] : [])];
+    const warnings = [...(data?.warnings ?? []), ...(groupReply.data?.warnings ?? [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, groupReply.data, resolved.dropped, onDiagnostics]);
+  }, [data, groupReply.data, onDiagnostics]);
 
   const split = options.split === true;
   const entries = useMemo(() => model ? raceEntries(model, ranked, { split, bands: bandsFor, unknown: tokens.muted }) : [],
@@ -161,7 +160,7 @@ export default function EquipmentProducedWidget({ widget, runtime, active, onDia
     lineTooltip={(hour, _tags, labelAt, country) => [linesTooltip(hour, lines, labelAt, country, dayLabel(hour), measureInfo.label, formatUnits)]}
     labels={{ race: `Equipment ${measureInfo.unit}, ${dayLabel(moment)}`, lines: `Equipment ${measureInfo.unit} over time`,
       mix: name => `Equipment of ${name} ${measureInfo.unit}, by ${grouping}`, actions: 'Equipment produced actions' }}
-    presentation={{ exact: false, held: false, mixSamplePixels: .5, lineLooks: 'moment', lineColourHours: 'moment', raceTooltip: 'sampled',
+    presentation={{ exact: false, held: false,
       strongMixName: true, mixKeyHours: 'starts', raceEmptyState: false, linePadding: CHART_LAYOUT.countryEndLabels, resetTimeView: true }}
     lineEmpty={{ icon: 'layers', message: 'No countries to draw. Choose countries in the widget settings.' }}
     mixEmpty={{ icon: 'layers', message: widget.countries.kind === 'group'

@@ -23,10 +23,7 @@ use std::{
 };
 use ts_rs::TS;
 
-const MAX_CHANGES: usize = 8_000_000;
-const MAX_VARIANT_BYTES: usize = 256 * 1024 * 1024;
 const CACHED_BRANCHES: usize = 2;
-const MAX_KEY: usize = 256;
 
 /// A country identity within one observation: its canonical slot, native id and
 /// the observation (a restart begins another, whose totals start again).
@@ -146,10 +143,6 @@ struct RowState {
     ended: bool,
 }
 
-fn budget() -> io::Error {
-    io::Error::other("The equipment produced history exceeds its memory budget")
-}
-
 /// Adds a row's new count to its producer's total.
 fn apply(
     totals: &mut HashMap<Identity, (u64, BTreeMap<Entry, Total>)>,
@@ -244,7 +237,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
     let mut cost_totals: HashMap<Identity, (u64, BTreeMap<Entry, CostTotal>)> = HashMap::new();
     let mut kinds: HashMap<u64, u8> = HashMap::new();
     let mut unlisted: HashSet<u64> = HashSet::new();
-    let (mut version, mut observation, mut changes) = (0u64, 0u32, 0usize);
+    let (mut version, mut observation) = (0u64, 0u32);
     let mut cost_version = 0;
     let mut last_frame = replay
         .branches
@@ -298,9 +291,6 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
             }
             last_frame = Some(hour);
             result.variants.observe(decoded);
-            if result.variants.retained_bytes() > MAX_VARIANT_BYTES {
-                return Err(budget());
-            }
             let read = slot_read(
                 &decoded.metrics,
                 TableId::ProductionLineOutput,
@@ -411,9 +401,6 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
             let mut seen = HashSet::with_capacity(output.len());
             for row in output {
                 let key = (row.line, row.ordinal);
-                if rows.len() >= MAX_CHANGES && !rows.contains_key(&key) {
-                    return Err(budget());
-                }
                 seen.insert(key);
                 let refit = match kinds.get(&row.line) {
                     Some(kind) => *kind == engine::cequipment_production_line::KIND_SHIP_REFIT,
@@ -512,15 +499,13 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 track.last = None;
             }
             for (tag, identity) in observed {
-                changes += 1;
-                if changes > MAX_CHANGES {
-                    return Err(budget());
-                }
                 let track = result.tags.entry(tag).or_default();
                 let starts = !track
                     .last
                     .is_some_and(|(seen, at)| seen == identity && at.checked_add(1) == Some(hour));
-                let sample = u32::try_from(track.hours.len()).map_err(|_| budget())?;
+                let sample = u32::try_from(track.hours.len()).map_err(|_| {
+                    io::Error::other("The production sample index exceeds its integer range")
+                })?;
                 track.hours.push(hour);
                 track.last_hours.push(hour);
                 track.starts.push(starts);
@@ -541,10 +526,6 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                     for entry in keys {
                         let now = entries.get(&entry).copied().unwrap_or_default();
                         if track.cost_current.get(&entry).copied().unwrap_or_default() != now {
-                            changes += 1;
-                            if changes > MAX_CHANGES {
-                                return Err(budget());
-                            }
                             track
                                 .cost_changes
                                 .entry(entry)
@@ -571,10 +552,6 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 for entry in keys {
                     let now = entries.get(&entry).copied().unwrap_or_default();
                     if track.current.get(&entry).copied().unwrap_or_default() != now {
-                        changes += 1;
-                        if changes > MAX_CHANGES {
-                            return Err(budget());
-                        }
                         track.changes.entry(entry).or_default().push((sample, now));
                     }
                 }
@@ -615,7 +592,7 @@ impl Named<'_> {
         self.texts
             .filter(|_| !key.starts_with(equipment::UNRESOLVED_MARK))
             .and_then(|texts| texts.text(key))
-            .filter(|name| !name.is_empty() && name.len() <= MAX_KEY)
+            .filter(|name| !name.is_empty())
     }
 }
 

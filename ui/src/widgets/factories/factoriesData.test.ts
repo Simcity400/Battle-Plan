@@ -8,7 +8,7 @@ import { lineLabelHours } from '../../charts/series.ts';
 import { DATE_OVERLAY_OPTION, mixCountry } from '../../charts/race/options.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import '../definitions.ts';
-import { OPTIONS } from './definition.ts';
+import { definition, OPTIONS } from './definition.ts';
 import { chosenGroups, countRuns, factoriesAt, factoriesRequest, factoryModel, factorySegmentAt, factoryTooltips, formatCount, groupCount, groupName, lineRuns, mixBands, raceEntries, rankFactories, typeChoices, validateFactoriesReply, withheld } from './factoriesData.ts';
 import type { CountMode } from './factoriesData';
 
@@ -47,6 +47,20 @@ const REPLY: CountryFactoriesReply = {
     { tag: 'ITA', membership: null, segments: [{ firstHour: 100, lastHour: 107 }], runs: [{ firstHour: 100, lastHour: 107, startsSegment: true, values: values({ 'civilian:total': 12, 'military:total': 9 }) }] },
   ],
 };
+
+test('factory selection and ranking accept every recorded country', () => {
+  assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
+  const field = OPTIONS.find(field => field.key === 'types')!;
+  assert.ok(field.kind === 'content-set');
+  assert.equal(field.max, Number.MAX_SAFE_INTEGER);
+  const tags = Array.from({ length: 5000 }, (_, index) => `mod country ${index}`);
+  const chosen = resolveCountries({ kind: 'tags', tags }, [], undefined, 200, definition.countries.max);
+  assert.deepEqual(factoriesRequest('1', chosen, 'built', []), { branchId: '1', tags, top: null });
+  assert.equal(chosen.dropped, 0);
+  const top = resolveCountries({ kind: 'group', group: { type: 'top', count: tags.length }, membership: 'hour', aggregate: false },
+    [], undefined, 200, definition.countries.max);
+  assert.equal(top.top, tags.length);
+});
 
 test('the reply is checked: one value per field, whole numbers, runs in hour order', () => {
   assert.equal(validateFactoriesReply(REPLY), REPLY);

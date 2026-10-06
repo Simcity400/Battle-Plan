@@ -5,7 +5,6 @@
 //! P: AddPoliticalPower 140B98130 writes CPoliticalStatus+0xE0;
 //! AddCommandPower 1406C3320 writes CCountry+0x1F0.
 
-pub use super::MAX_COUNTRIES;
 use super::{LoadContext, Product, validate_countries};
 use crate::Source;
 use serde::{Deserialize, Serialize};

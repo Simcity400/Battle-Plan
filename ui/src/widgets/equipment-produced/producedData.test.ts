@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { createServer } from 'vite';
 import { createWidget } from '../../dashboard/model.ts';
 import { rankedCandidates, resolveCountries } from '../../dashboard/groups.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { DATE_OVERLAY_OPTION } from '../../charts/race/options.ts';
 import { mixCountry } from '../../charts/race/options.ts';
+import { countryRaceItems } from '../../charts/race/countryRace.ts';
 import type { EquipmentProducedReply, ProducedKey, ProducedSeries } from '../../generated/dashboard';
 import '../definitions.ts';
-import { OPTIONS } from './definition.ts';
+import { definition, OPTIONS } from './definition.ts';
 import { bandValue, column, emptyRace, keyBands, keyLabel, mixBands, producedAt, producedModel, producedRequest, producedTooltips, raceEntries, rankProduced,
   seriesBands, storedValues, totalRuns, typeLabel, validateProducedReply, valueAt } from './producedData.ts';
 
@@ -88,6 +92,64 @@ test('the top N rank a country only once it has produced something, and say why 
     { ...REPLY.series[1], membership: [{ firstHour: 56, lastHour: 103 }] }] });
   assert.equal(emptyRace(top, 10), 'nothing');
   assert.equal(emptyRace(top, 4), 'unknown');
+});
+
+test('race bars are one total or one segment per group, summing to the label', () => {
+  const model = producedModel(REPLY);
+  const bands = keyBands(model, ['#a', '#b', '#c'], '#muted');
+  const ranked = rankProduced(model, ['GER', 'ITA'], 40, 10);
+  const entries = (split: boolean) => countryRaceItems(raceEntries(model, ranked, { split, bands: () => bands, unknown: '#u' }),
+    new Map(), () => '#country', '#u', false);
+  const [germany] = entries(true);
+  assert.equal(germany.label, '13');
+  assert.deepEqual(germany.segments.map(segment => [segment.id, segment.value, segment.color]), [['0', 10, '#a'], ['1', 3, '#b']]);
+  assert.equal(germany.segments.reduce((sum, segment) => sum + segment.value, 0), germany.value);
+  const [whole] = entries(false);
+  assert.deepEqual(whole.segments, [{ id: 'total', color: '#country', value: 13 }]);
+});
+
+test('production tooltips name the hovered hour and lines name their own drawn ends', async () => {
+  // Render the widget and shared view; only transport, artwork and canvas leaves are replaced.
+  const replacements: Record<string, string> = {
+    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(REPLY)} });`,
+    '/dashboard/playback.ts': `export const usePlaybackHour = () => {};
+      export const usePlaybackSpeed = clock => clock.getSnapshot().hoursPerSecond;`,
+    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
+    '/dashboard/countryLooks.ts': `export const useCountryLooks = (_client, _track, _tags, moment, _active, _segment, hours) => ({
+      name: (tag, hour) => tag + ' at ' + (hour ?? hours?.get(tag) ?? moment), color: () => [50, 100, 150], flag: () => undefined, revision: 0 });`,
+    '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({ labelAt: hour => tag => ({ name: tag + ' hovered ' + hour }), revision: 0 });`,
+    '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['#123', '#456'], muted: '#888', surface: '#000', fontSize: { body: 12 } });
+      export const useViewportHeight = () => 1000;`,
+    '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
+    '/charts/draw.ts': `export const dayLabel = String; export const drawBands = () => {}; export const drawLine = () => {};
+      export const placeEndLabels = (ctx, _frame, _tokens, labels) => { ctx.labels = labels; };`,
+    '/charts/race/RaceChart.tsx': `import { createElement } from 'react';
+      export default props => createElement('p', null, props.items.map(item => props.tooltip(item.key)?.title).join('|'));`,
+    '/charts/TimeChart.tsx': `import { createElement } from 'react';
+      export default props => { const ctx = {}; props.overlay(ctx, { x: props.extent, toY: value => value }, {});
+        return createElement('p', null, ctx.labels.map(label => label.text).join('|')); }`,
+  };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null },
+    plugins: [{ name: 'production-chart-leaves', enforce: 'pre', transform: (_source, id) => {
+      const replacement = Object.entries(replacements).find(([suffix]) => id.replaceAll('\\', '/').endsWith(suffix));
+      return replacement?.[1];
+    } }] });
+  try {
+    const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/equipment-produced/EquipmentProducedWidget.tsx');
+    const render = (view: string, lastHour: number) => {
+      const widget = createWidget('equipment-produced', 'track-1', 'w1');
+      widget.countries = { kind: 'tags', tags: ['GER', 'ITA'] };
+      widget.options = { view };
+      const track = { id: 'track-1', source: { id: 's', revision: 1, metadata: { countries: [] } },
+        branch: { id: '1', firstHour: 8, lastHour, gaps: [] } };
+      const runtime = { tracks: [track], clock: { getHour: () => lastHour, getSnapshot: () => ({ hoursPerSecond: 24 }) } };
+      return renderToStaticMarkup(createElement(Widget, { widget, runtime, active: true, onDiagnostics() {} }));
+    };
+    assert.match(render('race', 40), /GER hovered 40/);
+    const lines = render('lines', 90);
+    assert.match(lines, /GER at 55 13/);
+    assert.match(lines, /ITA at 90 20/);
+  } finally { await vite.close(); }
 });
 
 test('empty top-N weeks and months distinguish complete zero windows from unknown ones', () => {
@@ -262,6 +324,20 @@ test('the request asks for the top N or the chosen countries, with the measure, 
     { branchId: '1', measure: 'week', grouping: 'variant', included: ['infantry_equipment'], refits: false, tags: [], top: 10 });
   assert.deepEqual(producedRequest('1', { tags: ['GER'] }, 'total', 'type', [], true),
     { branchId: '1', measure: 'total', grouping: 'type', included: [], refits: true, tags: ['GER'], top: null });
+});
+
+test('production selection and ranking accept every recorded country', () => {
+  assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
+  const tags = Array.from({ length: 5000 }, (_, index) => `MOD${index}`);
+  const named = resolveCountries({ kind: 'tags', tags }, [], undefined, 40, definition.countries.max);
+  assert.equal(named.dropped, 0);
+  assert.deepEqual(producedRequest('1', named, 'total', 'type', [], false).tags, tags);
+  const top = resolveCountries({ kind: 'group', group: { type: 'top', count: tags.length }, membership: 'hour', aggregate: false },
+    [], undefined, 40, definition.countries.max);
+  assert.equal(producedRequest('1', top, 'total', 'type', [], false).top, tags.length);
+  const model = producedModel({ ...REPLY, keys: [], series: tags.map(tag => ({ tag, firstHours: [8], lastHours: [103],
+    breaks: [0], membership: null, values: [], total: c(0, [1]) })) });
+  assert.equal(rankProduced(model, tags, 40, tags.length).length, tags.length);
 });
 
 test('a new widget races the top 10 of all countries by running total, date overlay off', () => {

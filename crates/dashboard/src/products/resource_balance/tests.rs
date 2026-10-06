@@ -7,6 +7,38 @@ use replay::{
 use std::sync::{Arc, atomic::AtomicBool};
 
 #[test]
+fn resource_history_keeps_every_run_from_the_recording() {
+    use crate::products::resource_balance::scan;
+    const DEALS: usize = 5_000;
+    const READS: i32 = 81;
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            (0..READS)
+                .map(|hour| {
+                    let deals: Vec<_> = (0..DEALS)
+                        .map(|id| (id as u64, 21, 9001, i64::from(hour)))
+                        .collect();
+                    resource_frame(100 + hour, i64::from(hour), 9001, &deals)
+                })
+                .collect(),
+        )],
+    )
+    .unwrap();
+    let scanned = scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
+    assert_eq!(scanned.trades.len(), DEALS * READS as usize);
+    assert_eq!(scanned.series[&1].len(), READS as usize);
+    for (read, trades) in scanned.trades.chunks(DEALS).enumerate() {
+        assert!(trades.iter().all(|trade| {
+            trade.first_hour == 100 + read as i32
+                && trade.last_hour == trade.first_hour
+                && trade.delivered_raw == read.to_string()
+        }));
+    }
+}
+
+#[test]
 fn resource_values_run_over_recorded_hours_and_never_cross_gaps() {
     use crate::products::resource_balance::{TradeDirection, scan};
     let import = [(0x33, 21, 9001, 800_000)];

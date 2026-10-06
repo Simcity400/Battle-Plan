@@ -79,7 +79,7 @@ test('optional amount easing stays within one recorded stretch and labels remain
 test('legacy mixes use the same half-pixel thinning and preserve signed peaks and gaps', () => {
   const stack = buildStack([[{ firstHour: 0, lastHour: 1, value: 2 }, { firstHour: 2, lastHour: 2, value: 12 },
     { firstHour: 3, lastHour: 4, value: -8 }, { firstHour: 8, lastHour: 10, value: 3, breakBefore: true }]]);
-  const legacy = countryRaceSegments(stack, 1, 10, 8, .5, false);
+  const legacy = countryRaceSegments(stack, 1, 10, 8, false);
   assert.deepEqual(legacy, stackedSegments(stack, 1, 10, 4));
   assert.ok(legacy.some(segment => segment.bands[0].high.includes(12)));
   assert.ok(legacy.some(segment => segment.bands[0].low.includes(-8)));
@@ -93,13 +93,14 @@ test('keyboard stops are sorted change hours, without synthetic stack end bounda
     { tag: 'b', runs: [{ firstHour: 1, lastHour: 6, value: 3 }, { firstHour: 8, lastHour: 10, value: 4 }] }]), [1, 2, 8]);
 });
 
-test('end labels stop at drawn reads, optionally use moment looks, and retain exact raw text', () => {
+test('end labels stop at each drawn read and retain exact raw text', () => {
   const lines = [{ tag: 'a', runs: [{ firstHour: 1, lastHour: 4, value: 2 }, { firstHour: 8, lastHour: 10, value: 3 }] }];
   const name = (_tag: string, hour?: number) => hour === undefined ? 'Moment' : `At ${hour}`;
   const color = (_tag: string, hour?: number) => hour === undefined ? 'moment-colour' : `colour-${hour}`;
   assert.deepEqual(countryRaceEnds(lines, 1, 7, null, name, color, String), [{ id: 'a', color: 'colour-4', value: 2, text: 'At 4 2' }]);
   assert.equal(countryRaceEnds(lines, 1, 10, 9, name, color, String)[0].text, 'At 9 3');
-  assert.equal(countryRaceEnds(lines, 1, 10, 9, name, color, String, false)[0].text, 'Moment 3');
+  assert.deepEqual(countryRaceEnds([...lines, { tag: 'b', runs: [{ firstHour: 1, lastHour: 3, value: 8 }] }], 1, 10, 9, name, color, String),
+    [{ id: 'a', color: 'colour-9', value: 3, text: 'At 9 3' }, { id: 'b', color: 'colour-3', value: 8, text: 'At 3 8' }]);
   assert.deepEqual(countryRaceEnds(lines, 5, 7, null, name, color, String), []);
   assert.deepEqual(countryRaceEnds([{ ...lines[0], color: 'capacity', muted: true, endLabel: hour => `Exact ${hour}: 9,007,199,254,740,993` }],
     1, 7, null, name, color, String), [{ id: 'a', color: 'capacity', value: 2, muted: true, text: 'Exact 4: 9,007,199,254,740,993' }]);

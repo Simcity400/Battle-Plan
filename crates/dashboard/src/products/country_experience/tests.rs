@@ -194,7 +194,7 @@ fn experience_incomplete_tables_unresolved_links_and_missing_rows_are_not_zero()
 #[test]
 fn experience_change_widens_signed_raws_before_subtracting_and_requests_share_limits() {
     use crate::products::{
-        MAX_COUNTRIES, Product,
+        Product,
         country_experience::{CountryExperience, ExperienceParams, scan},
     };
     let frames = (0..=24)
@@ -225,9 +225,6 @@ fn experience_change_widens_signed_raws_before_subtracting_and_requests_share_li
     };
     assert!(CountryExperience::validate(&params("1", vec!["opaque!tag".into()])).is_ok());
     assert!(CountryExperience::validate(&params("1", vec![])).is_err());
-    assert!(
-        CountryExperience::validate(&params("1", vec!["x".into(); MAX_COUNTRIES + 1])).is_err()
-    );
     assert!(CountryExperience::validate(&params("bad", vec!["x".into()])).is_err());
     assert!(CountryExperience::validate(&params("1", vec!["x\0".into()])).is_err());
 }

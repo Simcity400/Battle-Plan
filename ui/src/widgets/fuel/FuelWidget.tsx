@@ -48,7 +48,7 @@ export default function FuelWidget({ widget, runtime, active, onDiagnostics }: W
   const lines = useMemo<CountryRaceLine[]>(() => {
     if (!data || !view) return [];
     const line = (of: 'fuel' | 'capacity'): CountryRaceLine => ({
-      tag: of, runs: fuelRuns(view.reads, data.quantityScale, of), name: of === 'fuel' ? 'Fuel' : 'Capacity',
+      tag: of, runs: fuelRuns(view.reads, data.quantityScale, of),
       color: of === 'fuel' ? tokens.accent : tokens.muted,
       ...(of === 'capacity' ? { dash: SECONDARY_DASH, endDot: false, muted: true } : { area: options.areaFill !== false, muted: false }),
       endLabel: hour => {
@@ -76,7 +76,7 @@ export default function FuelWidget({ widget, runtime, active, onDiagnostics }: W
   return <CountryRaceView runtime={runtime} track={track} active={active} options={options} view="lines" extent={extent} playhead={playhead}
     state={state} moment={Math.floor(playhead ?? extent[1])} slots={1} ranked={[]} lines={lines} strip={strip} keyHours={view?.readHours}
     label={`Fuel of ${name}`} labels={{ lines: `Fuel of ${name}`, actions: 'Fuel actions' }} empty="" formatValue={String}
-    presentation={{ countryLooks: false, lineLooks: 'moment', held: false, linePadding: CHART_LAYOUT.measureEndLabels }}
+    presentation={{ countryLooks: false, held: false, linePadding: CHART_LAYOUT.measureEndLabels }}
     beforeChart={!options.endLabels && showCapacity
       ? <p className="chart-line-key"><i aria-hidden="true" />Solid: fuel · <i className="is-dashed" aria-hidden="true" />dashed: capacity</p> : null}
     tooltip={() => null}

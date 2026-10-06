@@ -8,12 +8,12 @@ One country's strategic resources: where each comes from and where it goes, per 
   - The game's surplus (green) or deficit (red) is at the right.
   - The legend lists only the parts that occur. Bars glide over the app's motion time within one unbroken stretch of recording, and jump across a gap, a missing table or a change of country, as a line breaks there; numbers are exact at once.
 - **Over time (setting):** supply solid and demand dashed for the chosen resources.
-  - Each chosen resource takes its palette colour by the game's order when that colour is free, else the first free one, so two lines never share a colour.
-  - Resource chips above the chart choose the resources, up to eight lines (a token declared twice draws a line for each declaration, and its chip says so when that passes the limit); the choice is saved like any setting and also appears in the settings panel. Lines past the palette, which only a choice made in the settings panel can reach, repeat the colours with dash patterns of their own, one set for every further eight lines, so no two lines look alike however many there are.
-  - A chip changes only its own resource. Saved resources this campaign lacks (another campaign's modded resource) are kept and count toward the eight, as in the settings panel; the last resource this campaign shows stays chosen.
+  - Each chosen resource takes its palette colour by the game's order when that colour is free, else the first free one.
+  - Resource chips above the chart choose up to 16 recorded resource tokens (a token declared twice draws a line for each declaration); the choice is saved like any setting and also appears in the settings panel. Lines past the palette repeat the colours with dash patterns of their own, one set for every further eight lines, so no two lines look alike however many there are.
+  - A chip changes only its own resource. Saved resources this campaign lacks (another campaign's modded resource) are kept, as in the settings panel; the last resource this campaign shows stays chosen.
   - Until a resource is chosen, the resource with the largest supply or demand in the branch is shown.
   - With exactly one resource, the gap between the lines is shaded green (surplus) or red (shortfall), which can be switched off. The shading is bounded by the very curves the lines are drawn with and changes colour where they cross.
-  - A chip that cannot act says why on hover: a resource whose content name cannot be stored, the limit reached, or the last resource shown. With nothing chosen yet, choosing a resource never requires storing the automatic one.
+  - A chip that cannot act says why on hover: a resource whose content name cannot be stored, 16 tokens already chosen, or the last resource shown. With nothing chosen yet, choosing a resource never requires storing the automatic one.
 - **Hover** (or keyboard focus on a row) shows the game-style breakdown:
   - produced, from subjects, imported with each import deal (flag, partner, the civilian factories paid and convoys);
   - to the overlord, exported with each export deal, what the deals do not account for, and the reserve set aside but not bought;

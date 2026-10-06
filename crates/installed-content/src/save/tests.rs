@@ -435,7 +435,7 @@ provinces={3={controller=D01}}
     assert!(states[0].controller_explicit);
     assert_eq!(states[1].controller, b"GER");
     assert!(!states[1].controller_explicit);
-    let provinces = save.known_province_control(&map).unwrap();
+    let provinces = save.province_control(&map).unwrap();
     // A state's explicit controller does not replace province ownership
     // or its independent sparse controller fields, and vice versa.
     assert_eq!(provinces[0].controller.as_deref(), Some(b"GER".as_slice()));

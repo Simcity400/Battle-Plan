@@ -7,7 +7,6 @@ import type { WidgetSpec } from '../../dashboard/model';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { TradeFlowsReply } from '../../generated/dashboard';
-import { MAX_COUNTRIES } from './definition';
 import { resourceName, validateTradeFlowsReply } from './tradeData';
 
 /** The widget's countries (all countries, chosen ones or a group's members) and
@@ -21,7 +20,7 @@ export function useTradeFlows(widget: WidgetSpec, runtime: WidgetRuntime, active
   const all = widget.countries.kind === 'all';
   const lastHour = track?.branch.lastHour ?? 0;
   const resolved = useMemo<ResolvedCountries | null>(() => all ? null
-    : resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, MAX_COUNTRIES), [all, widget.countries, fallback, groups.data, lastHour]);
+    : resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, Number.MAX_SAFE_INTEGER), [all, widget.countries, fallback, groups.data, lastHour]);
   const tags = useMemo(() => resolved ? [...resolved.tags].sort() : null, [resolved]);
   const ready = track && (all || (tags && tags.length > 0));
   const request = ready ? { sourceId: track.source.id, revision: track.source.revision, product: 'trade-flows', params: { branchId: track.branch.id, tags } } : null;

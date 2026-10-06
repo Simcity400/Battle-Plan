@@ -84,15 +84,12 @@ use ts_rs::TS;
 pub struct ProductionLines;
 pub struct ProductionLineDetail;
 
-/// Line runs and output reads kept per country before the scan refuses: two a day
-/// for 200 lines over a 4,400-day campaign, about 70 MB held as numbers.
-const MAX_RUNS: usize = 2_000_000;
-/// The hours one detail reply covers: 30 days, so playback asks about once a month
-/// and one reply holds at most 30 reads of each line.
+const CACHED_COUNTRIES: usize = 8;
+
+/// The hours one detail reply covers: 30 days, so playback asks about once a month.
 pub const DETAIL_HOURS: i32 = 720;
 /// Each reply's bound, inside the transport's.
 pub use super::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
-const CACHED_COUNTRIES: usize = 8;
 /// Longest side of an equipment or organisation icon.
 const ICON_EDGE: u32 = 96;
 /// The sprite the game shows for an organisation without its own
@@ -601,16 +598,6 @@ pub fn scan(
         ]);
     }
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Production request cancelled");
-    let budget = || io::Error::other("Production history exceeds its memory budget");
-    // Line runs and output reads held, against MAX_RUNS.
-    let count = |runs: &mut usize| {
-        *runs += 1;
-        if *runs > MAX_RUNS {
-            Err(budget())
-        } else {
-            Ok(())
-        }
-    };
     let mut result = ScannedLines::default();
     let mut last: Option<((u32, u32), i32)> = None;
     let mut open: BTreeMap<u64, Open> = BTreeMap::new();
@@ -635,7 +622,6 @@ pub fn scan(
     let mut pending: BTreeSet<u64> = BTreeSet::new();
     // The last hour an output read was due, read or not.
     let mut last_output_due: Option<i32> = None;
-    let mut runs = 0_usize;
     for block in replay.index.iter().filter(|block| block.branch == branch) {
         if cancelled.load(Ordering::Acquire) {
             return Err(cancel());
@@ -872,7 +858,6 @@ pub fn scan(
                         run.last_hour = hour
                     }
                     _ => {
-                        count(&mut runs)?;
                         line.runs.push(values);
                     }
                 }
@@ -969,7 +954,6 @@ pub fn scan(
                     if rows.iter().any(|(row, _)| row.ended) || !open.contains_key(&handle) {
                         line.final_output = Some(run);
                     } else {
-                        count(&mut runs)?;
                         line.output.push(run);
                     }
                 }

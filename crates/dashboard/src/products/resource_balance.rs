@@ -79,9 +79,6 @@ use ts_rs::TS;
 
 pub struct ResourceBalance;
 
-/// Runs kept per country before the scan refuses, far above a long campaign's
-/// daily changes.
-const MAX_RUNS: usize = 400_000;
 const CACHED_COUNTRIES: usize = 8;
 /// A country's recorded pools of one resource over consecutive hours while they
 /// stay unchanged. Raw values are exact decimal strings with
@@ -246,7 +243,6 @@ pub fn scan(
         TableId::ResourceExchanges,
     ];
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Resource request cancelled");
-    let budget = || io::Error::other("Resource history exceeds its memory budget");
     let mut result = ScannedBalance::default();
     let mut learned = Learned::default();
     // The identity and hour last seen, and whether the pools and the deals were
@@ -256,7 +252,6 @@ pub fn scan(
     let mut pools_open = false;
     let mut deals_open = false;
     let mut open_trades: BTreeMap<u64, usize> = BTreeMap::new();
-    let mut runs = 0_usize;
     for block in replay.index.iter().filter(|block| block.branch == branch) {
         if cancelled.load(Ordering::Acquire) {
             return Err(cancel());
@@ -337,10 +332,6 @@ pub fn scan(
                     match series.last_mut() {
                         Some(run) if follows && same_pools(run, &values) => run.last_hour = hour,
                         _ => {
-                            runs += 1;
-                            if runs > MAX_RUNS {
-                                return Err(budget());
-                            }
                             series.push(PoolRun {
                                 starts_segment: !follows,
                                 ..values
@@ -403,10 +394,6 @@ pub fn scan(
                         still.insert(exchange.id, index);
                     }
                     previous => {
-                        runs += 1;
-                        if runs > MAX_RUNS {
-                            return Err(budget());
-                        }
                         result.trades.push(TradeRun {
                             starts_segment: previous.is_none(),
                             ..terms

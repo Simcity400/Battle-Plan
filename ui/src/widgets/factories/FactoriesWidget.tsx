@@ -17,7 +17,7 @@ import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { CountryFactoriesReply } from '../../generated/dashboard';
-import { MAX_COUNTRIES, OPTIONS } from './definition';
+import { definition, OPTIONS } from './definition';
 import { chosenGroups, factoriesAt, factoriesRequest, factoryModel, factorySegmentAt, factoryTooltips, formatCount, groupName, lineRuns, mixBands,
   raceEntries, rankFactories, validateFactoriesReply } from './factoriesData';
 import type { CountMode } from './factoriesData';
@@ -41,7 +41,7 @@ export default function FactoriesWidget({ widget, runtime, active, onDiagnostics
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const groupReply = useCountryGroups(runtime, track, active && grouped);
   const fallback = defaultCountryTag(track);
-  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groupReply.data, lastHour, MAX_COUNTRIES),
+  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groupReply.data, lastHour, definition.countries.max),
     [widget.countries, fallback, groupReply.data, lastHour]);
   const params = track ? factoriesRequest(track.branch.id, resolved, mode, chosen) : null;
   const request = track && params && (params.top || params.tags.length)
@@ -58,11 +58,10 @@ export default function FactoriesWidget({ widget, runtime, active, onDiagnostics
   const mixTag = mixCountry(widget.countries, fallback, ranked);
   const shownTags = view === 'race' ? ranked.map(entry => entry.tag) : view === 'lines' ? lineTags : mixTag ? [mixTag] : [];
   useEffect(() => {
-    const warnings = [...(data?.warnings ?? []), ...(groupReply.data?.warnings ?? []),
-      ...(resolved.dropped ? [`${resolved.dropped} more countries are left out; this widget shows at most ${MAX_COUNTRIES}.`] : [])];
+    const warnings = [...(data?.warnings ?? []), ...(groupReply.data?.warnings ?? [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, groupReply.data, resolved.dropped, onDiagnostics]);
+  }, [data, groupReply.data, onDiagnostics]);
 
   const split = options.split === true;
   const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -106,7 +105,7 @@ export default function FactoriesWidget({ widget, runtime, active, onDiagnostics
     labels={{ race: `Factories, ${countName}, ${dayLabel(moment)}`, lines: `Factories over time, ${countName}`,
       mix: name => `Factories of ${name} by type, ${countName}`, actions: 'Factory actions' }}
     raceLegendParts={split && groups.length > 1 ? chosenParts : []} partsLabel="Factory types"
-    presentation={{ exact: false, held: false, mixSamplePixels: .5, lineColourHours: 'labels', raceTooltip: 'sampled',
+    presentation={{ exact: false, held: false, lineColourHours: 'labels',
       tooltipKeep: groups.length > 1 ? 1 : 0, linePadding: CHART_LAYOUT.countryEndLabels, strongMixName: true,
       mixKeyHours: 'starts', raceEmptyState: false, resetTimeView: true }}
     lineEmpty={{ icon: 'factory', message: 'No countries to draw. Choose countries in the widget settings.' }}

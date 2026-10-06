@@ -141,10 +141,4 @@ fn measures_reply_every_requested_country_and_warn_for_unrecorded_ones() {
     assert_eq!(command.measure, Measure::CommandPower);
     assert_eq!(command.series[0].runs[0].value_raw, i64::MAX.to_string());
     assert_ne!(command.series[0].runs, reply.series[0].runs);
-    let too_many = MeasureParams {
-        branch_id: "1".into(),
-        measure: Measure::PoliticalPower,
-        tags: (0..17).map(|index| format!("T{index}")).collect(),
-    };
-    assert!(CountryMeasure::validate(&too_many).is_err());
 }

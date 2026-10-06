@@ -606,16 +606,6 @@ impl BaseResources {
         }
         Ok(())
     }
-
-    /// Retained public strict contract for authored resources with no reader diagnostics.
-    pub fn read(layers: &crate::ResolvedLayers) -> io::Result<Self> {
-        let mut result = Self::default();
-        let states = super::strict_content_state_history(layers)?;
-        for state in states.definitions().values() {
-            result.add_state_history(state)?;
-        }
-        Ok(result)
-    }
 }
 
 /// Initial resource rows for clean state templates. Consumers report exclusions

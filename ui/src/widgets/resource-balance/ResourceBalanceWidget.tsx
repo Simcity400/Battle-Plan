@@ -31,7 +31,7 @@ import type { ResourceBalanceReply, ResourceInfo } from '../../generated/dashboa
 import { balanceOf, barScale, changeHours, chosenLines, chosenResources, dealsKnown, FULL_BREAKDOWN_MAX, orderResources, overTimeTooltip, partnersAt, resourceName,
   resourceTooltip, supplyDemandRuns, toggleChosen, tradeIndex, tradesAt } from './balanceData';
 import type { Balance, RowOrder } from './balanceData';
-import { MAX_CHOSEN, OPTIONS } from './definition';
+import { OPTIONS } from './definition';
 import { useResourceBalance } from './useResourceBalance';
 import './resourceBalance.css';
 
@@ -232,7 +232,7 @@ function OverTime({ data, tokens, viewport, options, runtime, track, extent, pla
   // click cannot act is disabled and says why, pressed or not.
   // One chip per token: a repeated declaration is chosen with its token.
   const chips = data.resources.filter(item => item.ordinal === 1);
-  const actions = new Map(chips.map(item => [item.token, toggleChosen(data, stored, chosen, item.token, MAX_CHOSEN)]));
+  const actions = new Map(chips.map(item => [item.token, toggleChosen(data, stored, chosen, item.token, Number.MAX_SAFE_INTEGER)]));
   const pick = (token: string) => {
     const action = actions.get(token);
     if (action && 'value' in action && setOption) setOption('resources', action.value);
@@ -242,7 +242,7 @@ function OverTime({ data, tokens, viewport, options, runtime, track, extent, pla
     {setOption && <ChipSet label="Resources" chips={chips.map(item => {
       const action = actions.get(item.token);
       return { value: item.token, label: resourceName(item), icon: item.icon, unavailable: action && 'reason' in action ? action.reason : undefined };
-    })} selected={chosen} max={MAX_CHOSEN} onToggle={pick} />}
+    })} selected={chosen} max={Number.MAX_SAFE_INTEGER} onToggle={pick} />}
     <Legend label="Resources" items={lines.map(line => {
       const run = runAt(line.series.runs, head);
       return { id: String(line.resource.id), label: resourceName(line.resource), color: line.color,

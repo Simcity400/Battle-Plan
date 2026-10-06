@@ -5,6 +5,27 @@ use replay::{
 };
 
 #[test]
+fn equipment_icon_warnings_name_every_refused_technology() {
+    let refused: Vec<_> = (0..9).map(|entry| format!("technology_{entry}")).collect();
+    let content = crate::products::equipment_icon::IconContent::from_parts(
+        Default::default(),
+        installed_content::technology::Enablers {
+            refused: refused.clone(),
+            ..Default::default()
+        },
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+    );
+    let [warning] = content.warnings().try_into().unwrap();
+    assert!(warning.starts_with("9 technologies"));
+    for reason in refused {
+        assert!(warning.contains(&reason), "{warning}");
+    }
+}
+
+#[test]
 fn equipment_icons_follow_the_production_rows_rule() {
     use crate::products::equipment_icon::{Icon, IconContent, IconHour, variant_icon};
     use installed_content::{

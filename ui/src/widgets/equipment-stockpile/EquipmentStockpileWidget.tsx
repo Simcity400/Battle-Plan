@@ -29,7 +29,7 @@ import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboar
 import { usePlaybackHour } from '../../dashboard/playback';
 import { readAt, readNote } from '../../dashboard/reads';
 import type { EquipmentStockpileReply } from '../../generated/dashboard';
-import { MAX_CHOSEN, OPTIONS } from './definition';
+import { OPTIONS } from './definition';
 import { AI_NOTE, automaticLines, CHOSEN_KEYS, hasRecords, balanceAt, balanceMode, barExtent, chartRuns, choiceKey, choiceRow, formatPercent, oneChoicePerRow, GROUP_NOUNS, groupLabel, groupTooltip, labelAt,
   NO_DESIGN, orderGroups, otherDesigns, overTimeTooltip, shareModeOf, shareOf, shareScale, stockAt, stockChoices, stockGroups, typesComplete, undrawableReason, weeklyAt, columnVars } from './stockpileData';
 import type { Grouping, RowOrder, StockGroup } from './stockpileData';
@@ -269,7 +269,7 @@ function OverTime({ data, tokens, viewport, options, runtime, track, extent, pla
     // Deselecting a row drops every saved choice of it, not only the one shown.
     const token = setToken(choice);
     const kept = chosenTokens.includes(token) ? stored.filter(item => item === token || choiceRow(contentKey(item)) !== group.key) : stored;
-    return [group.key, toggleChosen(source, kept, chosenTokens, token, MAX_CHOSEN)];
+    return [group.key, toggleChosen(source, kept, chosenTokens, token, Number.MAX_SAFE_INTEGER)];
   }));
   const pick = (key: string) => {
     const action = actions.get(key);
@@ -286,7 +286,7 @@ function OverTime({ data, tokens, viewport, options, runtime, track, extent, pla
       const cannot = !drawable.includes(group) ? undrawableReason(data, group, grouping) : undefined;
       return { value: group.key, label: labelAt(group, grouping, head), unavailable: cannot ?? (action && 'reason' in action ? action.reason : undefined) };
     }), ...others.map(other => ({ value: setToken(other.key), label: `${labelAt(other.group, grouping, head)} (saved design)`, unavailable: other.reason }))]}
-      selected={chosen} max={MAX_CHOSEN} onToggle={pick} />}
+      selected={chosen} max={Number.MAX_SAFE_INTEGER} onToggle={pick} />}
     {!endLabels && <Legend label="Shown over time" items={lines.map(line => {
       if (shareMode) {
         const value = shareOf(balanceAt(data, line.group, head));

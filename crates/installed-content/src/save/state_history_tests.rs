@@ -52,12 +52,13 @@ impl Drop for Content {
 }
 
 #[test]
-fn one_unported_history_excludes_only_its_state_and_leaves_unknown_provinces() {
+fn one_unported_history_excludes_its_file_suffix_and_leaves_other_files_known() {
     let content = Content::new(&[
         (
             "history/states/bad.txt",
             "state={id=1 provinces={1} history={IF={limit={} \
-             free_operative={operative=a} free_operative={operative=b}}}}",
+             free_operative={operative=a} free_operative={operative=b}}}} \
+             state={id=4 provinces={4}}",
         ),
         (
             "history/states/clean.txt",
@@ -67,7 +68,7 @@ fn one_unported_history_excludes_only_its_state_and_leaves_unknown_provinces() {
     let layers = content.layers();
     let membership = read_partial_map_membership(&layers).unwrap();
     assert_eq!(membership.known_states, BTreeSet::from([2, 3]));
-    assert_eq!(membership.excluded_states.len(), 1);
+    assert_eq!(membership.excluded_states.len(), 2);
     let excluded = &membership.excluded_states[&1];
     assert_eq!(excluded.file, "history/states/bad.txt");
     assert!(excluded.reasons[0].contains("Deferred effect `free_operative`"));
@@ -78,21 +79,20 @@ fn one_unported_history_excludes_only_its_state_and_leaves_unknown_provinces() {
     );
     assert_eq!(membership.provinces[&2], ProvinceMembership::Known(Some(2)));
     assert_eq!(membership.provinces[&3], ProvinceMembership::Known(Some(3)));
-    assert_eq!(membership.provinces[&4], ProvinceMembership::Known(None));
-    assert!(membership.province_is_unknown(1));
+    let later = &membership.excluded_states[&4];
+    assert_eq!(later.file, excluded.file);
     assert_eq!(
-        membership.provinces[&1],
-        ProvinceMembership::Unknown(BTreeSet::from([1]))
+        later.reasons,
+        [format!(
+            "after state 1's unported reader: {}",
+            excluded.reasons[0]
+        )]
     );
-    let error = read_map_membership(&layers).unwrap_err().to_string();
-    assert!(error.contains("1 diagnostics"), "{error}");
-    assert!(error.contains("history/states/bad.txt"), "{error}");
-    assert!(error.contains("free_operative"), "{error}");
-    let error = construction::BaseResources::read(&layers)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("1 diagnostics"), "{error}");
-    assert!(error.contains("free_operative"), "{error}");
+    assert_eq!(
+        membership.provinces[&4],
+        ProvinceMembership::Unknown(BTreeSet::from([4]))
+    );
+    assert!(membership.province_is_unknown(1));
 }
 
 #[test]
@@ -127,11 +127,6 @@ fn partial_base_resources_keeps_clean_rows_and_explicitly_excludes_bad_states() 
     );
     assert!(membership.excluded_states[&1].reasons[0].contains("free_operative"));
     assert!(membership.province_is_unknown(1));
-    let error = construction::BaseResources::read(&layers)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("1 diagnostics"), "{error}");
-    assert!(error.contains("free_operative"), "{error}");
 }
 
 #[test]
@@ -244,18 +239,10 @@ fn a_clean_first_definition_is_exact_despite_a_later_state_id_conflict() {
     assert_eq!(membership.provinces[&2], ProvinceMembership::Known(None));
     assert_eq!(membership.notes.len(), 1);
     assert!(membership.notes[0].contains("the game keeps the first"));
-    for error in [
-        read_map_membership(&layers).unwrap_err(),
-        construction::BaseResources::read(&layers).unwrap_err(),
-    ] {
-        let error = error.to_string();
-        assert!(error.contains("1 diagnostics"), "{error}");
-        assert!(error.contains("the game keeps the first"), "{error}");
-    }
 }
 
 #[test]
-fn state_control_compares_excluded_states_while_province_control_skips_unknown_rows() {
+fn state_control_compares_excluded_states_while_province_control_keeps_explicit_controllers() {
     let content = Content::new(&[(
         "history/states/two.txt",
         "state={id=1 provinces={1} impassable=maybe} state={id=2 provinces={2}}",
@@ -264,15 +251,49 @@ fn state_control_compares_excluded_states_while_province_control_skips_unknown_r
     let mut saved = parse(
         br#"HOI4txt
 date=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
-countries={AAA={}} states={1={owner=AAA} 2={owner=AAA}} provinces={1={owner=unsupported}}
+countries={AAA={}} states={1={owner=AAA} 2={owner=AAA}} provinces={1={controller=AAA}}
 "#,
     )
     .unwrap();
     let rows = saved.known_state_control(&membership).unwrap();
     assert_eq!(rows.iter().map(|row| row.id).collect::<Vec<_>>(), [1, 2]);
-    let rows = saved.known_province_control(&membership).unwrap();
-    assert_eq!(rows.iter().map(|row| row.id).collect::<Vec<_>>(), [2, 3, 4]);
-    assert_eq!(rows[0].owner.as_deref(), Some(b"AAA".as_slice()));
+    let rows = saved.province_control(&membership).unwrap();
+    assert_eq!(
+        rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+        [1, 2, 3, 4]
+    );
+    assert_eq!(rows[0].owner, None);
+    assert!(!rows[0].membership_known);
+    assert_eq!(rows[0].state, None);
+    assert_eq!(rows[0].controller.as_deref(), Some(b"AAA".as_slice()));
+    assert!(rows[0].controller_explicit);
+    assert_eq!(rows[1].owner.as_deref(), Some(b"AAA".as_slice()));
+    assert!(rows[1].membership_known);
+    assert_eq!(rows[1].state, Some(2));
+    assert!(rows[2].membership_known);
+    assert_eq!(rows[2].state, None);
+    assert_eq!(rows[2].owner, None);
+    saved.provinces.get_mut(&1).unwrap().owner = Some(b"AAA".to_vec());
+    assert!(
+        saved
+            .province_control(&membership)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported per-province owner")
+    );
+    saved.provinces.get_mut(&1).unwrap().owner = None;
+    saved.provinces.get_mut(&1).unwrap().controller = Some(b"missing".to_vec());
+    assert!(
+        saved
+            .province_control(&membership)
+            .unwrap_err()
+            .to_string()
+            .contains("province 1 references unknown saved country missing")
+    );
+    saved.provinces.get_mut(&1).unwrap().controller = None;
+    let rows = saved.province_control(&membership).unwrap();
+    assert_eq!(rows[0].controller, None);
+    assert!(!rows[0].controller_explicit);
     saved.states.get_mut(&1).unwrap().owner = None;
     assert!(
         saved
@@ -282,7 +303,7 @@ countries={AAA={}} states={1={owner=AAA} 2={owner=AAA}} provinces={1={owner=unsu
             .contains("state 1 lacks its owner")
     );
     // An excluded state's owner is irrelevant to the known provinces.
-    assert!(saved.known_province_control(&membership).is_ok());
+    assert!(saved.province_control(&membership).is_ok());
     saved.states.get_mut(&1).unwrap().owner = Some(b"AAA".to_vec());
     saved.states.get_mut(&2).unwrap().owner = None;
     assert!(
@@ -294,7 +315,7 @@ countries={AAA={}} states={1={owner=AAA} 2={owner=AAA}} provinces={1={owner=unsu
     );
     assert!(
         saved
-            .known_province_control(&membership)
+            .province_control(&membership)
             .unwrap_err()
             .to_string()
             .contains("state 2 lacks its owner")
@@ -375,8 +396,9 @@ equipments={convoy_1={id={id=1 type=70}} convoy_1={id={id=2 type=70}}}
     map.add_state_history(&history_fixture(b"state={id=1 provinces={1 2}}"))
         .unwrap();
     let map = PartialMapMembership::from(map);
-    let rows = save.known_province_control(&map).unwrap();
+    let rows = save.province_control(&map).unwrap();
     assert_eq!(rows.len(), 3);
+    assert!(rows.iter().all(|row| row.membership_known));
     assert_eq!(rows[0].controller.as_deref(), Some(b"GER".as_slice()));
     assert!(!rows[0].controller_explicit);
     assert_eq!(rows[1].controller.as_deref(), Some(b"D01".as_slice()));
@@ -386,14 +408,14 @@ equipments={convoy_1={id={id=1 type=70}} convoy_1={id={id=2 type=70}}}
     assert_eq!(save.equipment_definitions.len(), 2);
     save.states.get_mut(&1).unwrap().owner = None;
     assert!(
-        save.known_province_control(&map)
+        save.province_control(&map)
             .unwrap_err()
             .to_string()
             .contains("lacks its owner")
     );
     save.states.remove(&1);
     assert!(
-        save.known_province_control(&map)
+        save.province_control(&map)
             .unwrap_err()
             .to_string()
             .contains("lacks state")

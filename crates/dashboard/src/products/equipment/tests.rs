@@ -5,6 +5,38 @@ use replay::rows::TableRows;
 use std::sync::atomic::AtomicBool;
 
 #[test]
+fn equipment_localisation_keeps_names_past_the_old_length_limit() {
+    struct LongName(String);
+    impl Texts for LongName {
+        fn has(&self, _: &str) -> bool {
+            true
+        }
+        fn text(&self, _: &str) -> Option<String> {
+            Some(self.0.clone())
+        }
+    }
+    let texts = LongName("Equipment name ".repeat(30));
+    assert_eq!(
+        localise_for(&texts, Some("TAG"), "type"),
+        Some(texts.0.clone())
+    );
+    let named = production::Named {
+        texts: Some(&texts),
+        units: None,
+    };
+    assert_eq!(named.type_name("type"), Some(texts.0));
+}
+
+#[test]
+fn equipment_reader_warnings_keep_every_named_refusal() {
+    let mut types = installed_content::equipment::Database::default();
+    types.misreads = (0..9)
+        .map(|entry| format!("equipment file: refused {entry}"))
+        .collect();
+    assert_eq!(equipment_warnings(&types), types.misreads);
+}
+
+#[test]
 fn weekly_units_are_the_game_s_truncated_fixed5() {
     // Germany's Bf 109 E line in the W3 save: speed 3.60045, cost 22.5 IC.
     assert_eq!(weekly_units_raw(360_045, 2_250_000), Some(112_014));

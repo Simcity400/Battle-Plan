@@ -35,8 +35,8 @@
 //! read is timed against another table. Values start at the hour supplying them.
 //!
 //! A request names what the widget draws, so a reply never carries every
-//! country's history: either chosen tags (at most [`MAX_COUNTRIES`]), or the top
-//! N by a count, ranked here over every country at every hour a value changes.
+//! country's history: either chosen tags, or the top N by a count, ranked here
+//! over every country at every hour a value changes.
 //! A top-N reply carries each country that was ever among them, with the hours
 //! it was (`membership`) and its runs cut to those hours, so at most N countries'
 //! runs cover any hour. The reply's size is counted before it is built and
@@ -74,12 +74,8 @@ pub struct CountryFactories;
 
 /// The fixed5 scale of the recorded totals (`engine::factory_group`: i64 x100000).
 const FIXED5: i64 = 100_000;
-/// Runs the scan keeps over every country before it refuses, bounding its memory.
-const MAX_RUNS: usize = 1_000_000;
+
 const CACHED_BRANCHES: usize = 2;
-const MAX_NAME: usize = 256;
-/// Most countries one request names, and the largest N of a top-N request.
-pub const MAX_COUNTRIES: usize = 30;
 /// The most a reply's series may take serialised: well inside the transport's
 /// 32 MiB with the groups, the fields and the envelope.
 pub use super::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
@@ -418,8 +414,6 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Factories request cancelled");
     let mut result = ScannedFactories::default();
     let mut tracks: BTreeMap<String, Track> = BTreeMap::new();
-    let mut runs = 0usize;
-    let mut segments = 0usize;
     for block in replay.index.iter().filter(|block| block.branch == branch) {
         if cancelled.load(Ordering::Acquire) {
             return Err(cancel());
@@ -468,19 +462,12 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 }
                 let track = tracks.get_mut(name).expect("inserted above");
                 let identity = (slot, country.id);
-                if !observe_identity(
+                observe_identity(
                     &mut track.segments,
                     &mut track.last_identity,
                     identity,
                     hour,
-                ) {
-                    segments += 1;
-                    if segments > MAX_RUNS {
-                        return Err(io::Error::other(
-                            "The country identity history exceeds its memory budget",
-                        ));
-                    }
-                }
+                );
                 // Factory availability must not change a known country identity.
                 if rows.is_none() {
                     continue;
@@ -510,12 +497,6 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 match track.runs.last_mut() {
                     Some(run) if continues && run.values == values => run.last_hour = hour,
                     _ => {
-                        runs += 1;
-                        if runs > MAX_RUNS {
-                            return Err(io::Error::other(
-                                "The factory history exceeds its memory budget",
-                            ));
-                        }
                         track.runs.push(FactoryRun {
                             first_hour: hour,
                             last_hour: hour,
@@ -824,7 +805,7 @@ pub fn group_buildings(
                 })
                 .map(|token| FactoryBuilding {
                     token: token.clone(),
-                    name: localise(token).filter(|name| !name.is_empty() && name.len() <= MAX_NAME),
+                    name: localise(token).filter(|name| !name.is_empty()),
                 })
                 .collect(),
         })
@@ -980,9 +961,6 @@ impl Product for CountryFactories {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        if params.tags.len() > MAX_COUNTRIES {
-            return Err("Invalid country selection");
-        }
         for tag in &params.tags {
             validate_tag(tag)?;
         }
@@ -990,11 +968,7 @@ impl Product for CountryFactories {
             let mut groups = top.groups.clone();
             groups.sort_unstable();
             groups.dedup();
-            if !params.tags.is_empty()
-                || top.count == 0
-                || top.count as usize > MAX_COUNTRIES
-                || groups.len() != top.groups.len()
-            {
+            if !params.tags.is_empty() || top.count == 0 || groups.len() != top.groups.len() {
                 return Err("Invalid top countries");
             }
         }

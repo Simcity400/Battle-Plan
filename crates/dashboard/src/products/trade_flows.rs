@@ -27,10 +27,8 @@
 //! it trades equipment, not resources, and the recorded table has no equipment
 //! type or quantity to size a flow by (`engine::cpurchase_contract`).
 //!
-//! The reply covers the whole branch so playback is a local lookup. It is bounded:
-//! a scan that would keep more than [`MAX_RUNS`] runs, or a reply longer than the
-//! transport holds (many short flows cost more than their runs; measured with
-//! `transport::json_len`), is refused with a message asking for fewer countries,
+//! The reply covers the whole branch so playback is a local lookup. A reply past
+//! the product byte budget is refused with a message asking for fewer countries,
 //! never cut short.
 //!
 //! Runs end at a gap, a missing table or a change in a named country's identity
@@ -65,11 +63,6 @@ use ts_rs::TS;
 
 pub struct TradeFlows;
 
-/// Runs kept before the scan refuses: about 20 MB of reply, within the transport's
-/// bound, and far above a long vanilla campaign's daily changes.
-pub const MAX_RUNS: usize = 500_000;
-/// Most countries a request may name.
-pub const MAX_TAGS: usize = 256;
 const CACHED_REQUESTS: usize = 4;
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -240,8 +233,6 @@ pub struct ScannedFlows {
     pub unnamed: usize,
     /// Deal rows whose seller or buyer the recorded links do not resolve.
     pub unresolved: usize,
-    /// Runs kept.
-    pub runs: usize,
 }
 
 impl ScannedFlows {
@@ -284,13 +275,11 @@ impl ScannedFlows {
     }
 }
 
-/// Scans one branch for every trade deal, or those of `tags` as seller or buyer,
-/// keeping at most `max_runs` runs: a scan that needs more is refused.
+/// Scans one branch for every trade deal, or those of `tags` as seller or buyer.
 pub fn scan(
     replay: &Replay,
     branch: u64,
     tags: Option<&[String]>,
-    max_runs: usize,
     cancelled: &AtomicBool,
 ) -> io::Result<ScannedFlows> {
     let selected = [
@@ -423,12 +412,6 @@ pub fn scan(
                         run.last_hour = hour
                     }
                     _ => {
-                        result.runs += 1;
-                        if result.runs > max_runs {
-                            return Err(io::Error::other(format!(
-                                "Trade history needs more than {max_runs} runs, more than one reply holds; choose fewer countries in the widget settings."
-                            )));
-                        }
                         runs.push(Run {
                             first_hour: hour,
                             last_hour: hour,
@@ -471,9 +454,6 @@ impl Product for TradeFlows {
             return Err("Invalid branch");
         }
         if let Some(tags) = &params.tags {
-            if tags.len() > MAX_TAGS {
-                return Err("Too many countries");
-            }
             for tag in tags {
                 validate_tag(tag)?;
             }
@@ -504,7 +484,6 @@ impl Product for TradeFlows {
                     &source.replay(),
                     params.branch(),
                     key.1.as_deref(),
-                    MAX_RUNS,
                     cancelled,
                 )?);
                 let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
@@ -546,18 +525,13 @@ impl Product for TradeFlows {
             flows,
             warnings,
         };
-        fits_one_reply(&reply, REPLY_BUDGET)?;
+        fits_one_reply(&reply, super::MAX_PRODUCT_REPLY_BYTES)?;
         Ok(reply)
     }
 }
 
-/// Room for the reply itself inside the transport's bound: the envelope naming the
-/// source and product takes the rest.
-const REPLY_BUDGET: usize = crate::transport::MAX_REPLY_BYTES - 64 * 1024;
-
 /// Refuses a reply longer than `limit` bytes as JSON with a message saying what to
-/// do, before the transport would refuse it with none: many short flows cost more
-/// per run than the run budget allows for.
+/// do, before the transport would refuse it with none.
 pub fn fits_one_reply(reply: &TradeFlowsReply, limit: usize) -> io::Result<()> {
     match crate::transport::json_len(reply, limit) {
         Some(_) => Ok(()),

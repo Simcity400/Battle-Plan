@@ -32,18 +32,29 @@ fn attributed(input: &[u8]) -> ParsedStates {
 }
 
 #[test]
-fn states_diagnostics_inside_one_template_affect_only_that_state() {
-    let parsed = attributed(b"state = { id = 1 provinces = { 1 } state_startup_effect = { free_operative = { operative = authored } } } state = { id = 2 provinces = { 2 } }");
-    assert_eq!(parsed.states.len(), 2);
+fn states_deferred_readers_affect_their_template_and_every_later_template() {
+    let parsed = attributed(b"state = { id = 1 provinces = { 1 } } state = { id = 2 state_startup_effect = { free_operative = { operative = authored } } } state = { id = 3 }");
+    assert_eq!(parsed.states.len(), 3);
+    assert!(parsed.states[0].1.is_empty());
     assert_eq!(parsed.states[0].0.provinces, [1]);
     assert!(
-        parsed.states[0].1.iter().any(|note| {
+        parsed.states[1].1.iter().any(|note| {
             note.contains("Deferred effect `free_operative`") && note.contains("count: 1")
         }),
         "{:?}",
-        parsed.states[0].1
+        parsed.states[1].1
     );
-    assert!(parsed.states[1].1.is_empty(), "{:?}", parsed.states[1].1);
+    assert_eq!(
+        parsed.states[2].1,
+        [format!(
+            "after state 2's unported reader: {}",
+            parsed.states[1].1[0]
+        )]
+    );
+}
+
+#[test]
+fn states_settled_diagnostics_inside_one_template_affect_only_that_state() {
     let parsed = attributed(b"state = { id = 1 impassable = maybe } state = { id = 2 }");
     assert!(parsed.states[0].1[0].contains("not yes or no"));
     assert!(parsed.states[1].1.is_empty());
@@ -54,9 +65,19 @@ fn states_repeated_deferred_diagnostics_keep_each_templates_count() {
     let parsed = attributed(b"state = { id = 1 state_startup_effect = { free_operative = { operative = first } free_operative = { operative = second } } } state = { id = 2 history = { free_operative = { operative = third } } } state = { id = 3 }");
     assert_eq!(parsed.states[0].1.len(), 1, "{:?}", parsed.states[0].1);
     assert!(parsed.states[0].1[0].contains("count: 2"));
-    assert_eq!(parsed.states[1].1.len(), 1, "{:?}", parsed.states[1].1);
-    assert!(parsed.states[1].1[0].contains("count: 1"));
-    assert!(parsed.states[2].1.is_empty());
+    assert_eq!(parsed.states[1].1.len(), 2, "{:?}", parsed.states[1].1);
+    assert_eq!(
+        parsed.states[1].1[0],
+        format!("after state 1's unported reader: {}", parsed.states[0].1[0])
+    );
+    assert!(parsed.states[1].1[1].contains("count: 1"));
+    assert_eq!(
+        parsed.states[2].1,
+        [
+            parsed.states[1].1[0].clone(),
+            format!("after state 2's unported reader: {}", parsed.states[1].1[1]),
+        ]
+    );
     assert_eq!(parsed.diagnostics.len(), 1, "{:?}", parsed.diagnostics);
     assert!(parsed.diagnostics[0].1.contains("count: 3"));
 }

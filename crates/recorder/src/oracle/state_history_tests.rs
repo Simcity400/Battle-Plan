@@ -132,8 +132,8 @@ fn core_reports_missing_rows_even_when_their_membership_is_excluded() {
 #[test]
 fn base_resources_skip_excluded_states_and_compare_clean_declarations() {
     let (membership, content) = with_content(
-        "state={id=1 provinces={1} resources={synthetic=4} history={free_operative={operative=a}}} \
-         state={id=2 provinces={2} resources={synthetic=3}}",
+        "state={id=2 provinces={2} resources={synthetic=3}} \
+         state={id=1 provinces={1} resources={synthetic=4} history={free_operative={operative=a}}}",
         2,
         save::read_partial_state_history,
     )
@@ -199,7 +199,7 @@ fn a_previously_deferred_if_without_map_effect_runs_the_dependent_comparisons() 
 }
 
 #[test]
-fn an_unported_history_reader_excludes_only_its_state_by_name_and_count() {
+fn an_unported_history_reader_excludes_its_state_and_later_states_by_name_and_count() {
     let membership = membership(
         "state={id=1 provinces={1} history={IF={limit={} \
          free_operative={operative=a} free_operative={operative=b}}}} \
@@ -217,9 +217,17 @@ fn an_unported_history_reader_excludes_only_its_state_by_name_and_count() {
     assert!(membership.province_is_unknown(1));
     assert_eq!(
         membership.provinces[&2],
-        save::ProvinceMembership::Known(Some(2))
+        save::ProvinceMembership::Unknown(BTreeSet::from([2]))
     );
-    assert!(!membership.state_is_excluded(2));
+    let later = &membership.excluded_states[&2];
+    assert_eq!(later.file, excluded.file);
+    assert_eq!(
+        later.reasons,
+        [format!(
+            "after state 1's unported reader: {}",
+            excluded.reasons[0]
+        )]
+    );
 }
 
 #[test]
@@ -240,7 +248,7 @@ fn core_skips_only_membership_fields_and_keeps_saved_value_differences() {
         rows[0].victory_points = 7;
         rows[1].state = 999;
         rows[1].owner = u32::MAX;
-        rows[1].controller = u32::MAX;
+        rows[1].controller = 0;
         rows[1].victory_points = 99;
     }
     if let TableView::Complete(TableRows::States(rows)) =
@@ -263,10 +271,11 @@ fn core_skips_only_membership_fields_and_keeps_saved_value_differences() {
     assert_eq!(report.compared_tables["Provinces.victory_points"], 2);
     assert_eq!(report.membership_skips["Provinces"], 1);
     assert!(!report.membership_skips.contains_key("States"));
-    assert_eq!(report.differences.len(), 7, "{:?}", report.differences);
+    assert_eq!(report.differences.len(), 8, "{:?}", report.differences);
     for field in [
         "province 1.victory_points",
         "province 2.victory_points",
+        "province 2.controller",
         "state 1.custom_name",
         "state 2.custom_name",
         "state 2.owner",
@@ -313,6 +322,18 @@ fn core_skips_only_membership_fields_and_keeps_saved_value_differences() {
             .contains_key("content map membership")
     );
     assert!(report.coverage_line().contains("incomplete"));
+
+    // An omitted controller still depends on the excluded state's owner.
+    saved.provinces.get_mut(&2).unwrap().controller = None;
+    if let TableView::Complete(TableRows::Provinces(rows)) =
+        &mut *frame.tables[TableId::Provinces.index()]
+    {
+        rows[1].controller = u32::MAX;
+    }
+    let context = country_context(&frame).unwrap();
+    let mut report = Report::default();
+    compare_provinces(&frame, &saved, &membership, &context.links, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
 }
 
 #[test]

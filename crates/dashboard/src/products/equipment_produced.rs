@@ -53,14 +53,13 @@
 //! and stays exact, unless included types are chosen and an unresolved variant
 //! left out of them holds something (it could belong to one of them).
 //!
-//! A request names what the widget draws: chosen tags (at most
-//! [`MAX_COUNTRIES`]) or the top N by the included types' measure, ranked over
-//! every country at every hour a value changes (`ranking::top_membership`), a
-//! country ranking only once it has produced something (a zero is not ranked); a
-//! top-N reply carries each country ever among them with its values cut to the
-//! hours it was (`membership`). A request naming neither replies the types
-//! alone. The reply's size is counted before it is built and refused past
-//! [`MAX_REPLY_BYTES`].
+//! A request names what the widget draws: chosen tags or the top N by the included
+//! types' measure, ranked over every country at every hour a value changes
+//! (`ranking::top_membership`), a country ranking only once it has produced
+//! something (a zero is not ranked); a top-N reply carries each country ever among
+//! them with its values cut to the hours it was (`membership`). A request naming
+//! neither replies the types alone. The reply's size is counted before it is built
+//! and refused past [`MAX_REPLY_BYTES`].
 
 use super::{
     LoadContext, Product,
@@ -79,11 +78,6 @@ use ts_rs::TS;
 
 pub struct EquipmentProduced;
 
-/// Most countries one request names, and the largest N of a top-N request.
-pub const MAX_COUNTRIES: usize = 30;
-/// Most types one request includes, and the longest type key.
-pub const MAX_INCLUDED: usize = 64;
-const MAX_KEY: usize = 256;
 /// The most a reply's series may take serialised: well inside the transport's
 /// 32 MiB with the keys and the envelope.
 pub use super::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
@@ -1139,7 +1133,7 @@ pub fn reply(
             "{unresolved} produced variants have an equipment type the recorded content does not resolve; each type is kept apart under its recorded token."
         ));
     }
-    for reason in untyped.iter().take(8) {
+    for reason in &untyped {
         warnings.push(format!("An equipment type cannot be resolved: {reason}."));
     }
     warnings.extend(recording_warnings(scanned));
@@ -1194,23 +1188,15 @@ impl Product for EquipmentProduced {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        if params.tags.len() > MAX_COUNTRIES {
-            return Err("Invalid country selection");
-        }
         for tag in &params.tags {
             validate_tag(tag)?;
         }
         if let Some(count) = params.top
-            && (!params.tags.is_empty() || count == 0 || count as usize > MAX_COUNTRIES)
+            && (!params.tags.is_empty() || count == 0)
         {
             return Err("Invalid top countries");
         }
-        if params.included.len() > MAX_INCLUDED
-            || params
-                .included
-                .iter()
-                .any(|key| key.is_empty() || key.len() > MAX_KEY)
-        {
+        if params.included.iter().any(|key| key.is_empty()) {
             return Err("Invalid equipment types");
         }
         Ok(())

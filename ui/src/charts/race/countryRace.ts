@@ -18,7 +18,7 @@ export interface CountryRaceLine {
   /** Distinguishes several measures of the same country. */
   id?: string;
   /** Fixed measure looks bypass country names and colours (for a level and ceiling). */
-  name?: string; color?: string; area?: boolean; dash?: readonly number[]; endDot?: boolean; muted?: boolean;
+  color?: string; area?: boolean; dash?: readonly number[]; endDot?: boolean; muted?: boolean;
   /** Exact recorded text, independent of the plotting number. */
   endLabel?: (hour: number, name: string) => string;
 }
@@ -57,13 +57,13 @@ export function countryRaceHours(lines: readonly CountryRaceLine[]): number[] {
 /** End labels stay on the last recorded point, including a view ending in a gap. */
 export function countryRaceEnds(lines: readonly CountryRaceLine[], from: number, to: number, until: number | null,
   name: (tag: string, hour?: number) => string, colour: (tag: string, hour?: number) => string,
-  format: (value: number) => string, dated = true) {
+  format: (value: number) => string) {
   return lines.flatMap(line => {
     const hour = lineEndHour(line.runs, from, Math.min(to, until ?? to));
     if (hour === null) return [];
     const run = runAt(line.runs, hour);
-    return run ? [{ id: line.id ?? line.tag, color: line.color ?? colour(line.tag, dated ? hour : undefined), value: run.value,
-      text: line.endLabel?.(hour, name(line.tag, dated ? hour : undefined)) ?? `${line.name ?? name(line.tag, dated ? hour : undefined)} ${format(run.value)}`,
+    return run ? [{ id: line.id ?? line.tag, color: line.color ?? colour(line.tag, hour), value: run.value,
+      text: line.endLabel?.(hour, name(line.tag, hour)) ?? `${name(line.tag, hour)} ${format(run.value)}`,
       ...(line.muted !== undefined ? { muted: line.muted } : {}) }] : [];
   });
 }
@@ -74,8 +74,8 @@ export function countryRaceTooltipTags(hour: number, tags: readonly string[], re
 }
 
 /** Thin geometry on the drawing grid; held bands are the default for new races. */
-export function countryRaceSegments(stack: StackModel, from: number, to: number, hoursPerPixel: number, samplePixels = 0.5, held = true): StackSegment[] {
-  const segments = stackedSegments(stack, from, to, hoursPerPixel * samplePixels);
+export function countryRaceSegments(stack: StackModel, from: number, to: number, hoursPerPixel: number, held = true): StackSegment[] {
+  const segments = stackedSegments(stack, from, to, hoursPerPixel / 2);
   return held ? segments.map(heldStackSegment) : segments;
 }
 

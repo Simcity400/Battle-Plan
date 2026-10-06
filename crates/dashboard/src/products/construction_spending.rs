@@ -161,17 +161,15 @@ pub struct ProjectSpending {
 }
 
 impl ProjectSpending {
-    /// Records one stretch ending at `hour`; returns the entries it added.
-    pub(crate) fn record(&mut self, hour: i32, stretch: Result<i64, SpendingGap>) -> usize {
+    /// Records one stretch ending at `hour`.
+    pub(crate) fn record(&mut self, hour: i32, stretch: Result<i64, SpendingGap>) {
         match stretch {
-            Ok(0) => 0,
+            Ok(0) => (),
             Ok(amount) => {
                 self.spent.push((hour, amount));
-                1
             }
             Err(gap) => {
                 self.unknown.push((hour, gap));
-                1
             }
         }
     }

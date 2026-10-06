@@ -12,8 +12,8 @@ Who sells which resources to whom: a Sankey of sellers (left) to buyers (right),
   - Chosen countries show their trade with anyone (default) or, as a setting, only trade between them.
   - A group counted at each hour counts a trade only while its country is a member, and nothing in hours its membership was not recorded.
   - At the moment shown, a group whose members are unknown or none says so (the kit's `worldFilter`).
-- **Resources (setting):** any of the campaign's own resources; none chosen shows them all.
-- **Countries per side (setting, 12 by default):** the countries that sell or buy the most at the moment shown are drawn. The rest are summed into one "N other sellers" or "N other buyers" node, so nothing is left out. One country past the limit is shown itself rather than as "1 other".
+- **Resources (setting):** up to 16 of the campaign's own resources; a chip says when the limit is reached. None chosen shows them all.
+- **Countries per side (setting, 12 by default, minimum 1 with no maximum):** the countries that sell or buy the most at the moment shown are drawn. The rest are summed into one "N other sellers" or "N other buyers" node, so nothing is left out. Increase the setting to expand those countries into their own nodes. One country past the chosen count is shown itself rather than as "1 other".
   - When fewer fit the widget's height (the flow kit's `flowCapacity`: a label row a node), only those are drawn, the rest are summed, and the caption says so.
 - **Ribbon width (setting):**
   - **Same scale all campaign** (default): widths are amounts, so the diagram grows and shrinks with the trade.
@@ -59,8 +59,8 @@ Who sells which resources to whom: a Sankey of sellers (left) to buyers (right),
 - **Market purchases (`PurchaseContracts`)** are the international market's equipment contracts, not resources. The recorded table has no equipment type or quantity to size a ribbon by, so they are not shown.
 
 **Size:**
-- The reply is bounded. A scan that would keep more than 500,000 runs, or a reply longer than the transport holds (many short flows cost more than their runs; measured with `transport::json_len` before sending), is refused with a message asking for fewer countries, never cut short.
-- A 1,500-country test world fits one reply with every flow.
+- The reply is bounded. A reply beyond `MAX_PRODUCT_REPLY_BYTES` (many short flows cost more than their runs; measured with `transport::json_len` before sending) is refused with a message asking for fewer countries, never cut short.
+- A 5,000-country test world across 51 reads fits one reply with every flow and all 510,000 runs.
 - On the earlier daily recording (15 days, 90 countries trading) the whole-world reply was 92 KB: 411 flows, 476 runs and 13 KB of resource icons. A current hourly recording has not been measured here.
 
 **Built from the kit:**

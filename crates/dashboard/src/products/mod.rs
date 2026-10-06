@@ -211,12 +211,9 @@ impl BranchParams {
     }
 }
 
-/// Most countries one line-chart request may name.
-pub const MAX_COUNTRIES: usize = 16;
-
 /// Selection checks shared by products drawing several countries.
 pub fn validate_countries(branch_id: &str, tags: &[String]) -> Result<(), &'static str> {
-    if tags.is_empty() || tags.len() > MAX_COUNTRIES {
+    if tags.is_empty() {
         return Err("Invalid country selection");
     }
     for tag in tags {

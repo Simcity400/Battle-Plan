@@ -77,8 +77,8 @@ fn trade_replay() -> Replay {
 
 #[test]
 fn trade_flows_read_every_hour_and_never_cross_gaps() {
-    use crate::products::trade_flows::{MAX_RUNS, scan};
-    let scanned = scan(&trade_replay(), 1, None, MAX_RUNS, &AtomicBool::new(false)).unwrap();
+    use crate::products::trade_flows::scan;
+    let scanned = scan(&trade_replay(), 1, None, &AtomicBool::new(false)).unwrap();
     assert_eq!(scanned.reads, [100, 101, 102, 103, 104, 106, 107, 108]);
     assert_eq!(span_pairs(&scanned.known), [(100, 104), (106, 108)]);
     let (countries, flows) = scanned.reply_flows();
@@ -111,21 +111,13 @@ fn trade_flows_read_every_hour_and_never_cross_gaps() {
     assert_eq!(flows[0].factories, [1, 1, 1]);
     assert_eq!(flows[1].factories, [1, 1, 1, 1, 2]);
     assert_eq!(scanned.unnamed + scanned.unresolved, 0);
-    assert_eq!(scanned.runs, 8);
 }
 
 #[test]
 fn trade_flows_for_chosen_countries_keep_only_their_deals() {
-    use crate::products::trade_flows::{MAX_RUNS, scan};
+    use crate::products::trade_flows::scan;
     let tags = ["SPR".to_owned()];
-    let scanned = scan(
-        &trade_replay(),
-        1,
-        Some(&tags),
-        MAX_RUNS,
-        &AtomicBool::new(false),
-    )
-    .unwrap();
+    let scanned = scan(&trade_replay(), 1, Some(&tags), &AtomicBool::new(false)).unwrap();
     let (countries, flows) = scanned.reply_flows();
     assert_eq!(countries, ["GER", "SPR"]);
     assert_eq!(flows.len(), 1);
@@ -135,7 +127,7 @@ fn trade_flows_for_chosen_countries_keep_only_their_deals() {
 
 #[test]
 fn trade_flows_are_unknown_after_a_missing_table_and_count_what_they_cannot_name() {
-    use crate::products::trade_flows::{MAX_RUNS, scan};
+    use crate::products::trade_flows::scan;
     let deal = [(0x33, 21, 9001, 800_000), (0x66, 777, 9001, 5)];
     let mut missing = resource_frame(101, 30_100_000, 9001, &deal);
     *missing.tables[TableId::ResourceExchanges.index()] = TableView::Unavailable {
@@ -162,7 +154,7 @@ fn trade_flows_are_unknown_after_a_missing_table_and_count_what_they_cannot_name
         )],
     )
     .unwrap();
-    let scanned = scan(&replay, 1, None, MAX_RUNS, &AtomicBool::new(false)).unwrap();
+    let scanned = scan(&replay, 1, None, &AtomicBool::new(false)).unwrap();
     assert_eq!(scanned.reads, [100, 102, 104, 105]);
     assert_eq!(
         span_pairs(&scanned.known),
@@ -192,7 +184,7 @@ fn trade_flows_are_unknown_after_a_missing_table_and_count_what_they_cannot_name
 
 #[test]
 fn trade_runs_need_country_tables_and_end_when_country_identity_changes() {
-    use crate::products::trade_flows::{MAX_RUNS, scan};
+    use crate::products::trade_flows::scan;
     let deal = [(0x33, 21, 9001, 800_000)];
     // The country that takes the tag GER later is linked as 9002.
     let renamed = [(0x33, 21, 9002, 800_000)];
@@ -217,7 +209,7 @@ fn trade_runs_need_country_tables_and_end_when_country_identity_changes() {
         )],
     )
     .unwrap();
-    let scanned = scan(&replay, 1, None, MAX_RUNS, &AtomicBool::new(false)).unwrap();
+    let scanned = scan(&replay, 1, None, &AtomicBool::new(false)).unwrap();
     assert_eq!(span_pairs(&scanned.known), [(100, 100), (102, 105)]);
     let (countries, flows) = scanned.reply_flows();
     assert_eq!(
@@ -232,8 +224,8 @@ fn trade_runs_need_country_tables_and_end_when_country_identity_changes() {
 
 #[test]
 fn a_reply_longer_than_the_transport_holds_is_refused_with_what_to_do() {
-    use crate::products::trade_flows::{MAX_RUNS, TradeFlowsReply, fits_one_reply, scan};
-    let scanned = scan(&trade_replay(), 1, None, MAX_RUNS, &AtomicBool::new(false)).unwrap();
+    use crate::products::trade_flows::{TradeFlowsReply, fits_one_reply, scan};
+    let scanned = scan(&trade_replay(), 1, None, &AtomicBool::new(false)).unwrap();
     let (countries, flows) = scanned.reply_flows();
     let reply = TradeFlowsReply {
         branch_id: "1".into(),
@@ -248,7 +240,7 @@ fn a_reply_longer_than_the_transport_holds_is_refused_with_what_to_do() {
     };
     let bytes = serde_json::to_vec(&reply).unwrap().len();
     assert!(fits_one_reply(&reply, bytes).is_ok());
-    // Many short flows can pass the run budget and still not fit: said, not cut.
+    // The complete reply is refused, never cut.
     let error = fits_one_reply(&reply, bytes - 1).expect_err("refused");
     assert!(
         error.to_string().contains("choose fewer countries"),
@@ -258,7 +250,7 @@ fn a_reply_longer_than_the_transport_holds_is_refused_with_what_to_do() {
 
 #[test]
 fn hours_with_deals_they_cannot_attribute_are_known_only_in_part() {
-    use crate::products::trade_flows::{MAX_RUNS, scan};
+    use crate::products::trade_flows::scan;
     let clean = [(0x33, 21, 9001, 800_000)];
     let unresolved = [
         (0x33, 21, 9001, 800_000),
@@ -278,7 +270,7 @@ fn hours_with_deals_they_cannot_attribute_are_known_only_in_part() {
         )],
     )
     .unwrap();
-    let scanned = scan(&replay, 1, None, MAX_RUNS, &AtomicBool::new(false)).unwrap();
+    let scanned = scan(&replay, 1, None, &AtomicBool::new(false)).unwrap();
     assert_eq!(span_pairs(&scanned.known), [(100, 103)]);
     // Two deals are left out at hours 100 and 101; hour 102 is whole.
     assert_eq!(
@@ -293,7 +285,7 @@ fn hours_with_deals_they_cannot_attribute_are_known_only_in_part() {
 
 #[test]
 fn trade_flows_treat_tags_as_opaque_strings() {
-    use crate::products::trade_flows::{MAX_RUNS, scan};
+    use crate::products::trade_flows::scan;
     // A mod's tags may hold any non-NUL bytes: spaces, separators, a dynamic tag.
     let retag = |mut frame: DecodedFrame| {
         if let TableView::Complete(TableRows::Countries(rows)) =
@@ -319,7 +311,7 @@ fn trade_flows_treat_tags_as_opaque_strings() {
     )
     .unwrap();
     let tags = ["It aly".to_owned()];
-    let scanned = scan(&replay, 1, Some(&tags), MAX_RUNS, &AtomicBool::new(false)).unwrap();
+    let scanned = scan(&replay, 1, Some(&tags), &AtomicBool::new(false)).unwrap();
     let (countries, flows) = scanned.reply_flows();
     assert_eq!(countries, ["G>E,R", "It aly"]);
     assert_eq!(
@@ -329,21 +321,8 @@ fn trade_flows_treat_tags_as_opaque_strings() {
             .collect::<Vec<_>>(),
         [("It aly".to_owned(), "G>E,R".to_owned(), 1)]
     );
-    let scanned = scan(&replay, 1, None, MAX_RUNS, &AtomicBool::new(false)).unwrap();
+    let scanned = scan(&replay, 1, None, &AtomicBool::new(false)).unwrap();
     assert_eq!(scanned.reply_flows().0, ["D01", "G>E,R", "It aly"]);
-}
-
-#[test]
-fn trade_flows_refuse_more_runs_than_one_reply_holds_instead_of_cutting_them() {
-    use crate::products::trade_flows::scan;
-    let error = scan(&trade_replay(), 1, None, 5, &AtomicBool::new(false)).expect_err("refused");
-    assert!(
-        error.to_string().contains("choose fewer countries"),
-        "{error}"
-    );
-    // The same history for fewer countries fits.
-    let tags = ["SPR".to_owned()];
-    assert!(scan(&trade_replay(), 1, Some(&tags), 5, &AtomicBool::new(false)).is_ok());
 }
 
 /// `count` countries each selling the next one steel and oil, the amount changing
@@ -401,8 +380,8 @@ fn a_whole_world_of_trade_fits_one_reply_with_every_flow() {
         LoadContext, Product,
         trade_flows::{TradeFlowParams, TradeFlows},
     };
-    const COUNTRIES: u32 = 1_500;
-    const READS: i32 = 48;
+    const COUNTRIES: u32 = 5_000;
+    const READS: i32 = 51;
     // A real campaign's hours, so the reply is as long as a real one.
     const START: i32 = 60_827_800;
     let replay = Arc::new(
@@ -427,12 +406,18 @@ fn a_whole_world_of_trade_fits_one_reply_with_every_flow() {
         &AtomicBool::new(false),
     )
     .unwrap();
+    let params = TradeFlowParams {
+        branch_id: "1".into(),
+        tags: Some(
+            (0..COUNTRIES)
+                .map(|index| String::from_utf8(crate::test_fixtures::scale_tag(index)).unwrap())
+                .collect(),
+        ),
+    };
+    assert!(TradeFlows::validate(&params).is_ok());
     let reply = TradeFlows::load(
         &source,
-        &TradeFlowParams {
-            branch_id: "1".into(),
-            tags: None,
-        },
+        &params,
         &LoadContext { content: None },
         &AtomicBool::new(false),
     )
@@ -447,12 +432,5 @@ fn a_whole_world_of_trade_fits_one_reply_with_every_flow() {
             .all(|flow| flow.first_hours.len() == READS as usize)
     );
     assert_eq!(span_pairs(&reply.known), [(START, START + READS - 1)]);
-    let bytes = serde_json::to_vec(&reply).unwrap().len();
-    let runs = 2 * COUNTRIES as usize * READS as usize;
-    // At the same size per run, the most runs a scan keeps still fit one reply.
-    assert!(
-        bytes / runs * crate::products::trade_flows::MAX_RUNS
-            < crate::transport::MAX_REPLY_BYTES * 3 / 4,
-        "{bytes} bytes for {runs} runs"
-    );
+    assert!(serde_json::to_vec(&reply).unwrap().len() < crate::products::MAX_PRODUCT_REPLY_BYTES);
 }

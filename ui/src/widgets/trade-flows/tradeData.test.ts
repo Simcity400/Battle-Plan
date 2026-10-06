@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { resolveCountries, worldFilter } from '../../dashboard/groups.ts';
+import { resolveOptions } from '../../dashboard/options.ts';
+import { definition, OPTIONS } from './definition.ts';
 import type { CountrySelection } from '../../dashboard/model';
 import type { CountryGroupReply } from '../../generated/dashboard';
 import type { ResourceInfo, TradeFlow, TradeFlowsReply } from '../../generated/dashboard';
@@ -25,6 +27,18 @@ function reply(): TradeFlowsReply {
     warnings: [],
   };
 }
+
+test('trade selection accepts every recorded country', () => {
+  assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
+  const tags = Array.from({ length: 5000 }, (_, index) => `MOD${index}`);
+  const resolved = resolveCountries({ kind: 'tags', tags }, [], undefined, 119, definition.countries.max);
+  assert.deepEqual([resolved.tags, resolved.dropped], [tags, 0]);
+});
+
+test('countries per side accepts counts above forty and one, keeping the default twelve', () => {
+  assert.equal(resolveOptions(OPTIONS, {}).perSide, 12);
+  for (const perSide of [1, 80]) assert.equal(resolveOptions(OPTIONS, { perSide }).perSide, perSide);
+});
 
 test('a reply is checked for parallel runs in order with exact amounts', () => {
   assert.doesNotThrow(() => validateTradeFlowsReply(reply()));

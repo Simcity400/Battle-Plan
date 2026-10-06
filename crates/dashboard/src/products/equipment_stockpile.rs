@@ -81,7 +81,7 @@ use crate::{
     Source, catalogue,
     metadata::{link_slot, slot_read, tagged_country, validate_campaign},
     products::country_groups::HourSpan,
-    read_runs::{AmountRun, OverBudget, ReadRuns},
+    read_runs::{AmountRun, ReadRuns},
 };
 use installed_content::equipment::Database;
 use replay::{
@@ -102,9 +102,6 @@ use ts_rs::TS;
 
 pub struct EquipmentStockpile;
 
-/// Runs kept per country before the scan refuses, far above a long campaign's
-/// daily changes.
-const MAX_RUNS: usize = 1_000_000;
 const CACHED_COUNTRIES: usize = 8;
 
 pub use super::equipment::StockVariantName;
@@ -225,10 +222,6 @@ pub struct ScannedStockpile {
 /// same bound as `engine::country_stability`'s ring saturation).
 pub const NEED_BOUND_RAW: i64 = 0x53e2_d620_fb40;
 
-fn budget(_: OverBudget) -> io::Error {
-    io::Error::other("Equipment stockpile history exceeds its memory budget")
-}
-
 /// Scans one branch for one country's stockpile, production and variant names.
 pub fn scan(
     replay: &Replay,
@@ -247,15 +240,15 @@ pub fn scan(
     .collect();
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Stockpile request cancelled");
     let mut result = ScannedStockpile {
-        stock: ReadRuns::new(MAX_RUNS),
-        weekly: ReadRuns::new(MAX_RUNS),
+        stock: ReadRuns::new(),
+        weekly: ReadRuns::new(),
         reads: Vec::new(),
         variants: VariantCatalogue::default(),
         costless: 0,
         other_kinds: 0,
-        balance: ReadRuns::new(MAX_RUNS),
-        logistics_stock: ReadRuns::new(MAX_RUNS),
-        ai: ReadRuns::new(MAX_RUNS),
+        balance: ReadRuns::new(),
+        logistics_stock: ReadRuns::new(),
+        ai: ReadRuns::new(),
         logistics_reads: Vec::new(),
         line_reads: Vec::new(),
         logistics_tokens: BTreeMap::new(),
@@ -323,7 +316,7 @@ pub fn scan(
                         .collect();
                     if own.is_empty() {
                         // The game computed no balance: the country was AI-controlled.
-                        result.ai.read(hour, []).map_err(budget)?;
+                        result.ai.read(hour, []);
                         result.balance.close();
                         result.logistics_stock.close();
                     } else {
@@ -340,17 +333,13 @@ pub fn scan(
                                 }
                             }
                         }
-                        result
-                            .balance
-                            .read(
-                                hour,
-                                own.iter().map(|row| (row.token, Some(row.balance_raw))),
-                            )
-                            .map_err(budget)?;
+                        result.balance.read(
+                            hour,
+                            own.iter().map(|row| (row.token, Some(row.balance_raw))),
+                        );
                         result
                             .logistics_stock
-                            .read(hour, own.iter().map(|row| (row.token, Some(row.stock_raw))))
-                            .map_err(budget)?;
+                            .read(hour, own.iter().map(|row| (row.token, Some(row.stock_raw))));
                         result.ai.close();
                     }
                 }
@@ -368,16 +357,13 @@ pub fn scan(
             }
             if let Some(stock) = stock {
                 result.reads.push(hour);
-                result
-                    .stock
-                    .read(
-                        hour,
-                        stock
-                            .iter()
-                            .filter(|row| link_slot(links, row.country) == Some(slot))
-                            .map(|row| (row.variant_handle, Some(row.amount_raw))),
-                    )
-                    .map_err(budget)?;
+                result.stock.read(
+                    hour,
+                    stock
+                        .iter()
+                        .filter(|row| link_slot(links, row.country) == Some(slot))
+                        .map(|row| (row.variant_handle, Some(row.amount_raw))),
+                );
             }
             if let Some(lines) = lines {
                 result.line_reads.push(hour);
@@ -402,7 +388,7 @@ pub fn scan(
                     };
                     weekly.push((line.variant, units));
                 }
-                result.weekly.read(hour, weekly).map_err(budget)?;
+                result.weekly.read(hour, weekly);
             }
         }
     }
@@ -629,7 +615,7 @@ impl Product for EquipmentStockpile {
                 name: content
                     .as_ref()
                     .and_then(|(catalogue, _)| catalogue.text(&key))
-                    .filter(|name| !name.is_empty() && name.len() <= 256),
+                    .filter(|name| !name.is_empty()),
                 need_note: match &content {
                     Some((_, known)) => need_note(known, &key).unwrap_or_else(Some),
                     None => Some(
@@ -646,11 +632,9 @@ impl Product for EquipmentStockpile {
             ));
         }
         if untyped_count > 0 {
-            let reasons: Vec<&str> = untyped.iter().take(8).map(String::as_str).collect();
             warnings.push(format!(
-                "{untyped_count} recorded variants or archetypes have an equipment type the content does not resolve; they are shown by their token and every total they could belong to is unknown ({}{}).",
-                reasons.join("; "),
-                if untyped.len() > reasons.len() { "; …" } else { "" }
+                "{untyped_count} recorded variants or archetypes have an equipment type the content does not resolve; they are shown by their token and every total they could belong to is unknown ({}).",
+                untyped.into_iter().collect::<Vec<_>>().join("; ")
             ));
         }
         if scanned.costless > 0 {

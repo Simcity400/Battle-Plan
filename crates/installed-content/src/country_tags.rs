@@ -18,21 +18,15 @@ pub struct TagIndex {
 }
 
 impl TagIndex {
-    /// The skipped keys as one counted warning, naming the first few.
+    /// Every skipped key as one counted warning.
     pub fn warning(&self) -> Option<String> {
         if self.skipped.is_empty() {
             return None;
         }
-        let named: Vec<&str> = self.skipped.iter().take(8).map(String::as_str).collect();
         Some(format!(
-            "{} common/country_tags keys are not three bytes, so the game declares no tag for them: {}{}",
+            "{} common/country_tags keys are not three bytes, so the game declares no tag for them: {}",
             self.skipped.len(),
-            named.join("; "),
-            if self.skipped.len() > named.len() {
-                "; …"
-            } else {
-                ""
-            }
+            self.skipped.join("; "),
         ))
     }
 }
@@ -127,5 +121,11 @@ mod tests {
             ])
         );
         assert!(add_tag_index("bad.txt", b"SOV = { a = b }", &mut index).is_err());
+        let extra = (0..8)
+            .map(|id| format!("skipped_{id}=unused\n"))
+            .collect::<String>();
+        add_tag_index("extra.txt", extra.as_bytes(), &mut index).unwrap();
+        assert_eq!(index.skipped.len(), 9);
+        assert!(index.warning().unwrap().ends_with("extra.txt: skipped_7"));
     }
 }

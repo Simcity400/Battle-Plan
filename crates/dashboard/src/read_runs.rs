@@ -39,25 +39,17 @@ pub struct ReadRuns<K: Ord + Copy> {
     /// Totals that did not fit the table's i64 and were kept unknown, never clamped.
     pub overflowed: usize,
     carried: bool,
-    count: usize,
-    limit: usize,
 }
 
-/// More runs than a product's budget allows.
-#[derive(Debug, PartialEq, Eq)]
-pub struct OverBudget;
-
 impl<K: Ord + Copy> ReadRuns<K> {
-    /// No runs yet; `limit` bounds the runs kept, far above a long campaign's changes.
-    pub fn new(limit: usize) -> Self {
+    /// No runs yet; each read adds the keys and changes it recorded.
+    pub fn new() -> Self {
         Self {
             runs: BTreeMap::new(),
             spans: Vec::new(),
             open: BTreeMap::new(),
             overflowed: 0,
             carried: false,
-            count: 0,
-            limit,
         }
     }
 
@@ -67,11 +59,7 @@ impl<K: Ord + Copy> ReadRuns<K> {
     /// unknown for this read (the latter counted in `overflowed`), never clamped. A key
     /// missing from the read had no row. A value continues its run only when the hour before was
     /// carried and the value is unchanged.
-    pub fn read(
-        &mut self,
-        hour: i32,
-        values: impl IntoIterator<Item = (K, Option<i64>)>,
-    ) -> Result<(), OverBudget> {
+    pub fn read(&mut self, hour: i32, values: impl IntoIterator<Item = (K, Option<i64>)>) {
         let follows = self.carried
             && self
                 .spans
@@ -113,10 +101,6 @@ impl<K: Ord + Copy> ReadRuns<K> {
                     run.last_hour = hour
                 }
                 _ => {
-                    self.count += 1;
-                    if self.count > self.limit {
-                        return Err(OverBudget);
-                    }
                     runs.push(AmountRun {
                         first_hour: hour,
                         last_hour: hour,
@@ -127,7 +111,6 @@ impl<K: Ord + Copy> ReadRuns<K> {
         }
         self.open = totals;
         self.carried = true;
-        Ok(())
     }
 
     /// An hour carried from the last read: its values and span go on, but only
@@ -161,6 +144,12 @@ impl<K: Ord + Copy> ReadRuns<K> {
     }
 }
 
+impl<K: Ord + Copy> Default for ReadRuns<K> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,14 +163,23 @@ mod tests {
     }
 
     #[test]
+    fn every_recorded_change_is_kept_past_the_old_stockpile_run_budget() {
+        let mut built = ReadRuns::new();
+        for hour in 0..201 {
+            built.read(hour, (0..5_000).map(|key| (key, Some(i64::from(hour)))));
+        }
+        assert_eq!(built.runs.len(), 5_000);
+        assert_eq!(built.runs.values().map(Vec::len).sum::<usize>(), 1_005_000);
+        assert_eq!(runs(&built, 4_999).last(), Some(&(200, 200, Some("200"))));
+    }
+
+    #[test]
     fn values_start_at_reads_carry_until_the_next_and_a_missing_key_ends_its_run() {
-        let mut built = ReadRuns::new(100);
-        built
-            .read(10, [(1, Some(5)), (2, Some(7)), (1, Some(3))])
-            .unwrap();
+        let mut built = ReadRuns::new();
+        built.read(10, [(1, Some(5)), (2, Some(7)), (1, Some(3))]);
         built.carry(11);
         // Unchanged at the next read: one run; key 2 has no row, so its run ends.
-        built.read(12, [(1, Some(8))]).unwrap();
+        built.read(12, [(1, Some(8))]);
         built.carry(13);
         assert_eq!(runs(&built, 1), [(10, 13, Some("8"))]);
         assert_eq!(runs(&built, 2), [(10, 11, Some("7"))]);
@@ -196,13 +194,11 @@ mod tests {
 
     #[test]
     fn a_recorded_zero_is_a_value_and_an_uncomputable_one_poisons_the_sum() {
-        let mut built = ReadRuns::new(100);
+        let mut built = ReadRuns::new();
         // A zero is kept as a run, told apart from a key never listed.
-        built
-            .read(10, [(1, Some(0)), (2, Some(4)), (2, None)])
-            .unwrap();
+        built.read(10, [(1, Some(0)), (2, Some(4)), (2, None)]);
         built.carry(11);
-        built.read(12, [(1, Some(0)), (2, Some(4))]).unwrap();
+        built.read(12, [(1, Some(0)), (2, Some(4))]);
         assert_eq!(runs(&built, 1), [(10, 12, Some("0"))]);
         // One uncomputable value makes the key's total unknown at that read, not 4.
         assert_eq!(runs(&built, 2), [(10, 11, None), (12, 12, Some("4"))]);
@@ -211,12 +207,12 @@ mod tests {
 
     #[test]
     fn a_break_ends_every_value_and_the_next_read_starts_a_new_span() {
-        let mut built = ReadRuns::new(100);
-        built.read(10, [(1, Some(5))]).unwrap();
+        let mut built = ReadRuns::new();
+        built.read(10, [(1, Some(5))]);
         built.close();
         // Hours after a break are unknown, not carried.
         built.carry(11);
-        built.read(12, [(1, Some(5))]).unwrap();
+        built.read(12, [(1, Some(5))]);
         // A carried hour that skips one is a break too.
         built.carry(14);
         built.carry(15);
@@ -234,26 +230,20 @@ mod tests {
                 }
             ]
         );
-        // The budget refuses runs past it.
-        let mut exact = ReadRuns::new(100);
+        let mut exact = ReadRuns::new();
         // Intermediate sums past i64 do not clamp: the total is exactly 100000.
-        exact
-            .read(
-                1,
-                [
-                    (1, Some(i64::MAX)),
-                    (1, Some(100_000)),
-                    (1, Some(-i64::MAX)),
-                ],
-            )
-            .unwrap();
+        exact.read(
+            1,
+            [
+                (1, Some(i64::MAX)),
+                (1, Some(100_000)),
+                (1, Some(-i64::MAX)),
+            ],
+        );
         assert_eq!(runs(&exact, 1), [(1, 1, Some("100000"))]);
         // A total that does not fit is unknown and counted, never clamped.
-        exact.read(2, [(1, Some(i64::MAX)), (1, Some(1))]).unwrap();
+        exact.read(2, [(1, Some(i64::MAX)), (1, Some(1))]);
         assert_eq!(runs(&exact, 1)[1], (2, 2, None));
         assert_eq!(exact.overflowed, 1);
-        let mut small = ReadRuns::new(1);
-        assert_eq!(small.read(1, [(2, Some(1))]), Ok(()));
-        assert_eq!(small.read(3, [(2, Some(2))]), Err(OverBudget));
     }
 }

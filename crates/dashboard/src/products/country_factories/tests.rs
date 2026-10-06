@@ -257,6 +257,12 @@ fn factory_groups_are_named_by_the_content_buildings_their_flags_count() {
     );
     assert_eq!(listed(FactoryGroupKey::Naval), [named("yard")]);
     assert_eq!(groups[0].flag, "military_production");
+    let long_name = "Factory name ".repeat(30);
+    let long = group_buildings(&buildings, |_| Some(long_name.clone()));
+    assert_eq!(
+        long[0].buildings[0].name.as_deref(),
+        Some(long_name.as_str())
+    );
 }
 
 #[test]
@@ -389,11 +395,9 @@ fn factories_reply_the_countries_asked_for_without_content_and_answer_again_from
             branch_id: "x".into(),
             ..params(&[], None)
         },
-        params(&["GER"; 31], None),
         params(&[""], None),
         params(&["GER"], Some(top(10, civilian()))),
         params(&[], Some(top(0, civilian()))),
-        params(&[], Some(top(31, civilian()))),
         params(
             &[],
             Some(top(3, vec![FactoryGroupKey::Naval, FactoryGroupKey::Naval])),
@@ -895,9 +899,56 @@ fn factory_tags_are_opaque_strings_ranked_in_byte_order() {
 }
 
 #[test]
+fn factory_selections_follow_the_recorded_country_count() {
+    use crate::products::{
+        Product,
+        country_factories::{
+            CountryFactories, FactoriesParams, FactoryCount, FactoryTop, ScannedFactories,
+            requested_series,
+        },
+    };
+    let scanned = ScannedFactories {
+        series: (0..5_000)
+            .map(|country| {
+                (
+                    format!("T{country}"),
+                    vec![factory_run(10, 10, vec![0; 31])],
+                )
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let mut params = FactoriesParams {
+        branch_id: "1".into(),
+        tags: scanned.series.keys().cloned().collect(),
+        top: None,
+    };
+    assert!(CountryFactories::validate(&params).is_ok());
+    assert_eq!(
+        requested_series(&scanned, &params, &AtomicBool::new(false))
+            .unwrap()
+            .len(),
+        scanned.series.len()
+    );
+    params.tags.clear();
+    params.top = Some(FactoryTop {
+        count: scanned.series.len() as u32,
+        mode: FactoryCount::Built,
+        groups: vec![],
+    });
+    assert!(CountryFactories::validate(&params).is_ok());
+    assert_eq!(
+        requested_series(&scanned, &params, &AtomicBool::new(false))
+            .unwrap()
+            .len(),
+        scanned.series.len()
+    );
+}
+
+#[test]
 fn a_long_campaign_s_reply_is_bounded_by_the_countries_asked_for() {
     use crate::products::country_factories::{
-        FactoriesParams, FactoryCount, FactoryGroupKey, FactoryTop, MAX_COUNTRIES, MAX_REPLY_BYTES,
+        FactoriesParams, FactoryCount, FactoryGroupKey, FactoryTop, MAX_REPLY_BYTES,
         ScannedFactories, requested_bytes, requested_series, series_bytes,
     };
     // 100 countries, each with 2,500 changes (a long campaign's daily runs) of
@@ -918,13 +969,14 @@ fn a_long_campaign_s_reply_is_bounded_by_the_countries_asked_for() {
     let every: usize = scanned.series.values().map(|runs| runs.len()).sum();
     assert_eq!(every, 250_000);
     let serialized = |series| serde_json::to_string(series).unwrap().len();
+    let selected = 30;
     let chosen = FactoriesParams {
         branch_id: "1".into(),
-        tags: scanned.series.keys().take(MAX_COUNTRIES).cloned().collect(),
+        tags: scanned.series.keys().take(selected).cloned().collect(),
         top: None,
     };
     let series = requested_series(&scanned, &chosen, &AtomicBool::new(false)).unwrap();
-    assert_eq!(series.len(), MAX_COUNTRIES);
+    assert_eq!(series.len(), selected);
     // The size is counted from the scan, before anything is copied, as exactly what
     // is then built, and never undercounted.
     let counted = |params: &FactoriesParams| {

@@ -947,7 +947,14 @@ fn a_modded_content_stack_names_and_pictures_its_own_buildings_and_refuses_what_
         ("mod_case", "Ambiguous Works"),
         ("STATE_900", "Atlantis"),
     ]);
-    let localise = |key: &str| texts.get(key).map(|text| text.to_string());
+    let long_name = "Construction name ".repeat(30);
+    let localise = |key: &str| {
+        if matches!(key, "industrial_complex" | "STATE_900") {
+            Some(long_name.clone())
+        } else {
+            texts.get(key).map(|text| text.to_string())
+        }
+    };
     let view = ContentView {
         layers: &catalogue.content.layers,
         sprites: &catalogue.sprites,
@@ -980,7 +987,7 @@ fn a_modded_content_stack_names_and_pictures_its_own_buildings_and_refuses_what_
     // The mod's own frame for the vanilla type, and its own type with its own frame.
     assert_eq!(
         (name(CIVILIAN), icon(CIVILIAN)),
-        (Some("Civilian Factory"), Some(red))
+        (Some(long_name.as_str()), Some(red))
     );
     assert_eq!(
         (name(500), icon(500)),
@@ -999,7 +1006,7 @@ fn a_modded_content_stack_names_and_pictures_its_own_buildings_and_refuses_what_
     assert_eq!(named.repair_icon.as_deref().map(first_pixel), Some(blue));
     assert_eq!(
         (named.states[&5].as_deref(), named.states[&900].as_deref()),
-        (None, Some("Atlantis"))
+        (None, Some(long_name.as_str()))
     );
     let warned = |start: &str| {
         named

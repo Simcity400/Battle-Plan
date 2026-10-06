@@ -90,11 +90,10 @@ export default function TradeFlowsWidget({ widget, runtime, active, onDiagnostic
   const hover = useHoverLabels(runtime.client, track, active, pending);
 
   useEffect(() => {
-    const warnings = [...(data?.warnings ?? []), ...(groups.data?.warnings ?? []),
-      ...(resolved?.dropped ? [`${resolved.dropped} more countries are left out; this widget follows at most ${resolved.tags.length}.`] : [])];
+    const warnings = [...(data?.warnings ?? []), ...(groups.data?.warnings ?? [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, groups.data, resolved, onDiagnostics]);
+  }, [data, groups.data, onDiagnostics]);
 
   // What the diagram draws: nodes named and coloured, ribbons by resource or seller.
   const shownResources = useMemo(() => {

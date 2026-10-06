@@ -58,11 +58,11 @@ export interface CountryRaceViewProps {
   labels?: { race?: string; lines?: string; mix?: (name: string) => string; actions?: string };
   lineEmpty?: { icon?: IconName; message: string };
   mixEmpty?: { icon?: IconName; message: string; unavailable: (name: string) => string };
-  resetKey?: string; tooltipResetKey?: unknown;
+  resetKey?: string;
   presentation?: {
-    exact?: boolean; held?: boolean; mixSamplePixels?: number;
-    lineLooks?: 'end' | 'moment'; lineColourHours?: 'drawn' | 'labels' | 'moment'; countryLooks?: boolean;
-    raceTooltip?: 'hover' | 'sampled'; tooltipKeep?: number; linePadding?: number;
+    exact?: boolean; held?: boolean;
+    lineColourHours?: 'drawn' | 'labels'; countryLooks?: boolean;
+    tooltipKeep?: number; linePadding?: number;
     strongMixName?: boolean; mixKeyHours?: 'boundaries' | 'starts'; raceEmptyState?: boolean;
     resetTimeView?: boolean;
   };
@@ -75,7 +75,7 @@ const NO_TAGS: readonly string[] = [];
  * identities, exact reads, chart controls and Jump to across all race widgets. */
 export default function CountryRaceView({ runtime, track, active, options, view, extent, playhead, moment, slots, ranked, lines,
   parts = NO_PARTS, raceLegendParts = parts, partsLabel = 'Types', mix, countryTags, countryLookHours, segmentAt, tooltip, tooltipTags, lineTooltip, timeTooltip,
-  keyHours: suppliedHours, strip, beforeChart, state, formatAxis, labels: chartLabels, lineEmpty, mixEmpty, resetKey, tooltipResetKey,
+  keyHours: suppliedHours, strip, beforeChart, state, formatAxis, labels: chartLabels, lineEmpty, mixEmpty, resetKey,
   presentation = {}, label, empty, formatValue }: CountryRaceViewProps) {
   const tokens = useChartTokens();
   const hoursPerSecond = usePlaybackSpeed(runtime.clock);
@@ -97,7 +97,7 @@ export default function CountryRaceView({ runtime, track, active, options, view,
     ?? (view === 'race' ? ranked.map(entry => entry.tag) : view === 'lines' ? lines.map(line => line.tag) : mix ? [mix.tag] : []),
     [presentation.countryLooks, countryTags, view, ranked, lines, mix]);
   const looks = useCountryLooks(runtime.client, track, tags, moment, active, segmentAt,
-    view === 'race' ? countryLookHours : linesView && presentation.lineLooks !== 'moment' ? hours : undefined,
+    view === 'race' ? countryLookHours : linesView ? hours : undefined,
     view === 'race' && countryLookHours !== undefined);
   const country = useCountryColours(tags, looks.color, tokens, looks);
   const colours = useMemo(() => partColours(parts, tokens.categories), [parts, tokens.categories]);
@@ -115,11 +115,10 @@ export default function CountryRaceView({ runtime, track, active, options, view,
     [tip, tooltipTags]);
   const labels = useCountryLabelsAt(runtime.client, track, wanted, active);
   useEffect(() => { if (!active) { tipKey.current = ''; setTip(null); } }, [active]);
-  useEffect(() => { if (tooltipResetKey !== undefined) { tipKey.current = ''; setTip(null); } }, [tooltipResetKey]);
   const keyHours = useMemo(() => countryRaceHours(drawnLines), [drawnLines]);
   const lineLayers = useMemo<ChartLayer[]>(() => [{
     draw: (ctx, frame, chartTokens, state) => {
-      const labelHours = presentation.lineColourHours === 'moment' ? undefined : presentation.lineColourHours === 'labels'
+      const labelHours = presentation.lineColourHours === 'labels'
         ? endLabels ? lineLabelHours(drawnLines, frame.x[0], Math.min(frame.x[1], extent[1]), until) : undefined
         : lineLabelHours(drawnLines, frame.x[0], Math.min(frame.x[1], state.playhead ?? frame.x[1]), null);
       for (const line of drawnLines) drawLine(ctx, frame, chartTokens, line.runs, line.color ?? country(line.tag, labelHours?.get(line.tag)),
@@ -136,12 +135,12 @@ export default function CountryRaceView({ runtime, track, active, options, view,
     draw: (ctx, frame, chartTokens, state) => {
       const hoursPerPixel = (frame.x[1] - frame.x[0]) / Math.max(1, frame.plotWidth);
       for (const segment of countryRaceSegments(stack, frame.x[0], Math.min(frame.x[1], state.playhead ?? frame.x[1]),
-        hoursPerPixel, presentation.mixSamplePixels, presentation.held !== false)) {
+        hoursPerPixel, presentation.held !== false)) {
         drawBands(ctx, frame, chartTokens, segment.hours, segment.bands, mixParts.map(part => mixColours.get(part.id) ?? chartTokens.muted));
       }
     },
     extent: x => stackExtent(stack, x[0], Math.min(x[1], until ?? x[1])),
-  }] : [], [stack, mixParts, mixColours, until, presentation.mixSamplePixels, presentation.held]);
+  }] : [], [stack, mixParts, mixColours, until, presentation.held]);
   const revision = useMemo(() => ({ lines, mix, looks: looks.revision, labels: labels.revision, viewport }),
     [lines, mix, looks.revision, labels.revision, viewport]);
   if (state != null || !track) return state ?? null;
@@ -172,7 +171,6 @@ export default function CountryRaceView({ runtime, track, active, options, view,
       {view === 'race' ? <RaceChart label={chartLabels?.race ?? `${label}, ${dayLabel(moment)}`} items={items} slots={slots}
         name={looks.name} flag={looks.flag}
         tooltip={tag => {
-          if (presentation.raceTooltip === 'sampled') return tipAt(tag, moment, looks.name(tag));
           showTip(moment, [tag]); return tipAt(tag, moment, labels.labelAt(moment)(tag).name);
         }}
         onContextMenu={(tag, x, y) => { const read = countryRaceReadHour(tag, moment, countryLookHours); if (read !== null) jump(read, x, y); }} dateOverlay={options.dateOverlay === true ? dayLabel(moment) : null}
@@ -180,7 +178,7 @@ export default function CountryRaceView({ runtime, track, active, options, view,
         : <TimeChart key={presentation.resetTimeView ? view : undefined} {...common} label={view === 'mix' && mix ? chartLabels?.mix?.(looks.name(mix.tag)) ?? `${label} over time`
           : chartLabels?.lines ?? `${label} over time`} layers={linesView ? lineLayers : mixLayers} strip={strip} formatValue={formatAxis}
           keyHours={suppliedHours ?? (linesView ? keyHours : presentation.mixKeyHours === 'starts' ? mixHours : stack?.hours ?? [])}
-          onViewChange={presentation.lineLooks === 'moment' || (view === 'mix' && presentation.mixKeyHours === 'starts') ? undefined : onViewChange}
+          onViewChange={presentation.countryLooks === false || (view === 'mix' && presentation.mixKeyHours === 'starts') ? undefined : onViewChange}
           padding={linesView ? presentation.linePadding !== undefined
             ? { right: endLabels ? presentation.linePadding : CHART_LAYOUT.right } : endLabels ? { right: tokens.fontSize.body * 12 } : undefined : undefined}
           revision={revision}
@@ -197,7 +195,7 @@ export default function CountryRaceView({ runtime, track, active, options, view,
           }} overlay={(ctx, frame, chartTokens) => {
             if (!linesView || !endLabels) return;
             placeEndLabels(ctx, frame, chartTokens, countryRaceEnds(drawnLines, frame.x[0], Math.min(frame.x[1], extent[1]), until,
-              looks.name, country, formatValue, presentation.lineLooks !== 'moment').map(end => ({ ...end, y: frame.toY(end.value) })));
+              looks.name, country, formatValue).map(end => ({ ...end, y: frame.toY(end.value) })));
           }} />}
     </div>
     {menu.menu}

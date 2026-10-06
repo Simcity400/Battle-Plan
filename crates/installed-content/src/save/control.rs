@@ -5,8 +5,10 @@ use super::{PartialMapMembership, ProvinceMembership, Save, invalid};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProvinceControl {
     pub id: u32,
+    /// False leaves state, owner and an omitted controller unknown.
+    pub membership_known: bool,
+    /// None with known membership is an unassigned province.
     pub state: Option<u32>,
-    /// None is the no-owner/no-controller sentinel for a province without a state.
     pub owner: Option<Vec<u8>>,
     pub controller: Option<Vec<u8>>,
     pub controller_explicit: bool,
@@ -78,9 +80,9 @@ impl Save {
     /// CProvince writer 140e6ca90 omits a controller equivalent to its state's
     /// owner; post-load 1409cdf80 fills omitted/nonpositive controls from that
     /// owner. A missing state or state-owner field cannot be filled this way.
-    /// Unknown provinces have no inferred owner/controller row. Other rows use
-    /// the native save omissions and the full kept state-ID inventory.
-    pub fn known_province_control(
+    /// Unknown provinces retain explicit saved controllers; their state/owner
+    /// and omitted controllers remain unknown. Other rows use native omissions.
+    pub fn province_control(
         &self,
         membership: &PartialMapMembership,
     ) -> io::Result<Vec<ProvinceControl>> {
@@ -94,23 +96,15 @@ impl Save {
                 "save province {id} is absent from the verified map or is its sentinel"
             )));
         }
-        self.province_control_for(membership.provinces.iter().filter_map(|(&id, assignment)| {
-            match assignment {
-                ProvinceMembership::Known(state) => Some((id, *state)),
-                ProvinceMembership::Unknown(_) => None,
-            }
-        }))
-    }
-
-    fn province_control_for(
-        &self,
-        assignments: impl Iterator<Item = (u32, Option<u32>)>,
-    ) -> io::Result<Vec<ProvinceControl>> {
         let mut rows = Vec::new();
-        for (id, state_id) in assignments {
+        for (&id, assignment) in &membership.provinces {
             if id == 0 {
                 continue;
             }
+            let (state_id, membership_known) = match assignment {
+                ProvinceMembership::Known(state) => (*state, true),
+                ProvinceMembership::Unknown(_) => (None, false),
+            };
             let owner = state_id.map(|state_id| {
                 self.states.get(&state_id).ok_or_else(|| invalid(format!("save lacks state {state_id}, required by province {id}")))?
                     .owner.clone().ok_or_else(|| invalid(format!("save state {state_id} lacks its owner; refusing to infer province {id}")))
@@ -133,6 +127,7 @@ impl Save {
             }
             rows.push(ProvinceControl {
                 id,
+                membership_known,
                 state: state_id,
                 owner,
                 controller,

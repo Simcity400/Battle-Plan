@@ -2,16 +2,13 @@ import type { WidgetMeta } from '../../dashboard/definitions';
 import { AFTER_PLAYHEAD_OPTION } from '../../dashboard/options.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 
-/** At most this many resources are drawn over time: the categorical palette's size. */
-export const MAX_CHOSEN = 8;
-
 const overTime = (options: Readonly<Record<string, OptionValue>>) => options.view === 'time';
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'bars',
     choices: [{ value: 'bars', label: 'Balance bars' }, { value: 'time', label: 'Over time' }] },
   { key: 'resources', section: 'options', label: 'Resources over time', hint: 'From the campaign’s own content', kind: 'content-set',
-    automatic: 'Automatic: the largest resource', max: MAX_CHOSEN, default: '', visibleWhen: overTime },
+    automatic: 'Automatic: the largest resource', max: Number.MAX_SAFE_INTEGER, default: '', visibleWhen: overTime },
   { key: 'gap', section: 'options', label: 'Shade surplus and shortfall', hint: 'With one resource chosen', kind: 'toggle', default: true, visibleWhen: overTime },
   { key: 'order', section: 'options', label: 'Order', kind: 'choice', default: 'game', visibleWhen: options => options.view === 'bars',
     choices: [{ value: 'game', label: 'Game order' }, { value: 'shortfall', label: 'Biggest shortfall first' }, { value: 'volume', label: 'Largest first' }] },

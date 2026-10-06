@@ -18,8 +18,8 @@ Hover or reach a row with the arrow keys for its tooltip (started, finished, lev
 
 ## Settings
 
-- **Countries**: all countries (default), chosen countries, or a smart group; a group counts a project by its country's membership when the project was first read.
-- **Building types**: the types this campaign's projects name, named and pictured from content (never a fixed list); none chosen shows every type. The chips above the log set the same option.
+- **Countries**: all countries (default), chosen countries, or a smart group. A group counts a project by its country's membership when the project was first read.
+- **Building types**: the types this campaign's projects name, named and pictured from content (never a fixed list); none chosen shows every type. Up to 16 types can be chosen; a chip says when the limit is reached.
 - **Projects**: new buildings and repairs, only new (railways count as new), or only repairs.
 - **Order**: latest change (default) or start date.
 - The log settings every log shares: density, month headers, the new-row animation and the filter chips.

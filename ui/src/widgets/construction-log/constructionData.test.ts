@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ConstructionLogReply, ConstructionProject } from '../../generated/dashboard';
 import { formatDateTime } from '../../dashboard/calendar.ts';
+import { resolveCountries } from '../../dashboard/groups.ts';
+import { definition } from './definition.ts';
 import { buildingChoices, builtLabel, describeRow, factoriesShown, jumpHours, kindLabel, levelsLabel, logRows, placeLabel, projectAt, projectTooltip, statusLabel, validateConstructionLogReply, valuesRead } from './constructionData.ts';
 import type { LogFilter } from './constructionData';
 
@@ -33,6 +35,12 @@ const REPLY: ConstructionLogReply = {
 };
 
 const every: LogFilter = { types: [], projects: 'all', country: () => true, from: null };
+
+test('construction selection accepts every recorded country', () => {
+  assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
+  const tags = Array.from({ length: 5000 }, (_, index) => `MOD${index}`);
+  assert.deepEqual(resolveCountries({ kind: 'tags', tags }, [], undefined, 172, definition.countries.max).tags, tags);
+});
 
 test('the reply is checked before use', () => {
   assert.equal(validateConstructionLogReply(REPLY), REPLY);

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { UNSTORABLE } from '../../dashboard/options.ts';
+import { contentSet, parseStoredOptions, resolveOptions, UNSTORABLE } from '../../dashboard/options.ts';
+import { OPTIONS } from './definition.ts';
 import type { PoolRun, ResourceBalanceReply, TradeRun } from '../../generated/dashboard';
 import { clipToSpans, runAt } from '../../charts/series.ts';
 import { tooltipHeight, tooltipRoom, tooltipText } from '../../charts/tooltip.ts';
@@ -112,6 +113,19 @@ test('an automatic resource that cannot be stored never blocks choosing another'
   // Its own chip cannot act, and says why rather than doing nothing.
   assert.deepEqual(toggleChosen(modded, [], [long], long, 8), { reason: UNSTORABLE });
   assert.deepEqual(toggleChosen(modded, ['steel'], ['steel'], long, 8), { reason: UNSTORABLE });
+});
+
+test('resource choices exceed eight within shared settings bounds', () => {
+  const field = OPTIONS.find(field => field.key === 'resources')!;
+  assert.ok(field.kind === 'content-set');
+  assert.equal(field.max, Number.MAX_SAFE_INTEGER);
+  const tokens = Array.from({ length: 12 }, (_, index) => `mod_resource_${index}`);
+  const modded: ResourceBalanceReply = { ...REPLY, resources: tokens.map((token, id) => ({ id, token, ordinal: 1, name: null, icon: null })),
+    series: tokens.map((_, id) => ({ id, runs: [STEEL] })) };
+  const value = tokens.join(' ');
+  assert.deepEqual(contentSet(resolveOptions(OPTIONS, parseStoredOptions({ resources: value })!).resources), tokens);
+  assert.equal(chosenLines(modded, tokens).length, tokens.length);
+  assert.deepEqual(toggleChosen(modded, tokens.slice(0, -1), tokens.slice(0, -1), tokens.at(-1)!, field.max), { value });
 });
 
 test('long deal lists keep their largest deals, sum the rest and always show the totals', () => {
