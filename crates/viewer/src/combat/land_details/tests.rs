@@ -438,3 +438,24 @@ fn width_replays_direction_grouping_and_totals() {
     assert_eq!(total_width(&detail, plains, 2), 12_000_000);
     assert_eq!(total_width(&detail, plains, 0), 8_000_000);
 }
+
+#[test]
+fn border_width_badge_refuses_missing_configured_width_instead_of_terrain_totals() {
+    let detail = LandCombatDetailsRow::default();
+    let terrain = [7_000_000, 3_500_000];
+    for directions in [1, 2] {
+        let expected = if directions == 1 { "70" } else { "105" };
+        assert_eq!(
+            width_badge(Some(false), || Ok(total_width(&detail, terrain, directions))),
+            Ok(expected.into())
+        );
+        let refusal = width_badge(Some(true), || unreachable!()).unwrap_err();
+        assert!(refusal.contains("CLandBorderWarCombat configured width +0xD8"));
+        assert!(refusal.contains("1413D6800"));
+    }
+    assert!(
+        width_badge(None, || unreachable!())
+            .unwrap_err()
+            .contains("combat class")
+    );
+}

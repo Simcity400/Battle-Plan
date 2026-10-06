@@ -96,6 +96,62 @@ fn border_marker_membership_and_event_scopes_use_native_alias_and_copy_links() {
     assert_eq!(values[0].prev, Link::Itself);
 }
 
+#[test]
+fn hookless_tail_needs_no_country_links_and_outcomes_keep_native_presence_gates() {
+    let mut border = LandBorderWarInputs {
+        sides: [
+            LandBorderWarSide {
+                country: 7,
+                ..Default::default()
+            },
+            LandBorderWarSide {
+                country: 9,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    assert_eq!(tail_side(&border, 70, &BTreeMap::new()), Ok(None));
+    let links = [(7, 70), (9, 90)].into_iter().collect();
+    for side in 0..2 {
+        for win in [true, false] {
+            let id = if win {
+                &mut border.sides[side].win_event
+            } else {
+                &mut border.sides[side].lose_event
+            };
+            *id = b"synthetic_hook".to_vec();
+            assert_eq!(tail_side(&border, 70, &links), Ok(Some(0)));
+            assert_eq!(tail_side(&border, 90, &links), Ok(Some(1)));
+            let mut body = "Marker".into();
+            let mut refused = BTreeMap::new();
+            build(
+                &NoIcons,
+                &localisation(),
+                &border,
+                0,
+                &mut body,
+                &|_, _| Ok("Enemy".into()),
+                &|_| unreachable!(),
+                &|_, _| Description {
+                    body: "Event\n".into(),
+                    ..Default::default()
+                },
+                &mut refused,
+            )
+            .unwrap();
+            // Own win/enemy lose enable Win; own lose/enemy win enable Lose.
+            assert_eq!(body.contains("Win"), win == (side == 0));
+            assert_eq!(body.contains("Lose"), win != (side == 0));
+            assert!(refused.is_empty());
+            border.sides[side].win_event.clear();
+            border.sides[side].lose_event.clear();
+        }
+    }
+    border.transfer_state = 128;
+    assert_eq!(tail_side(&border, 70, &links), Ok(Some(0)));
+}
+
 struct Folder(std::path::PathBuf);
 impl Drop for Folder {
     fn drop(&mut self) {

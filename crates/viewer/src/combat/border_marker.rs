@@ -43,6 +43,30 @@ fn member(raw: i32, viewer: u32, links: &BTreeMap<u32, u32>) -> Result<bool, Str
     }
     Ok(canonical(raw, links)? == viewer)
 }
+
+fn tail_side(
+    border: &LandBorderWarInputs,
+    viewer: u32,
+    links: &BTreeMap<u32, u32>,
+) -> Result<Option<usize>, String> {
+    // 1413D69D0: +0x4F0/+0x510 lengths or +0xF0 must enable an outcome.
+    // With neither outcome, no country/content lookup can add text.
+    if border.transfer_state == 0
+        && border
+            .sides
+            .iter()
+            .all(|side| side.win_event.is_empty() && side.lose_event.is_empty())
+    {
+        return Ok(None);
+    }
+    if member(border.sides[0].country, viewer, links)? {
+        Ok(Some(0))
+    } else if member(border.sides[1].country, viewer, links)? {
+        Ok(Some(1))
+    } else {
+        Ok(None)
+    }
+}
 fn newline(body: &mut String) {
     if !body.is_empty() && !body.ends_with('\n') {
         body.push('\n');
@@ -225,11 +249,7 @@ pub(super) fn append(
     border: &LandBorderWarInputs,
     tooltip: &mut Tooltip,
 ) -> Result<(), String> {
-    let mine = if member(border.sides[0].country, viewer, links)? {
-        0
-    } else if member(border.sides[1].country, viewer, links)? {
-        1
-    } else {
+    let Some(mine) = tail_side(border, viewer, links)? else {
         return Ok(());
     };
     let loc = &document.names.localisation;

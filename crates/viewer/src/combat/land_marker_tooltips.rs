@@ -152,7 +152,7 @@ pub(crate) fn hit(hits: &[super::Hit], point: [f32; 2]) -> Option<(u64, [f32; 4]
 
 // CountryTagListContainsEquivalent@1406D7F90 -> 140BA60A0: primary or
 // secondary membership, direct references resolving to the same country.
-fn membership(
+pub(super) fn membership(
     sides: &LandCombatSideRow,
     viewer: u32,
     links: &BTreeMap<u32, u32>,

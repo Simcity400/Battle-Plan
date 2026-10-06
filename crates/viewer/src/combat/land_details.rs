@@ -359,6 +359,18 @@ pub(super) fn total_width(
     width.wrapping_add(extra.wrapping_mul(100_000).wrapping_mul(support) / 100_000)
 }
 
+fn width_badge(
+    border_war: Option<bool>,
+    ordinary: impl FnOnce() -> Result<i64, String>,
+) -> Result<String, String> {
+    // vf26: border 1413D6800 reads +0xD8, unlike terrain/directions@141298D50.
+    match border_war {
+        Some(true) => Err("CLandBorderWarCombat configured width +0xD8 (i64 fixed5) is unrecorded; 1413D6800 multiplies it by 1 + LandCombatDetails.width_factor, independently of terrain and attack directions".into()),
+        Some(false) => ordinary().map(|width| (width / 100_000).to_string()),
+        None => Err("LandCombatModifiers lacks the combat class, so its native width getter (141298D50/1413D6800) is unknown".into()),
+    }
+}
+
 /// Native 1412A2AA0 survival estimates, in fixed5, for the two complete sides.
 /// `participants` is the ordered full LandCombats census (not committed only).
 /// Early battles use 1412A26B0 and the verified content definition context.
@@ -498,36 +510,39 @@ pub(super) fn bind(
         );
         return Ok(());
     };
-    let movement: BTreeMap<_, _> = rows::<tables::DivisionMovement>(frame)?
-        .rows()
-        .iter()
-        .map(|row| (row.division, row.source))
-        .collect();
-    let widths = document
-        .counters
-        .combat_terrain
-        .get(&detail.province)
-        .and_then(|terrain| document.counters.combat_widths(terrain));
-    let directions = direction_count(
-        &detail.sides[0].committed,
-        &divisions,
-        detail.province,
-        &movement,
-    );
-    let total = match widths {
-        Some(&widths) => match &directions {
-            Ok(count) => Ok((total_width(detail, widths, *count) / 100_000).to_string()),
-            // Without a support width the direction count cannot matter.
-            Err(_) if widths[1] == 0 => Ok((total_width(detail, widths, 0) / 100_000).to_string()),
-            Err(reason) => Err(format!(
-                "Land combat {id} total width is hidden: the 141298E00 direction count is unknown ({reason})."
+    let modifiers = rows::<tables::LandCombatModifiers>(frame)?;
+    let total = width_badge(super::details::border_war(modifiers.rows(), id), || {
+        let movement: BTreeMap<_, _> = rows::<tables::DivisionMovement>(frame)
+            .map_err(|error| error.to_string())?
+            .rows()
+            .iter()
+            .map(|row| (row.division, row.source))
+            .collect();
+        let widths = document
+            .counters
+            .combat_terrain
+            .get(&detail.province)
+            .and_then(|terrain| document.counters.combat_widths(terrain));
+        let directions = direction_count(
+            &detail.sides[0].committed,
+            &divisions,
+            detail.province,
+            &movement,
+        );
+        match widths {
+            Some(&widths) => match directions {
+                Ok(count) => Ok(total_width(detail, widths, count)),
+                // Without a support width the direction count cannot matter.
+                Err(_) if widths[1] == 0 => Ok(total_width(detail, widths, 0)),
+                Err(reason) => Err(format!("141298E00 direction count is unknown ({reason})")),
+            },
+            None => Err(format!(
+                "province {} has no terrain category in the content",
+                detail.province
             )),
-        },
-        None => Err(format!(
-            "Land combat {id} total width is hidden: province {} has no terrain category in the content.",
-            detail.province
-        )),
-    };
+        }
+    })
+    .map_err(|why| format!("Land combat {id} total width is hidden: {why}."));
     out.bind("combat_width", TEXT, total);
     let conditions = conditions(frame)?;
     let participants = [&combat.attackers[..], &combat.defenders[..]];
@@ -575,7 +590,7 @@ pub(super) fn bind(
             format!("Land combat heading is hidden: the content lacks sprite {name} (1415C8950)."),
         ),
     }
-    out.warnings.push("Derived land values: committed widths apply recorded country/contextual-leader modifiers; the total width takes the province terrain's content widths; CAS damage and kills belong to the opposing side; heading uses the native early damage estimate or 24-loss mean and all participants.".into());
+    out.warnings.push("Derived land values: committed widths apply recorded country/contextual-leader modifiers; ordinary combat total width takes terrain and attack directions, while border total width needs its unrecorded configured base; CAS damage and kills belong to the opposing side; heading uses the native early damage estimate or 24-loss mean and all participants.".into());
     Ok(())
 }
 

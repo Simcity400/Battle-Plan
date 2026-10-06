@@ -29,6 +29,54 @@ fn naval_progress_has_outlook_and_delayed_description_on_both_skins() {
 }
 
 #[test]
+fn land_balance_bar_and_frame_share_native_outlook_and_delayed_explanation() {
+    let loc = loc(&[
+        ("COMBAT_UNDECIDED", "Undecided"),
+        ("COMBAT_WE_ARE_LOSING", "Losing"),
+        ("COMBAT_LAST_LESS_THAN_DAY", "Less than a day"),
+        ("COMBAT_LAST_MORE_THAN_DAY", "$DAYS$ days"),
+        ("COMBAT_PROGRESS_DESC", "Power balance explanation"),
+    ]);
+    for (scores, expected) in [
+        ([0x0017_4875_6160; 2], "Undecided\n41667 days"),
+        ([100_000, 200_000], "Losing\nLess than a day"),
+    ] {
+        let mut values = Values::new();
+        let mut refused = BTreeMap::new();
+        let outlook = super::super::land_marker_tooltips::outlook(
+            &NoIcons,
+            &loc,
+            scores,
+            [true, false],
+        );
+        land_progress_hovers(&mut values, &NoIcons, &loc, outlook, &mut refused);
+        assert!(refused.is_empty());
+        for key in ["combat_progress", "land_battle_progress_frame"] {
+            let widget = &values[key];
+            assert_eq!(widget.tooltip.as_deref(), Some(expected));
+            assert_eq!(
+                widget.tooltip_description.as_deref(),
+                Some("Power balance explanation")
+            );
+            assert!(widget.hover_owned);
+        }
+        // A missing recorded score clears an authored main tooltip, counted once.
+        land_progress_hovers(
+            &mut values,
+            &NoIcons,
+            &loc,
+            Err("LandCombatSides lacks combat 9".into()),
+            &mut refused,
+        );
+        assert_eq!(refused.get("LandCombatSides lacks combat 9"), Some(&1));
+        for key in ["combat_progress", "land_battle_progress_frame"] {
+            assert!(values[key].tooltip.is_none());
+            assert!(values[key].tooltip_description.is_some());
+        }
+    }
+}
+
+#[test]
 fn naval_ship_pride_hover_uses_executable_key_only_when_visible() {
     let loc: Localisation = [("NAVY_CONTAINS_PRIDE_OF_FLEET_WITHOUT_NAME", "Pride ship")]
         .into_iter()
