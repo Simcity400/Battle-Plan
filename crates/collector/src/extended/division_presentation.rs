@@ -362,7 +362,7 @@ impl Captured {
 
     /// CArmy+0x340 is the member pointer (140C72F00). RefreshCachedName
     /// 1409B4C40 calls 1409B5640; record its language-neutral operands instead
-    /// of +0x60, with the player's +0x88 bytes where the generator shows them.
+    /// of +0x60, with the stored +0x88 bytes where the generator shows them.
     /// Order/bind writers are 1409BC230/1409BBC40; rename 1413529F0 reaches
     /// 140C7F800/860/9C0, and template/load/stat paths 140C7EE00/140C7D090/
     /// 1401D8120 -> 140C7DEB0 also refresh it. Inputs therefore read hourly.
@@ -398,13 +398,10 @@ impl Captured {
                     }
                 });
             match result {
-                Ok(cname_group_member::Naming::Row(mut inputs)) => {
+                Ok(cname_group_member::Naming::Row(inputs)) => {
                     names.len += inputs.custom.1;
-                    // 1409B4C40 can copy the generated legacy name into +0x88.
-                    // NameOperands retains raw overrides only for player renames.
-                    if inputs.programmatic != 0 {
-                        inputs.custom = (0, 0);
-                    }
+                    // The reader already applies 1409B5640: a programmatic
+                    // +0x88 override is shown when the resolved group is null.
                     row.inputs = Some(inputs);
                 }
                 Ok(cname_group_member::Naming::DoesNotFit) => {
@@ -1163,7 +1160,7 @@ mod tests {
     }
 
     #[test]
-    fn division_naming_keeps_player_overrides_and_omits_generated_programmatic_text() {
+    fn division_naming_keeps_displayed_programmatic_and_player_overrides() {
         let mut bytes = Vec::new();
         let mut generated = member(0, b"Generated", 7);
         generated[cname_group_member::FLAG_B] = 1;
@@ -1208,7 +1205,7 @@ mod tests {
             .unwrap();
         assert_eq!(generated.programmatic, 1);
         assert_eq!(generated.order, 7);
-        assert!(generated.custom.is_empty());
+        assert_eq!(generated.custom, b"Generated");
         assert_eq!(
             rows[1]
                 .naming
@@ -1219,6 +1216,71 @@ mod tests {
                 .custom,
             b"Player"
         );
+    }
+
+    #[test]
+    fn division_naming_programmatic_overrides_follow_the_resolved_template_group() {
+        let mut world = scale_fixture::build(scale_fixture::Shape {
+            countries: 2,
+            divisions: 2,
+            wings: 1,
+            planes: 1,
+            ships: 0,
+        });
+        let _registry = template_registry(&mut world);
+        let mut members = division_name_members(&mut world);
+        for member in &mut members {
+            let custom = cname_group_member::OVERRIDE_NAME;
+            member[custom..custom + 8].copy_from_slice(b"Scripted");
+            member[custom + 16..custom + 24].copy_from_slice(&8_u64.to_le_bytes());
+            member[cname_group_member::FLAG_B] = 1;
+        }
+        // ResolveNameGroup@1409B7290 follows the member's nonnull +0x58
+        // reference, then reads the template's +0x1D0 group pointer.
+        let template =
+            engine::read::<u64>(&world.live(), world.armies[0] + carmy::STANDARD_TEMPLATE).unwrap()
+                as usize;
+        let offset = template - world.base + cname_group_member::TEMPLATE_NAME_GROUP;
+        world.bytes[offset..offset + 8].fill(0);
+        let seeds = std::array::from_fn::<_, 2, _>(|index| DivisionSeed {
+            division: index as u64 + 1,
+            name_member: Some(members[index].as_ptr() as usize),
+            ..Default::default()
+        });
+        let mut captured = Captured::with_capacities(&Capacities {
+            movement: 0,
+            status: seeds.len(),
+            bans: 0,
+            paths: 0,
+            name_bytes: 13,
+            name_groups: 2,
+            ..Capacities::default()
+        });
+        captured.capture_naming(&world.live(), world.base, &seeds);
+        for (row, naming) in captured.status.rows.iter_mut().zip(&captured.naming.first) {
+            row.division = naming.division;
+            row.naming = naming.inputs;
+        }
+        captured.status.outcome = Outcome::Rows { len: seeds.len() };
+        let TableView::Complete(TableRows::DivisionStatus(rows)) = captured.tables()[1].clone()
+        else {
+            panic!("programmatic naming retains the status rows");
+        };
+        for (row, custom, group) in [
+            (&rows[0], b"Scripted".as_slice(), b"".as_slice()),
+            (&rows[1], b"".as_slice(), b"GROUP".as_slice()),
+        ] {
+            let naming = row
+                .naming
+                .require("DivisionStatus.naming")
+                .unwrap()
+                .as_ref()
+                .unwrap();
+            assert_eq!((naming.kind, naming.programmatic), (0, 1));
+            assert_eq!(naming.custom, custom);
+            assert_eq!(naming.group, group);
+        }
+        assert_eq!(captured.names.required, 13);
     }
 
     #[test]
@@ -1233,7 +1295,9 @@ mod tests {
                 name_member: Some(0x1000 + bytes.len()),
                 ..Default::default()
             });
-            bytes.extend_from_slice(&member(0, b"XX", i32::MIN + index as i32));
+            let mut naming = member(0, b"XX", i32::MIN + index as i32);
+            naming[cname_group_member::FLAG_B] = (index % 2) as u8;
+            bytes.extend_from_slice(&naming);
         }
         let mut capacity = Capacities {
             movement: 0,
