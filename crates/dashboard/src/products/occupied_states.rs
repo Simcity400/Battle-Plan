@@ -267,7 +267,7 @@ fn append(runs: &mut Vec<OccupiedRun>, hour: i32, value: OccupiedValues) {
     }
 }
 
-fn law_content(
+pub(crate) fn law_content(
     cat: &Catalogue,
     laws: &installed_content::occupation_laws::Laws,
     token: &str,

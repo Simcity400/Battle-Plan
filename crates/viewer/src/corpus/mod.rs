@@ -239,6 +239,21 @@ fn stack(
         skipped_dependencies: plan.skipped.clone(),
         ..Default::default()
     };
+    if let Some(candidate) = candidates.iter().find(|candidate| candidate.id == plan.id) {
+        report.descriptor_file = Some(candidate.file.clone());
+        // The rewritten descriptor has already been checked to parse back identically.
+        if let Ok(descriptor) = installed_content::parser::parse(candidate.descriptor.as_bytes()) {
+            let field = |key: &[u8]| {
+                descriptor
+                    .get(key)
+                    .and_then(|value| value.scalar_str())
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            report.version = field(b"version");
+            report.supported_version = field(b"supported_version");
+        }
+    }
     let started = Instant::now();
     // Each stack keeps its own hash cache: gather rewrites the whole file.
     let gathered = stacks::user_folder(&scratch.join(&plan.id), language, candidates, &plan.mods)
@@ -277,13 +292,15 @@ fn stack(
             options.values.unwrap(),
         )
     });
-    let (runs, diagnostics) = readers::run(content, decode, values.clone());
+    let (runs, diagnostics, state_history) = readers::run(content, decode, values.clone());
     if let Some(values) = values {
         values.finish();
     }
     report.read_milliseconds = started.elapsed().as_millis();
     report.readers = runs;
     report.diagnostics = diagnostics;
+    report.state_history = state_history.notes;
+    report.state_history_states = state_history.states;
     report
 }
 

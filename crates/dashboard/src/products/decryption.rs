@@ -214,9 +214,7 @@ impl Product for Decryption {
             let content = source
                 .content(&options.options)
                 .map_err(|e| e.to_string())?;
-            cryptology::Defines::read(
-                &installed_content::defines::read(&content.layers).map_err(|e| e.to_string())?,
-            )
+            content_defines(&content.layers)
         })();
         if let Err(reason) = &defines {
             warnings.push(format!("Cipher thresholds unknown: {reason}"));
@@ -231,6 +229,12 @@ impl Product for Decryption {
         check_reply_budget(&reply)?;
         Ok(reply)
     }
+}
+
+pub(crate) fn content_defines(
+    layers: &installed_content::ResolvedLayers,
+) -> Result<cryptology::Defines, String> {
+    cryptology::Defines::read(&installed_content::defines::read(layers).map_err(|e| e.to_string())?)
 }
 
 fn table_reason(frame: &DecodedFrame, table: TableId) -> Option<String> {

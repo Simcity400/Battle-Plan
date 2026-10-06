@@ -26,10 +26,18 @@ pub enum Kind {
     Unsupported,
     /// A definition, value or lookup refused by name.
     Refused,
+    /// Authored alternatives do not give one content answer.
+    Ambiguous,
+    /// A product substitutes a token, another asset or a placeholder.
+    Fallback,
     /// An error the game logs, then continues or skips as the message states.
     Logged,
     /// Any other note a reader returns about the content.
     Warning,
+    /// Cited engine parity only.
+    Content,
+    /// Recorded operands unavailable to the offline inventory check.
+    Offline,
 }
 
 impl From<installed_content::DiagnosticKind> for Kind {
@@ -40,22 +48,47 @@ impl From<installed_content::DiagnosticKind> for Kind {
             installed_content::DiagnosticKind::Unsettled => Self::Unsettled,
             installed_content::DiagnosticKind::Unsupported => Self::Unsupported,
             installed_content::DiagnosticKind::Refused => Self::Refused,
+            installed_content::DiagnosticKind::Ambiguous => Self::Ambiguous,
+            installed_content::DiagnosticKind::Fallback => Self::Fallback,
             installed_content::DiagnosticKind::Logged => Self::Logged,
             installed_content::DiagnosticKind::Warning => Self::Warning,
         }
     }
 }
 
+impl From<dashboard::content_check::Kind> for Kind {
+    fn from(kind: dashboard::content_check::Kind) -> Self {
+        use dashboard::content_check::Kind as ProductKind;
+        match kind {
+            ProductKind::ParseFailure => Self::ParseFailure,
+            ProductKind::Misread => Self::Misread,
+            ProductKind::Unsettled => Self::Unsettled,
+            ProductKind::Logged => Self::Logged,
+            ProductKind::Refused => Self::Refused,
+            ProductKind::Unsupported => Self::Unsupported,
+            ProductKind::Ambiguous => Self::Ambiguous,
+            ProductKind::Fallback => Self::Fallback,
+            ProductKind::Warning => Self::Warning,
+            ProductKind::Content => Self::Content,
+            ProductKind::Offline => Self::Offline,
+        }
+    }
+}
+
 impl Kind {
-    pub const ALL: [Kind; 8] = [
+    pub const ALL: [Kind; 12] = [
         Kind::ReaderError,
         Kind::Unsettled,
         Kind::Misread,
         Kind::ParseFailure,
         Kind::Unsupported,
         Kind::Refused,
+        Kind::Ambiguous,
+        Kind::Fallback,
         Kind::Logged,
         Kind::Warning,
+        Kind::Content,
+        Kind::Offline,
     ];
 
     fn label(self) -> &'static str {
@@ -66,9 +99,20 @@ impl Kind {
             Kind::ParseFailure => "parse",
             Kind::Unsupported => "unsupported",
             Kind::Refused => "refused",
+            Kind::Ambiguous => "ambiguous",
+            Kind::Fallback => "fallback",
             Kind::Logged => "logged",
             Kind::Warning => "warning",
+            Kind::Content => "content",
+            Kind::Offline => "offline",
         }
+    }
+
+    fn actionable(self) -> bool {
+        // Misread and Logged remain actionable reader evidence: only an
+        // explicit Content finding establishes cited parity, and Offline
+        // establishes a dependency resolved by the recorded product.
+        !matches!(self, Self::Content | Self::Offline)
     }
 }
 
@@ -84,9 +128,28 @@ pub struct Diagnostic {
     /// same cause in many places counts once.
     pub cause: String,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<String>,
 }
 
 impl Diagnostic {
+    fn occurrences(&self) -> usize {
+        self.count.unwrap_or(1)
+    }
+
+    fn details(&self) -> String {
+        match self.count {
+            Some(count) => format!(
+                "{}; {count} items; examples: {}",
+                self.message,
+                self.examples.join(", ")
+            ),
+            None => self.message.clone(),
+        }
+    }
+
     /// A diagnostic whose file and line are read from `message`.
     pub fn new(reader: &str, kind: Kind, message: String) -> Self {
         Self {
@@ -96,6 +159,8 @@ impl Diagnostic {
             line: line_in(&message),
             cause: cause(&message),
             message,
+            count: None,
+            examples: Vec::new(),
         }
     }
 
@@ -105,6 +170,15 @@ impl Diagnostic {
         Self {
             cause: cause(why),
             ..Self::new(reader, kind, format!("{subject}: {why}"))
+        }
+    }
+
+    /// A diagnostic in `file`, whose message names it already.
+    #[cfg(test)]
+    pub fn in_file(reader: &str, kind: Kind, file: &str, message: String) -> Self {
+        Self {
+            file: Some(file.to_owned()),
+            ..Self::new(reader, kind, message)
         }
     }
 
@@ -137,6 +211,8 @@ impl Diagnostic {
             line,
             cause: cause(what),
             message,
+            count: None,
+            examples: Vec::new(),
         }
     }
 }
@@ -152,6 +228,9 @@ pub struct ReaderRun {
     /// the stack.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not_run: Option<String>,
+    /// What an offline product checked, or why it has no content dependency.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -161,10 +240,50 @@ pub struct Mounted {
     pub version: String,
 }
 
+/// The states reader's own diagnostic, separate from consumer-only notes.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StateHistoryDiagnostic {
+    pub file: Option<String>,
+    pub line: Option<u32>,
+    pub kind: Kind,
+    pub message: String,
+}
+
+impl From<&Diagnostic> for StateHistoryDiagnostic {
+    fn from(note: &Diagnostic) -> Self {
+        Self {
+            file: note.file.clone(),
+            line: note.line,
+            kind: note.kind,
+            message: note.message.clone(),
+        }
+    }
+}
+
+/// A kept state and the reader's reasons for excluding its map membership.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct StateHistoryState {
+    pub id: u32,
+    pub file: Option<String>,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Default)]
+pub struct StateHistory {
+    pub notes: Vec<StateHistoryDiagnostic>,
+    pub states: Vec<StateHistoryState>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct StackReport {
     pub stack: String,
     pub name: String,
+    #[serde(default)]
+    pub descriptor_file: Option<String>,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub supported_version: String,
     /// The mods mounted after the DLC, in mount order.
     pub mods: Vec<Mounted>,
     pub dlc: usize,
@@ -178,6 +297,10 @@ pub struct StackReport {
     pub read_milliseconds: u128,
     pub readers: Vec<ReaderRun>,
     pub diagnostics: Vec<Diagnostic>,
+    #[serde(default)]
+    pub state_history: Vec<StateHistoryDiagnostic>,
+    #[serde(default)]
+    pub state_history_states: Vec<StateHistoryState>,
 }
 
 impl StackReport {
@@ -188,7 +311,7 @@ impl StackReport {
                 .entry(diagnostic.reader.as_str())
                 .or_default()
                 .entry(diagnostic.kind)
-                .or_default() += 1;
+                .or_default() += diagnostic.occurrences();
         }
         counts
     }
@@ -259,23 +382,29 @@ fn header(leading: &[&str]) -> String {
 /// most frequent causes.
 pub fn summary(run: &BTreeMap<String, StackReport>, causes: usize) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "## Stacks\n");
+    let _ = writeln!(out, "## Stacks found\n");
     out.push_str(&header(&[
         "stack",
+        "descriptor",
         "name",
+        "version",
+        "supported_version",
+        "dependencies mounted",
+        "dependencies not found",
+        "DLC",
         "gather ms",
         "read ms",
         "not run",
-        "not in vanilla",
+        "actionable not in vanilla",
     ]));
     let vanilla = run.get(super::VANILLA);
     for report in run.values() {
         let mut totals = BTreeMap::new();
         for diagnostic in &report.diagnostics {
-            *totals.entry(diagnostic.kind).or_insert(0) += 1;
+            *totals.entry(diagnostic.kind).or_insert(0) += diagnostic.occurrences();
         }
         let name = match &report.gather_error {
-            Some(error) => format!("{} (not gathered: {})", report.name, cell(error)),
+            Some(error) => format!("{} (not gathered: {})", cell(&report.name), cell(error)),
             None => cell(&report.name),
         };
         let not_run: Vec<String> = report
@@ -286,21 +415,178 @@ pub fn summary(run: &BTreeMap<String, StackReport>, causes: usize) -> String {
         let beyond = vanilla
             .filter(|vanilla| vanilla.stack != report.stack)
             .map(|vanilla| {
-                difference(&vanilla.diagnostics, &report.diagnostics)
-                    .1
-                    .len()
+                growth(&vanilla.diagnostics, &report.diagnostics)
+                    .into_iter()
+                    .filter(|(diagnostic, _)| diagnostic.kind.actionable())
+                    .map(|(_, count)| count)
+                    .sum::<usize>()
                     .to_string()
             })
             .unwrap_or_default();
         let _ = writeln!(
             out,
-            "| {} | {name} | {} | {} | {} | {beyond} | {} |",
-            report.stack,
+            "| {} | {} | {name} | {} | {} | {} | {} | {} | {} | {} | {} | {beyond} | {} |",
+            cell(&report.stack),
+            cell(report.descriptor_file.as_deref().unwrap_or("")),
+            cell(&report.version),
+            cell(&report.supported_version),
+            cell(
+                &report
+                    .mods
+                    .iter()
+                    .filter(|mounted| mounted.name != report.name)
+                    .map(|mounted| format!(
+                        "{} ({}, {})",
+                        mounted.name, mounted.id, mounted.version
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            cell(&report.skipped_dependencies.join(", ")),
+            report.dlc,
             report.gather_milliseconds,
             report.read_milliseconds,
-            not_run.join(", "),
+            cell(&not_run.join(", ")),
             kind_cells(&totals)
         );
+    }
+    let products = dashboard::products::PRODUCTS;
+    let _ = writeln!(out, "\n## Dashboard products\n");
+    let _ = writeln!(
+        out,
+        "| stack | {} | content | offline |\n|{}",
+        products
+            .iter()
+            .map(|product| product.key)
+            .collect::<Vec<_>>()
+            .join(" | "),
+        "---|".repeat(products.len() + 3)
+    );
+    for report in run.values() {
+        let counts = report.counts();
+        let beyond = vanilla
+            .filter(|base| base.stack != report.stack)
+            .map(|base| growth(&base.diagnostics, &report.diagnostics));
+        let cells: Vec<_> = products
+            .iter()
+            .map(|product| {
+                let reader = format!("dashboard.{}", product.key);
+                let kinds = counts
+                    .get(reader.as_str())
+                    .map(|counts| {
+                        Kind::ALL
+                            .iter()
+                            .filter(|kind| kind.actionable())
+                            .filter_map(|kind| {
+                                counts
+                                    .get(kind)
+                                    .map(|count| format!("{count} {}", kind.label()))
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default();
+                if !kinds.is_empty() {
+                    match &beyond {
+                        Some(beyond) => format!(
+                            "{kinds} (+{} vs vanilla)",
+                            beyond
+                                .iter()
+                                .filter(|(diagnostic, _)| diagnostic.reader == reader
+                                    && diagnostic.kind.actionable())
+                                .map(|(_, count)| count)
+                                .sum::<usize>()
+                        ),
+                        None => kinds,
+                    }
+                } else if report
+                    .readers
+                    .iter()
+                    .any(|run| run.reader == reader && run.completed)
+                {
+                    "clean".to_owned()
+                } else {
+                    "not run".to_owned()
+                }
+            })
+            .collect();
+        let informational = |kind| {
+            report
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    products
+                        .iter()
+                        .any(|product| diagnostic.reader == format!("dashboard.{}", product.key))
+                        && diagnostic.kind == kind
+                })
+                .map(Diagnostic::occurrences)
+                .sum::<usize>()
+        };
+        let _ = writeln!(
+            out,
+            "| {} | {} | {} | {} |",
+            cell(&report.stack),
+            cells.join(" | "),
+            informational(Kind::Content),
+            informational(Kind::Offline)
+        );
+    }
+    let _ = writeln!(out, "\n## New in mods\n");
+    let _ = writeln!(
+        out,
+        "Actionable dashboard product causes and shared preparation notes beyond vanilla; occurrences include aggregate count growth, matched by reader, kind, file and message.\n"
+    );
+    for report in run.values().filter(|report| report.stack != super::VANILLA) {
+        let _ = writeln!(out, "### {}\n", cell(&report.stack));
+        let Some(base) = vanilla else {
+            let _ = writeln!(out, "Vanilla baseline unavailable.\n");
+            continue;
+        };
+        let beyond = growth(&base.diagnostics, &report.diagnostics);
+        let mut causes: BTreeMap<(&str, Kind, String), (usize, &Diagnostic)> = BTreeMap::new();
+        for (diagnostic, count) in &beyond {
+            if diagnostic.reader.starts_with("dashboard.")
+                && diagnostic.kind.actionable()
+                && (diagnostic
+                    .reader
+                    .strip_prefix("dashboard.")
+                    .is_some_and(|key| dashboard::content_check::SHARED_CHECK_KEYS.contains(&key))
+                    || products
+                        .iter()
+                        .any(|product| diagnostic.reader == format!("dashboard.{}", product.key)))
+            {
+                let entry = causes
+                    .entry((
+                        &diagnostic.reader,
+                        diagnostic.kind,
+                        diagnostic.cause.clone(),
+                    ))
+                    .or_insert((0, diagnostic));
+                entry.0 += count;
+            }
+        }
+        if causes.is_empty() {
+            let _ = writeln!(out, "No new actionable product diagnostics.\n");
+            continue;
+        }
+        let _ = writeln!(
+            out,
+            "| product / reader | kind | count | cause | example |\n|---|---|---|---|---|"
+        );
+        let mut causes: Vec<_> = causes.into_iter().collect();
+        causes.sort_by(|a, b| b.1.0.cmp(&a.1.0).then_with(|| a.0.cmp(&b.0)));
+        for ((reader, kind, cause), (count, example)) in causes {
+            let _ = writeln!(
+                out,
+                "| {} | {} | {count} | {} | {} |",
+                cell(reader.trim_start_matches("dashboard.")),
+                kind.label(),
+                cell(&cause),
+                cell(&example.details())
+            );
+        }
+        out.push('\n');
     }
     let _ = writeln!(out, "\n## Stacks by reader\n");
     out.push_str(&header(&["stack", "reader"]));
@@ -314,6 +600,7 @@ pub fn summary(run: &BTreeMap<String, StackReport>, causes: usize) -> String {
             );
         }
     }
+    out.push_str(&state_history(run));
     let _ = writeln!(
         out,
         "\n## Causes\n\nEach stack's causes, the gravest kinds first, then the most frequent.\n"
@@ -323,7 +610,7 @@ pub fn summary(run: &BTreeMap<String, StackReport>, causes: usize) -> String {
         for diagnostic in &report.diagnostics {
             *by_cause
                 .entry((&diagnostic.reader, diagnostic.kind, &diagnostic.cause))
-                .or_default() += 1;
+                .or_default() += diagnostic.occurrences();
         }
         if by_cause.is_empty() {
             continue;
@@ -338,6 +625,124 @@ pub fn summary(run: &BTreeMap<String, StackReport>, causes: usize) -> String {
                 "| {count} | {reader} | {} | {} |",
                 kind.label(),
                 cell(&truncate(cause, 240))
+            );
+        }
+        let _ = writeln!(out);
+    }
+    out
+}
+
+/// Affected states from the reader's API, plus its returned diagnostics and read error.
+pub fn state_history(run: &BTreeMap<String, StackReport>) -> String {
+    let mut out = String::from("\n## State history\n\n");
+    for report in run.values() {
+        let _ = writeln!(
+            out,
+            "### {} ({})\n",
+            cell(&report.stack),
+            cell(&report.name)
+        );
+        let reader = report
+            .readers
+            .iter()
+            .find(|reader| reader.reader == "states");
+        if let Some(error) = &report.gather_error {
+            let _ = writeln!(
+                out,
+                "Unavailable: stack was not gathered ({}).\n",
+                cell(error)
+            );
+            continue;
+        }
+        if let Some(needs) = reader.and_then(|reader| reader.not_run.as_deref()) {
+            let _ = writeln!(
+                out,
+                "Unavailable: states reader did not run ({}).\n",
+                cell(needs)
+            );
+            continue;
+        }
+        if reader.is_none() {
+            let _ = writeln!(out, "Unavailable: states reader result was not recorded.\n");
+            continue;
+        }
+        if reader.is_some_and(|reader| reader.completed) {
+            let _ = writeln!(
+                out,
+                "Affected states: {}.\n",
+                report.state_history_states.len()
+            );
+            if !report.state_history_states.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "| stack | name | state id | file | reasons |\n|---|---|---|---|---|"
+                );
+                for state in &report.state_history_states {
+                    let _ = writeln!(
+                        out,
+                        "| {} | {} | {} | {} | {} |",
+                        cell(&report.stack),
+                        cell(&report.name),
+                        state.id,
+                        cell(state.file.as_deref().unwrap_or("unknown")),
+                        cell(&state.reasons.join("; "))
+                    );
+                }
+                let _ = writeln!(out);
+            }
+        } else {
+            let _ = writeln!(out, "Affected states: unavailable.\n");
+        }
+        if report.state_history.is_empty() {
+            let message = if reader.is_some_and(|reader| reader.completed) {
+                "No states reader diagnostics. Refused: no."
+            } else {
+                "Unavailable: states reader failed. Refused: yes."
+            };
+            let _ = writeln!(out, "{message}\n");
+            continue;
+        }
+        let mut kinds: BTreeMap<Kind, usize> = BTreeMap::new();
+        for note in &report.state_history {
+            *kinds.entry(note.kind).or_default() += 1;
+        }
+        let counts = kinds
+            .iter()
+            .map(|(kind, count)| format!("{}: {count}", kind.label()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let refused = if reader.is_some_and(|reader| !reader.completed) {
+            "yes"
+        } else {
+            "no"
+        };
+        let _ = writeln!(out, "Notes per kind: {counts}. Refused: {refused}.\n");
+        if reader.is_some_and(|reader| !reader.completed) {
+            let _ = writeln!(
+                out,
+                "The states reader failed; the state inventory is unavailable.\n"
+            );
+        }
+        let _ = writeln!(
+            out,
+            "Returned reader diagnostics, including summaries and notes not attributable to a kept state:\n"
+        );
+        let _ = writeln!(
+            out,
+            "| stack | name | file | line | producer kind | message |\n|---|---|---|---|---|---|"
+        );
+        for note in &report.state_history {
+            let line = note
+                .line
+                .map_or_else(|| "unknown".to_owned(), |line| line.to_string());
+            let _ = writeln!(
+                out,
+                "| {} | {} | {} | {line} | {} | {} |",
+                cell(&report.stack),
+                cell(&report.name),
+                cell(note.file.as_deref().unwrap_or("unknown")),
+                note.kind.label(),
+                cell(&note.message)
             );
         }
         let _ = writeln!(out);
@@ -375,6 +780,30 @@ pub fn diff(
                 before.gather_error, after.gather_error
             );
         }
+        // Inventory growth changes count/examples, not diagnostic identity.
+        let mut previous: BTreeMap<Key<'_>, Vec<&Diagnostic>> = BTreeMap::new();
+        for diagnostic in &before.diagnostics {
+            previous
+                .entry(key(diagnostic))
+                .or_default()
+                .push(diagnostic);
+        }
+        for diagnostic in &after.diagnostics {
+            if let Some(old) = previous.get_mut(&key(diagnostic)).and_then(Vec::pop)
+                && (old.count != diagnostic.count || old.examples != diagnostic.examples)
+            {
+                changed = true;
+                let _ = writeln!(
+                    out,
+                    "- {stack}: {} ({}) inventory {:?} -> {:?}; examples: {}",
+                    diagnostic.reader,
+                    diagnostic.kind.label(),
+                    old.count,
+                    diagnostic.count,
+                    diagnostic.examples.join(", ")
+                );
+            }
+        }
         let (gone, new) = difference(&before.diagnostics, &after.diagnostics);
         if gone.is_empty() && new.is_empty() {
             continue;
@@ -411,7 +840,7 @@ pub fn diff(
                     "- {label}: {} {}: {}",
                     diagnostic.reader,
                     diagnostic.kind.label(),
-                    truncate(&diagnostic.message, 400)
+                    truncate(&diagnostic.details(), 400)
                 );
             }
             if list.len() > examples {
@@ -434,6 +863,26 @@ fn key(diagnostic: &Diagnostic) -> Key<'_> {
         diagnostic.file.as_deref(),
         &diagnostic.message,
     )
+}
+
+/// Positive occurrence growth, with aggregate count and examples outside
+/// identity. Duplicate diagnostics consume the same baseline occurrence pool.
+fn growth<'a>(base: &[Diagnostic], head: &'a [Diagnostic]) -> Vec<(&'a Diagnostic, usize)> {
+    let mut remaining: BTreeMap<Key<'_>, usize> = BTreeMap::new();
+    for diagnostic in base {
+        *remaining.entry(key(diagnostic)).or_default() += diagnostic.occurrences();
+    }
+    let mut new = Vec::new();
+    for diagnostic in head {
+        let baseline = remaining.entry(key(diagnostic)).or_default();
+        let matched = (*baseline).min(diagnostic.occurrences());
+        *baseline -= matched;
+        let added = diagnostic.occurrences() - matched;
+        if added > 0 {
+            new.push((diagnostic, added));
+        }
+    }
+    new
 }
 
 fn difference<'a>(
@@ -641,6 +1090,116 @@ fn numbers(word: &str) -> String {
 mod tests {
     use super::*;
 
+    mod state_history;
+
+    #[test]
+    fn aggregate_inventory_changes_keep_the_diff_identity() {
+        let mut before = Diagnostic::about(
+            "dashboard.national-focus",
+            Kind::Unsupported,
+            "product coverage",
+            "country script is not evaluated",
+        );
+        before.count = Some(2);
+        before.examples = vec!["focus a".into(), "focus b".into()];
+        let mut after = before.clone();
+        after.count = Some(8);
+        after.examples.push("focus c".into());
+        let before = [before];
+        let after = [after];
+        let (gone, new) = difference(&before, &after);
+        assert!(gone.is_empty() && new.is_empty());
+        assert!(after[0].details().contains("8 items"));
+        let decoded: Diagnostic =
+            serde_json::from_str(&serde_json::to_string(&after[0]).unwrap()).unwrap();
+        assert_eq!(decoded.count, Some(8));
+        let report = |diagnostic| StackReport {
+            stack: "mod".into(),
+            diagnostics: vec![diagnostic],
+            ..Default::default()
+        };
+        let inventory = diff(
+            &BTreeMap::from([("mod".into(), report(before[0].clone()))]),
+            &BTreeMap::from([("mod".into(), report(after[0].clone()))]),
+            5,
+        );
+        assert!(
+            inventory.contains("inventory Some(2) -> Some(8)"),
+            "{inventory}"
+        );
+        assert!(
+            !inventory.contains("new:") && !inventory.contains("gone:"),
+            "{inventory}"
+        );
+    }
+
+    #[test]
+    fn summary_counts_aggregate_growth_and_reader_failures_as_occurrences() {
+        let reader = "dashboard.national-focus";
+        let mut shared = Diagnostic::new(reader, Kind::Unsupported, "country script".into());
+        shared.count = Some(2);
+        shared.examples = vec!["old focus".into()];
+        let mut larger = shared.clone();
+        larger.count = Some(8);
+        larger.examples = vec!["different example".into()];
+        assert_eq!(key(&shared), key(&larger));
+        assert!(
+            difference(&[shared.clone()], &[larger.clone()])
+                .1
+                .is_empty()
+        );
+        let mut info = Diagnostic::new(reader, Kind::Offline, "holder tag".into());
+        info.count = Some(12);
+        let baseline = StackReport {
+            stack: "vanilla".into(),
+            diagnostics: vec![shared],
+            ..Default::default()
+        };
+        let modded = StackReport {
+            stack: "mod".into(),
+            diagnostics: vec![
+                larger,
+                info,
+                Diagnostic::new(reader, Kind::Unsettled, "unread suffix".into()),
+                Diagnostic::new(reader, Kind::ParseFailure, "parser failure".into()),
+            ],
+            ..Default::default()
+        };
+        let out = summary(
+            &BTreeMap::from([("vanilla".into(), baseline), ("mod".into(), modded)]),
+            10,
+        );
+        assert!(
+            out.contains("| mod | 1 unsettled, 1 parse, 8 unsupported (+8 vs vanilla) |"),
+            "{out}"
+        );
+        assert!(out.contains("| 0 | 12 |"), "{out}");
+        assert!(
+            out.contains("| national-focus | unsupported | 6 | country script |"),
+            "{out}"
+        );
+        assert!(
+            out.contains("| national-focus | unsettled | 1 | unread suffix |"),
+            "{out}"
+        );
+        assert!(
+            out.contains("| national-focus | parse | 1 | parser failure |"),
+            "{out}"
+        );
+        for kind in Kind::ALL {
+            assert_eq!(
+                kind.actionable(),
+                !matches!(kind, Kind::Content | Kind::Offline)
+            );
+        }
+        // Examples never affect matching; shrinking inventory adds no occurrence.
+        let mut small = Diagnostic::new(reader, Kind::Unsupported, "country script".into());
+        small.count = Some(1);
+        let mut big = small.clone();
+        big.count = Some(3);
+        assert!(growth(&[big], &[small]).is_empty());
+    }
+
     #[test]
     fn a_message_gives_its_file_line_and_masked_cause() {
         let diagnostic = Diagnostic::new(
@@ -711,5 +1270,304 @@ mod tests {
         };
         assert_eq!(messages(&gone), ["a", "b"]);
         assert_eq!(messages(&new), ["c"]);
+    }
+
+    #[test]
+    fn summary_lists_stack_descriptors_dependencies_and_every_product() {
+        use dashboard::products::{Product, national_focus::NationalFocus, research::Research};
+        let reader = format!("dashboard.{}", NationalFocus::KEY);
+        let mut report = StackReport {
+            stack: "local-fixture".into(),
+            name: "Fixture | conversion".into(),
+            descriptor_file: Some("mod/fixture.mod".into()),
+            version: "2.4".into(),
+            supported_version: "1.17.*".into(),
+            mods: vec![Mounted {
+                id: "123".into(),
+                name: "Dependency".into(),
+                version: "1.0".into(),
+            }],
+            skipped_dependencies: vec!["Other: not installed".into()],
+            ..Default::default()
+        };
+        report.readers = dashboard::products::PRODUCTS
+            .iter()
+            .map(|product| ReaderRun {
+                reader: format!("dashboard.{}", product.key),
+                milliseconds: 1,
+                completed: true,
+                not_run: None,
+                note: Some("coverage".into()),
+            })
+            .collect();
+        report.diagnostics = vec![
+            Diagnostic::new(&reader, Kind::Fallback, "key shown".into()),
+            Diagnostic::new(&reader, Kind::Ambiguous, "two portraits".into()),
+        ];
+        let summary = summary(&BTreeMap::from([(report.stack.clone(), report)]), 10);
+        assert!(summary.contains("## Stacks found\n"));
+        assert!(summary.contains("mod/fixture.mod | Fixture \\| conversion | 2.4 | 1.17.* | Dependency (123, 1.0) | Other: not installed"), "{summary}");
+        assert!(summary.contains("## Dashboard products\n"));
+        assert!(
+            summary.contains("| local-fixture | 1 ambiguous, 1 fallback | clean |"),
+            "{summary}"
+        );
+        for product in dashboard::products::PRODUCTS {
+            assert!(summary.contains(product.key));
+        }
+        let diagnostic = Diagnostic::new(
+            &format!("dashboard.{}", Research::KEY),
+            Kind::Fallback,
+            "sprite missing".into(),
+        );
+        let encoded = serde_json::to_string(&diagnostic).unwrap();
+        assert!(encoded.contains("\"fallback\""));
+        let decoded: Diagnostic = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, diagnostic);
+        assert_eq!(difference(&[], &[diagnostic]).1.len(), 1);
+    }
+
+    #[test]
+    fn product_matrix_and_mod_causes_count_only_actionable_multiset_delta() {
+        let reader = "dashboard.national-focus";
+        let shared = Diagnostic::in_file(
+            reader,
+            Kind::Fallback,
+            "interface/fixture.gfx",
+            "same fallback".into(),
+        );
+        let added = Diagnostic::about(reader, Kind::Refused, "focus added", "unsupported texture");
+        let runs = vec![ReaderRun {
+            reader: reader.into(),
+            milliseconds: 0,
+            completed: true,
+            not_run: None,
+            note: None,
+        }];
+        let base = StackReport {
+            stack: super::super::VANILLA.into(),
+            readers: runs.clone(),
+            diagnostics: vec![shared.clone()],
+            ..Default::default()
+        };
+        let modded = StackReport {
+            stack: "mod".into(),
+            readers: runs.clone(),
+            diagnostics: vec![
+                shared.clone(),
+                shared,
+                added,
+                Diagnostic::new(reader, Kind::Content, "authored omission".into()),
+                Diagnostic::new(reader, Kind::Offline, "recorded context; 4000 items".into()),
+                Diagnostic::new("other", Kind::Warning, "not a product".into()),
+            ],
+            ..Default::default()
+        };
+        let clean = StackReport {
+            stack: "clean-mod".into(),
+            readers: runs,
+            diagnostics: vec![
+                Diagnostic::new(reader, Kind::Content, "same game recovery".into()),
+                Diagnostic::new(reader, Kind::Offline, "one aggregated reason".into()),
+            ],
+            ..Default::default()
+        };
+        let summary = summary(
+            &BTreeMap::from([
+                (base.stack.clone(), base),
+                (modded.stack.clone(), modded),
+                (clean.stack.clone(), clean),
+            ]),
+            10,
+        );
+        let matrix = summary
+            .split("## Dashboard products\n")
+            .nth(1)
+            .unwrap()
+            .split("## New in mods\n")
+            .next()
+            .unwrap();
+        let stacks = summary
+            .split("## Stacks found\n")
+            .nth(1)
+            .unwrap()
+            .split("## Dashboard products\n")
+            .next()
+            .unwrap();
+        let heading = stacks
+            .lines()
+            .find(|line| line.starts_with("| stack |"))
+            .unwrap();
+        let column = heading
+            .split('|')
+            .position(|cell| cell.trim() == "actionable not in vanilla")
+            .unwrap();
+        for (stack, expected) in [("mod", "3"), ("clean-mod", "0")] {
+            let row = stacks
+                .lines()
+                .find(|line| line.starts_with(&format!("| {stack} |")))
+                .unwrap();
+            assert_eq!(
+                row.split('|').nth(column).unwrap().trim(),
+                expected,
+                "{stacks}"
+            );
+        }
+        assert_eq!(summary.matches("## New in mods\n").count(), 1);
+        assert_eq!(
+            summary
+                .matches("Actionable dashboard product causes and shared preparation notes beyond vanilla;")
+                .count(),
+            1
+        );
+        assert!(matrix.contains("| content | offline |"));
+        assert!(
+            matrix.contains("| mod | 1 refused, 2 fallback (+2 vs vanilla) |"),
+            "{matrix}"
+        );
+        assert!(matrix.contains("| clean-mod | clean |"), "{matrix}");
+        assert!(matrix.contains("| 1 | 1 |"));
+        let new = summary
+            .split("## New in mods\n")
+            .nth(1)
+            .unwrap()
+            .split("## Stacks by reader\n")
+            .next()
+            .unwrap();
+        assert!(
+            new.contains("| national-focus | fallback | 1 | same fallback | same fallback |"),
+            "{new}"
+        );
+        assert!(new.contains("| national-focus | refused | 1 | unsupported texture | focus added: unsupported texture |"), "{new}");
+        assert!(new.contains("No new actionable product diagnostics."));
+        assert!(
+            !new.contains("authored omission")
+                && !new.contains("recorded context")
+                && !new.contains("not a product")
+        );
+        for kind in [Kind::Content, Kind::Offline] {
+            let diagnostic = Diagnostic::new(reader, kind, "info".into());
+            let json = serde_json::to_string(&diagnostic).unwrap();
+            assert!(json.contains(kind.label()));
+            assert_eq!(
+                serde_json::from_str::<Diagnostic>(&json).unwrap(),
+                diagnostic
+            );
+            assert_eq!(difference(&[], &[diagnostic]).1.len(), 1);
+            assert!(Kind::Warning < kind);
+        }
+    }
+
+    #[test]
+    fn causes_keep_producer_reasons_without_wording_specific_grouping() {
+        assert_eq!(
+            cause("localisation key_a holds the scripted expression \"[ROOT.GetName]\""),
+            "localisation key_a holds the scripted expression <text>"
+        );
+        assert_eq!(
+            cause(
+                "Characters in common/characters/mod.txt: 12 character roles unavailable: one: unknown role."
+            ),
+            "Characters in <file>: N character roles unavailable: one: unknown role."
+        );
+        let one = Diagnostic::about(
+            "dashboard.idea-history",
+            Kind::Refused,
+            "product coverage",
+            "idea artwork unavailable",
+        );
+        let mut two = one.clone();
+        two.count = Some(4);
+        two.examples = vec!["different idea".into()];
+        assert_eq!(one.cause, two.cause);
+        assert_eq!(key(&one), key(&two));
+    }
+
+    #[test]
+    fn shared_preparation_notes_group_inventory_and_stay_out_of_product_cells() {
+        let keys = dashboard::content_check::SHARED_CHECK_KEYS;
+        assert!(!keys.is_empty());
+        let notes: Vec<_> = keys
+            .iter()
+            .enumerate()
+            .map(|(index, key)| {
+                let kind = if index % 2 == 0 {
+                    Kind::Refused
+                } else {
+                    Kind::Misread
+                };
+                let mut note = Diagnostic::about(
+                    &format!("dashboard.{key}"),
+                    kind,
+                    "shared preparation",
+                    &format!("{key} producer reason"),
+                );
+                note.count = Some(3);
+                note.examples = vec!["distinct subject: detailed producer reason".into()];
+                assert_eq!(note.cause, format!("{key} producer reason"));
+                note
+            })
+            .collect();
+        let base_notes = notes
+            .iter()
+            .map(|note| {
+                let mut base = note.clone();
+                base.count = Some(1);
+                base.examples.clear();
+                assert_eq!(key(note), key(&base));
+                base
+            })
+            .collect();
+        let product_runs = dashboard::products::PRODUCTS
+            .iter()
+            .map(|product| ReaderRun {
+                reader: format!("dashboard.{}", product.key),
+                milliseconds: 0,
+                completed: true,
+                not_run: None,
+                note: None,
+            })
+            .collect();
+        let report = StackReport {
+            stack: "mod".into(),
+            readers: product_runs,
+            diagnostics: notes.clone(),
+            ..Default::default()
+        };
+        let out = summary(
+            &BTreeMap::from([
+                (
+                    "vanilla".into(),
+                    StackReport {
+                        stack: "vanilla".into(),
+                        diagnostics: base_notes,
+                        ..Default::default()
+                    },
+                ),
+                ("mod".into(), report),
+            ]),
+            10,
+        );
+        let products = out
+            .split("## Dashboard products\n")
+            .nth(1)
+            .unwrap()
+            .split("## New in mods\n")
+            .next()
+            .unwrap();
+        for (shared_key, note) in keys.iter().zip(&notes) {
+            assert!(!products.contains(shared_key), "{products}");
+            assert!(
+                out.contains(&format!(
+                    "| {shared_key} | {} | 2 | {shared_key} producer reason |",
+                    note.kind.label()
+                )),
+                "{out}"
+            );
+            assert!(
+                out.contains(&format!("| mod | dashboard.{shared_key} |")),
+                "{out}"
+            );
+        }
     }
 }

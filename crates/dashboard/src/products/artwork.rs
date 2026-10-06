@@ -16,6 +16,10 @@ use std::{
     },
 };
 
+/// The sprite `CNationalFocus::GetIconName` (1402D0890) names for a focus
+/// without an icon.
+const UNKNOWN_FOCUS_ICON: &str = "GFX_goal_unknown";
+
 /// Longest side of returned product artwork previews.
 pub(crate) const ICON_EDGE: u32 = 96;
 
@@ -38,6 +42,8 @@ pub struct Context {
     definitions: BTreeMap<String, installed_content::focus::FocusDefinition>,
     point_days: Option<f64>,
     warnings: Vec<String>,
+    inventory: Vec<String>,
+    preparation_warnings: Vec<installed_content::Diagnostic>,
 }
 
 /// The source's artwork context for the configured folders, loaded on first use.
@@ -58,27 +64,44 @@ pub fn ensure<'a>(
 }
 
 impl Context {
-    fn load(catalogue: Arc<Catalogue>, kind: Kind) -> io::Result<Self> {
+    pub(crate) fn load(catalogue: Arc<Catalogue>, kind: Kind) -> io::Result<Self> {
         let mut warnings = vec!["Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".into()];
         warnings.extend(catalogue.verification.iter().cloned());
         let layers = &catalogue.content.layers;
-        let (definitions, point_days, technology_equipment) = match kind {
-            Kind::Focus => {
-                let (definitions, definition_warnings) = installed_content::focus::read(layers)?;
-                warnings.extend(definition_warnings.into_iter().map(|(_, message)| message));
-                (
-                    definitions,
-                    installed_content::focus::point_days(layers)?,
-                    BTreeMap::new(),
-                )
-            }
-            Kind::Technology => {
-                let (equipment, technology_warnings) =
-                    installed_content::technology::read_equipment(layers)?;
-                warnings.extend(technology_warnings.into_iter().map(|(_, message)| message));
-                (BTreeMap::new(), None, equipment)
-            }
-        };
+        let (definitions, point_days, technology_equipment, inventory, preparation_warnings) =
+            match kind {
+                Kind::Focus => {
+                    let (definitions, definition_warnings) = installed_content::focus::read(layers)?;
+                    warnings.extend(
+                        definition_warnings
+                            .iter()
+                            .map(|(_, message)| message.clone()),
+                    );
+                    let inventory = definitions.keys().cloned().collect();
+                    (
+                        definitions,
+                        installed_content::focus::point_days(layers)?,
+                        BTreeMap::new(),
+                        inventory,
+                        definition_warnings,
+                    )
+                }
+                Kind::Technology => {
+                    let read = installed_content::technology::Database::read(layers)?;
+                    warnings.extend(
+                        read.equipment_warnings
+                            .into_iter()
+                            .map(|(_, message)| message),
+                    );
+                    (
+                        BTreeMap::new(),
+                        None,
+                        read.equipment,
+                        read.tokens,
+                        read.inventory_warnings,
+                    )
+                }
+            };
         warnings.extend(catalogue.warnings.iter().cloned());
         Ok(Self {
             kind,
@@ -89,6 +112,8 @@ impl Context {
             definitions,
             point_days,
             warnings,
+            inventory,
+            preparation_warnings,
         })
     }
 
@@ -124,7 +149,18 @@ impl Context {
         let first = keys.peek()?.clone();
         let key = keys
             .find(|key| localisation.get(key).is_some())
-            .unwrap_or(first);
+            .unwrap_or_else(|| first.clone());
+        if key != first {
+            self.catalogue.note(crate::content_check::Finding::grouped(
+                // The technology reader projects unlocks, but neither it nor
+                // its README cites an equipment localisation rung in the
+                // engine's name/description ladder. Keep this actionable.
+                crate::content_check::Kind::Fallback,
+                &first,
+                "localisation key is missing; equipment localisation is shown",
+                format!("localisation {first} is missing; equipment localisation {key} is shown"),
+            ));
+        }
         self.catalogue.localised(&key, self.view())
     }
 
@@ -132,16 +168,26 @@ impl Context {
     /// for technologies. That function first tries a `<TAG>_` prefixed key for
     /// the viewing country; artwork is per token, so that variant is not read.
     fn description(&self, token: &str) -> Option<String> {
-        let key = self
-            .definitions
-            .get(token)
-            .map(|d| d.description.clone())
-            .unwrap_or_else(|| format!("{token}_desc"));
+        let key = self.description_key(token);
         let equipment = self
             .technology_equipment
             .get(token)
             .map(|equipment| format!("{equipment}_desc"));
         self.first_defined(std::iter::once(key).chain(equipment))
+    }
+
+    fn description_key(&self, token: &str) -> String {
+        self.definitions
+            .get(token)
+            .map(|d| d.description.clone())
+            .unwrap_or_else(|| format!("{token}_desc"))
+    }
+
+    pub(crate) fn description_is_defined(&self, token: &str) -> bool {
+        self.catalogue
+            .localisation
+            .get(&self.description_key(token))
+            .is_some()
     }
 
     fn base_duration_days(&self, token: &str) -> Option<f64> {
@@ -156,7 +202,7 @@ impl Context {
         self.first_defined(std::iter::once(key.to_owned()).chain(equipment))
     }
 
-    fn artwork(&self, token: &str) -> io::Result<Artwork> {
+    fn artwork(&self, token: &str) -> io::Result<(Artwork, Vec<crate::content_check::Finding>)> {
         let definition = self.definitions.get(token);
         let name = self.name(token);
         let sprites = &self.catalogue.sprites;
@@ -166,10 +212,66 @@ impl Context {
             None => None,
         };
         // _medium: technology_badge_controller::update 141BC1A00, 142936B70.
+        // 140B3A080 -> 140B3D930 tests declarations before 14229A780;
+        // CIcon::SetSpriteByName 1422E6410 also returns on a missing name.
+        // No missing-medium route to CreateGuiObjectBySpriteName 142222AD0
+        // is evidenced here, so do not assume its default-fallback texture.
         let declared = match declared {
             None if self.kind == Kind::Technology => find(&format!("GFX_{token}_medium"))?,
+            // CNationalFocus::GetIconName 1402D0890 returns the executable's
+            // GFX_goal_unknown for a focus that declares no icon; it resolves
+            // through the recorded stack like any other sprite.
+            None if self.kind == Kind::Focus
+                && definition.is_some_and(|d| d.icon.is_none() && !d.scripted_icon) =>
+            {
+                find(UNKNOWN_FOCUS_ICON)?
+            }
             declared => declared,
         };
+        let mut findings = Vec::new();
+        let missing = match declared {
+            Some(sprite) if sprite.texture.is_none() => {
+                let reason = "resolved icon sprite has no texture; a placeholder is shown";
+                Some((reason, reason.into()))
+            }
+            None => Some(
+                match definition.and_then(|definition| definition.icon.as_ref()) {
+                    Some(name) => (
+                        "icon sprite is undeclared; a placeholder is shown",
+                        format!("sprite {name} is undeclared; a placeholder is shown"),
+                    ),
+                    None if self.kind == Kind::Technology => (
+                        "technology medium sprite is undeclared; a placeholder is shown",
+                        format!(
+                            "technology medium sprite GFX_{token}_medium is undeclared; a placeholder is shown"
+                        ),
+                    ),
+                    None if definition.is_some_and(|d| !d.scripted_icon) => (
+                        "focus fallback sprite is undeclared; a placeholder is shown",
+                        format!(
+                            "focus declares no icon and its fallback {UNKNOWN_FOCUS_ICON} is undeclared; a placeholder is shown"
+                        ),
+                    ),
+                    None => (
+                        "focus declares no static icon; a placeholder is shown",
+                        "focus declares no static icon; a placeholder is shown".into(),
+                    ),
+                },
+            ),
+            _ => None,
+        };
+        if let Some((reason, message)) = missing {
+            use crate::content_check::{Finding, Kind};
+            findings.push(
+                if definition.is_some_and(|definition| definition.scripted_icon) {
+                    let reason =
+                        "trigger-chosen focus icon is not evaluated; a placeholder is shown";
+                    Finding::grouped(Kind::Unsupported, token, reason, reason)
+                } else {
+                    Finding::grouped(Kind::Fallback, token, reason, message)
+                },
+            );
+        }
         let icon = match declared {
             Some(sprite) if sprite.texture.is_some() => Some(catalogue::sprite_frame_png(
                 &self.catalogue.content.layers,
@@ -184,13 +286,50 @@ impl Context {
             )?),
             _ => None,
         };
-        Ok(Artwork {
-            token: token.into(),
-            name,
-            description: self.description(token),
-            base_duration_days: self.base_duration_days(token),
-            icon,
-        })
+        Ok((
+            Artwork {
+                token: token.into(),
+                name,
+                description: self.description(token),
+                base_duration_days: self.base_duration_days(token),
+                icon,
+            },
+            findings,
+        ))
+    }
+
+    pub(crate) fn tokens(&self) -> (&[String], &[installed_content::Diagnostic]) {
+        (&self.inventory, &self.preparation_warnings)
+    }
+
+    /// The same per-token preparation for the reply and the offline check.
+    pub(crate) fn prepare(&self, token: &str) -> (Artwork, Vec<crate::content_check::Finding>) {
+        use crate::content_check::{Finding, Kind};
+        let mut findings = Vec::new();
+        let art = match self.artwork(token) {
+            Ok((art, problems)) => {
+                findings.extend(problems);
+                art
+            }
+            Err(error) => {
+                // Focus/research widgets draw their own placeholder for None,
+                // so even a native no-texture outcome changes the shown art.
+                findings.push(Finding::grouped(
+                    Kind::Refused,
+                    token,
+                    "icon is unavailable; a placeholder is shown",
+                    format!("icon unavailable: {error}"),
+                ));
+                Artwork {
+                    token: token.into(),
+                    name: self.name(token),
+                    description: self.description(token),
+                    base_duration_days: self.base_duration_days(token),
+                    icon: None,
+                }
+            }
+        };
+        (art, findings)
     }
 
     /// Artwork for every token, with the context's standing warnings first.
@@ -210,23 +349,11 @@ impl Context {
                 return Err(invalid("Widget request cancelled"));
             }
             if !self.artwork_cache.contains_key(token) {
-                let mut messages = Vec::new();
-                let art = match self.artwork(token) {
-                    Ok(art) => art,
-                    Err(error) => {
-                        messages.push(format!("{token}: {error}"));
-                        Artwork {
-                            token: token.into(),
-                            name: self.name(token),
-                            description: self.description(token),
-                            base_duration_days: self.base_duration_days(token),
-                            icon: None,
-                        }
-                    }
-                };
-                if art.name.is_none() || art.icon.is_none() || art.description.is_none() {
-                    messages.push(format!("{token}: some localisation or artwork is unavailable in the recorded content."));
-                }
+                let (art, findings) = self.prepare(token);
+                let messages: Vec<String> = findings
+                    .into_iter()
+                    .map(|finding| format!("{token}: {}", finding.message))
+                    .collect();
                 let size =
                     artwork_bytes(&art) + messages.iter().map(|s| s.len() + 32).sum::<usize>();
                 // Retain a multi-country dashboard's working set of compressed
@@ -415,10 +542,12 @@ mod tests {
         assert_eq!(artwork[0].name.as_deref(), Some("Mod technology"));
         assert_eq!(artwork[0].description.as_deref(), Some("Mod description"));
         assert!(artwork[0].icon.is_none());
-        assert!(
+        assert_eq!(
             warnings
                 .iter()
-                .any(|warning| warning == &format!("mod_tech: {reason}")),
+                .filter(|warning| **warning == format!("mod_tech: icon unavailable: {reason}"))
+                .count(),
+            1,
             "{warnings:?}"
         );
     }

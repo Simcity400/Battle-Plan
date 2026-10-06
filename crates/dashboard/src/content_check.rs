@@ -1,0 +1,1172 @@
+//! Content-only preparation for every registered dashboard product.
+
+use crate::{catalogue::Catalogue, products};
+use installed_content::content::ResolvedContent;
+use std::{
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant},
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Kind {
+    ParseFailure,
+    Misread,
+    Unsettled,
+    Logged,
+    Refused,
+    Unsupported,
+    Ambiguous,
+    Fallback,
+    Warning,
+    /// Cited engine parity only.
+    Content,
+    /// A recording supplies the operands; aggregated once per product/reason.
+    Offline,
+}
+
+impl From<installed_content::DiagnosticKind> for Kind {
+    fn from(kind: installed_content::DiagnosticKind) -> Self {
+        match kind {
+            installed_content::DiagnosticKind::ParseFailure => Self::ParseFailure,
+            installed_content::DiagnosticKind::Misread => Self::Misread,
+            installed_content::DiagnosticKind::Unsettled => Self::Unsettled,
+            installed_content::DiagnosticKind::Unsupported => Self::Unsupported,
+            installed_content::DiagnosticKind::Refused => Self::Refused,
+            installed_content::DiagnosticKind::Ambiguous => Self::Ambiguous,
+            installed_content::DiagnosticKind::Fallback => Self::Fallback,
+            installed_content::DiagnosticKind::Logged => Self::Logged,
+            installed_content::DiagnosticKind::Warning => Self::Warning,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Finding {
+    pub kind: Kind,
+    pub file: Option<String>,
+    pub line: Option<u32>,
+    pub subject: String,
+    pub message: String,
+    /// Inventory details are outside the diagnostic's diff identity.
+    pub count: Option<usize>,
+    pub examples: Vec<String>,
+    pub(crate) aggregate_reason: Option<String>,
+}
+
+impl Finding {
+    pub(crate) fn new(kind: Kind, subject: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            file: None,
+            line: None,
+            subject: subject.into(),
+            message: message.into(),
+            count: None,
+            examples: Vec::new(),
+            aggregate_reason: None,
+        }
+    }
+
+    pub(crate) fn grouped(
+        kind: Kind,
+        subject: impl Into<String>,
+        reason: &str,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            aggregate_reason: Some(reason.into()),
+            ..Self::new(kind, subject, message)
+        }
+    }
+
+    pub(crate) fn reader(subject: &str, (kind, message): installed_content::Diagnostic) -> Self {
+        Self::new(kind.into(), subject, message)
+    }
+}
+
+#[derive(Debug)]
+pub struct ProductCheck {
+    pub key: &'static str,
+    pub elapsed: Duration,
+    pub error: Option<String>,
+    pub findings: Vec<Finding>,
+    /// Explicit coverage, including products with no offline content inputs.
+    pub note: String,
+}
+
+pub const AUTONOMY_CHECK_KEY: &str = "autonomy_content";
+pub const CONSTRUCTION_CHECK_KEY: &str = "construction_content";
+pub const PRODUCTION_LINES_CHECK_KEY: &str = "production_lines_content";
+pub const INTELLIGENCE_CHECK_KEY: &str = "intelligence_content";
+/// Preparation channels outside product cells; reader-owned notes are omitted.
+pub const SHARED_CHECK_KEYS: &[&str] = &[
+    AUTONOMY_CHECK_KEY,
+    CONSTRUCTION_CHECK_KEY,
+    PRODUCTION_LINES_CHECK_KEY,
+    INTELLIGENCE_CHECK_KEY,
+];
+
+/// A shared preparation's findings and notes, read once, or why it failed.
+type Prepared<T> = OnceLock<Result<(Vec<Finding>, Vec<T>), String>>;
+
+struct Content {
+    resolved: Arc<ResolvedContent>,
+    language: String,
+    catalogue: OnceLock<Result<Arc<Catalogue>, String>>,
+    politics: OnceLock<Result<Arc<products::politics_content::PoliticsContent>, String>>,
+    equipment: OnceLock<Result<Arc<installed_content::equipment::Database>, String>>,
+    autonomy: OnceLock<
+        Result<
+            (
+                installed_content::autonomy::AutonomyStates,
+                Vec<installed_content::Diagnostic>,
+            ),
+            String,
+        >,
+    >,
+    resources: OnceLock<Result<Vec<Finding>, String>>,
+    construction: Prepared<Finding>,
+    production: Prepared<installed_content::Diagnostic>,
+    tags: OnceLock<
+        Result<std::collections::BTreeMap<String, installed_content::country_tags::CountryTag>, String>,
+    >,
+    ideologies: OnceLock<Result<installed_content::ideologies::Ideologies, String>>,
+    intelligence:
+        OnceLock<Result<Arc<products::intelligence_content::IntelligenceContent>, String>>,
+    agency: OnceLock<Result<Arc<products::intelligence_content::IntelligenceContent>, String>>,
+}
+
+impl Content {
+    fn new(resolved: Arc<ResolvedContent>, language: &str) -> Self {
+        Self {
+            resolved,
+            language: language.to_owned(),
+            catalogue: OnceLock::new(),
+            politics: OnceLock::new(),
+            equipment: OnceLock::new(),
+            autonomy: OnceLock::new(),
+            resources: OnceLock::new(),
+            construction: OnceLock::new(),
+            production: OnceLock::new(),
+            tags: OnceLock::new(),
+            ideologies: OnceLock::new(),
+            intelligence: OnceLock::new(),
+            agency: OnceLock::new(),
+        }
+    }
+
+    fn equipment(&self) -> Result<&Arc<installed_content::equipment::Database>, String> {
+        self.equipment
+            .get_or_init(|| {
+                installed_content::equipment::Database::load_complete(&self.resolved.layers)
+                    .map(Arc::new)
+                    .map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    fn autonomy(&self) -> Result<&installed_content::autonomy::AutonomyStates, String> {
+        self.autonomy
+            .get_or_init(|| {
+                installed_content::autonomy::read(&self.resolved.layers).map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map(|(states, _)| states)
+            .map_err(Clone::clone)
+    }
+
+    fn intelligence(
+        &self,
+    ) -> Result<&Arc<products::intelligence_content::IntelligenceContent>, String> {
+        self.intelligence
+            .get_or_init(|| {
+                products::intelligence_content::IntelligenceContent::load(Arc::clone(
+                    self.catalogue()?,
+                ))
+                .map(Arc::new)
+                .map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    fn agency(&self) -> Result<&Arc<products::intelligence_content::IntelligenceContent>, String> {
+        self.agency
+            .get_or_init(|| {
+                Ok(Arc::new(
+                    products::intelligence_content::IntelligenceContent::load_agency(Arc::clone(
+                        self.catalogue()?,
+                    )),
+                ))
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    fn tags(
+        &self,
+    ) -> Result<&std::collections::BTreeMap<String, installed_content::country_tags::CountryTag>, String>
+    {
+        self.tags
+            .get_or_init(|| {
+                installed_content::country_tags::read_definitions(&self.resolved.layers)
+                    .map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    fn ideologies(&self) -> Result<&installed_content::ideologies::Ideologies, String> {
+        // The corpus ideologies reader owns these typed native notes.
+        self.ideologies
+            .get_or_init(|| {
+                installed_content::ideologies::read(&self.resolved.layers)
+                    .map(|(ideologies, _)| ideologies)
+                    .map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    fn catalogue(&self) -> Result<&Arc<Catalogue>, String> {
+        self.catalogue
+            .get_or_init(|| {
+                Catalogue::of_layers_for_check(self.resolved.layers.clone(), &self.language)
+                    .map(Arc::new)
+                    .map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    fn politics(&self) -> Result<&Arc<products::politics_content::PoliticsContent>, String> {
+        self.politics
+            .get_or_init(|| {
+                products::politics_content::PoliticsContent::load_with_ideologies(
+                    Arc::clone(self.catalogue()?),
+                    self.ideologies()?.clone(),
+                )
+                .map(Arc::new)
+                .map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+}
+
+/// Runs in registry order, sharing the catalogue and product readers. No
+/// recorded operands are invented; runtime-only checks name their limitation.
+pub fn check(content: Arc<ResolvedContent>, language: &str) -> Vec<ProductCheck> {
+    let content = Content::new(content, language);
+    let mut checks: Vec<_> = products::PRODUCTS
+        .iter()
+        .map(|product| {
+            let started = Instant::now();
+            let mut findings = Vec::new();
+            let result = run(product.key, &content, &mut findings);
+            if let Some(Ok(catalogue)) = content.catalogue.get() {
+                findings.extend(catalogue.take_findings());
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            findings.retain(|finding| seen.insert(finding.clone()));
+            aggregate(&mut findings);
+            ProductCheck {
+                key: product.key,
+                elapsed: started.elapsed(),
+                error: result.as_ref().err().cloned(),
+                findings,
+                note: result.unwrap_or_default(),
+            }
+        })
+        .collect();
+    // Equipment's full misreads and lost-read channel are already emitted by
+    // the corpus equipment reader, which calls the same Database::load.
+    if let Some(autonomy) = content.autonomy.get() {
+        let findings = autonomy
+            .as_ref()
+            .map(|(_, warnings)| {
+                warnings
+                    .iter()
+                    .cloned()
+                    .map(|note| Finding::reader("autonomy states", note))
+                    .collect()
+            })
+            .unwrap_or_default();
+        checks.push(ProductCheck {
+            key: AUTONOMY_CHECK_KEY,
+            elapsed: Duration::ZERO,
+            error: autonomy.as_ref().err().cloned(),
+            findings,
+            note: "Shared autonomy preparation; time included in its first product consumer."
+                .into(),
+        });
+    }
+    for (key, prepared) in [
+        (
+            CONSTRUCTION_CHECK_KEY,
+            content.construction.get().map(|prepared| {
+                prepared
+                    .as_ref()
+                    .map(|(_, notes)| notes.clone())
+                    .map_err(Clone::clone)
+            }),
+        ),
+        (
+            PRODUCTION_LINES_CHECK_KEY,
+            content.production.get().map(|prepared| {
+                prepared
+                    .as_ref()
+                    .map(|(_, notes)| {
+                        notes
+                            .iter()
+                            .cloned()
+                            .map(|note| Finding::reader("production-line preparation", note))
+                            .collect()
+                    })
+                    .map_err(Clone::clone)
+            }),
+        ),
+        (
+            INTELLIGENCE_CHECK_KEY,
+            content.intelligence.get().map(|prepared| {
+                prepared
+                    .as_ref()
+                    .map(|prepared| prepared.check_reader_notes())
+                    .map_err(Clone::clone)
+            }),
+        ),
+    ] {
+        if let Some(prepared) = prepared {
+            let mut findings = prepared.as_ref().cloned().unwrap_or_default();
+            aggregate(&mut findings);
+            checks.push(ProductCheck {
+                key,
+                elapsed: Duration::ZERO,
+                error: prepared.err(),
+                findings,
+                note: "Shared preparation; time included in its first product consumer.".into(),
+            });
+        }
+    }
+    checks
+}
+
+/// Aggregate declared reasons without putting changing inventories in the message.
+fn aggregate(findings: &mut Vec<Finding>) {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut reasons = BTreeMap::<(Kind, String), BTreeMap<String, BTreeSet<String>>>::new();
+    findings.retain(|finding| {
+        let reason = match &finding.aggregate_reason {
+            Some(reason) => reason.clone(),
+            None if finding.kind == Kind::Offline => finding.message.clone(),
+            None => return true,
+        };
+        let example = if finding.message == reason || finding.message == finding.subject {
+            finding.subject.clone()
+        } else {
+            format!("{}: {}", finding.subject, finding.message)
+        };
+        reasons
+            .entry((finding.kind, reason))
+            .or_default()
+            .entry(finding.subject.clone())
+            .or_default()
+            .insert(example);
+        false
+    });
+    findings.extend(reasons.into_iter().map(|((kind, reason), subjects)| {
+        let mut finding = Finding::new(
+            kind,
+            if kind == Kind::Offline {
+                "offline coverage"
+            } else {
+                "product coverage"
+            },
+            reason,
+        );
+        finding.count = Some(subjects.len());
+        finding.examples = subjects.into_values().flatten().collect();
+        finding
+    }));
+}
+
+fn take(catalogue: &Catalogue, subject: &str, findings: &mut Vec<Finding>) {
+    findings.extend(catalogue.take_findings().into_iter().map(|mut finding| {
+        finding.subject = subject.to_owned();
+        finding
+    }));
+}
+
+fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<String, String> {
+    use products::*;
+    match key {
+        national_focus::NationalFocus::KEY => {
+            artwork_check(content, artwork::Kind::Focus, findings)
+        }
+        research::Research::KEY => {
+            artwork_check(content, artwork::Kind::Technology, findings)
+        }
+        country_flags::CountryFlags::KEY => {
+            flags_check(content, findings)?;
+            Ok("Authored static-country flags, ideology-group candidates and shield checked; selected flags and shield colours require recorded country appearance, ruling parties and country identities.".into())
+        }
+        country_factories::CountryFactories::KEY => {
+            let catalogue = content.catalogue()?;
+            country_factories::content_groups(catalogue);
+            findings.extend(catalogue.take_findings());
+            Ok("Every authored factory building and group name checked; country totals require recorded factory rows.".into())
+        }
+        party_history::PartyHistory::KEY => {
+            parties_check(content, findings)?;
+            Ok("Authored ideology names/colours and static-country party-name ladders checked; party popularity, ruling parties, elections, custom names and leader names/portraits require recorded politics, country identities and character holders.".into())
+        }
+        idea_history::IdeaHistory::KEY => ideas_check(content, findings),
+        country_stability::CountryStability::KEY => {
+            stability_check(content, findings)?;
+            Ok("Authored idea, advisor, ideology and dynamic-modifier formula-line names/groups checked; stability, war support, command-power formulas and scripted line text require recorded inputs, modifier definitions, country scope and character holders.".into())
+        }
+        stability_parts::StabilityParts::KEY => {
+            stability_check(content, findings)?;
+            Ok("Authored idea, advisor, ideology and dynamic-modifier part names/groups checked; part values, identity changes, scripted text and observation dates require recorded stability lines, inputs, modifier definitions, country scope and character holders.".into())
+        }
+        resource_balance::ResourceBalance::KEY | trade_flows::TradeFlows::KEY => {
+            let prepared = content.resources.get_or_init(|| {
+                let mut prepared = Vec::new();
+                resources_check(content, &mut prepared).map(|()| prepared)
+            });
+            findings.extend(prepared.as_ref().map_err(Clone::clone)?.iter().cloned());
+            Ok(if key == resource_balance::ResourceBalance::KEY {
+                "Authored resource names and icons checked; country pools, trade quantities and recorded resource order require recorded resource definitions, lexical tokens, country resources, exchanges and country identities."
+            } else {
+                "Authored resource names and icons checked; seller/buyer flows, quantities and recorded resource order require recorded resource definitions, lexical tokens, exchanges and country identities."
+            }.into())
+        }
+        subjects::Subjects::KEY => {
+            let catalogue = content.catalogue()?;
+            let states = content.autonomy()?;
+            let named = states
+                .states
+                .iter()
+                .map(|state| state.id.as_str())
+                .collect();
+            subjects::levels(&named, Some(states), Some(catalogue));
+            take(catalogue, "subject level names", findings);
+            Ok("Every authored autonomy level checked; active relations and current levels require a recording.".into())
+        }
+        occupied_states::OccupiedStates::KEY => {
+            let catalogue = content.catalogue()?;
+            let laws = installed_content::occupation_laws::read(&content.resolved.layers)
+                .map_err(|why| why.to_string())?;
+            // Laws::warnings contains failed file reads, which settle no law.
+            findings.extend(
+                laws.warnings
+                    .iter()
+                    .map(|message| Finding::new(Kind::Refused, "occupation laws", message)),
+            );
+            if laws.warnings.is_empty() {
+                for token in laws.definitions.keys() {
+                    occupied_states::law_content(catalogue, &laws, token);
+                    take(catalogue, &format!("occupation law {token}"), findings);
+                }
+            }
+            Ok("Authored occupation-law names and icons checked; occupied state names and law assignments require recorded state identities.".into())
+        }
+        equipment_stockpile::EquipmentStockpile::KEY => {
+            let catalogue = content.catalogue()?;
+            let equipment = content.equipment()?;
+            for archetype in equipment.equipment.iter().filter(|kind| kind.is_archetype) {
+                let key = archetype.name_str().map_err(|why| why.to_string())?;
+                equipment_stockpile::type_name(catalogue, key);
+                take(catalogue, &format!("equipment type {key}"), findings);
+            }
+            Ok("Authored equipment archetype names checked; variant names and country localisation ladders require recorded variants and country identities.".into())
+        }
+        equipment_produced::EquipmentProduced::KEY
+        | production_spending::ProductionSpending::KEY => {
+            equipment_production_check(content, key, findings)?;
+            Ok("Authored equipment types, archetypes, domains and type names checked through shared equipment production preparation; produced/spent totals, costs and variant names require recorded lines, outputs, costs, variants and country identities.".into())
+        }
+        special_projects::SpecialProjects::KEY => {
+            findings.extend(
+                special_projects::check_content(Arc::clone(content.politics()?))
+                    .map_err(|why| why.to_string())?,
+            );
+            Ok("Authored project names, specialization names and generic icons checked through special-project preparation; country overrides, scripted names, iteration counts and scientist names/portraits require recorded country, project and character context.".into())
+        }
+        autonomy::Autonomy::KEY => {
+            autonomy_check(content, findings)?;
+            Ok("Every authored autonomy level named and ordered through autonomy preparation; subject relations, scores and move limits require recorded Autonomy and Subjects rows.".into())
+        }
+        construction_log::ConstructionLog::KEY
+        | construction_spending::ConstructionSpending::KEY => {
+            let prepared = content
+                .construction
+                .get_or_init(|| construction_check(content));
+            findings.extend(prepared.as_ref().map_err(Clone::clone)?.0.iter().cloned());
+            Ok("Every authored building and state named, and queue building/repair icons drawn through the shared construction preparation; recorded queue lines, state identities, custom state names and building/progress reads determine active projects and spending.".into())
+        }
+        equipment_losses::EquipmentLosses::KEY => {
+            findings.extend(
+                equipment_losses::check_content(content.catalogue()?, content.equipment()?)
+                    .map_err(|why| why.to_string())?,
+            );
+            Ok("Loss cause interface keys, cause names, equipment/design base names and Combat Log retention checked through equipment-losses preparation; recorded designs, loss records and writer coverage determine totals and active selections.".into())
+        }
+        world_tension::WorldTension::KEY => {
+            Ok("No content dependency: tension, country contributions and already-built threat text come from recorded WorldTension, ThreatCountryAggregates and ThreatSources rows, with Countries/CountryLinks naming the countries; display_text only strips their presentation controls.".into())
+        }
+        decryption::Decryption::KEY => {
+            decryption::content_defines(&content.resolved.layers)?;
+            Ok("Cipher threshold defines checked through shared decryption preparation; target strengths, amounts, bonus states and country identities require recorded RaidIntelInputs, Cryptology, Countries and CountryLinks rows, with Campaign dating the observations.".into())
+        }
+        country_nukes::CountryNukes::KEY => {
+            Ok("Nuclear type names localise the native token spellings recorded in LexicalTokens; no authored type-name inventory exists offline. Amounts, type ordinals, country identities and observation dates require recorded Nukes, Countries, CountryLinks and Campaign rows.".into())
+        }
+        raids::Raids::KEY => {
+            findings
+                .extend(raids::check_content(content.catalogue()?).map_err(|why| why.to_string())?);
+            Ok("Every authored raid type named and its generic icon drawn through raid preparation; phase/outcome names use the product's native keys. Active episodes, target names, building-specific icons and tallies require recorded Raids, RaidTargets, RaidCountries, Countries, CountryLinks, States, Provinces, LexicalTokens and Campaign context.".into())
+        }
+        espionage_log::EspionageLog::KEY => {
+            findings.extend(content.intelligence()?.check_operations());
+            Ok("Every authored operation name and icon checked through shared intelligence preparation; active episodes, assignments, type tokens, country identities and dates require recorded Operations, OperationAssignments, LexicalTokens, Countries, CountryLinks and Campaign rows.".into())
+        }
+        agency_comparison::AgencyComparison::KEY => {
+            findings.extend(content.agency()?.check_agency());
+            Ok("Uncreated agency name and defense-label template checked through shared intelligence preparation; created names, defense values, agency/operative rosters, country identities and dates require recorded IntelligenceAgencies, OperativeMemberships, Countries, CountryLinks and Campaign rows. Upgrade inventory is not captured by the live product.".into())
+        }
+        production_lines::ProductionLines::KEY | production_lines::ProductionLineDetail::KEY => {
+            let prepared = content.production.get_or_init(|| {
+                production_lines::check_content(
+                    Arc::clone(content.catalogue()?),
+                    Arc::clone(content.equipment()?),
+                )
+                .map_err(|why| why.to_string())
+            });
+            findings.extend(prepared.as_ref().map_err(Clone::clone)?.0.iter().cloned());
+            Ok("Shared production-line icon content loaded; authored equipment base names and generic icon candidates named and drawn through production preparation. Active line/detail inventory, variant overrides/creator/origin/classifier flags, country appearance/factions/capital and organisation name/icon/owner operands require recorded ProductionLines, VariantDefinitions and IndustrialOrganisations rows.".into())
+        }
+        land_owners::LandOwnersProduct::KEY => {
+            names_check(content, false, findings)?;
+            Ok("Static-country name ladders checked through country-name preparation; land totals, owners, dynamic-country names and cosmetic identities require recorded states and country naming operands.".into())
+        }
+        country_styles::CountryStyles::KEY => {
+            names_check(content, true, findings)?;
+            Ok("Static-country names checked through the product's plain-text country-name preparation; map colours, dynamic-country names and cosmetic identities require recorded country appearance and naming operands.".into())
+        }
+        country_groups::CountryGroups::KEY => {
+            Ok("Faction names use recorded keys localised through the content stack; their inventory requires a recording.".into())
+        }
+        country_measure::CountryMeasure::KEY => {
+            Ok("No content dependency: political and command power balances and their net drops use recorded Countries and CountryLinks rows.".into())
+        }
+        country_fuel::CountryFuel::KEY => {
+            Ok("No content dependency: tank quantities, capacity and daily gain/burn rings use recorded CountryFuel rows and Countries/CountryLinks identities.".into())
+        }
+        war_casualties::WarCasualties::KEY => {
+            let catalogue = content.catalogue()?;
+            let label = war_casualties::UNKNOWN_LABEL;
+            if catalogue
+                .localised(label, crate::catalogue::View::Plain)
+                .is_some_and(|text| text.trim().is_empty())
+            {
+                findings.push(Finding::new(
+                    Kind::Fallback,
+                    format!("casualty label {label}"),
+                    "localisation is blank; the key is shown",
+                ));
+            }
+            take(catalogue, &format!("casualty label {label}"), findings);
+            Ok("Unknown-casualty label checked; campaign names, casualty counters and rankings require recorded Campaign, WarRelations, country identities and politics rows.".into())
+        }
+        scoreboard::Scoreboard::KEY => {
+            let catalogue = content.catalogue()?;
+            scoreboard::registry(Some(catalogue));
+            take(catalogue, "scoreboard column labels", findings);
+            Ok("Column labels the executable binds checked through the product's registry; measures, rankings and country identities require recorded rows.".into())
+        }
+        occupation_trend::OccupationTrend::KEY => {
+            Ok("No content dependency: occupier resistance and compliance means use occupied-states' recorded state, garrison and resistance scan and Countries/CountryLinks identities.".into())
+        }
+        country_experience::CountryExperience::KEY => {
+            Ok("No content dependency: banked army, navy and air experience and daily changes use recorded CountryExperience rows and Countries/CountryLinks identities.".into())
+        }
+        _ => Err("No content preparation check is registered for this product.".into()),
+    }
+}
+
+fn equipment_production_check(
+    content: &Content,
+    product: &str,
+    findings: &mut Vec<Finding>,
+) -> Result<(), String> {
+    let catalogue = content.catalogue()?;
+    let units = content.equipment()?;
+    let named = products::equipment::production::Named {
+        units: Some(units),
+        texts: Some(catalogue.as_ref()),
+    };
+    for kind in &units.equipment {
+        let token = kind.name_str().map_err(|why| why.to_string())?;
+        let subject = format!("equipment type {token}");
+        match products::equipment::archetype_of(units, token) {
+            Ok((archetype, _, _)) => {
+                if named.type_name(&archetype).is_none() {
+                    findings.push(Finding::grouped(
+                        Kind::Fallback,
+                        &subject,
+                        "equipment type has no usable name; its token is shown",
+                        format!(
+                            "{archetype}: {product} has no usable type name; the token is shown"
+                        ),
+                    ));
+                }
+            }
+            Err(reason) => findings.push(Finding::new(Kind::Refused, &subject, reason)),
+        }
+        take(catalogue, &subject, findings);
+    }
+    Ok(())
+}
+
+fn autonomy_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), String> {
+    let catalogue = content.catalogue()?;
+    let states = content.autonomy()?;
+    products::autonomy::content_levels(states, catalogue);
+    take(catalogue, "autonomy level names", findings);
+    Ok(())
+}
+
+fn construction_check(content: &Content) -> Result<(Vec<Finding>, Vec<Finding>), String> {
+    let catalogue = content.catalogue()?;
+    let localise = |key: &str| catalogue.localised(key, crate::catalogue::View::Plain);
+    let named = products::construction_log::named_all(
+        &products::construction_log::ContentView {
+            layers: &catalogue.content.layers,
+            sprites: &catalogue.sprites,
+            guis: &catalogue.guis,
+            gui_decode: &catalogue.gui_decode,
+            localise: &localise,
+        },
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .map_err(|why| why.to_string())?;
+    // Typed state notes belong to the corpus states reader, including its refusals.
+    let products::construction_log::Named {
+        warnings,
+        declared_types,
+        ..
+    } = named;
+    let shared = warnings
+        .into_iter()
+        .map(|note| Finding::reader("construction preparation", note))
+        .collect();
+    let mut findings = Vec::new();
+    for key in declared_types {
+        findings.push(Finding::new(Kind::Offline, format!("building {key}"),
+            "active construction and completed/spent amounts need recorded queue and progress reads; unavailable offline"));
+    }
+    take(catalogue, "construction names", &mut findings);
+    Ok((findings, shared))
+}
+
+fn artwork_check(
+    content: &Content,
+    kind: products::artwork::Kind,
+    findings: &mut Vec<Finding>,
+) -> Result<String, String> {
+    let catalogue = content.catalogue()?;
+    let context = products::artwork::Context::load(Arc::clone(catalogue), kind)
+        .map_err(|error| error.to_string())?;
+    let (tokens, _) = context.tokens();
+    let total = tokens.len();
+    let mut without_description = 0;
+    for token in tokens {
+        let subject = format!(
+            "{} {token}",
+            match kind {
+                products::artwork::Kind::Focus => "focus",
+                products::artwork::Kind::Technology => "technology",
+            }
+        );
+        let (_, problems) = context.prepare(token);
+        without_description += usize::from(!context.description_is_defined(token));
+        findings.extend(problems.into_iter().map(|mut problem| {
+            problem.subject = subject.clone();
+            problem
+        }));
+        take(catalogue, &subject, findings);
+    }
+    Ok(match kind {
+        products::artwork::Kind::Focus => format!(
+            "{total} declared items checked; {without_description} missing description localisation keys (the key is shown, 142230940)."
+        ),
+        products::artwork::Kind::Technology => {
+            format!("{total} declared technologies checked (text and icons).")
+        }
+    })
+}
+
+fn flags_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), String> {
+    use products::country_flags::{
+        CountryFlagSize, FlagCache, FlagSearch, ShieldStyle, find_flag, flag_cells,
+    };
+    match content
+        .catalogue()
+        .and_then(|catalogue| ShieldStyle::load(catalogue).map_err(|error| error.to_string()))
+    {
+        Ok(style) => findings.extend(
+            style
+                .warnings
+                .into_iter()
+                .map(|message| Finding::new(Kind::Warning, "shield", message)),
+        ),
+        Err(error) => findings.push(Finding::new(Kind::Refused, "shield", error)),
+    }
+    let cells = flag_cells(&content.resolved.layers).map_err(|error| error.to_string())?;
+    let tags = content.tags()?;
+    // Flag preparation needs ideology groups alone, not the idea databases.
+    let ideologies = content.ideologies()?;
+    let (groups, _) = ideologies.groups();
+    let mut cache = FlagCache::default();
+    for (tag, definition) in tags {
+        if definition.dynamic {
+            // CCountryDatabase::load_tags 14070E900 declares runtime slots;
+            // the product's choices() resolves their recorded appearance.
+            findings.push(Finding::new(
+                Kind::Offline,
+                format!("country {tag:?}"),
+                "dynamic country flags need recorded appearance; unavailable offline",
+            ));
+            continue;
+        }
+        let mut any = false;
+        for group in groups.iter().map(|group| Some(group.token.as_str())) {
+            let candidates = installed_content::country_names::flag_keys(tag, "", "", group);
+            for size in [
+                CountryFlagSize::Full,
+                CountryFlagSize::Medium,
+                CountryFlagSize::Small,
+            ] {
+                let subject = format!("flag {tag:?} group {group:?} {size:?}");
+                let (found, problems) = find_flag(
+                    &content.resolved.layers,
+                    size.sets(),
+                    &cells,
+                    &candidates,
+                    &mut cache,
+                )
+                .map_err(|error| error.to_string())?;
+                // A completely missing group/set authored no image, and the
+                // engine's LoadFirstDecodableCountryFlag 14122A730 skips it.
+                // Keep file refusals, but no diagnostic for authored absence.
+                findings.extend(
+                    problems
+                        .into_iter()
+                        .filter(|problem| problem.file.is_some() || problem.kind == Kind::Refused)
+                        .map(|mut problem| {
+                            problem.subject = subject.clone();
+                            problem
+                        }),
+                );
+                match found {
+                    FlagSearch::Found { .. } => any = true,
+                    FlagSearch::Unresolvable | FlagSearch::Absent => {}
+                }
+            }
+        }
+        // choices() can pass None when a recorded country has no resolvable
+        // ruling party. Probe that path only if every group/set was absent,
+        // and retain one visible-fallback note per tag (dashboard README,
+        // "Offline product checks"), rather than three impossible requests.
+        if !any {
+            let candidates = installed_content::country_names::flag_keys(tag, "", "", None);
+            let mut plain_found = false;
+            for size in [
+                CountryFlagSize::Full,
+                CountryFlagSize::Medium,
+                CountryFlagSize::Small,
+            ] {
+                let (found, problems) = find_flag(
+                    &content.resolved.layers,
+                    size.sets(),
+                    &cells,
+                    &candidates,
+                    &mut cache,
+                )
+                .map_err(|error| error.to_string())?;
+                plain_found |= matches!(found, FlagSearch::Found { .. });
+                findings.extend(
+                    problems
+                        .into_iter()
+                        .filter(|problem| problem.file.is_some() || problem.kind == Kind::Refused),
+                );
+            }
+            if !plain_found {
+                findings.push(Finding::new(Kind::Fallback, format!("flag {tag:?} group None"),
+                    "no decodable flag without a ruling group or in any group; flag artwork is unavailable"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parties_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), String> {
+    use products::party_history::{
+        PartyNaming, ideology_infos, ideology_type_info, party_key_checked,
+    };
+    let politics = content.politics()?;
+    let mut warnings = Vec::new();
+    ideology_infos(politics, &mut warnings);
+    // ideology_infos emits typed product findings; its strings are live warnings.
+    // Localisation diagnostics retain the ideology token in their messages.
+    findings.extend(politics.catalogue.take_findings());
+    let tags = content.tags()?;
+    for (tag, definition) in tags {
+        if definition.dynamic {
+            findings.push(Finding::new(
+                Kind::Offline,
+                format!("country {tag:?}"),
+                "dynamic country parties need recorded identity; unavailable offline",
+            ));
+        }
+    }
+    for group in politics.ideologies.groups().0 {
+        for token in &group.types {
+            ideology_type_info(Some(politics), token);
+            take(
+                &politics.catalogue,
+                &format!("ideology type {token}"),
+                findings,
+            );
+        }
+        for (tag, _) in tags.iter().filter(|(_, definition)| !definition.dynamic) {
+            let subject = format!("party {tag:?} / {}", group.token);
+            let naming = PartyNaming {
+                token: group.token.clone(),
+                tag: Some(tag.clone()),
+                original_tag: Some(String::new()),
+                key: None,
+            };
+            let (key, reason) = party_key_checked(&naming, |key| politics.defines(key))
+                .ok_or_else(|| "static party naming operands were refused".to_owned())?;
+            if let Some(reason) = reason {
+                // CPoliticalParty::GetLocalizedName 14118F860 / 14118EAD0:
+                // the group token is the engine's final naming rung.
+                findings.push(Finding::grouped(Kind::Content, &subject, "party name keys are missing; the ideology group name is shown (14118F860 / 14118EAD0)", reason));
+            }
+            politics.localised(&key, crate::catalogue::View::Plain);
+            take(&politics.catalogue, &subject, findings);
+        }
+    }
+    Ok(())
+}
+
+fn ideas_check(content: &Content, findings: &mut Vec<Finding>) -> Result<String, String> {
+    use products::idea_history::{Joined, categories, effect_keys, prepare_info};
+    let politics = content.politics()?;
+    let localise = |key: &str, view| politics.localised(key, view);
+    let joined = Joined::of(politics, &localise);
+    categories(&joined);
+    take(&politics.catalogue, "idea categories and slots", findings);
+    if let Some(gap) = politics.ideas.tags.categories().1 {
+        findings.push(Finding::new(
+            Kind::Refused,
+            "idea category inventory",
+            gap.to_string(),
+        ));
+    }
+    let (tokens, gap) = politics.ideas.tokens();
+    if let Some(gap) = gap {
+        findings.push(Finding::new(
+            Kind::Refused,
+            "idea inventory",
+            gap.to_string(),
+        ));
+    }
+    let (advisors, advisor_gap) = politics.characters.advisor_tokens();
+    if let Some(gap) = advisor_gap {
+        findings.push(Finding::new(
+            Kind::Refused,
+            "advisor idea inventory",
+            gap.to_string(),
+        ));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut without_description = 0;
+    for token in tokens.chain(advisors).filter(|token| seen.insert(*token)) {
+        let subject = format!("idea {token}");
+        without_description += usize::from(politics.idea_description_key(token).is_none());
+        let (found, problems) = prepare_info(
+            &joined,
+            token,
+            None,
+            Err("recorded advisor holder is unavailable offline"),
+            true,
+        );
+        findings.extend(problems);
+        // Artwork creates typed findings at its source. Its returned string
+        // serves the live reply only; emitting it here would count portraits twice.
+        politics.idea_artwork_offline(token);
+        let (modifiers, texts) = effect_keys(&[found]);
+        findings.extend(products::idea_format::content_formats(politics, &modifiers));
+        products::idea_format::texts(politics, &texts);
+        take(&politics.catalogue, &subject, findings);
+    }
+    Ok(format!(
+        "{} declared ideas/advisors checked; {without_description} without an authored description key (no finding).",
+        seen.len()
+    ))
+}
+
+fn stability_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), String> {
+    use products::country_stability::{BreakdownLine, line_group_offline, line_name_offline};
+    let politics = content.politics()?;
+    let check_line = |kind: &str, identity: &str, findings: &mut Vec<Finding>| {
+        let line = BreakdownLine {
+            line: 0,
+            kind: kind.to_owned(),
+            identity: identity.to_owned(),
+            identity_id: 0,
+            secondary_raw: String::new(),
+            value_raw: String::new(),
+            text: None,
+            label: None,
+            group: None,
+            group_kind: None,
+        };
+        let subject = format!("{kind} {identity}");
+        line_group_offline(&line, politics);
+        line_name_offline(&line, politics);
+        let problems = politics.catalogue.take_findings();
+        findings.extend(problems.into_iter().map(|mut problem| {
+            problem.subject = subject.clone();
+            problem
+        }));
+    };
+    let (tokens, gap) = politics.ideas.tokens();
+    if let Some(gap) = gap {
+        findings.push(Finding::new(
+            Kind::Refused,
+            "idea inventory",
+            gap.to_string(),
+        ));
+    }
+    for token in tokens {
+        check_line("idea", token, findings);
+    }
+    let (advisors, gap) = politics.characters.advisor_tokens();
+    if let Some(gap) = gap {
+        findings.push(Finding::new(
+            Kind::Refused,
+            "advisor idea inventory",
+            gap.to_string(),
+        ));
+    }
+    for token in advisors {
+        check_line("advisor", token, findings);
+    }
+    let (groups, _) = politics.ideologies.groups();
+    for group in groups {
+        check_line("ideology", &group.token, findings);
+        for token in &group.types {
+            check_line("ideology", token, findings);
+        }
+    }
+    for definition in politics.modifier_definitions.iter() {
+        check_line("dynamicModifier", &definition.token, findings);
+    }
+    Ok(())
+}
+
+fn resources_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), String> {
+    use products::resources::{ContentView, ordinals, resource_content};
+    let catalogue = content.catalogue()?;
+    let (resources, _) =
+        installed_content::resources::read(&content.resolved.layers).map_err(|error| error.to_string())?;
+    let numbered: Vec<_> = resources
+        .into_iter()
+        .enumerate()
+        .map(|(index, resource)| (index as u32, resource.token))
+        .collect();
+    let wanted: Vec<_> = numbered
+        .iter()
+        .zip(ordinals(&numbered))
+        .map(|((_, token), ordinal)| (token.clone(), ordinal))
+        .collect();
+    let mut cached = std::collections::BTreeMap::new();
+    let mut warnings = Vec::new();
+    findings.extend(
+        resource_content(
+            &ContentView::of(catalogue),
+            &wanted,
+            &mut cached,
+            &mut warnings,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .map_err(|error| error.to_string())?,
+    );
+
+    Ok(())
+}
+
+fn names_check(content: &Content, plain: bool, findings: &mut Vec<Finding>) -> Result<(), String> {
+    use installed_content::country_names::{CountryNames, Operands};
+    let catalogue = content.catalogue()?;
+    let tags = content.tags()?;
+    let ideologies = content.ideologies()?;
+    let (groups, _) = ideologies.groups();
+    for (tag, definition) in tags {
+        if definition.dynamic {
+            // 14070E900 marks runtime slots. CountryNames' recorded operands
+            // (country_names.rs) supply the runtime naming/cosmetic identity.
+            findings.push(Finding::new(
+                Kind::Offline,
+                format!("country {tag:?}"),
+                "dynamic country names need recorded naming operands; unavailable offline",
+            ));
+            continue;
+        }
+        for group in
+            std::iter::once(None).chain(groups.iter().map(|group| Some(group.token.as_str())))
+        {
+            let subject = format!("country name {tag:?} group {group:?}");
+            let operands = Operands::for_tag(tag, group);
+            let key = operands.name_key("", |key| catalogue.localisation.get(key).is_some());
+            let names = CountryNames::of_operands(
+                &catalogue.localisation,
+                std::collections::BTreeMap::from([(0, Ok(operands))]),
+            );
+            match if plain {
+                products::country_styles::country_name(&names, 0)
+            } else {
+                names.name(0)
+            } {
+                Ok(_) => {}
+                Err(reason) => {
+                    let message =
+                        format!("{reason}; the country name is unavailable and the tag is shown");
+                    findings.push(if key.is_none() {
+                        Finding::grouped(Kind::Content, subject,
+                            "country-name ladder has no localisation; the bare tag key is copied (142230940)", message)
+                    } else {
+                        Finding::new(Kind::Refused, subject, message)
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn equipment_and_autonomy_preparation_reuse_the_same_loaded_objects() {
+        let content = Content::new(
+            Arc::new(ResolvedContent {
+                layers: installed_content::ResolvedLayers::from_folders(&[]).unwrap(),
+                stats: Default::default(),
+            }),
+            "english",
+        );
+        assert!(Arc::ptr_eq(
+            content.equipment().unwrap(),
+            content.equipment().unwrap(),
+        ));
+        assert!(std::ptr::eq(
+            content.autonomy().unwrap(),
+            content.autonomy().unwrap(),
+        ));
+        assert!(std::ptr::eq(
+            content.tags().unwrap(),
+            content.tags().unwrap()
+        ));
+        assert!(std::ptr::eq(
+            content.ideologies().unwrap(),
+            content.ideologies().unwrap()
+        ));
+    }
+
+    #[test]
+    fn reader_kinds_preserve_the_producer_without_reading_message_words() {
+        for (producer, expected) in [
+            (installed_content::DiagnosticKind::ParseFailure, Kind::ParseFailure),
+            (installed_content::DiagnosticKind::Misread, Kind::Misread),
+            (installed_content::DiagnosticKind::Unsettled, Kind::Unsettled),
+            (installed_content::DiagnosticKind::Unsupported, Kind::Unsupported),
+            (installed_content::DiagnosticKind::Refused, Kind::Refused),
+            (installed_content::DiagnosticKind::Logged, Kind::Logged),
+            (installed_content::DiagnosticKind::Warning, Kind::Warning),
+        ] {
+            let note = Finding::reader(
+                "fixture",
+                (producer, "unknown unsupported parse failure".into()),
+            );
+            assert_eq!(note.kind, expected);
+            assert_eq!(note.message, "unknown unsupported parse failure");
+        }
+    }
+
+    #[test]
+    fn offline_reasons_count_distinct_items_with_every_example() {
+        let mut findings: Vec<_> = (0..8)
+            .map(|index| {
+                Finding::new(
+                    Kind::Offline,
+                    format!("item {index}"),
+                    "recorded context unavailable offline",
+                )
+            })
+            .collect();
+        findings.push(findings[0].clone());
+        findings.push(Finding::new(
+            Kind::Unsupported,
+            "script",
+            "reader cannot handle this form",
+        ));
+        aggregate(&mut findings);
+        assert_eq!(findings.len(), 2);
+        assert_eq!(findings[1].message, "recorded context unavailable offline");
+        assert_eq!(findings[1].count, Some(8));
+        assert_eq!(
+            findings[1].examples,
+            [
+                "item 0", "item 1", "item 2", "item 3", "item 4", "item 5", "item 6", "item 7"
+            ]
+        );
+    }
+
+    #[test]
+    fn recorded_holder_reasons_do_not_split_by_authored_advisor_name() {
+        let reason = "advisor role needs its recorded holder template; unavailable offline";
+        let mut findings = vec![
+            Finding::grouped(
+                Kind::Offline,
+                "idea first",
+                reason,
+                "advisor first's template missing",
+            ),
+            Finding::grouped(
+                Kind::Offline,
+                "idea second",
+                reason,
+                "advisor second's template missing",
+            ),
+        ];
+        aggregate(&mut findings);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].message, reason);
+        assert_eq!(findings[0].count, Some(2));
+        assert_eq!(
+            findings[0].examples,
+            [
+                "idea first: advisor first's template missing",
+                "idea second: advisor second's template missing",
+            ]
+        );
+    }
+}

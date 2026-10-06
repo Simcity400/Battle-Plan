@@ -91,18 +91,79 @@ pub fn intelligence_content(
 }
 
 impl IntelligenceContent {
+    pub(crate) fn check_reader_notes(&self) -> Vec<crate::content_check::Finding> {
+        self.definitions
+            .notes
+            .iter()
+            .cloned()
+            .map(|note| crate::content_check::Finding::reader("operation definitions", note))
+            .collect()
+    }
+
+    pub(crate) fn check_operations(&self) -> Vec<crate::content_check::Finding> {
+        use crate::content_check::{Finding, Kind};
+        let mut findings = Vec::new();
+        if self.definitions.operation_refusals.is_empty() {
+            for definition in self.definitions.operations.values() {
+                let subject = format!("operation {}", definition.token);
+                let (artwork, _) = self.operation_artwork(&definition.token);
+                let notes = self.catalogue.take_findings();
+                if artwork.name.is_none()
+                    && !notes.iter().any(|note| note.subject == definition.name)
+                {
+                    findings.push(Finding::new(
+                        Kind::Fallback,
+                        &subject,
+                        "operation has no usable authored name; the reply name is unknown",
+                    ));
+                }
+                // operation_artwork records its own text and image refusals.
+                findings.extend(notes);
+            }
+        }
+        findings
+    }
+
+    pub(crate) fn check_agency(&self) -> Vec<crate::content_check::Finding> {
+        use crate::content_check::{Finding, Kind};
+        let mut findings = Vec::new();
+        self.default_agency_name();
+        findings.extend(self.catalogue.take_findings());
+        let label = self.defense_label();
+        let notes = self.catalogue.take_findings();
+        if label.is_none() && notes.is_empty() {
+            findings.push(Finding::new(
+                Kind::Fallback,
+                "AGENCY_DEFENSE_LEVEL",
+                "agency defense template is missing; its label and number are unknown",
+            ));
+        }
+        findings.extend(notes);
+        findings.push(Finding::new(Kind::Offline, "AGENCY_DEFENSE_LEVEL",
+            "agency defense numeric text needs the recorded IntelligenceAgencies value; unavailable offline"));
+        findings
+    }
+
     pub(crate) fn load(catalogue: Arc<Catalogue>) -> io::Result<Self> {
         let definitions = installed_content::intelligence::read(&catalogue.content.layers)?;
+        let mut content = Self::load_agency(catalogue);
+        content
+            .warnings
+            .extend(definitions.warnings.iter().cloned());
+        content.definitions = definitions;
+        Ok(content)
+    }
+
+    pub(crate) fn load_agency(catalogue: Arc<Catalogue>) -> Self {
         let mut warnings = catalogue.verification.clone();
         warnings.extend(catalogue.warnings.iter().cloned());
-        warnings.extend(definitions.warnings.iter().cloned());
-        Ok(Self {
+        Self {
             catalogue,
-            definitions,
+            definitions: installed_content::intelligence::Intelligence::default(),
             warnings,
             defense: OnceLock::default(),
             artwork: Mutex::default(),
-        })
+        }
     }
 
     /// GetAgency's uncreated branch, 141A7B350 case 0x19. The literal is an
@@ -232,6 +293,97 @@ impl IntelligenceContent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn intelligence_reader_notes_are_shared_and_do_not_enter_product_checks() {
+        let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+            (
+                "common/operations/mod.txt",
+                "mod_operation = { operation_target = { target_array = unsupported } }",
+            ),
+            (
+                "localisation/test_l_english.yml",
+                "\u{feff}l_english:\n AGENCY_NAME:0 \"Custom agency\"\n AGENCY_DEFENSE_LEVEL:0 \"Protection: $LEVEL|.1$\"\n",
+            ),
+        ]);
+        let catalogue = Arc::new(catalogue);
+        let operations = IntelligenceContent::load(Arc::clone(&catalogue)).unwrap();
+        assert_eq!(operations.definitions.operation_refusals.len(), 1);
+        let notes = operations.check_reader_notes();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].kind, crate::content_check::Kind::Unsettled);
+        assert!(notes[0].message.contains("target_array"));
+        assert!(operations.check_operations().is_empty());
+        let agency_notes = operations.check_agency();
+        assert_eq!(agency_notes.len(), 1);
+        assert_eq!(agency_notes[0].kind, crate::content_check::Kind::Offline);
+        assert_eq!(agency_notes[0].subject, "AGENCY_DEFENSE_LEVEL");
+
+        let agency = IntelligenceContent::load_agency(catalogue);
+        assert!(agency.definitions.operation_refusals.is_empty());
+        assert!(agency.definitions.operations.is_empty());
+        assert_eq!(
+            agency.default_agency_name().as_deref(),
+            Some("Custom agency")
+        );
+        assert_eq!(agency.defense_label().as_deref(), Some("Protection"));
+        assert_eq!(agency.check_agency().len(), 1);
+    }
+
+    #[test]
+    fn agency_preparation_does_not_read_operation_files() {
+        let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
+            (
+                "common/operations/mod.txt",
+                "mod_operation = { name = MOD_OPERATION icon = mod_sprite }",
+            ),
+            (
+                "localisation/test_l_english.yml",
+                "\u{feff}l_english:\n AGENCY_NAME:0 \"Custom agency\"\n AGENCY_DEFENSE_LEVEL:0 \"Protection: $LEVEL|.1$\"\n",
+            ),
+        ]);
+        std::fs::remove_file(folder.0.join("common/operations/mod.txt")).unwrap();
+        let catalogue = Arc::new(catalogue);
+        assert!(IntelligenceContent::load(Arc::clone(&catalogue)).is_err());
+        let agency = IntelligenceContent::load_agency(catalogue);
+        assert_eq!(
+            agency.default_agency_name().as_deref(),
+            Some("Custom agency")
+        );
+        assert_eq!(agency.defense_label().as_deref(), Some("Protection"));
+        let notes = agency.check_agency();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].kind, crate::content_check::Kind::Offline);
+    }
+
+    #[test]
+    fn intelligence_shared_notes_keep_native_deferred_kind() {
+        let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
+            "common/operations/mod.txt",
+            "custom = { on_start = { free_operative = { operative = custom_name } } }",
+        )]);
+        let content = IntelligenceContent::load(Arc::new(catalogue)).unwrap();
+        let notes = content.check_reader_notes();
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].kind, crate::content_check::Kind::Unsupported);
+        assert!(
+            notes[0]
+                .message
+                .contains("Deferred effect `free_operative`")
+        );
+        let operation_notes = content.check_operations();
+        assert!(
+            operation_notes
+                .iter()
+                .all(|note| note.message != notes[0].message)
+        );
+        let agency_notes = content.check_agency();
+        assert!(
+            agency_notes
+                .iter()
+                .all(|note| note.message != notes[0].message)
+        );
+    }
 
     #[test]
     fn intelligence_content_ignores_uncaptured_agency_upgrade_definitions() {

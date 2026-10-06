@@ -248,18 +248,90 @@ fn decode_icon(cat: &Catalogue, key: &str) -> Result<String, String> {
         .map_err(|error| format!("raid sprite {key}: {error}"))
 }
 
+fn localised_label(cat: &Catalogue, key: &str) -> Option<String> {
+    cat.localisation.get(key)?;
+    cat.localised(key, View::Plain)
+}
+
+// GetLocalizedName@140A8E3B0 constructs raid_type_<database name>.
+fn type_name_key(kind: &RaidType) -> String {
+    format!("raid_type_{}", kind.name)
+}
+
 fn type_info(cat: &Catalogue, kind: &RaidType) -> RaidTypeInfo {
-    // GetLocalizedName@140A8E3B0 constructs raid_type_<database name>.
-    let name_key = format!("raid_type_{}", kind.name);
-    let name = cat
-        .localisation
-        .get(&name_key)
-        .and_then(|_| cat.localised(&name_key, View::Plain));
+    let name_key = type_name_key(kind);
+    let name = localised_label(cat, &name_key);
     RaidTypeInfo {
         token: kind.name.clone(),
         name,
         missing: None,
     }
+}
+
+fn prepare_types(cat: &Catalogue, raids: &Catalog) -> Vec<RaidTypeInfo> {
+    raids
+        .types
+        .iter()
+        .map(|kind| type_info(cat, kind))
+        .chain(raids.uncertain.iter().map(|kind| RaidTypeInfo {
+            token: kind.name.clone(),
+            name: None,
+            missing: Some(kind.reason.clone()),
+        }))
+        .collect()
+}
+
+pub(crate) fn check_content(cat: &Catalogue) -> io::Result<Vec<crate::content_check::Finding>> {
+    use crate::content_check::{Finding, Kind};
+    let raids = installed_content::raids::read(&cat.content.layers)?;
+    // The corpus raid reader owns native notes, including uncertain types.
+    let mut findings = Vec::new();
+    let mut icons = BTreeMap::new();
+    for kind in &raids.types {
+        let info = type_info(cat, kind);
+        let subject = format!("raid type {}", kind.name);
+        let name_key = type_name_key(kind);
+        if info.name.is_none() && cat.localisation.get(&name_key).is_none() {
+            findings.push(Finding::new(
+                Kind::Fallback,
+                &subject,
+                format!("{name_key}: name localisation is missing; shown as unknown"),
+            ));
+        }
+        match icon_key(cat, kind, None) {
+            Ok(key) => {
+                icons
+                    .entry(key.clone())
+                    .or_insert_with(|| decode_icon(cat, &key));
+            }
+            Err(reason) => findings.push(Finding::new(Kind::Refused, &subject, reason)),
+        }
+        findings.extend(cat.take_findings());
+        findings.push(Finding::grouped(
+            Kind::Offline,
+            subject,
+            "raid target names and building-specific icon candidates need recorded target scope; unavailable offline",
+            "raid target names and building-specific icon candidates need recorded target scope; unavailable offline",
+        ));
+    }
+    findings.extend(icons.into_iter().filter_map(|(key, decoded)| {
+        decoded
+            .err()
+            .map(|reason| Finding::new(Kind::Fallback, key, reason))
+    }));
+    for key in native::PHASE_KEYS.into_iter().chain(native::OUTCOME_KEYS) {
+        // Localising records a text the localiser refuses as its own finding.
+        localised_label(cat, key);
+        if cat.localisation.get(key).is_none() {
+            findings.push(Finding::new(
+                Kind::Fallback,
+                key,
+                "raid phase/outcome name is missing; shown as unknown",
+            ));
+        }
+        findings.extend(cat.take_findings());
+    }
+    Ok(findings)
 }
 
 fn read_content(cat: Arc<Catalogue>) -> io::Result<Content> {
@@ -274,7 +346,8 @@ fn read_content(cat: Arc<Catalogue>) -> io::Result<Content> {
     warnings.extend(refused.lines("raid types"));
     let names = match scripted_text::read_state_content(&cat.content.layers) {
         Ok(states) => {
-            warnings.extend(states.warnings);
+            warnings
+                .extend(scripted_text::live_state_warnings(&states.warnings).map(str::to_owned));
             states.names
         }
         Err(error) => {
@@ -282,16 +355,7 @@ fn read_content(cat: Arc<Catalogue>) -> io::Result<Content> {
             StateNames::new()
         }
     };
-    let mut types: Vec<_> = raids
-        .types
-        .iter()
-        .map(|kind| type_info(&cat, kind))
-        .collect();
-    types.extend(raids.uncertain.iter().map(|kind| RaidTypeInfo {
-        token: kind.name.clone(),
-        name: None,
-        missing: Some(kind.reason.clone()),
-    }));
+    let types = prepare_types(&cat, &raids);
     let mut unnamed = Refusals::default();
     for kind in types.iter().filter(|kind| kind.name.is_none()) {
         unnamed.note("name localisation is missing or refused", &kind.token);
@@ -813,14 +877,7 @@ impl Scan {
                         .ok_or_else(|| io::Error::other("Raid success count overflow"))?;
                 }
             }
-            let localise = |key| {
-                content.and_then(|c| {
-                    c.catalogue
-                        .localisation
-                        .get(key)
-                        .and_then(|_| c.catalogue.localised(key, View::Plain))
-                })
-            };
+            let localise = |key| content.and_then(|c| localised_label(&c.catalogue, key));
             if !(0..=native::PHASE_ENDED).contains(&row.phase) {
                 self.refusals
                     .note(format!("unsupported raid phase {}", row.phase), &id);

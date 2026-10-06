@@ -411,7 +411,7 @@ fn autonomy_levels_follow_a_mods_autonomy_states_in_their_order_and_count() {
     );
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(
-        warnings[0].contains("autonomy_scripted") && warnings[0].contains("not a plain number"),
+        warnings[0].1.contains("autonomy_scripted") && warnings[0].1.contains("not a plain number"),
         "{warnings:?}"
     );
     // Recorded in another order, with a level only vanilla defined.

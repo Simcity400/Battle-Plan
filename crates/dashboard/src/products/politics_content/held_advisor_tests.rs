@@ -3,7 +3,7 @@ use crate::{
     catalogue::View,
     products::{
         country_stability::{BreakdownLine, RecordedCharacter, line_group},
-        idea_history::{Joined, info},
+        idea_history::{Joined, prepare_info},
         identity::built_template,
     },
 };
@@ -65,15 +65,20 @@ fn a_disagreeing_advisor_is_its_holders_template() {
     };
     for (line, trait_token) in [(4, "a_trait"), (8, "b_trait")] {
         let built = built_template(&row(line), Some(&lexical)).unwrap();
-        let found = info(
+        let (found, findings) = prepare_info(
             &joined,
             "MOD_split_idea",
             Some("political_advisor"),
             Ok(&built),
+            false,
         );
         assert!(found.effects_known, "{:?}", found.unknown);
         assert_eq!(found.unknown, None);
         assert_eq!(found.traits[0].token, trait_token);
+        assert!(findings.iter().any(|finding| {
+            finding.kind == crate::content_check::Kind::Fallback
+                && finding.subject == format!("idea MOD_split_idea trait {trait_token}")
+        }));
     }
     // What the hour does not hold is refused by name.
     let unspelled = built_template(&row(8), Some(&[])).unwrap_err();
@@ -90,13 +95,18 @@ fn a_disagreeing_advisor_is_its_holders_template() {
     )
     .unwrap_err();
     assert!(absent.contains("CCharacter+0x20 is null"), "{absent}");
-    let found = info(
+    let (found, findings) = prepare_info(
         &joined,
         "MOD_split_idea",
         Some("political_advisor"),
         Err(&unspelled),
+        false,
     );
     assert!(!found.effects_known);
+    assert!(findings.iter().any(|finding| {
+        finding.kind == crate::content_check::Kind::Unsupported
+            && Some(finding.message.as_str()) == found.unknown.as_deref()
+    }));
     assert!(
         found
             .unknown

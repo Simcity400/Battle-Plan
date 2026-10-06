@@ -674,7 +674,13 @@ fn content_folder(name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
 
 #[test]
 fn factory_types_follow_a_modded_content_stack() {
-    use crate::products::country_factories::{FactoryGroupKey, describe_groups};
+    use crate::{
+        catalogue::Catalogue,
+        content_check::Kind,
+        products::country_factories::{
+            FactoryGroupKey, content_groups, describe_groups_with_findings,
+        },
+    };
     let vanilla = content_folder(
         "factories_vanilla",
         &[
@@ -712,12 +718,18 @@ fn factory_types_follow_a_modded_content_stack() {
         (&modded, &["common/buildings"][..]),
     ])
     .unwrap();
-    let localisation = installed_content::localisation::read(&layers, "english").unwrap();
-    let (groups, warnings) = describe_groups(&layers, |token| {
-        localisation.get(token)?;
-        // CBuildingTemplate::constructor@1414a4470 uses consumer@142230F20.
-        crate::catalogue::localised(&localisation, token, crate::catalogue::View::Plain).ok()
-    });
+    let catalogue = Catalogue::of_layers_for_check(layers, "english").unwrap();
+    let (groups, warnings) = content_groups(&catalogue);
+    let findings = catalogue.take_findings();
+    assert_eq!(findings.len(), 2);
+    assert!(findings.iter().any(|finding| {
+        finding.kind == Kind::Content
+            && finding.subject == "building workshop"
+            && finding.message.contains("142230940")
+    }));
+    assert!(findings.iter().any(|finding| {
+        finding.kind == Kind::Fallback && finding.subject == "factory group naval_production"
+    }));
     let _ = std::fs::remove_dir_all(&vanilla);
     let _ = std::fs::remove_dir_all(&modded);
     let named = |key| -> Vec<(String, Option<String>)> {
@@ -756,7 +768,7 @@ fn factory_types_follow_a_modded_content_stack() {
     assert!(
         warnings
             .iter()
-            .any(|warning| warning.starts_with("workshop:")),
+            .all(|warning| !warning.starts_with("workshop:")),
         "{warnings:?}"
     );
     // The native integer scan leaves an unresolved token at its constructor's zero.
@@ -768,7 +780,7 @@ fn factory_types_follow_a_modded_content_stack() {
         )],
     );
     let layers = installed_content::ResolvedLayers::from_folders(&[(&scripted, &[][..])]).unwrap();
-    let (groups, warnings) = describe_groups(&layers, |_| None);
+    let (groups, warnings, findings) = describe_groups_with_findings(&layers, |_| None);
     let _ = std::fs::remove_dir_all(&scripted);
     assert_eq!(groups.len(), 3);
     assert!(groups.iter().all(|group| group.buildings.is_empty()));
@@ -776,6 +788,12 @@ fn factory_types_follow_a_modded_content_stack() {
         warnings
             .iter()
             .all(|warning| warning.starts_with("No building"))
+    );
+    assert_eq!(findings.len(), 3);
+    assert!(
+        findings
+            .iter()
+            .all(|finding| finding.kind == Kind::Fallback)
     );
     // A modifier block the reader cannot settle is refused, never treated as vanilla.
     let unsupported = content_folder(
@@ -786,7 +804,7 @@ fn factory_types_follow_a_modded_content_stack() {
         )],
     );
     let layers = installed_content::ResolvedLayers::from_folders(&[(&unsupported, &[][..])]).unwrap();
-    let (groups, warnings) = describe_groups(&layers, |_| None);
+    let (groups, warnings, findings) = describe_groups_with_findings(&layers, |_| None);
     let _ = std::fs::remove_dir_all(&unsupported);
     assert_eq!(groups.len(), 3);
     assert!(groups.iter().all(|group| group.buildings.is_empty()));
@@ -794,6 +812,9 @@ fn factory_types_follow_a_modded_content_stack() {
         warnings[0].starts_with("Factory types are unavailable"),
         "{warnings:?}"
     );
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].kind, Kind::Refused);
+    assert_eq!(findings[0].subject, "factory types");
 }
 
 #[test]

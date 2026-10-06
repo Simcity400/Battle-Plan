@@ -268,7 +268,7 @@ fn subject_content(source: &Source, options: &ContentOptions) -> io::Result<Arc<
     let loaded = Arc::new(SubjectContent {
         catalogue,
         states,
-        warnings,
+        warnings: warnings.into_iter().map(|(_, message)| message).collect(),
     });
     *state = Some(Arc::clone(&loaded));
     Ok(loaded)

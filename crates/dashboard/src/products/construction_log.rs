@@ -1827,7 +1827,24 @@ pub struct Named {
     pub types: BTreeMap<u32, (Option<String>, Option<String>)>,
     pub repair_icon: Option<String>,
     pub states: BTreeMap<u32, Option<String>>,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<installed_content::Diagnostic>,
+    /// A refused state read, warned live; the states corpus owns it offline.
+    state_read_error: Option<String>,
+    pub(crate) state_diagnostics: Vec<installed_content::Diagnostic>,
+    pub(crate) declared_types: Vec<String>,
+}
+
+impl Named {
+    fn live_warnings(&self) -> impl Iterator<Item = String> + '_ {
+        self.warnings
+            .iter()
+            .map(|(_, message)| message.clone())
+            .chain(self.state_read_error.clone())
+            .chain(
+                crate::scripted_text::live_state_warnings(&self.state_diagnostics)
+                    .map(|why| format!("State names: {why}")),
+            )
+    }
 }
 
 /// The recorded content a log's names and art come from: the catalogue's layers,
@@ -1880,7 +1897,12 @@ fn line_sprite(content: &ContentView<'_>, element: &str) -> io::Result<LineSprit
 const LISTED: usize = 12;
 
 /// "N <what>: a, b, c and N more", or nothing for none.
-fn counted(warnings: &mut Vec<String>, what: &str, names: &[String]) {
+fn counted(
+    warnings: &mut Vec<installed_content::Diagnostic>,
+    kind: installed_content::DiagnosticKind,
+    what: &str,
+    names: &[String],
+) {
     if names.is_empty() {
         return;
     }
@@ -1896,7 +1918,7 @@ fn counted(warnings: &mut Vec<String>, what: &str, names: &[String]) {
     } else {
         String::new()
     };
-    warnings.push(format!("{} {what}: {shown}{rest}.", names.len()));
+    warnings.push((kind, format!("{} {what}: {shown}{rest}.", names.len())));
 }
 
 /// Names and icons for the building types the projects name and names for their
@@ -1909,22 +1931,70 @@ pub fn named(
     states: &BTreeSet<u32>,
     cancelled: &AtomicBool,
 ) -> io::Result<Named> {
+    named_inventory(content, Some((types, states)), cancelled)
+}
+
+pub(crate) fn named_all(content: &ContentView<'_>, cancelled: &AtomicBool) -> io::Result<Named> {
+    named_inventory(content, None, cancelled)
+}
+
+/// The building types and states a recording names.
+type Inventory<'a> = (&'a [(u32, Option<String>)], &'a BTreeSet<u32>);
+
+fn named_inventory(
+    content: &ContentView<'_>,
+    inventory: Option<Inventory<'_>>,
+    cancelled: &AtomicBool,
+) -> io::Result<Named> {
+    use installed_content::DiagnosticKind::{Ambiguous, Fallback, Refused};
     let mut warnings = Vec::new();
     let layers = content.layers;
     let buildings = match installed_content::buildings::read(layers) {
         Ok(buildings) => Some(buildings),
         Err(error) => {
-            warnings.push(format!(
-                "Building types are unavailable in the recorded content: {error}"
+            warnings.push((
+                Refused,
+                format!("Building types are unavailable in the recorded content: {error}"),
             ));
             None
         }
     };
+    let mut state_diagnostics = Vec::new();
+    let mut state_read_error = None;
+    let definitions = match crate::scripted_text::read_state_content(layers) {
+        Ok(content) => {
+            state_diagnostics = content.warnings;
+            Some(content.states)
+        }
+        Err(error) => {
+            state_read_error = Some(format!("State names are unavailable: {error}"));
+            None
+        }
+    };
+    let (declared_types, authored_types, authored_states) = if inventory.is_none() {
+        let declared_types = buildings
+            .as_ref()
+            .map(|buildings| buildings.declaration_order.clone())
+            .unwrap_or_default();
+        let authored_types: Vec<_> = declared_types
+            .iter()
+            .enumerate()
+            .map(|(id, token)| (id as u32, Some(token.clone())))
+            .collect();
+        let authored_states = definitions
+            .as_ref()
+            .map(|states| states.definitions().keys().copied().collect())
+            .unwrap_or_default();
+        (declared_types, authored_types, authored_states)
+    } else {
+        (Vec::new(), Vec::new(), BTreeSet::new())
+    };
+    let (types, states) = inventory.unwrap_or((&authored_types, &authored_states));
     let sprite = |element| line_sprite(content, element);
     let strip = match sprite(LINE_PICTURE) {
         Ok(strip) => Some(strip),
         Err(error) => {
-            warnings.push(format!("Building icons are unavailable: {error}"));
+            warnings.push((Refused, format!("Building icons are unavailable: {error}")));
             None
         }
     };
@@ -2008,36 +2078,43 @@ pub fn named(
     }
     counted(
         &mut warnings,
+        Fallback,
         "building types are not in the recorded lexical dictionary and show by their number",
         &undictionaried,
     );
     counted(
         &mut warnings,
+        Fallback,
         "building types are not declared in the recorded content's buildings, so they show by their script name without an icon",
         &undeclared,
     );
     counted(
         &mut warnings,
+        Fallback,
         "building types have no name in the recorded localisation and show by their script name",
         &unnamed,
     );
     counted(
         &mut warnings,
+        Fallback,
         "building types have icon_frame 0 (none declared: CBuildingTemplate +0x2e4, zeroed by 1414a4470), whose picture is not verified, so they show a placeholder",
         &frameless,
     );
     counted(
         &mut warnings,
+        Refused,
         "building types give a negative icon_frame; it is refused and they show a placeholder",
         &unusable,
     );
     counted(
         &mut warnings,
+        Ambiguous,
         "building types are declared more than once with differing fields; which declaration the game shows is not verified, so they show a placeholder",
         &ambiguous,
     );
     counted(
         &mut warnings,
+        Refused,
         "building icons could not be read from the queue's building strip and show a placeholder",
         &unreadable,
     );
@@ -2081,24 +2158,10 @@ pub fn named(
     }) {
         Ok(icon) => Some(icon),
         Err(error) => {
-            warnings.push(format!(
+            let why = format!(
                 "The repair marker is unavailable, so repairs are marked in words only: {error}"
-            ));
-            None
-        }
-    };
-    let definitions = match crate::scripted_text::read_state_content(layers) {
-        Ok(content) => {
-            warnings.extend(
-                content
-                    .warnings
-                    .into_iter()
-                    .map(|why| format!("State names: {why}")),
             );
-            Some(content.states)
-        }
-        Err(error) => {
-            warnings.push(format!("State names are unavailable: {error}"));
+            warnings.push((Refused, why));
             None
         }
     };
@@ -2119,6 +2182,7 @@ pub fn named(
     }
     counted(
         &mut warnings,
+        Fallback,
         "states have no name in the recorded content and show by their number",
         &unnamed_states,
     );
@@ -2127,6 +2191,9 @@ pub fn named(
         repair_icon,
         states: named_states,
         warnings,
+        state_diagnostics,
+        state_read_error,
+        declared_types,
     })
 }
 
@@ -2288,7 +2355,7 @@ pub(crate) fn content_names(
             };
             warnings.extend(catalogue.verification.iter().cloned());
             warnings.extend(catalogue.warnings.iter().cloned());
-            warnings.extend(named.warnings.iter().cloned());
+            warnings.extend(named.live_warnings());
             if named.types.values().any(|(_, icon)| icon.is_some()) {
                 warnings.push("Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned());
             }
@@ -2312,7 +2379,7 @@ pub(crate) fn names_in(
     warnings: &mut Vec<String>,
 ) -> io::Result<ContentNames> {
     let named = named(content, &log.types, &project_states(log), cancelled)?;
-    warnings.extend(named.warnings.iter().cloned());
+    warnings.extend(named.live_warnings());
     Ok(ContentNames::of(log, Some(Arc::new(named))))
 }
 

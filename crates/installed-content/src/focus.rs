@@ -23,6 +23,8 @@ pub struct FocusDefinition {
     pub cost: Option<f64>,
     /// Conditional icon scripts need game evaluation and remain unavailable.
     pub icon: Option<String>,
+    /// An authored trigger-chosen icon block, distinct from no icon field.
+    pub scripted_icon: bool,
 }
 
 fn scalar<'a>(items: &'a [Item], key: &str) -> io::Result<Option<&'a str>> {
@@ -360,6 +362,10 @@ pub fn parse(
                             .filter(|cost| *cost >= 0)
                             .map(|cost| cost as f64 / 100_000.0),
                         icon,
+                        scripted_icon: children
+                            .iter()
+                            .rfind(|item| item.keyword_is("icon"))
+                            .is_some_and(|item| item.value.items().is_some()),
                     },
                 );
             } else if item.keyword_is("focus_tree") || item.keyword_is("continuous_focus_palette") {
@@ -547,6 +553,8 @@ free_operative = { operative = a } free_operative = { operative = b }
         assert_eq!(defs["A"].description, "TITLE_desc");
         assert_eq!(defs["A"].icon.as_deref(), Some("GFX_goal_a"));
         assert_eq!(defs["B"].icon, None);
+        assert!(defs["B"].scripted_icon);
+        assert!(!defs["A"].scripted_icon);
         assert_eq!(defs["C"].localisation, "C");
     }
 

@@ -80,6 +80,11 @@ pub struct ModifierDefinitions {
 }
 
 impl ModifierDefinitions {
+    /// Every effective scripted definition.
+    pub fn iter(&self) -> impl Iterator<Item = &ModifierDefinition> {
+        self.by_name.values()
+    }
+
     pub(crate) fn registered_names(&self) -> impl Iterator<Item = &[u8]> {
         self.registered.iter().map(Vec::as_slice)
     }

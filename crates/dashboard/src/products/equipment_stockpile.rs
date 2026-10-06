@@ -421,6 +421,21 @@ fn need_note(types: &Database, archetype: &str) -> Result<Option<String>, String
     })
 }
 
+/// The same archetype name for the recorded reply and offline preparation.
+pub(crate) fn type_name(catalogue: &crate::catalogue::Catalogue, key: &str) -> Option<String> {
+    let name = catalogue
+        .text(key)
+        .filter(|name| !name.is_empty());
+    if name.is_none() {
+        catalogue.note(crate::content_check::Finding::new(
+            crate::content_check::Kind::Fallback,
+            key,
+            "equipment type name is unavailable; its key is shown",
+        ));
+    }
+    name
+}
+
 impl Product for EquipmentStockpile {
     const KEY: &'static str = "equipment-stockpile";
     const CONTENT_DEPENDENT: bool = true;
@@ -614,8 +629,7 @@ impl Product for EquipmentStockpile {
             .map(|(key, _, domain)| StockType {
                 name: content
                     .as_ref()
-                    .and_then(|(catalogue, _)| catalogue.text(&key))
-                    .filter(|name| !name.is_empty()),
+                    .and_then(|(catalogue, _)| type_name(catalogue, &key)),
                 need_note: match &content {
                     Some((_, known)) => need_note(known, &key).unwrap_or_else(Some),
                     None => Some(

@@ -27,7 +27,35 @@ use super::report::{Diagnostic, Kind, ReaderRun};
 struct Log {
     runs: Vec<ReaderRun>,
     diagnostics: Vec<Diagnostic>,
+    state_history: super::report::StateHistory,
     values: Option<super::values::Writer>,
+}
+
+fn read_states(
+    log: &mut Log,
+    read: impl FnOnce() -> io::Result<(installed_content::states::States, Vec<installed_content::Diagnostic>)>,
+) -> Option<installed_content::states::States> {
+    let diagnostic_start = log.diagnostics.len();
+    let states = log.read("states", read).map(|(states, notes)| {
+        log.typed("states", notes);
+        for &id in states.definitions().keys() {
+            let reasons = states.diagnostics(id);
+            if !reasons.is_empty() {
+                log.state_history
+                    .states
+                    .push(super::report::StateHistoryState {
+                        id,
+                        file: states.source(id).map(str::to_owned),
+                        reasons: reasons.to_vec(),
+                    });
+            }
+        }
+        states
+    });
+    log.state_history
+        .notes
+        .extend(log.diagnostics[diagnostic_start..].iter().map(Into::into));
+    states
 }
 
 impl Log {
@@ -41,6 +69,7 @@ impl Log {
             milliseconds: started.elapsed().as_millis(),
             completed: result.is_ok(),
             not_run: None,
+            note: None,
         });
         if self.values.is_some() {
             self.value(reader, &result.as_ref().map_err(|error| error.to_string()));
@@ -70,6 +99,7 @@ impl Log {
                 milliseconds: 0,
                 completed: false,
                 not_run: Some(format!("needs {needs}")),
+                note: None,
             });
         }
     }
@@ -134,7 +164,7 @@ pub fn run(
     content: installed_content::GatheredContent,
     decode: installed_content::image::native::Decode,
     values: Option<super::values::Writer>,
-) -> (Vec<ReaderRun>, Vec<Diagnostic>) {
+) -> (Vec<ReaderRun>, Vec<Diagnostic>, super::report::StateHistory) {
     let language = content
         .language
         .strip_prefix("l_")
@@ -207,7 +237,37 @@ pub fn run(
             })
             .map_err(io::Error::other)
     });
-    (log.runs, log.diagnostics)
+    for product in dashboard::content_check::check(Arc::clone(&resolved), &language) {
+        let reader = format!("dashboard.{}", product.key);
+        log.runs.push(ReaderRun {
+            reader: reader.clone(),
+            milliseconds: product.elapsed.as_millis(),
+            completed: product.error.is_none(),
+            not_run: None,
+            note: Some(product.note),
+        });
+        if let Some(error) = product.error {
+            log.note(&reader, Kind::ReaderError, error);
+        }
+        for finding in product.findings {
+            let mut diagnostic = Diagnostic::about(
+                &reader,
+                finding.kind.into(),
+                &finding.subject,
+                &finding.message,
+            );
+            diagnostic.count = finding.count;
+            diagnostic.examples = finding.examples;
+            if finding.file.is_some() {
+                diagnostic.file = finding.file;
+            }
+            if finding.line.is_some() {
+                diagnostic.line = finding.line;
+            }
+            log.diagnostics.push(diagnostic);
+        }
+    }
+    (log.runs, log.diagnostics, log.state_history)
 }
 
 /// Localisation, interface resources, GUI files, model and particle descriptors.
@@ -558,11 +618,11 @@ fn map(
             regions,
         };
     };
-    match log.read("states", || {
+    let states = read_states(log, || {
         installed_content::states::read(layers, defines, &data.definitions)
-    }) {
-        Some((states, warnings)) => {
-            log.typed("states", warnings);
+    });
+    match states {
+        Some(states) => {
             for (id, state) in states.definitions() {
                 for why in [
                     state.name_key.as_ref().err(),
@@ -913,6 +973,7 @@ fn triggers(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
         }
     }
     if let Some(catalog) = log.read("raids", || installed_content::raids::read(layers)) {
+        log.typed("raids", catalog.misreads.iter().cloned());
         log.notes("raids", Kind::Refused, &catalog.refused);
         for (name, why) in &catalog.unsupported {
             log.about("raids", Kind::Unsupported, format_args!("raid {name}"), why);
@@ -1066,6 +1127,108 @@ mod tests {
     use installed_content::raids::RaidType;
 
     #[test]
+    fn state_history_uses_kept_state_sources_and_diagnostics_from_the_same_read() {
+        use std::{
+            fs,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_viewer_corpus_states_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        struct Fixture(std::path::PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let fixture = Fixture(root);
+        for (path, text) in [
+            (
+                "01-kept.txt",
+                "state = { id = 1 impassable = maybe } state = { id = 2 }",
+            ),
+            (
+                "02-filewide.txt",
+                "@a bad orphan = yes state = { id = 3 } state = { id = 4 }",
+            ),
+            (
+                "03-discarded.txt",
+                "state = { id = 2 state_startup_effect = { free_operative = { operative = authored } } }",
+            ),
+            ("04-empty.txt", "@a bad orphan = yes"),
+        ] {
+            let path = fixture.0.join("history/states").join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        let layers = ResolvedLayers::from_folders(&[(&fixture.0, &[][..])]).unwrap();
+        let defines = Defines::new().unwrap();
+        defines
+            .load(
+                "fixture.lua",
+                b"NDefines = { NBuildings = { MAX_BUILDING_LEVELS = 15 } }",
+            )
+            .unwrap();
+        let mut reads = 0;
+        let mut log = Log::default();
+        let states = read_states(&mut log, || {
+            reads += 1;
+            installed_content::states::read(&layers, &defines, &BTreeMap::new())
+        })
+        .unwrap();
+        assert_eq!(reads, 1);
+        assert_eq!(
+            log.state_history
+                .states
+                .iter()
+                .map(|state| state.id)
+                .collect::<Vec<_>>(),
+            [1, 3, 4]
+        );
+        for state in &log.state_history.states {
+            assert_eq!(state.file.as_deref(), states.source(state.id));
+            assert_eq!(state.reasons, states.diagnostics(state.id));
+        }
+        assert!(states.diagnostics(2).is_empty());
+        assert!(
+            log.state_history
+                .notes
+                .iter()
+                .any(|note| note.message.contains("defined by both"))
+        );
+        assert!(
+            log.state_history
+                .notes
+                .iter()
+                .any(|note| note.message.contains("04-empty.txt"))
+        );
+        assert!(
+            log.state_history
+                .notes
+                .iter()
+                .any(|note| note.message.contains("03-discarded.txt")
+                    && note.message.contains("Deferred effect"))
+        );
+        assert_eq!(log.state_history.notes.len(), log.diagnostics.len());
+        let mut refused = Log::default();
+        assert!(
+            read_states(&mut refused, || Err(io::Error::other(
+                "history/states/refused.txt: line 8: reader stopped"
+            )))
+            .is_none()
+        );
+        assert!(refused.state_history.states.is_empty());
+        assert_eq!(refused.state_history.notes.len(), 1);
+        assert_eq!(refused.state_history.notes[0].kind, Kind::ReaderError);
+        assert_eq!(refused.state_history.notes[0].line, Some(8));
+    }
+
+    #[test]
     fn counted_effect_warnings_reach_the_corpus_report() {
         let warning = "common/national_focus/gap.txt: line 3: Deferred effect `set_capital`: value reader 0x140534280, key reader 0x1403B4F40; by-key reading retained (count: 2)".to_owned();
         let mut log = Log::default();
@@ -1077,6 +1240,84 @@ mod tests {
         assert_eq!(note.line, Some(3));
         assert!(note.message.contains("key reader 0x1403B4F40"));
         assert!(note.message.contains("count: 2"));
+    }
+
+    #[test]
+    fn raid_reader_notes_reach_the_corpus_once_with_their_producer_kinds() {
+        use std::{
+            fs,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_viewer_corpus_raids_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        struct Fixture(std::path::PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let fixture = Fixture(root);
+        let path = fixture.0.join("common/raids/fixture.txt");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            path,
+            "types = {
+                kept = { unit_model = { type = x } success_levels = { success = { actor_effects = { free_operative = { operative = x } } } } }
+                undecided = { unit_requirements = { battalion_types = { \"authored\" = { min = 1 } } } }
+            }",
+        )
+        .unwrap();
+        let buildings = fixture.0.join("common/buildings/fixture.txt");
+        fs::create_dir_all(buildings.parent().unwrap()).unwrap();
+        fs::write(buildings, "buildings = { mod_building = {} }").unwrap();
+        let layers = ResolvedLayers::from_folders(&[(&fixture.0, &[][..])]).unwrap();
+        let catalog = installed_content::raids::read(&layers).unwrap();
+        assert!(
+            catalog
+                .misreads
+                .iter()
+                .any(|(kind, _)| *kind == installed_content::DiagnosticKind::Misread),
+            "{catalog:?}"
+        );
+        assert!(
+            catalog
+                .misreads
+                .iter()
+                .any(|(kind, _)| *kind == installed_content::DiagnosticKind::Unsupported),
+            "{catalog:?}"
+        );
+        assert!(!catalog.uncertain.is_empty(), "{catalog:?}");
+        assert_eq!(
+            catalog.uncertain[0].kind,
+            installed_content::DiagnosticKind::Unsupported
+        );
+        let mut log = Log::default();
+        triggers(&mut log, &layers, None);
+        for (kind, message) in &catalog.misreads {
+            let found: Vec<_> = log
+                .diagnostics
+                .iter()
+                .filter(|note| note.reader == "raids" && note.message == *message)
+                .collect();
+            assert_eq!(found.len(), 1, "{message}: {found:?}");
+            assert_eq!(found[0].kind, (*kind).into());
+        }
+        for uncertain in &catalog.uncertain {
+            let message = format!("raid {}: {}", uncertain.name, uncertain.reason);
+            let found: Vec<_> = log
+                .diagnostics
+                .iter()
+                .filter(|note| note.reader == "raids" && note.message == message)
+                .collect();
+            assert_eq!(found.len(), 1, "{message}: {found:?}");
+            assert_eq!(found[0].kind, uncertain.kind.into());
+        }
     }
 
     #[test]
@@ -1095,6 +1336,36 @@ mod tests {
                 .iter()
                 .all(|note| note.kind == Kind::Warning)
         );
+        for (producer, message, expected) in [
+            (
+                installed_content::DiagnosticKind::Logged,
+                "unsupported colour",
+                Kind::Logged,
+            ),
+            (
+                installed_content::DiagnosticKind::Warning,
+                "file cannot be followed",
+                Kind::Warning,
+            ),
+            (
+                installed_content::DiagnosticKind::ParseFailure,
+                "unknown form",
+                Kind::ParseFailure,
+            ),
+            (
+                installed_content::DiagnosticKind::Fallback,
+                "shown by its script name",
+                Kind::Fallback,
+            ),
+            (
+                installed_content::DiagnosticKind::Ambiguous,
+                "declared more than once with differing fields",
+                Kind::Ambiguous,
+            ),
+        ] {
+            log.typed("reader", [(producer, message.to_owned())]);
+            assert_eq!(log.diagnostics.last().unwrap().kind, expected);
+        }
     }
 
     #[test]

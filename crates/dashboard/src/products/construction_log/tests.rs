@@ -472,6 +472,121 @@ pub(crate) fn construction_frames(last: i32, frame: impl Fn(i32, bool) -> Decode
 }
 
 #[test]
+fn construction_log_live_reply_keeps_the_first_duplicate_state_without_a_warning() {
+    use crate::products::{
+        LoadContext, Product,
+        construction_log::{ConstructionLog, ConstructionLogParams},
+    };
+    use replay::spool::Record;
+    let (_, folder) = crate::catalogue::tests::folder_catalogue(&[
+        ("hoi4.exe", "test"),
+        (
+            "user/settings.txt",
+            "language=l_english force_pow2_textures=no",
+        ),
+        (
+            "user/dlc_load.json",
+            r#"{"enabled_mods":[],"disabled_dlcs":[]}"#,
+        ),
+        (
+            "common/defines/defines.lua",
+            "NDefines={NBuildings={MAX_BUILDING_LEVELS=15}}",
+        ),
+        (
+            "common/buildings/buildings.txt",
+            "buildings={industrial_complex={icon_frame=-1}}",
+        ),
+        (
+            "map/default.map",
+            "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp",
+        ),
+        ("map/definition.csv", "0;0;0;0;land;false;unknown;0\n"),
+        ("history/states/1-kept.txt", "state={id=5 name=STATE_KEPT}"),
+        (
+            "history/states/2-duplicate.txt",
+            "state={id=5 name=STATE_DUPLICATE}",
+        ),
+        (
+            "localisation/construction_l_english.yml",
+            "\u{feff}l_english:\n industrial_complex:0 \"Mod factory\"\n STATE_KEPT:0 \"Kept state\"\n STATE_DUPLICATE:0 \"Discarded state\"\n",
+        ),
+    ]);
+    let (options, identity) = crate::test_fixtures::content_identity(&folder.0);
+    let frames = (100..=101)
+        .map(|hour| {
+            construction_frame(
+                hour,
+                hour == 100,
+                vec![building_line(1, 5, 1, 0, 3)],
+                Vec::new(),
+                Some(vec![building_at(5, CIVILIAN, (1, 1))]),
+                Vec::new(),
+            )
+        })
+        .collect();
+    let mut input = records(1, frames);
+    let Record::SessionStart(session) = &mut input[0] else {
+        unreachable!()
+    };
+    session.identity = identity;
+    let source = crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: "construction-duplicate-state".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        Arc::new(Replay::from_records(CAMPAIGN.into(), &[input]).unwrap()),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let catalogue = crate::catalogue::catalogue(&source, &options).unwrap();
+    let state_content =
+        crate::scripted_text::read_state_content(&catalogue.content.layers).unwrap();
+    assert_eq!(
+        state_content.states.get(5).unwrap().name_key.as_deref(),
+        Ok("STATE_KEPT")
+    );
+    assert!(
+        state_content
+            .warnings
+            .iter()
+            .any(|(kind, note)| *kind == installed_content::DiagnosticKind::Warning
+                && note.contains("state 5 is defined by both"))
+    );
+    let reply = ConstructionLog::load(
+        &source,
+        &ConstructionLogParams {
+            branch_id: "1".into(),
+        },
+        &LoadContext {
+            content: Some(options),
+        },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(reply.projects.len(), 1);
+    assert_eq!(reply.states[0].name.as_deref(), Some("Kept state"));
+    assert_eq!(reply.types[0].name.as_deref(), Some("Mod factory"));
+    assert!(reply.types[0].icon.is_none());
+    assert!(
+        reply
+            .warnings
+            .iter()
+            .all(|note| !note.contains("state 5 is defined by both")),
+        "{:?}",
+        reply.warnings
+    );
+    assert!(
+        reply
+            .warnings
+            .iter()
+            .any(|note| note.contains("give a negative icon_frame; it is refused")),
+        "{:?}",
+        reply.warnings
+    );
+}
+
+#[test]
 fn a_railway_recorded_without_a_route_ends_unknown_and_is_counted() {
     use crate::products::{
         Product,
@@ -762,11 +877,11 @@ fn construction_icons_follow_strip_direction_and_the_gui_repair_frame() {
             };
             assert_eq!(named.repair_icon.as_deref().map(first_pixel), expected);
             if vertical && (1..=2).contains(&frame) {
-                assert!(named.warnings.iter().any(|warning| warning.contains(
+                assert!(named.warnings.iter().any(|(_, warning)| warning.contains(
                     "production_building_line_entry.repair (repair_strip, frameanimatedspritetype) runs down its texture, which is not supported"
                 )));
             } else if expected.is_none() {
-                assert!(named.warnings.iter().any(|warning| warning.contains(
+                assert!(named.warnings.iter().any(|(_, warning)| warning.contains(
                     &format!("production_building_line_entry.repair (repair_strip): frame {frame} is outside 1..=2")
                 )));
             }
@@ -828,9 +943,58 @@ fn construction_icons_use_cached_guis_and_the_native_fallback_and_refuse_unknown
         unknown
             .warnings
             .iter()
-            .any(|why| why.contains("fixture_building (frame 2: settings.txt"))
+            .any(|(_, why)| why.contains("fixture_building (frame 2: settings.txt"))
     );
-    assert!(unknown.warnings.iter().any(|why| why.contains("repair marker is unavailable") && why.contains("settings.txt")));
+    assert!(unknown.warnings.iter().any(
+        |(_, why)| why.contains("repair marker is unavailable") && why.contains("settings.txt")
+    ));
+}
+
+#[test]
+fn refused_state_read_keeps_live_wording_and_is_omitted_offline() {
+    use crate::products::construction_log::{ContentView, named};
+    use std::collections::BTreeSet;
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
+        "common/buildings/test.txt",
+        "buildings={mod_building={icon_frame=-1}}",
+    )]);
+    let error = crate::scripted_text::read_state_content(&catalogue.content.layers)
+        .err()
+        .unwrap();
+    let expected = format!("State names are unavailable: {error}");
+    let prepared = named(
+        &ContentView {
+            layers: &catalogue.content.layers,
+            sprites: &catalogue.sprites,
+            guis: &catalogue.guis,
+            gui_decode: &catalogue.gui_decode,
+            localise: &|_| Some("Mod building".into()),
+        },
+        &[(1, Some("mod_building".into()))],
+        &BTreeSet::from([1]),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(
+        prepared
+            .live_warnings()
+            .filter(|message| message.starts_with("State names"))
+            .collect::<Vec<_>>(),
+        [expected.as_str()]
+    );
+    let checks = crate::content_check::check(Arc::clone(&catalogue.content), "english");
+    let shared = checks
+        .iter()
+        .find(|check| check.key == crate::content_check::CONSTRUCTION_CHECK_KEY)
+        .unwrap();
+    assert!(shared.error.is_none(), "{shared:?}");
+    assert!(
+        shared
+            .findings
+            .iter()
+            .all(|finding| !finding.message.contains(&expected)),
+        "{shared:?}"
+    );
 }
 
 #[test]
@@ -1012,6 +1176,7 @@ fn a_modded_content_stack_names_and_pictures_its_own_buildings_and_refuses_what_
         named
             .warnings
             .iter()
+            .map(|(_, message)| message)
             .find(|warning| warning.starts_with(start))
             .unwrap_or_else(|| panic!("{start}: {:?}", named.warnings))
             .clone()
@@ -1032,6 +1197,35 @@ fn a_modded_content_stack_names_and_pictures_its_own_buildings_and_refuses_what_
             .ends_with(": mod_scripted, mod_far, not_a_building.")
     );
     assert!(warned("1 states have no name").ends_with(": 5."));
+    for (prefix, expected) in [
+        (
+            "1 building types give a negative icon_frame",
+            installed_content::DiagnosticKind::Refused,
+        ),
+        (
+            "2 building types are declared more than once",
+            installed_content::DiagnosticKind::Ambiguous,
+        ),
+        (
+            "1 building types have icon_frame 0",
+            installed_content::DiagnosticKind::Fallback,
+        ),
+        (
+            "3 building types have no name",
+            installed_content::DiagnosticKind::Fallback,
+        ),
+    ] {
+        assert_eq!(
+            named
+                .warnings
+                .iter()
+                .find(|(_, message)| message.starts_with(prefix))
+                .unwrap()
+                .0,
+            expected
+        );
+    }
+    assert!(named.declared_types.is_empty());
 }
 
 #[test]

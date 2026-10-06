@@ -1231,6 +1231,60 @@ fn icon_image(catalogue: &Catalogue, icon: &Icon) -> io::Result<String> {
     }
 }
 
+/// Checks the presentation inputs the product can enumerate without selecting a
+/// recorded variant or organisation. Their runtime operands stay explicit.
+pub(crate) fn check_content(
+    catalogue: Arc<Catalogue>,
+    equipment: Arc<installed_content::equipment::Database>,
+) -> io::Result<(
+    Vec<crate::content_check::Finding>,
+    Vec<installed_content::Diagnostic>,
+)> {
+    use crate::content_check::{Finding, Kind};
+    let content = IconContent::with_equipment(Arc::clone(&catalogue), Some(equipment))?;
+    let diagnostics = content.preparation_warnings();
+    let mut findings = Vec::new();
+    for prepared in content.authored_icons()? {
+        let subject = format!("production equipment {}", prepared.token);
+        if equipment::localise_for(catalogue.as_ref(), None, &prepared.token).is_none() {
+            findings.push(Finding::grouped(
+                Kind::Fallback,
+                &subject,
+                "production-line equipment has no usable base name; its token is shown",
+                format!(
+                    "{}: production-line equipment has no usable base name; the token is shown",
+                    prepared.token
+                ),
+            ));
+        }
+        for reason in prepared.refusals {
+            findings.push(Finding::new(Kind::Refused, &subject, reason));
+        }
+        for icon in prepared.icons {
+            if let Err(error) = icon_image(&catalogue, &icon) {
+                findings.push(Finding::grouped(
+                    Kind::Fallback,
+                    &subject,
+                    "production-line picture is unavailable; a placeholder is shown",
+                    format!(
+                        "{}: picture unavailable: {error}; a placeholder is shown",
+                        icon_key(&icon)
+                    ),
+                ));
+            }
+        }
+        findings.extend(catalogue.take_findings().into_iter().map(|mut finding| {
+            finding.subject = subject.clone();
+            finding
+        }));
+        findings.push(Finding::new(Kind::Offline, subject,
+            "production variant names and selected icons need recorded variant/country/appearance/faction/capital operands; unavailable offline"));
+    }
+    findings.push(Finding::new(Kind::Offline, "industrial organisations",
+        "organisation name keys, stored sprites and owners come from recorded IndustrialOrganisations rows; their inventory is unavailable offline"));
+    Ok((findings, diagnostics))
+}
+
 /// A scan's identity: its branch, its tag and the icon content it was made with.
 /// The content is the `Arc` itself, kept alive by the entry, so it can never match
 /// other content that reuses its address.

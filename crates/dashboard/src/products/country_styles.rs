@@ -23,6 +23,13 @@ use ts_rs::TS;
 
 pub struct CountryStyles;
 
+/// The chart's plain country name, shared with the offline content check.
+pub(crate) fn country_name(names: &CountryNames<'_>, slot: u32) -> Result<String, String> {
+    names
+        .name(slot)
+        .and_then(|name| plain_text(&name).map_err(|reason| format!("its name holds {reason}")))
+}
+
 /// Most countries one request may name.
 const MAX_TAGS: usize = 64;
 /// Hours kept per source, so a chart's legend and its labels share one decode.
@@ -221,11 +228,8 @@ impl HourStyles {
             let (name, name_problem) = match &names {
                 None => (None, None),
                 // Names are plain text for charts: the game's colour codes are removed.
-                Some(names) => match names.name(country.canonical_slot) {
-                    Ok(name) => match plain_text(&name) {
-                        Ok(name) => (Some(name), None),
-                        Err(reason) => (None, Some(format!("its name holds {reason}"))),
-                    },
+                Some(names) => match country_name(names, country.canonical_slot) {
+                    Ok(name) => (Some(name), None),
                     Err(reason) => (None, Some(reason)),
                 },
             };

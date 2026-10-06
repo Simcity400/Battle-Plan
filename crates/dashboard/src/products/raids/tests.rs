@@ -558,6 +558,188 @@ fn mod_content() -> (Scratch, Content) {
 }
 
 #[test]
+fn raids_offline_fallbacks_only_cover_absent_localisation_and_omit_reader_notes() {
+    use crate::content_check::Kind;
+    let scratch = Scratch::new();
+    scratch.write(
+        "common/buildings/buildings.txt",
+        "buildings={mod_factory={}}",
+    );
+    scratch.write(
+        "common/raids/types.txt",
+        "types={named={} missing={} refused={} duplicate={} duplicate={} unsupported={starting_point={types={building}}} noted={unit_model={type=x}}}",
+    );
+    let refused_phase = native::PHASE_KEYS[0];
+    let missing_phase = native::PHASE_KEYS[1];
+    let mut localisation = String::from(
+        "\u{feff}l_english:\n raid_type_named:0 \"Named raid\"\n raid_type_refused:0 \"\u{a4}unsupported_control\"\n raid_type_noted:0 \"Noted raid\"\n",
+    );
+    for key in native::PHASE_KEYS.into_iter().chain(native::OUTCOME_KEYS) {
+        if key == missing_phase {
+            continue;
+        }
+        let text = if key == refused_phase {
+            "\u{a4}unsupported_control"
+        } else {
+            "Known label"
+        };
+        localisation.push_str(&format!(" {key}:0 \"{text}\"\n"));
+    }
+    scratch.write("localisation/types_l_english.yml", &localisation);
+    let layers = installed_content::ResolvedLayers::from_folders(&[(&scratch.0, &[][..])]).unwrap();
+    let raids = installed_content::raids::read(&layers).unwrap();
+    assert!(!raids.misreads.is_empty(), "{raids:?}");
+    assert_eq!(raids.uncertain.len(), 2);
+    let cat = Catalogue::of_layers_for_check(layers, "english").unwrap();
+    assert_eq!(
+        prepare_types(&cat, &raids)[0].name.as_deref(),
+        Some("Named raid")
+    );
+    cat.take_findings();
+    let findings = check_content(&cat).unwrap();
+    for subject in ["raid type duplicate", "raid type unsupported"] {
+        assert!(
+            findings.iter().all(|finding| finding.subject != subject),
+            "{findings:?}"
+        );
+    }
+    assert!(
+        findings.iter().all(|finding| finding.kind != Kind::Misread),
+        "{findings:?}"
+    );
+    assert!(
+        findings
+            .iter()
+            .all(|finding| !(finding.kind == Kind::Fallback
+                && finding.subject == "raid type refused")),
+        "{findings:?}"
+    );
+    for subject in ["raid_type_refused", refused_phase] {
+        let matching: Vec<_> = findings
+            .iter()
+            .filter(|finding| finding.subject == subject)
+            .collect();
+        assert_eq!(matching.len(), 1, "{findings:?}");
+        assert_eq!(matching[0].kind, Kind::Unsupported);
+    }
+    assert!(
+        findings
+            .iter()
+            .any(|finding| finding.subject == "raid type missing"
+                && finding.kind == Kind::Fallback
+                && finding.message
+                    == "raid_type_missing: name localisation is missing; shown as unknown"),
+        "{findings:?}"
+    );
+    assert!(
+        findings
+            .iter()
+            .any(|finding| finding.subject == missing_phase
+                && finding.kind == Kind::Fallback
+                && finding.message == "raid phase/outcome name is missing; shown as unknown"),
+        "{findings:?}"
+    );
+}
+
+#[test]
+fn raids_live_reply_keeps_the_first_duplicate_state_without_a_warning() {
+    use replay::spool::Record;
+    let scratch = Scratch::new();
+    for (path, text) in [
+        ("hoi4.exe", "test"),
+        (
+            "user/settings.txt",
+            "language=l_english force_pow2_textures=no",
+        ),
+        (
+            "user/dlc_load.json",
+            r#"{"enabled_mods":[],"disabled_dlcs":[]}"#,
+        ),
+        (
+            "common/defines/defines.lua",
+            "NDefines={NBuildings={MAX_BUILDING_LEVELS=15}}",
+        ),
+        (
+            "common/buildings/buildings.txt",
+            "buildings={mod_factory={}}",
+        ),
+        ("common/raids/types.txt", "types={mod_raid={}}"),
+        (
+            "map/default.map",
+            "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp",
+        ),
+        ("map/definition.csv", "0;0;0;0;land;false;unknown;0\n"),
+        ("history/states/1-kept.txt", "state={id=41 name=STATE_KEPT}"),
+        (
+            "history/states/2-duplicate.txt",
+            "state={id=41 name=STATE_DUPLICATE}",
+        ),
+        (
+            "localisation/raids_l_english.yml",
+            "\u{feff}l_english:\n raid_type_mod_raid:0 \"Mod raid\"\n STATE_KEPT:0 \"Kept state\"\n STATE_DUPLICATE:0 \"Discarded state\"\n",
+        ),
+    ] {
+        scratch.write(path, text);
+    }
+    let (options, identity) = crate::test_fixtures::content_identity(&scratch.0);
+    let mut observed = frame(100, vec![raid(1, 2, 0)]);
+    if let TableView::Complete(TableRows::States(rows)) =
+        &mut *observed.tables[TableId::States.index()]
+    {
+        rows[0].custom_name.clear();
+    }
+    let mut input = records(1, vec![observed]);
+    let Record::SessionStart(session) = &mut input[0] else {
+        unreachable!()
+    };
+    session.identity = identity;
+    let source = Source::from_replay(
+        crate::SourceKey {
+            source_id: "raid-duplicate-state".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        Arc::new(Replay::from_records(CAMPAIGN.into(), &[input]).unwrap()),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let catalogue = catalogue::catalogue(&source, &options).unwrap();
+    let state_content = scripted_text::read_state_content(&catalogue.content.layers).unwrap();
+    assert!(
+        state_content
+            .warnings
+            .iter()
+            .any(|(_, note)| note.contains("state 41 is defined by both"))
+    );
+    let reply = Raids::load(
+        &source,
+        &RaidsParams {
+            branch_id: "1".into(),
+            view: RaidsView::Log,
+            tags: vec!["GER".into()],
+            top: None,
+        },
+        &LoadContext {
+            content: Some(options),
+        },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(
+        reply.episodes[0].runs[0].target_name.as_deref(),
+        Some("Kept state")
+    );
+    assert!(
+        reply
+            .warnings
+            .iter()
+            .all(|note| !note.contains("state 41 is defined by both")),
+        "{:?}",
+        reply.warnings
+    );
+}
+
+#[test]
 fn raids_modded_types_use_content_names_and_refused_forms_are_named_and_counted() {
     let (_scratch, content) = mod_content();
     assert_eq!(

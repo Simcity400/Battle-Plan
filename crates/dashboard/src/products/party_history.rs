@@ -22,7 +22,7 @@
 //! The ruling party's name is the game's (`GetName@14118F860`): its stored key
 //! (`PoliticalParties.name`) when `set_party_name` cleared the default flag,
 //! then with the country's original tag (`CountryAppearance.name_tag`), then the
-//! ideology group's own name. [`party_name`] follows it.
+//! ideology group's own name. [`party_key`] follows it.
 
 use super::{
     CountryParams, LoadContext, Product, country_measure::FixedRun, idea_history::IdeaCharacter,
@@ -111,26 +111,20 @@ pub struct PartyNaming {
     pub key: Option<String>,
 }
 
-/// The game's name for a party (`CPoliticalParty::GetLocalizedName`
-/// 14118F860), through `defines` (the existence check) and `localise`, the
-/// game's localiser, which copies a key localisation lacks as its raw bytes
-/// (142230940; only the loader's stored controls, 14238C1A0, are colour, so a
-/// raw `§` shows). None when it cannot be known: the tag or original tag is
-/// not recorded, or `localise` refused the text (it notes why).
-pub fn party_name(
-    naming: &PartyNaming,
-    defines: impl Fn(&str) -> bool,
-    localise: impl Fn(&str) -> Option<String>,
-) -> Option<String> {
-    localise(&party_key(naming, defines)?)
-}
-
-/// The key [`party_name`] localises: the stored key, else
+/// The party localisation key: the stored key, else
 /// `<TAG>_<group>_party`, `<ORIGTAG>_<group>_party`, then the group token
 /// (14118EAD0). None when the tag or original tag is not recorded.
 pub fn party_key(naming: &PartyNaming, defines: impl Fn(&str) -> bool) -> Option<String> {
+    party_key_checked(naming, defines).map(|(key, _)| key)
+}
+
+/// The same party ladder, retaining its fallback reason for the offline check.
+pub(crate) fn party_key_checked(
+    naming: &PartyNaming,
+    defines: impl Fn(&str) -> bool,
+) -> Option<(String, Option<String>)> {
     if let Some(key) = &naming.key {
-        return Some(key.clone());
+        return Some((key.clone(), None));
     }
     let own = format!("{}_{}_party", naming.tag.as_deref()?, naming.token);
     let key = if defines(&own) {
@@ -142,10 +136,27 @@ pub fn party_key(naming: &PartyNaming, defines: impl Fn(&str) -> bool) -> Option
         }
     };
     Some(if defines(&key) {
-        key
+        (key, None)
     } else {
-        naming.token.clone()
+        (
+            naming.token.clone(),
+            Some(format!(
+                "party name keys for {:?} / {} are missing; the ideology group name is shown",
+                naming.tag.as_deref()?,
+                naming.token
+            )),
+        )
     })
+}
+
+pub(crate) fn ideology_type_info(
+    politics: Option<&super::politics_content::PoliticsContent>,
+    token: &str,
+) -> IdeologyTypeInfo {
+    IdeologyTypeInfo {
+        token: token.to_owned(),
+        name: politics.and_then(|politics| politics.localised(token, View::Plain)),
+    }
 }
 
 /// An ideology group as content names and colours it.
@@ -246,14 +257,34 @@ pub(crate) fn ideology_infos(
     let (groups, gap) = politics.ideologies.groups();
     if let Some(gap) = gap {
         warnings.push(format!("Ideologies may be missing or out of date: {gap}."));
+        politics.catalogue.note(crate::content_check::Finding::new(
+            crate::content_check::Kind::Refused,
+            "ideology inventory",
+            gap.to_string(),
+        ));
     }
     groups
         .iter()
-        .map(|group| IdeologyInfo {
-            token: group.token.clone(),
-            // Ideology names are plain (140616BC0).
-            name: politics.localised(&group.token, View::Plain),
-            color: group.color.as_ref().ok().map(|color| chart_color(*color)),
+        .map(|group| {
+            if let Err(reason) = &group.color {
+                let subject = format!("ideology {}", group.token);
+                let message = format!("{subject}: {reason}; its colour is unavailable");
+                politics
+                    .catalogue
+                    .note(crate::content_check::Finding::grouped(
+                        crate::content_check::Kind::Warning,
+                        &subject,
+                        "ideology colour is unreadable; its colour is unavailable",
+                        &message,
+                    ));
+                warnings.push(message);
+            }
+            IdeologyInfo {
+                token: group.token.clone(),
+                // Ideology names are plain (140616BC0).
+                name: politics.localised(&group.token, View::Plain),
+                color: group.color.as_ref().ok().map(|color| chart_color(*color)),
+            }
         })
         .collect()
 }
@@ -644,12 +675,7 @@ impl Product for PartyHistory {
             .collect();
         let ideology_types = types
             .into_iter()
-            .map(|token| IdeologyTypeInfo {
-                token: token.to_owned(),
-                name: politics
-                    .as_ref()
-                    .and_then(|politics| politics.localised(token, View::Plain)),
-            })
+            .map(|token| ideology_type_info(politics.as_deref(), token))
             .collect();
         let mut people = Vec::with_capacity(scanned.people.len());
         for leader in &scanned.people {
@@ -684,12 +710,9 @@ impl Product for PartyHistory {
             .iter()
             .map(|naming| {
                 politics.as_ref().and_then(|politics| {
-                    party_name(
-                        naming,
-                        |key| politics.defines(key),
-                        // Party names are plain (14118F860).
-                        |key| politics.localised(key, View::Plain),
-                    )
+                    let (key, _) = party_key_checked(naming, |key| politics.defines(key))?;
+                    // Party names are plain (14118F860).
+                    politics.localised(&key, View::Plain)
                 })
             })
             .collect();

@@ -216,7 +216,7 @@ fn idea_history_spans_break_at_gaps_and_advisors_keep_their_recorded_role() {
 
 #[test]
 fn advisor_traits_select_the_first_native_name_match() {
-    use crate::products::idea_history::{Joined, info};
+    use crate::products::idea_history::{Joined, prepare_info};
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "common/country_leader/a.txt",
@@ -250,7 +250,7 @@ fn advisor_traits_select_the_first_native_name_match() {
         traits: &traits,
         localise: &localise,
     };
-    let advisor = info(&joined, "advisor", None, Err("no holder"));
+    let (advisor, findings) = prepare_info(&joined, "advisor", None, Err("no holder"), false);
     // 1412894E0 -> 140712D20 -> 140710200 keeps the first name match.
     // The following unread suffix cannot change that match, but can hide
     // a match before Later or define Missing.
@@ -266,12 +266,20 @@ fn advisor_traits_select_the_first_native_name_match() {
         assert!(!unknown.known);
         assert_eq!(unknown.name, None);
         assert!(unknown.unknown.as_deref().unwrap().contains("b.txt"));
+        assert!(findings.iter().any(|finding| {
+            finding.kind == crate::content_check::Kind::Refused
+                && finding.subject == format!("idea advisor trait {}", unknown.token)
+                && Some(finding.message.as_str()) == unknown.unknown.as_deref()
+        }));
     }
 }
 
 #[test]
 fn ideas_join_content_for_category_slot_and_traits() {
-    use crate::products::idea_history::{Joined, categories, info};
+    use crate::{
+        content_check::Kind,
+        products::idea_history::{Joined, categories, prepare_info},
+    };
     let names = installed_content::key_names::KeyNames::default();
     let tags = installed_content::ideas::parse_tags(
         b"idea_categories = { government = { slot = economy character_slot = political_advisor character_slot = political_advisor }           country = { type = national_spirit } military_staff = { character_slot = theorist } }",
@@ -301,13 +309,15 @@ fn ideas_join_content_for_category_slot_and_traits() {
         localise: &localise,
     };
     const NO_HOLDER: Result<&installed_content::characters::BuiltTemplate, &str> = Err("no holder");
-    let law = info(&joined, "civilian_economy", None, NO_HOLDER);
+    let (law, findings) = prepare_info(&joined, "civilian_economy", None, NO_HOLDER, false);
+    assert!(findings.is_empty(), "{findings:?}");
     assert_eq!(
         (law.category.as_deref(), law.slot.as_deref(), law.law),
         (Some("government"), Some("economy"), true)
     );
     assert_eq!(law.effects[0].fixed5, "35000");
-    let spirit = info(&joined, "GER_spirit", None, NO_HOLDER);
+    let (spirit, findings) = prepare_info(&joined, "GER_spirit", None, NO_HOLDER, false);
+    assert!(findings.is_empty(), "{findings:?}");
     assert_eq!(
         (spirit.category.as_deref(), spirit.slot),
         (Some("country"), None)
@@ -322,14 +332,26 @@ fn ideas_join_content_for_category_slot_and_traits() {
             hidden: true,
         }]
     );
-    let advisor = info(&joined, "GER_schacht_idea", None, NO_HOLDER);
+    let (advisor, findings) = prepare_info(&joined, "GER_schacht_idea", None, NO_HOLDER, false);
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].kind, Kind::Fallback);
+    assert_eq!(
+        findings[0].subject,
+        "idea GER_schacht_idea trait captain_of_industry"
+    );
     assert_eq!(
         (advisor.category.as_deref(), advisor.slot.as_deref()),
         (Some("government"), Some("political_advisor"))
     );
     assert_eq!(advisor.traits[0].token, "captain_of_industry");
     assert_eq!(content.idea("GER_theorist"), Ok(None));
-    let theorist = info(&joined, "GER_theorist", None, NO_HOLDER);
+    let (theorist, findings) = prepare_info(&joined, "GER_theorist", None, NO_HOLDER, false);
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].kind, Kind::Fallback);
+    assert_eq!(
+        findings[0].subject,
+        "idea GER_theorist trait military_theorist"
+    );
     assert_eq!(
         (theorist.category.as_deref(), theorist.slot.as_deref()),
         (Some("military_staff"), Some("theorist"))
@@ -348,12 +370,17 @@ fn ideas_join_content_for_category_slot_and_traits() {
     assert!(!advisor.traits[0].known);
     // Instances that disagree without a holder's template: the reason says
     // so rather than "not in the content files".
-    let split = info(
+    let (split, findings) = prepare_info(
         &joined,
         "GER_split_idea",
         Some("political_advisor"),
         NO_HOLDER,
+        false,
     );
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].kind, Kind::Unsupported);
+    assert_eq!(findings[0].subject, "idea GER_split_idea");
+    assert_eq!(Some(findings[0].message.as_str()), split.unknown.as_deref());
     assert!(!split.effects_known);
     assert!(
         split
@@ -365,10 +392,20 @@ fn ideas_join_content_for_category_slot_and_traits() {
         "{:?}",
         split.unknown
     );
-    let unknown = info(&joined, "MOD_mystery", None, NO_HOLDER);
+    let (unknown, findings) = prepare_info(&joined, "MOD_mystery", None, NO_HOLDER, false);
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].kind, Kind::Refused);
+    assert_eq!(findings[0].subject, "idea MOD_mystery");
     assert_eq!((unknown.category, unknown.slot), (None, None));
     // An advisor content cannot resolve is placed by the seat the recording gave it.
-    let recorded = info(&joined, "MOD_mystery", Some("political_advisor"), NO_HOLDER);
+    let (recorded, findings) = prepare_info(
+        &joined,
+        "MOD_mystery",
+        Some("political_advisor"),
+        NO_HOLDER,
+        false,
+    );
+    assert!(findings.is_empty(), "{findings:?}");
     assert_eq!(
         (recorded.category.as_deref(), recorded.slot.as_deref()),
         (Some("government"), Some("political_advisor"))

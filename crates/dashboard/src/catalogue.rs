@@ -3,6 +3,7 @@
 //! folders, plus the texture decoding every image reply uses. Everything is
 //! resolved through the recorded content stack; nothing names a vanilla asset.
 
+use crate::content_check::{Finding, Kind};
 use crate::{Source, content, invalid, products::ContentOptions};
 use base64::Engine;
 use installed_content::{
@@ -77,23 +78,104 @@ pub fn localised_with(
     arguments: &[(&str, Argument<'_>)],
     view: View,
 ) -> Result<String, String> {
-    let text = localisation
-        .localise_with(key.as_bytes(), arguments)
-        .map_err(|refusal| refusal.to_string())?;
-    let text =
-        scripted(&text, view).map_err(|reason| format!("localisation {key} holds {reason}"))?;
-    plain_text(&text).map_err(|reason| format!("localisation {key} holds {reason}"))
+    localised_with_reason(localisation, key, arguments, view, Kind::Unsupported)
+        .0
+        .map_err(|finding| finding.message)
+}
+
+/// A product's text and typed findings, obtained with one substitution walk.
+pub(crate) fn localised_details(
+    localisation: &Localisation,
+    key: &str,
+    arguments: &[(&str, Argument<'_>)],
+    view: View,
+    country_kind: Kind,
+) -> (Option<String>, Vec<Finding>) {
+    let (text, mut findings) =
+        localised_with_reason(localisation, key, arguments, view, country_kind);
+    let text = text.map_err(|finding| findings.push(*finding)).ok();
+    (text, findings)
+}
+
+fn localised_with_reason(
+    localisation: &Localisation,
+    key: &str,
+    arguments: &[(&str, Argument<'_>)],
+    view: View,
+    country_kind: Kind,
+) -> (Result<String, Box<Finding>>, Vec<Finding>) {
+    localised_with_renderer(localisation, key, arguments, |text| {
+        scripted(text, view).map_err(|reason| {
+            let aggregate = if country_kind == Kind::Offline {
+                "scripted localisation needs recorded country context; unavailable offline"
+            } else {
+                "scripted localisation is not evaluated because this product does not pass a country"
+            };
+            Box::new(Finding::grouped(
+                country_kind,
+                key,
+                aggregate,
+                format!("localisation {key} holds {reason}"),
+            ))
+        })
+    })
+}
+
+fn localised_with_renderer(
+    localisation: &Localisation,
+    key: &str,
+    arguments: &[(&str, Argument<'_>)],
+    render: impl FnOnce(&str) -> Result<(String, Option<&'static str>), Box<Finding>>,
+) -> (Result<String, Box<Finding>>, Vec<Finding>) {
+    let (text, fallbacks) = localisation.localise_with_fallbacks(key.as_bytes(), arguments);
+    // Native substitution recovery: 142230940 / 14223096F / 142230D7B.
+    let mut findings: Vec<_> = fallbacks
+        .into_iter()
+        .map(|reason| Finding::new(Kind::Content, key, reason))
+        .collect();
+    let text = text
+        .map_err(|why| {
+            Box::new(Finding::grouped(
+                Kind::Refused,
+                key,
+                "native localisation text refused",
+                why.to_string(),
+            ))
+        })
+        .and_then(|text| {
+            let (text, fallback) = render(&text)?;
+            if let Some(reason) = fallback {
+                // CTextBase::ProcessString 1412B9CA0 / 1412B9E55 drops this in the game.
+                findings.push(Finding::new(
+                    Kind::Content,
+                    key,
+                    format!("localisation {key} holds {reason}"),
+                ));
+            }
+            plain_text(&text).map_err(|why| {
+                Box::new(Finding::grouped(
+                    Kind::Unsupported,
+                    key,
+                    &format!("localisation holds {why}"),
+                    format!("localisation {key} holds {why}"),
+                ))
+            })
+        });
+    (text, findings)
 }
 
 /// The text as `view` shows its `[`s ([`View`]).
-fn scripted(text: &str, view: View) -> Result<String, String> {
+fn scripted(text: &str, view: View) -> Result<(String, Option<&'static str>), String> {
     let Some(open) = text.find('[') else {
-        return Ok(text.to_owned());
+        return Ok((text.to_owned(), None));
     };
     let closed = text[open + 1..].find(']');
     match (view, closed) {
-        (View::Plain, _) => Ok(text.to_owned()),
-        (View::Scripted, None) => Ok(String::new()),
+        (View::Plain, _) => Ok((text.to_owned(), None)),
+        (View::Scripted, None) => Ok((
+            String::new(),
+            Some("an unclosed scripted expression; the game omits the text"),
+        )),
         (View::Scripted, Some(length)) => Err(format!(
             "the scripted expression {:?}, which the game evaluates for the country the text is shown for, and this product does not pass that country",
             &text[open..open + length + 2],
@@ -110,13 +192,30 @@ pub fn localised_in(
     arguments: &[(&str, Argument<'_>)],
     scripted: &crate::scripted_text::ScriptedText<'_>,
 ) -> Result<String, String> {
-    let text = localisation
-        .localise_with(key.as_bytes(), arguments)
-        .map_err(|refusal| refusal.to_string())?;
-    let text = scripted
-        .expand(&text)
-        .map_err(|reason| format!("localisation {key} holds {reason}"))?;
-    plain_text(&text).map_err(|reason| format!("localisation {key} holds {reason}"))
+    localised_in_details(localisation, key, arguments, scripted)
+        .0
+        .map_err(|finding| finding.message)
+}
+
+fn localised_in_details(
+    localisation: &Localisation,
+    key: &str,
+    arguments: &[(&str, Argument<'_>)],
+    scripted: &crate::scripted_text::ScriptedText<'_>,
+) -> (Result<String, Box<Finding>>, Vec<Finding>) {
+    localised_with_renderer(localisation, key, arguments, |text| {
+        scripted
+            .expand(text)
+            .map(|text| (text, None))
+            .map_err(|why| {
+                Box::new(Finding::grouped(
+                    Kind::Unsupported,
+                    key,
+                    "recorded-country scripted text unavailable",
+                    format!("localisation {key} holds {why}"),
+                ))
+            })
+    })
 }
 
 /// Stored game text (`installed_content::localisation`) as plain text, read as the
@@ -206,6 +305,7 @@ pub struct Catalogue {
     /// [`Catalogue::localise_in`] refused so far, by reason: a fact of the
     /// content, reported by [`Catalogue::refusal_lines`].
     refused: Mutex<Refusals>,
+    findings: Option<Mutex<BTreeSet<Finding>>>,
     /// Scripted localisation names and the recursion limit, read on first
     /// use ([`Catalogue::scripted_content`]).
     scripted: OnceLock<Result<crate::scripted_text::ScriptedContent, String>>,
@@ -290,11 +390,12 @@ impl Catalogue {
             warnings,
             recorded_language,
             refused: Mutex::default(),
+            findings: None,
             scripted: OnceLock::new(),
         })
     }
 
-    #[cfg(test)]
+    /// A content-only catalogue, without a recording or identity verification.
     pub(crate) fn of_layers(layers: ResolvedLayers, language: &str) -> io::Result<Self> {
         let localisation = Arc::new(installed_content::localisation::read(&layers, language)?);
         let content = Arc::new(ResolvedContent {
@@ -311,28 +412,48 @@ impl Catalogue {
         )
     }
 
-    /// [`localised_in`], noting a refusal: a key the content lacks is its own
-    /// bytes, as the game's localiser copies it.
+    /// Recorded-country text, with recovery notes from the same localiser walk.
     pub fn localise_in(
         &self,
         key: &str,
         scripted: &crate::scripted_text::ScriptedText<'_>,
     ) -> Option<String> {
-        localised_in(&self.localisation, key, &[], scripted)
-            .inspect_err(|reason| self.refuse(reason, key))
+        let (text, findings) = localised_in_details(&self.localisation, key, &[], scripted);
+        for finding in findings {
+            self.note(finding);
+        }
+        text.inspect_err(|finding| self.refuse_finding((**finding).clone()))
             .ok()
     }
 
-    /// [`localised_with`], noting a refusal: a key the content lacks is its
-    /// own bytes, as the game's localiser copies it.
     pub fn localised_with(
         &self,
         key: &str,
         arguments: &[(&str, Argument<'_>)],
         view: View,
     ) -> Option<String> {
-        localised_with(&self.localisation, key, arguments, view)
-            .inspect_err(|reason| self.refuse(reason, key))
+        self.localised_for(key, arguments, view, Kind::Unsupported)
+    }
+
+    /// Stability and special projects evaluate this text with the recorded
+    /// country on their live paths.
+    pub(crate) fn localised_offline_country(&self, key: &str) -> Option<String> {
+        self.localised_for(key, &[], View::Scripted, Kind::Offline)
+    }
+
+    fn localised_for(
+        &self,
+        key: &str,
+        arguments: &[(&str, Argument<'_>)],
+        view: View,
+        country_kind: Kind,
+    ) -> Option<String> {
+        let (text, findings) =
+            localised_with_reason(&self.localisation, key, arguments, view, country_kind);
+        for finding in findings {
+            self.note(finding);
+        }
+        text.inspect_err(|finding| self.refuse_finding((**finding).clone()))
             .ok()
     }
 
@@ -358,10 +479,19 @@ impl Catalogue {
 
     /// Notes a text of `identity` not shown for `reason`.
     pub fn refuse(&self, reason: &str, identity: &str) {
+        self.refuse_finding(Finding::new(Kind::Refused, identity, reason));
+    }
+
+    pub(crate) fn refuse_as(&self, kind: Kind, reason: &str, identity: &str) {
+        self.refuse_finding(Finding::new(kind, identity, reason));
+    }
+
+    pub(crate) fn refuse_finding(&self, finding: Finding) {
         self.refused
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .note(reason, identity);
+            .note(&finding.message, &finding.subject);
+        self.note(finding);
     }
 
     /// The texts refused so far, one warning per reason, and the warnings
@@ -386,6 +516,33 @@ impl Catalogue {
         }
         self.content.layers.read_warnings().append_to(&mut lines);
         lines
+    }
+
+    pub(crate) fn note(&self, finding: Finding) {
+        if let Some(findings) = &self.findings {
+            findings
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(finding);
+        }
+    }
+
+    pub(crate) fn take_findings(&self) -> Vec<Finding> {
+        self.findings
+            .as_ref()
+            .map(|findings| {
+                std::mem::take(&mut *findings.lock().unwrap_or_else(|e| e.into_inner()))
+                    .into_iter()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// A collector owned exclusively by one offline preparation, never by a live source.
+    pub(crate) fn of_layers_for_check(layers: ResolvedLayers, language: &str) -> io::Result<Self> {
+        let mut catalogue = Self::of_layers(layers, language)?;
+        catalogue.findings = Some(Mutex::default());
+        Ok(catalogue)
     }
 }
 
@@ -497,7 +654,7 @@ pub(crate) fn gui_texture_frame_png(
     image_frame_png(&gui_texture(layers, name, decode)?, frames, frame, max_edge)
 }
 
-fn image_frame_png(
+pub(crate) fn image_frame_png(
     image: &Rgba8Image,
     frames: u32,
     frame: u32,
@@ -790,6 +947,7 @@ pub(crate) mod tests {
             warnings: Vec::new(),
             recorded_language: "english".into(),
             refused: Mutex::default(),
+            findings: None,
             scripted: OnceLock::new(),
         }
     }
@@ -867,6 +1025,75 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn plain_and_recorded_text_share_recovery_and_refusal_kinds() {
+        let (catalogue, _folder) = folder_catalogue(&[
+            (
+                "localisation/mod_l_english.yml",
+                concat!(
+                    "\u{feff}l_english:\n",
+                    " BROKEN:0 \"a$MISSING$b\"\n",
+                    " GAP:0 \"a¤b\"\n",
+                    " CUT:0 \"$VALUE$\"\n",
+                    " SCOPED:0 \"§Y[ROOT.GetTag]§!\"\n",
+                ),
+            ),
+            (
+                "common/defines/mod.lua",
+                "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
+            ),
+        ]);
+        let frame = crate::scope::tests::frame();
+        let scripted = crate::scripted_text::ScriptedText::new(
+            &frame,
+            &catalogue.localisation,
+            catalogue.scripted_content().unwrap(),
+            0,
+        );
+        let cut = format!("a{}", "é".repeat(0xC00));
+        let arguments = [("VALUE", Argument::Text(&cut))];
+        for (key, refusal) in [
+            ("ABSENT", None),
+            ("BROKEN", None),
+            ("GAP", Some(Kind::Unsupported)),
+            ("CUT", Some(Kind::Refused)),
+        ] {
+            let plain = localised_with_reason(
+                &catalogue.localisation,
+                key,
+                &arguments,
+                View::Plain,
+                Kind::Unsupported,
+            );
+            let recorded =
+                localised_in_details(&catalogue.localisation, key, &arguments, &scripted);
+            assert_eq!(plain, recorded, "{key}");
+            assert_eq!(plain.0.as_ref().err().map(|f| f.kind), refusal, "{key}");
+            assert!(plain.1.iter().all(|f| f.kind == Kind::Content), "{key}");
+            if matches!(key, "ABSENT" | "BROKEN") {
+                assert!(!plain.1.is_empty(), "{key}");
+            }
+        }
+        assert_eq!(
+            localised_in_details(&catalogue.localisation, "SCOPED", &[], &scripted),
+            (Ok("GER".into()), Vec::new())
+        );
+        for kind in [Kind::Unsupported, Kind::Offline] {
+            let (text, findings) =
+                localised_details(&catalogue.localisation, "SCOPED", &[], View::Scripted, kind);
+            assert_eq!(text, None);
+            assert_eq!(findings.len(), 1);
+            assert_eq!(findings[0].kind, kind);
+            assert_eq!(findings[0].subject, "SCOPED");
+        }
+        assert_eq!(catalogue.localised("GAP", View::Plain), None);
+        let warnings = catalogue.refusal_lines();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(catalogue.localise_in("GAP", &scripted), None);
+        assert_eq!(catalogue.refusal_lines(), warnings);
+        assert!(catalogue.take_findings().is_empty());
+    }
+
+    #[test]
     fn a_refusal_is_counted_once_per_identity() {
         let mut refusals = Refusals::default();
         refusals.note("why", "B");
@@ -935,10 +1162,7 @@ pub(crate) mod tests {
     }
     #[test]
     fn missing_or_unreadable_settings_only_refuse_catalogue_artwork() {
-        use crate::{
-            products::ContentOptions,
-            test_fixtures::{CAMPAIGN, records, source},
-        };
+        use crate::test_fixtures::{CAMPAIGN, records, source};
         use replay::{container::Replay, spool::Record};
         use std::sync::atomic::AtomicBool;
         let (_, folder) = crate::catalogue::tests::folder_catalogue(&[
@@ -956,35 +1180,7 @@ pub(crate) mod tests {
                 "\u{feff}l_english:\n NAME:0 \"Recorded name\"\n",
             ),
         ]);
-        let options = ContentOptions {
-            options: installed_content::ResolveOptions {
-                game_dir: folder.0.clone(),
-                user_dir: folder.0.join("user"),
-                cache_dir: folder.0.join("cache"),
-            },
-            allow_unverified: true,
-        };
-        std::fs::create_dir(folder.0.join("dlc")).unwrap();
-        let gathered = installed_content::gather(&installed_content::GatherOptions {
-            game_dir: options.options.game_dir.clone(),
-            user_dir: options.options.user_dir.clone(),
-            cache_dir: options.options.cache_dir.clone(),
-            dlc_order: Some(Vec::new()),
-        })
-        .unwrap();
-        let identity = gathered
-            .identity(
-                "test".into(),
-                [
-                    0x9f, 0x86, 0xd0, 0x81, 0x88, 0x4c, 0x7d, 0x65, 0x9a, 0x2f, 0xea, 0xa0, 0xc5,
-                    0x5a, 0xd0, 0x15, 0xa3, 0xbf, 0x4f, 0x1b, 0x2b, 0x0b, 0x82, 0x2c, 0xd1, 0x5d,
-                    0x6c, 0x15, 0xb0, 0xf0, 0x0a, 0x08,
-                ],
-                4,
-                "test".into(),
-                [1; 32],
-            )
-            .unwrap();
+        let (options, identity) = crate::test_fixtures::content_identity(&folder.0);
         let settings = options.options.user_dir.join("settings.txt");
         std::fs::remove_file(&settings).unwrap();
         for unreadable in [false, true] {

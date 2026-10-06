@@ -4,7 +4,7 @@
 //! tree read kept for main's readers that have not moved yet (a follow-up
 //! after the political layers, recorded in the plan).
 
-use crate::{ResolvedLayers, parser::Document};
+use crate::{DiagnosticKind, DiagnosticMessage, ResolvedLayers, parser::Document};
 use std::io;
 
 /// The files a database loader reads from `folder` (lower case, ending in
@@ -36,24 +36,30 @@ pub fn paths(layers: &ResolvedLayers, folder: &str, filter: Option<&str>) -> Vec
 
 /// Each parsed file under `folder` in load order, as trees, for the content
 /// readers not yet on the reader replay. `what` names the content in warnings.
-pub fn documents(
+pub fn documents<D: DiagnosticMessage>(
     layers: &ResolvedLayers,
     folder: &str,
     what: &str,
-    warnings: &mut Vec<String>,
+    warnings: &mut Vec<D>,
 ) -> io::Result<Vec<(String, Document)>> {
     let mut result = Vec::new();
     for path in paths(layers, folder, Some(".txt")) {
         match crate::parser::parse_unclosed(&layers.read(&path)?) {
             Ok((document, repaired)) => {
                 if repaired {
-                    warnings.push(format!(
-                        "{path} ends inside an open block; it was closed as the game closes it."
-                    ));
+                    warnings.push(D::from_diagnostic((
+                        DiagnosticKind::Warning,
+                        format!(
+                            "{path} ends inside an open block; it was closed as the game closes it."
+                        ),
+                    )));
                 }
                 result.push((path, document));
             }
-            Err(error) => warnings.push(format!("{what} unavailable in {path}: {error}")),
+            Err(error) => warnings.push(D::from_diagnostic((
+                DiagnosticKind::ParseFailure,
+                format!("{what} unavailable in {path}: {error}"),
+            ))),
         }
     }
     Ok(result)

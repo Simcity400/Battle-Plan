@@ -6,6 +6,42 @@ use replay::{
     spool::Record,
 };
 
+/// Gather a synthetic content root whose executable contains `test`.
+pub(crate) fn content_identity(
+    root: &std::path::Path,
+) -> (crate::products::ContentOptions, replay::identity::Identity) {
+    let options = crate::products::ContentOptions {
+        options: installed_content::ResolveOptions {
+            game_dir: root.to_owned(),
+            user_dir: root.join("user"),
+            cache_dir: root.join("cache"),
+        },
+        allow_unverified: true,
+    };
+    std::fs::create_dir_all(root.join("dlc")).unwrap();
+    let gathered = installed_content::gather(&installed_content::GatherOptions {
+        game_dir: options.options.game_dir.clone(),
+        user_dir: options.options.user_dir.clone(),
+        cache_dir: options.options.cache_dir.clone(),
+        dlc_order: Some(Vec::new()),
+    })
+    .unwrap();
+    let identity = gathered
+        .identity(
+            "test".into(),
+            [
+                0x9f, 0x86, 0xd0, 0x81, 0x88, 0x4c, 0x7d, 0x65, 0x9a, 0x2f, 0xea, 0xa0, 0xc5, 0x5a,
+                0xd0, 0x15, 0xa3, 0xbf, 0x4f, 0x1b, 0x2b, 0x0b, 0x82, 0x2c, 0xd1, 0x5d, 0x6c, 0x15,
+                0xb0, 0xf0, 0x0a, 0x08,
+            ],
+            4,
+            "test".into(),
+            [1; 32],
+        )
+        .unwrap();
+    (options, identity)
+}
+
 pub(crate) const CAMPAIGN: &[u8] = b"analytics-test";
 
 pub(crate) fn ownership_frame(branch: u64, hour: i32, owner: u32) -> DecodedFrame {

@@ -33,7 +33,9 @@ use replay::{
 
 mod balance;
 mod entries;
-pub(crate) use entries::{Environment, StateNames, read_state_content, state_name_from};
+pub(crate) use entries::{
+    Environment, StateNames, live_state_warnings, read_state_content, state_name_from,
+};
 mod properties;
 pub(crate) mod random;
 

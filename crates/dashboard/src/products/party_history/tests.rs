@@ -1,4 +1,4 @@
-use super::{PartyNaming, RecordedPortrait, leader_portrait, party_name};
+use super::{PartyNaming, RecordedPortrait, leader_portrait, party_key};
 use crate::test_fixtures::{CAMPAIGN, ownership_frame, records};
 use replay::{
     container::Replay,
@@ -20,15 +20,10 @@ fn a_party_is_named_as_the_game_names_it() {
     ));
     let refused = std::cell::RefCell::new(crate::catalogue::Refusals::default());
     let name = |naming: &PartyNaming| {
-        party_name(
-            naming,
-            |key| loc.get(key).is_some(),
-            |key| {
-                crate::catalogue::localised(&loc, key, crate::catalogue::View::Plain)
-                    .inspect_err(|reason| refused.borrow_mut().note(reason.clone(), key))
-                    .ok()
-            },
-        )
+        let key = party_key(naming, |key| loc.get(key).is_some())?;
+        crate::catalogue::localised(&loc, &key, crate::catalogue::View::Plain)
+            .inspect_err(|reason| refused.borrow_mut().note(reason.clone(), &key))
+            .ok()
     };
     let naming =
         |token: &str, tag: Option<&str>, original: Option<&str>, key: Option<&str>| PartyNaming {

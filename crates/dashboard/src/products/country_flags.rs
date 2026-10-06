@@ -16,7 +16,7 @@ use replay::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::{
         Arc,
@@ -44,7 +44,7 @@ pub enum CountryFlagSize {
 impl CountryFlagSize {
     /// Flag sets searched in order; a medium flag a mod omits falls back to the
     /// same country's large flag rather than to no flag.
-    fn sets(self) -> &'static [FlagSet] {
+    pub(crate) fn sets(self) -> &'static [FlagSet] {
         match self {
             Self::Full | Self::Shield => &[FlagSet::Normal],
             Self::Medium => &[FlagSet::Medium, FlagSet::Normal],
@@ -157,14 +157,7 @@ impl Product for CountryFlags {
                     .find(|cached| Arc::ptr_eq(&cached.content, &resolved))
                 {
                     Some(cached) => cached.cells,
-                    None => {
-                        let defines = installed_content::defines::read(&resolved.layers)?;
-                        [
-                            FlagSet::Normal.cell(&defines)?,
-                            FlagSet::Medium.cell(&defines)?,
-                            FlagSet::Small.cell(&defines)?,
-                        ]
-                    }
+                    None => flag_cells(&resolved.layers)?,
                 };
                 let loaded = FlagContext::load(
                     source.replay(),
@@ -305,12 +298,37 @@ fn safe_flag_key(key: &str) -> bool {
 pub(crate) enum FlagSearch {
     Found {
         asset: String,
-        image: Rgba8Image,
+        image: Arc<Rgba8Image>,
     },
     /// A candidate this reader cannot resolve: the engine would have tried it
     /// before the rest, so no later candidate may stand in for it.
-    Unresolvable(String),
+    Unresolvable,
     Absent,
+}
+
+pub(crate) fn flag_cells(layers: &installed_content::ResolvedLayers) -> io::Result<[[u32; 2]; 3]> {
+    let defines = installed_content::defines::read(layers)?;
+    Ok([
+        FlagSet::Normal.cell(&defines)?,
+        FlagSet::Medium.cell(&defines)?,
+        FlagSet::Small.cell(&defines)?,
+    ])
+}
+
+#[derive(Clone)]
+enum FlagFile {
+    Missing,
+    Refused(installed_content::flags::DecodeFailure),
+    Image(Arc<Rgba8Image>),
+}
+
+/// One decoding per file/set, shared across the country's key ladders.
+#[derive(Default)]
+pub(crate) struct FlagCache {
+    files: BTreeMap<(usize, String), FlagFile>,
+    reported: BTreeSet<(usize, String)>,
+    substitutions: BTreeSet<String>,
+    unresolvable: BTreeSet<String>,
 }
 
 /// Searches `sets` in order, and in each the candidates in order, as
@@ -323,29 +341,101 @@ pub(crate) fn find_flag(
     sets: &[FlagSet],
     cells: &[[u32; 2]; 3],
     candidates: &[String],
-) -> io::Result<FlagSearch> {
+    cache: &mut FlagCache,
+) -> io::Result<(FlagSearch, Vec<crate::content_check::Finding>)> {
+    use crate::content_check::{Finding, Kind};
+    let mut findings = Vec::new();
     for &set in sets {
-        let cell = cells[match set {
+        let set_index = match set {
             FlagSet::Normal => 0,
             FlagSet::Medium => 1,
             FlagSet::Small => 2,
-        }];
+        };
+        let cell = cells[set_index];
         for key in candidates {
             if !safe_flag_key(key) {
-                return Ok(FlagSearch::Unresolvable(key.clone()));
+                if cache.unresolvable.insert(key.clone()) {
+                    findings.push(Finding::new(Kind::Refused, key,
+                        format!("flag name {key:?} cannot be resolved inside the flag folder, so the country's flag is unavailable")));
+                }
+                return Ok((FlagSearch::Unresolvable, findings));
             }
             let asset = format!("{}{key}.tga", set.directory());
-            let bytes = match layers.read_uncovered(&asset) {
-                Ok(bytes) => bytes,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(error),
-            };
-            if let Some(image) = installed_content::flags::decode(&bytes, cell) {
-                return Ok(FlagSearch::Found { asset, image });
+            let cache_key = (set_index, asset.clone());
+            if !cache.files.contains_key(&cache_key) {
+                let file = match layers.read_uncovered(&asset) {
+                    Ok(bytes) => match installed_content::flags::decode_checked(&bytes, cell) {
+                        Ok(image) => FlagFile::Image(Arc::new(image)),
+                        Err(reason) => FlagFile::Refused(reason),
+                    },
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => FlagFile::Missing,
+                    Err(error) => return Err(error),
+                };
+                cache.files.insert(cache_key.clone(), file);
+            }
+            match &cache.files[&cache_key] {
+                FlagFile::Missing => {}
+                FlagFile::Refused(reason) => {
+                    if !cache.reported.insert(cache_key.clone()) {
+                        continue;
+                    }
+                    // DecodeFlagTga 14122AB00 rejects these headers, and
+                    // LoadFirstDecodableCountryFlag 14122A730 skips them.
+                    // The port's stricter truncated-read refusal differs.
+                    let mut finding = Finding::new(
+                        match reason {
+                            installed_content::flags::DecodeFailure::EngineRefused => Kind::Content,
+                            installed_content::flags::DecodeFailure::Truncated => Kind::Refused,
+                        },
+                        key,
+                        match reason {
+                            installed_content::flags::DecodeFailure::EngineRefused => format!(
+                                "flag decoder refused {asset} at cell {}x{}; this file was skipped",
+                                cell[0], cell[1]
+                            ),
+                            installed_content::flags::DecodeFailure::Truncated => format!(
+                                "flag decoder cannot safely read {asset} at cell {}x{}; the port refuses this input but the engine does not check read status",
+                                cell[0], cell[1]
+                            ),
+                        },
+                    );
+                    finding.file = Some(asset.clone());
+                    findings.push(finding);
+                }
+                FlagFile::Image(image) => {
+                    if sets.first() == Some(&FlagSet::Medium)
+                        && set == FlagSet::Normal
+                        && cache.substitutions.insert(asset.clone())
+                    {
+                        // No traced native medium-to-normal substitution: actionable.
+                        let mut finding = Finding::new(
+                            Kind::Fallback,
+                            key,
+                            format!(
+                                "medium flag is missing or undecodable; normal flag {asset} is shown"
+                            ),
+                        );
+                        finding.file = Some(asset.clone());
+                        findings.push(finding);
+                    }
+                    return Ok((
+                        FlagSearch::Found {
+                            asset,
+                            image: image.clone(),
+                        },
+                        findings,
+                    ));
+                }
             }
         }
     }
-    Ok(FlagSearch::Absent)
+    // Product omission has no cited native display parity.
+    findings.push(Finding::new(
+        Kind::Fallback,
+        candidates.first().cloned().unwrap_or_default(),
+        "no decodable flag in the requested sets; flag artwork is unavailable",
+    ));
+    Ok((FlagSearch::Absent, findings))
 }
 
 /// The extent `width` x `height` scaled so its longer side is at most `edge`.
@@ -566,6 +656,7 @@ impl FlagContext {
             }
             None => None,
         };
+        let mut cache = FlagCache::default();
         if let Some(style) = shield_style {
             warnings.extend(style.warnings.iter().cloned());
         }
@@ -580,12 +671,22 @@ impl FlagContext {
             // A flag key is the recorded tag (any bytes but NUL, spaces
             // included) with a cosmetic tag or party token; one this reader
             // cannot resolve costs only this country's flag.
-            match find_flag(
+            let (found, findings) = find_flag(
                 &self.content.layers,
                 request.size.sets(),
                 &self.cells,
                 &choice.candidates,
-            )? {
+                &mut cache,
+            )?;
+            warnings.extend(
+                findings
+                    .into_iter()
+                    // Substitution and engine-skipped files stay corpus-only.
+                    // Refusals differ from a file the engine could draw.
+                    .filter(|finding| finding.kind == crate::content_check::Kind::Refused)
+                    .map(|finding| format!("{tag}: {}", finding.message)),
+            );
+            match found {
                 FlagSearch::Found { asset, image } => {
                     let image = match shield_style {
                         Some(style) => shield(&image, &style.mask, style.overlay.as_ref()),
@@ -602,10 +703,7 @@ impl FlagContext {
                         pixels: image.pixels,
                     });
                 }
-                FlagSearch::Unresolvable(key) => warnings.push(format!(
-                    "{tag}: flag name {key:?} cannot be resolved inside the flag folder, \
-                     so the country's flag is unavailable"
-                )),
+                FlagSearch::Unresolvable => {}
                 FlagSearch::Absent => warnings.push(format!(
                     "{tag}: flag artwork unavailable in the recorded content"
                 )),
@@ -624,6 +722,109 @@ impl FlagContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unresolvable_flag_keys_report_once_across_sets_and_groups() {
+        let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[]);
+        let mut cache = FlagCache::default();
+        for (index, set) in [FlagSet::Normal, FlagSet::Medium, FlagSet::Small]
+            .into_iter()
+            .enumerate()
+        {
+            let (found, findings) = find_flag(
+                &catalogue.content.layers,
+                &[set],
+                &[[1, 1]; 3],
+                &["../mod_country".into(), "safe_fallback".into()],
+                &mut cache,
+            )
+            .unwrap();
+            assert!(matches!(found, FlagSearch::Unresolvable));
+            assert_eq!(findings.len(), usize::from(index == 0));
+        }
+    }
+
+    #[test]
+    fn live_flag_reply_warns_only_for_unreproduced_draws() {
+        let image = vec![
+            0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 32, 0x28, 30, 20, 10, 255,
+        ];
+        let mut skipped = image.clone();
+        skipped[2] = 10;
+        let mut truncated = image.clone();
+        truncated.pop();
+        let (catalogue, _folders) = crate::catalogue::texture_tests::texture_catalogue(
+            &[],
+            &[
+                ("gfx/flags/mod_normal.tga", image.clone()),
+                ("gfx/flags/medium/mod_good.tga", image),
+                ("gfx/flags/medium/mod_skipped.tga", skipped),
+                ("gfx/flags/medium/mod_truncated.tga", truncated),
+            ],
+        );
+        for (candidates, asset, reason) in [
+            (vec!["mod_normal"], Some("gfx/flags/mod_normal.tga"), None),
+            (
+                vec!["mod_skipped", "mod_good"],
+                Some("gfx/flags/medium/mod_good.tga"),
+                None,
+            ),
+            (
+                vec!["mod_truncated", "mod_good"],
+                Some("gfx/flags/medium/mod_good.tga"),
+                Some("engine does not check read status"),
+            ),
+            (
+                vec!["mod_absent"],
+                None,
+                Some("mod tag: flag artwork unavailable in the recorded content"),
+            ),
+        ] {
+            let context = FlagContext {
+                options: ResolveOptions {
+                    game_dir: "G".into(),
+                    user_dir: "U".into(),
+                    cache_dir: "C".into(),
+                },
+                content: Arc::clone(&catalogue.content),
+                cells: [[1, 1]; 3],
+                choices: HashMap::from([(
+                    "mod tag".into(),
+                    FlagChoice {
+                        raw: 0,
+                        tag: "mod tag".into(),
+                        candidates: candidates.into_iter().map(str::to_owned).collect(),
+                    },
+                )]),
+                branch_id: "1".into(),
+                hour: 0,
+                warnings: Vec::new(),
+            };
+            let request = CountryFlagParams {
+                branch_id: "1".into(),
+                hour: 0,
+                tags: vec!["mod tag".into()],
+                size: CountryFlagSize::Medium,
+            };
+            let reply = context
+                .reply(&request, None, &AtomicBool::new(false))
+                .unwrap();
+            assert_eq!(reply.flags.first().map(|flag| flag.asset.as_str()), asset);
+            match reason {
+                Some(reason) => assert_eq!(
+                    reply
+                        .warnings
+                        .iter()
+                        .filter(|warning| warning.contains(reason))
+                        .count(),
+                    1,
+                    "{:?}",
+                    reply.warnings
+                ),
+                None => assert!(reply.warnings.is_empty(), "{:?}", reply.warnings),
+            }
+        }
+    }
 
     #[test]
     fn unknown_decode_settings_refuse_the_shield_by_name() {

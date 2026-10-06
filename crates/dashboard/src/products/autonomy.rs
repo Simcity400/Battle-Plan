@@ -380,13 +380,36 @@ pub fn order_levels(
     (levels, places)
 }
 
+pub(crate) fn level_name(catalogue: &Catalogue, id: &str) -> Option<String> {
+    catalogue.localised(id, View::Plain)
+}
+
+/// Authored levels only: offline preparation has no scores to rank unplaced levels.
+pub(crate) fn content_levels(
+    states: &installed_content::autonomy::AutonomyStates,
+    catalogue: &Catalogue,
+) -> Vec<AutonomyLevel> {
+    states
+        .ordered()
+        .into_iter()
+        .map(|state| AutonomyLevel {
+            id: state.id.clone(),
+            name: level_name(catalogue, &state.id),
+            defined: state.min_freedom_level.is_some(),
+        })
+        .collect()
+}
+
 #[derive(Default)]
 struct Cache {
     entries: VecDeque<(u64, Arc<ScannedAutonomy>)>,
 }
 
 /// The content's autonomy states and the notes reading them left.
-type States = (installed_content::autonomy::AutonomyStates, Vec<String>);
+type States = (
+    installed_content::autonomy::AutonomyStates,
+    Vec<installed_content::Diagnostic>,
+);
 /// The states read for a catalogue, read once per catalogue (held, so a new one is
 /// never mistaken for it).
 type StatesCache = Option<(Arc<Catalogue>, Arc<States>)>;
@@ -471,7 +494,7 @@ impl Product for Autonomy {
                 .and_then(|catalogue| Ok((content_states(source, &catalogue)?, catalogue)))
             {
                 Ok((states, catalogue)) => {
-                    warnings.extend(states.1.iter().cloned());
+                    warnings.extend(states.1.iter().map(|(_, message)| message.clone()));
                     Some((states.0.clone(), catalogue))
                 }
                 Err(error) => {
@@ -486,7 +509,7 @@ impl Product for Autonomy {
         };
         let (levels, places) =
             order_levels(&scanned, content.as_ref().map(|(states, _)| states), |id| {
-                content.as_ref()?.1.localised(id, View::Plain)
+                level_name(&content.as_ref()?.1, id)
             });
         if let Some((_, catalogue)) = &content {
             warnings.extend(catalogue.refusal_lines());

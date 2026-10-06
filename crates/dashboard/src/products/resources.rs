@@ -204,14 +204,26 @@ fn resource_name(
     localisation: &Localisation,
     token: &str,
     warnings: &mut Vec<String>,
+    findings: &mut Vec<crate::content_check::Finding>,
 ) -> Option<String> {
     let upper = installed_content::localisation::crt_case_text(token, true, false);
     let key = format!("PRODUCTION_MATERIALS_{upper}");
-    // An empty text is shown empty, as the game's text box shows it; a key
-    // the content lacks is its own bytes (142230940).
-    catalogue::localised(localisation, &key, catalogue::View::Plain)
-        .inspect_err(|reason| warnings.push(format!("{token}: no name: {reason}")))
-        .ok()
+    // Recovery and text share the walk; missing keys are byte copies (142230940).
+    let (name, notes) = catalogue::localised_details(
+        localisation,
+        &key,
+        &[],
+        catalogue::View::Plain,
+        crate::content_check::Kind::Unsupported,
+    );
+    warnings.extend(
+        notes
+            .iter()
+            .filter(|finding| finding.kind != crate::content_check::Kind::Content)
+            .map(|finding| format!("{token}: no name: {}", finding.message)),
+    );
+    findings.extend(notes);
+    name
 }
 
 /// Names and icons for `wanted` declarations (token, ordinal) from content: the name
@@ -224,24 +236,48 @@ pub(crate) fn resource_content(
     cached: &mut BTreeMap<(String, u32), Declared>,
     warnings: &mut Vec<String>,
     cancelled: &AtomicBool,
-) -> io::Result<()> {
+) -> io::Result<Vec<crate::content_check::Finding>> {
+    use crate::content_check::{Finding, Kind};
     let missing: Vec<&(String, u32)> = wanted
         .iter()
         .filter(|key| !cached.contains_key(*key))
         .collect();
     if missing.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
+    let mut findings = Vec::new();
     let icons = match icons(view) {
         Ok((icons, notes)) => {
+            findings.extend(
+                notes
+                    .iter()
+                    .map(|note| Finding::new(Kind::Warning, "resource icons", note)),
+            );
             warnings.extend(notes);
             Some(icons)
         }
         Err(error) => {
-            warnings.push(format!("Resource icons are unavailable: {error}"));
+            let message = format!("Resource icons are unavailable: {error}");
+            findings.push(Finding::new(Kind::Refused, "resource icons", &message));
+            warnings.push(message);
             None
         }
     };
+    // Decode one shared strip, rather than once per resource frame.
+    let image = icons.as_ref().and_then(|icons| {
+        view.gui_decode
+            .as_ref()
+            .map_err(crate::invalid)
+            .and_then(|decode| {
+                catalogue::gui_texture(view.layers, icons.texture.as_bytes(), *decode)
+            })
+            .map_err(|why| {
+                let message = format!("Resource icons are unavailable: {why}");
+                findings.push(Finding::new(Kind::Refused, "resource icons", &message));
+                warnings.push(message);
+            })
+            .ok()
+    });
     for (token, ordinal) in missing {
         if cancelled.load(Ordering::Acquire) {
             return Err(io::Error::new(
@@ -250,7 +286,12 @@ pub(crate) fn resource_content(
             ));
         }
         let mut notes = Vec::new();
-        let name = resource_name(view.localisation, token, &mut notes);
+        let mut name_findings = Vec::new();
+        let name = resource_name(view.localisation, token, &mut notes, &mut name_findings);
+        for finding in &mut name_findings {
+            finding.subject = format!("resource {token} declaration {ordinal}");
+        }
+        findings.extend(name_findings);
         if *ordinal == 1 {
             warnings.extend(notes);
         }
@@ -263,37 +304,40 @@ pub(crate) fn resource_content(
                 .flatten();
             (icons, frame)
         }) {
-            Some((icons, Some(frame))) => match view
-                .gui_decode
-                .as_ref()
-                .map_err(crate::invalid)
-                .and_then(|decode| {
-                    catalogue::gui_texture_frame_png(
-                        view.layers,
-                        icons.texture.as_bytes(),
-                        *decode,
-                        icons.frames,
-                        frame - 1,
-                        ICON_EDGE,
-                    )
-                }) {
+            Some((_, Some(_))) if image.is_none() => None,
+            Some((icons, Some(frame))) => match catalogue::image_frame_png(
+                image.as_ref().expect("shared texture decoded"),
+                icons.frames,
+                frame - 1,
+                ICON_EDGE,
+            ) {
                 Ok(icon) => Some(icon),
                 Err(error) => {
-                    warnings.push(format!("{token}: icon unavailable: {error}"));
+                    let message = format!("{token}: icon unavailable: {error}");
+                    findings.push(Finding::new(
+                        Kind::Refused,
+                        format!("resource {token} declaration {ordinal}"),
+                        &message,
+                    ));
+                    warnings.push(message);
                     None
                 }
             },
             Some((_, None)) => {
-                warnings.push(format!(
-                    "{token}: the recorded content gives no usable icon frame."
+                let message = format!("{token}: the recorded content gives no usable icon frame.");
+                findings.push(Finding::new(
+                    Kind::Fallback,
+                    format!("resource {token} declaration {ordinal}"),
+                    &message,
                 ));
+                warnings.push(message);
                 None
             }
             None => None,
         };
         cached.insert((token.clone(), *ordinal), Declared { name, icon });
     }
-    Ok(())
+    Ok(findings)
 }
 
 /// Every recorded resource (native index and token, in the game's order) with its
@@ -592,7 +636,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_decode_settings_keep_resource_names_and_refuse_icons_by_token() {
+    fn shared_texture_failures_keep_resource_names_and_report_one_cause() {
         let (mut catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
             (
                 "interface/test.gui",
@@ -600,38 +644,54 @@ mod tests {
             ),
             (
                 "interface/test.gfx",
-                "spriteTypes = { spriteType = { name = icon texturefile = gfx/icon.dds } }",
+                "spriteTypes = { spriteType = { name = icon texturefile = gfx/icon.dds noOfFrames = 2 } }",
             ),
             (
                 "common/resources/test.txt",
-                "resources = { ore = { icon_frame = 1 } }",
+                "resources = { ore = { icon_frame = 1 } metal = { icon_frame = 2 } }",
             ),
             (
                 "localisation/test_l_english.yml",
-                "\u{feff}l_english:\n PRODUCTION_MATERIALS_ORE:0 \"Ore\"\n",
+                "\u{feff}l_english:\n PRODUCTION_MATERIALS_ORE:0 \"Ore\"\n PRODUCTION_MATERIALS_METAL:0 \"Metal\"\n",
             ),
+            ("gfx/icon.dds", "invalid DDS"),
         ]);
         catalogue.guis = installed_content::gui::native::read_layers(&catalogue.content.layers).unwrap();
-        catalogue.gui_decode = Err("settings.txt is unavailable".into());
-        let mut cached = Default::default();
-        let mut warnings = Vec::new();
-        resource_content(
-            &ContentView::of(&catalogue),
-            &[("ore".into(), 1)],
-            &mut cached,
-            &mut warnings,
-            &std::sync::atomic::AtomicBool::new(false),
-        )
-        .unwrap();
-        let declared = &cached[&("ore".into(), 1)];
-        assert_eq!(declared.name.as_deref(), Some("Ore"));
-        assert!(declared.icon.is_none());
-        assert!(
-            warnings
-                .iter()
-                .any(|why| why.contains("ore: icon unavailable: settings.txt")),
-            "{warnings:?}"
-        );
+        for decode in [
+            Err("settings.txt is unavailable".into()),
+            Ok(Default::default()),
+        ] {
+            catalogue.gui_decode = decode;
+            let mut cached = Default::default();
+            let mut warnings = Vec::new();
+            let wanted = [("ore".into(), 1), ("metal".into(), 1)];
+            let findings = resource_content(
+                &ContentView::of(&catalogue),
+                &wanted,
+                &mut cached,
+                &mut warnings,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            assert_eq!(findings.len(), 1, "{findings:?}");
+            assert_eq!(findings[0].kind, crate::content_check::Kind::Refused);
+            assert_eq!(findings[0].subject, "resource icons");
+            assert_eq!(warnings.len(), 1, "{warnings:?}");
+            assert!(warnings[0].starts_with("Resource icons are unavailable:"));
+            assert_eq!(cached[&wanted[0]].name.as_deref(), Some("Ore"));
+            assert_eq!(cached[&wanted[1]].name.as_deref(), Some("Metal"));
+            assert!(cached.values().all(|declared| declared.icon.is_none()));
+            let repeated = resource_content(
+                &ContentView::of(&catalogue),
+                &wanted,
+                &mut cached,
+                &mut warnings,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            assert!(repeated.is_empty());
+            assert_eq!(warnings.len(), 1);
+        }
     }
 }
 
@@ -654,23 +714,26 @@ mod naming_tests {
         // Mixed case: toupper folds the token, so both name the same key.
         for token in ["oil", "Oil"] {
             assert_eq!(
-                resource_name(&localisation, token, &mut warnings).as_deref(),
+                resource_name(&localisation, token, &mut warnings, &mut Vec::new()).as_deref(),
                 Some("Oil [ROOT.GetName]")
             );
         }
         assert_eq!(
-            resource_name(&localisation, "steel", &mut warnings).as_deref(),
+            resource_name(&localisation, "steel", &mut warnings, &mut Vec::new()).as_deref(),
             Some("")
         );
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(
-            resource_name(&localisation, "tungsten", &mut warnings).as_deref(),
+            resource_name(&localisation, "tungsten", &mut warnings, &mut Vec::new()).as_deref(),
             Some("PRODUCTION_MATERIALS_TUNGSTEN")
         );
-        assert_eq!(resource_name(&localisation, "coal", &mut warnings), None);
+        assert_eq!(
+            resource_name(&localisation, "coal", &mut warnings, &mut Vec::new()),
+            None
+        );
         // The "C" locale's toupper leaves a byte above 0x7F.
         assert_eq!(
-            resource_name(&localisation, "stål", &mut warnings).as_deref(),
+            resource_name(&localisation, "stål", &mut warnings, &mut Vec::new()).as_deref(),
             Some("PRODUCTION_MATERIALS_STåL")
         );
         assert_eq!(

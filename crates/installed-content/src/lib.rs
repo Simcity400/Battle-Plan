@@ -107,6 +107,10 @@ pub enum DiagnosticKind {
     Unsupported,
     /// A definition or lookup cannot be used.
     Refused,
+    /// Several definitions leave the intended result uncertain.
+    Ambiguous,
+    /// Presentation substitutes for unavailable content.
+    Fallback,
     /// The game logs an error and continues.
     Logged,
     /// Another content note that does not prevent its use.

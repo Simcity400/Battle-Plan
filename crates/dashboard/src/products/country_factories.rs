@@ -870,18 +870,40 @@ pub fn scans_run(source: &Source) -> usize {
         .runs
 }
 
-fn content_groups(catalogue: &Catalogue) -> (Vec<FactoryGroupInfo>, Vec<String>) {
+pub(crate) fn content_groups(catalogue: &Catalogue) -> (Vec<FactoryGroupInfo>, Vec<String>) {
     let mut warnings = catalogue.verification.clone();
     warnings.extend(catalogue.warnings.iter().cloned());
-    let (groups, notes) = describe_groups(&catalogue.content.layers, |token| {
-        // CBuildingTemplate::constructor@1414a4470 localises the raw key with
-        // localization_substitution_record::consumer@142230F20 (no script scope)
-        // into +0x210. get_display_name@1414a7570 returns that cached name to
-        // CProductionLineBuildingItem::vta48_vf0@141d40750 in the construction UI.
-        // A type without localisation stays unnamed.
-        catalogue.localisation.get(token)?;
-        catalogue.localised(token, catalogue::View::Plain)
-    });
+    let (groups, notes, mut findings) =
+        describe_groups_with_findings(&catalogue.content.layers, |token| {
+            // CBuildingTemplate::constructor@1414a4470 localises the raw key with
+            // localization_substitution_record::consumer@142230F20 (no script scope)
+            // into +0x210. get_display_name@1414a7570 returns that cached name to
+            // CProductionLineBuildingItem::vta48_vf0@141d40750 in the construction UI.
+            // A type without localisation stays unnamed.
+            catalogue.localisation.get(token)?;
+            let name = catalogue.localised(token, catalogue::View::Plain)?;
+            if name.is_empty() {
+                catalogue.refuse("factory building name is empty", token);
+                None
+            } else {
+                Some(name)
+            }
+        });
+    for building in groups.iter().flat_map(|group| &group.buildings) {
+        if building.name.is_none() && catalogue.localisation.get(&building.token).is_none() {
+            findings.push(crate::content_check::Finding::new(
+                crate::content_check::Kind::Content,
+                format!("building {}", building.token),
+                format!(
+                    "{}: no name in the recorded content; shown by its token (142230940).",
+                    building.token
+                ),
+            ));
+        }
+    }
+    for finding in findings {
+        catalogue.note(finding);
+    }
     warnings.extend(notes);
     warnings.extend(catalogue.refusal_lines());
     (groups, warnings)
@@ -893,44 +915,54 @@ fn content_groups(catalogue: &Catalogue) -> (Vec<FactoryGroupInfo>, Vec<String>)
 /// read is said in a warning and named visibly: a type with no name by its token, a
 /// group no building counts in by its flag, and the whole list by the flags when
 /// the building files cannot be read (such as an unsupported modifier block).
-pub fn describe_groups(
+fn describe_groups_with_findings(
     layers: &installed_content::ResolvedLayers,
     localise: impl Fn(&str) -> Option<String>,
-) -> (Vec<FactoryGroupInfo>, Vec<String>) {
+) -> (
+    Vec<FactoryGroupInfo>,
+    Vec<String>,
+    Vec<crate::content_check::Finding>,
+) {
+    use crate::content_check::{Finding, Kind};
     let mut warnings = Vec::new();
+    let mut findings = Vec::new();
     match installed_content::buildings::read(layers) {
         Ok(buildings) => {
             for token in &buildings.ambiguous_factory_types {
-                warnings.push(format!(
+                let message = format!(
                     "{token} is declared more than once with different factory flags; which group it counts in is not known, so it names none."
+                );
+                findings.push(Finding::new(
+                    Kind::Ambiguous,
+                    format!("building {token}"),
+                    &message,
                 ));
+                warnings.push(message);
             }
             let groups = group_buildings(&buildings, localise);
             for group in &groups {
                 if group.buildings.is_empty() {
-                    warnings.push(format!(
+                    let message = format!(
                         "No building in the recorded content has {}; its group is named by the flag.",
                         group.flag
+                    );
+                    findings.push(Finding::new(
+                        Kind::Fallback,
+                        format!("factory group {}", group.flag),
+                        &message,
                     ));
-                }
-                for building in group
-                    .buildings
-                    .iter()
-                    .filter(|building| building.name.is_none())
-                {
-                    warnings.push(format!(
-                        "{}: no name in the recorded content; shown by its token.",
-                        building.token
-                    ));
+                    warnings.push(message);
                 }
             }
-            (groups, warnings)
+            (groups, warnings, findings)
         }
         Err(error) => {
-            warnings.push(format!(
+            let message = format!(
                 "Factory types are unavailable, so the groups are named by their flags: {error}"
-            ));
-            (unnamed_groups(), warnings)
+            );
+            findings.push(Finding::new(Kind::Refused, "factory types", &message));
+            warnings.push(message);
+            (unnamed_groups(), warnings, findings)
         }
     }
 }

@@ -401,7 +401,7 @@ fn subject_levels_follow_a_modded_content_stack() {
     std::fs::remove_dir_all(&root).unwrap();
     // The scripted level is refused by name, not assumed.
     assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert!(warnings[0].contains("autonomy_mod_scripted"));
+    assert!(warnings[0].1.contains("autonomy_mod_scripted"));
     let named = [
         "autonomy_puppet",
         "autonomy_dominion",

@@ -54,7 +54,16 @@ fn parse_with_registry(
     registry: &units::Registry,
     names: &KeyNames,
 ) -> Result<(EquipmentLinks, Vec<crate::Diagnostic>), (crate::DiagnosticKind, io::Error)> {
-    let (read, undecided, refused) = read_templates(input, registry, names);
+    parse_with_tokens(input, registry, names, &mut Vec::new())
+}
+
+fn parse_with_tokens(
+    input: &[u8],
+    registry: &units::Registry,
+    names: &KeyNames,
+    tokens: &mut Vec<String>,
+) -> Result<(EquipmentLinks, Vec<crate::Diagnostic>), (crate::DiagnosticKind, io::Error)> {
+    let (read, undecided, refused) = read_templates_with_tokens(input, registry, names, tokens);
     if let Some(cause) = read.unsettled {
         return Err((cause.kind, invalid(format!("technology: {cause}"))));
     }
@@ -160,43 +169,81 @@ fn parse_with_registry(
     ))
 }
 
+/// One preparation read supplies both native equipment links and the inventory.
+#[derive(Debug)]
+pub struct Database {
+    pub equipment: BTreeMap<String, String>,
+    pub tokens: Vec<String>,
+    pub equipment_warnings: Vec<crate::Diagnostic>,
+    pub inventory_warnings: Vec<crate::Diagnostic>,
+}
+
+impl Database {
+    pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
+        let registry = units::Registry::read(layers)?;
+        let names = layers.key_names()?;
+        let mut result = BTreeMap::new();
+        let mut tokens = Vec::new();
+        let mut equipment_warnings = Vec::new();
+        let mut inventory_warnings = Vec::new();
+        // 140AC1BA0 enumerates this directory without recursion.
+        for path in layers.directory_files("common/technologies", ".txt")? {
+            match parse_with_tokens(&layers.read(&path)?, &registry, &names, &mut tokens) {
+                Ok((definitions, notes)) => {
+                    result.extend(definitions);
+                    let notes: Vec<_> = notes
+                        .into_iter()
+                        .map(|(kind, note)| (kind, format!("{path}: {note}")))
+                        .collect();
+                    equipment_warnings.extend(notes.iter().cloned());
+                    inventory_warnings.extend(notes);
+                }
+                Err((kind, error)) => {
+                    equipment_warnings.push((
+                        kind,
+                        format!("Technology equipment links unavailable in {path}: {error}"),
+                    ));
+                    inventory_warnings.push((
+                        kind,
+                        format!("{path}: technology inventory may be incomplete: {error}"),
+                    ));
+                }
+            }
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        tokens.retain(|token| seen.insert(token.clone()));
+        Ok(Self {
+            equipment: result
+                .into_iter()
+                .filter_map(|(token, equipment)| equipment.map(|equipment| (token, equipment)))
+                .collect(),
+            tokens,
+            equipment_warnings,
+            inventory_warnings,
+        })
+    }
+}
+
 pub fn read_equipment(
     layers: &ResolvedLayers,
 ) -> io::Result<(BTreeMap<String, String>, Vec<crate::Diagnostic>)> {
-    let registry = units::Registry::read(layers)?;
-    let names = layers.key_names()?;
-    let mut result = BTreeMap::new();
-    let mut warnings = Vec::new();
-    // 140AC1BA0 enumerates this directory without recursion.
-    for path in layers.directory_files("common/technologies", ".txt")? {
-        match parse_with_registry(&layers.read(&path)?, &registry, &names) {
-            Ok((definitions, notes)) => {
-                result.extend(definitions);
-                warnings.extend(
-                    notes
-                        .into_iter()
-                        .map(|(kind, note)| (kind, format!("{path}: {note}"))),
-                );
-            }
-            Err((kind, error)) => warnings.push((
-                kind,
-                format!("Technology equipment links unavailable in {path}: {error}"),
-            )),
-        }
-    }
-    Ok((
-        result
-            .into_iter()
-            .filter_map(|(token, equipment)| equipment.map(|equipment| (token, equipment)))
-            .collect(),
-        warnings,
-    ))
+    let read = Database::read(layers)?;
+    Ok((read.equipment, read.equipment_warnings))
 }
 
 fn read_templates(
     input: &[u8],
     registry: &units::Registry,
     names: &KeyNames,
+) -> (native::Read, Vec<modifiers::Undecided>, Vec<String>) {
+    read_templates_with_tokens(input, registry, names, &mut Vec::new())
+}
+
+fn read_templates_with_tokens(
+    input: &[u8],
+    registry: &units::Registry,
+    names: &KeyNames,
+    tokens: &mut Vec<String>,
 ) -> (native::Read, Vec<modifiers::Undecided>, Vec<String>) {
     use Node::*;
     let mut undecided = Vec::new();
@@ -223,7 +270,15 @@ fn read_templates(
                     Shape::Skip
                 }
                 (File, _) => Shape::Skip,
-                (Technologies, _) => Shape::Object(Technology),
+                (Technologies, _) => {
+                    if let Ok(token) = std::str::from_utf8(crate::parser::c_string(&field.key.text))
+                    {
+                        tokens.push(token.to_owned());
+                    } else {
+                        refused.push("technology token is not UTF-8".into());
+                    }
+                    Shape::Object(Technology)
+                }
                 (
                     Technology,
                     Some(b"allow" | b"unlock" | b"allow_branch" | b"on_research_complete_limit"),
@@ -533,6 +588,78 @@ pub fn read_enablers(layers: &ResolvedLayers) -> io::Result<Enablers> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn tokens_keep_database_order_replacement_and_refused_inventory_notes() {
+        struct TempRoot(std::path::PathBuf);
+        impl Drop for TempRoot {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = TempRoot(std::env::temp_dir().join(format!(
+            "technology-tokens-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )));
+        let (base, addon) = (root.0.join("base"), root.0.join("mod"));
+        for (layer, path, text) in [
+            (
+                &base,
+                "common/terrain/fixture.txt",
+                "categories = { fixture = {} }",
+            ),
+            (
+                &base,
+                "common/technologies/a.txt",
+                "technologies = { removed = {} }",
+            ),
+            (
+                &base,
+                "common/technologies/b.txt",
+                "technologies = { middle = {} repeated = {} }",
+            ),
+            (
+                &addon,
+                "common/technologies/a.txt",
+                "technologies = { z_first = {} a_second = {} repeated = {} }",
+            ),
+            (
+                &addon,
+                "common/technologies/nested/c.txt",
+                "technologies = { not_loaded = {} }",
+            ),
+            (
+                &addon,
+                "common/technologies/c.txt",
+                "technologies = { refused_form = { folder = { position = { 1 } } } }",
+            ),
+        ] {
+            let file = layer.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        }
+        let layers = ResolvedLayers::from_folders(&[(&base, &[]), (&addon, &[])]).unwrap();
+        let read = Database::read(&layers).unwrap();
+        assert!(read.equipment.is_empty());
+        assert_eq!(read.equipment_warnings.len(), 1);
+        let (tokens, notes) = (read.tokens, read.inventory_warnings);
+        assert_eq!(
+            tokens,
+            ["z_first", "a_second", "repeated", "middle", "refused_form"]
+        );
+        assert_eq!(
+            notes,
+            [(
+                crate::DiagnosticKind::Unsupported,
+                "common/technologies/c.txt: technology inventory may be incomplete: technology refused_form folder position: unsupported vector form".into(),
+            )]
+        );
+    }
 
     fn parse_equipment(
         input: &[u8],

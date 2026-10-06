@@ -7,7 +7,7 @@
 //! assumed, and its state sorts after every state with a known level.
 
 use crate::{
-    ResolvedLayers, fixed5,
+    Diagnostic, DiagnosticKind, ResolvedLayers, fixed5,
     parser::{Document, Value},
     script_files,
 };
@@ -74,13 +74,14 @@ fn plain_number(bytes: &[u8]) -> bool {
 fn from_document(
     document: &Document,
     path: &str,
-    warnings: &mut Vec<String>,
+    warnings: &mut Vec<Diagnostic>,
 ) -> Vec<AutonomyState> {
     let mut states = Vec::new();
     for value in document.get_all(b"autonomy_state") {
         let Some(items) = value.items() else {
-            warnings.push(format!(
-                "{path}: an autonomy_state is not a block and is left out."
+            warnings.push((
+                DiagnosticKind::Refused,
+                format!("{path}: an autonomy_state is not a block and is left out."),
             ));
             continue;
         };
@@ -88,8 +89,9 @@ fn from_document(
             .and_then(Value::scalar_str)
             .filter(|id| !id.is_empty())
         else {
-            warnings.push(format!(
-                "{path}: an autonomy_state has no id and is left out."
+            warnings.push((
+                DiagnosticKind::Refused,
+                format!("{path}: an autonomy_state has no id and is left out."),
             ));
             continue;
         };
@@ -99,14 +101,14 @@ fn from_document(
             .filter(|bytes| plain_number(bytes))
             .and_then(fixed5::script_fixed5);
         if min_freedom_level.is_none() {
-            warnings.push(format!(
+            warnings.push((DiagnosticKind::Refused, format!(
                 "{path}: autonomy state {id} has {}; its place in the level order is not known.",
                 if level.is_some() {
                     "a min_freedom_level that is not a plain number"
                 } else {
                     "no min_freedom_level"
                 }
-            ));
+            )));
         }
         states.push(AutonomyState {
             id: id.to_owned(),
@@ -118,7 +120,7 @@ fn from_document(
 
 /// Every autonomy state in load order, with notes about files and states left
 /// out or unordered. A state defined again replaces the earlier one in place.
-pub fn read(layers: &ResolvedLayers) -> io::Result<(AutonomyStates, Vec<String>)> {
+pub fn read(layers: &ResolvedLayers) -> io::Result<(AutonomyStates, Vec<Diagnostic>)> {
     let mut warnings = Vec::new();
     let mut result = AutonomyStates::default();
     for (path, document) in script_files::documents(
@@ -138,7 +140,7 @@ fn merge(
     result: &mut AutonomyStates,
     state: AutonomyState,
     path: &str,
-    warnings: &mut Vec<String>,
+    warnings: &mut Vec<Diagnostic>,
 ) {
     match result
         .states
@@ -146,9 +148,12 @@ fn merge(
         .find(|existing| existing.id == state.id)
     {
         Some(existing) => {
-            warnings.push(format!(
-                "{path}: autonomy state {} is defined again; the later definition is used.",
-                state.id
+            warnings.push((
+                DiagnosticKind::Warning,
+                format!(
+                    "{path}: autonomy state {} is defined again; the later definition is used.",
+                    state.id
+                ),
             ));
             *existing = state;
         }
@@ -160,7 +165,7 @@ fn merge(
 mod tests {
     use super::*;
 
-    fn states(files: &[(&str, &str)]) -> (AutonomyStates, Vec<String>) {
+    fn states(files: &[(&str, &str)]) -> (AutonomyStates, Vec<Diagnostic>) {
         let mut warnings = Vec::new();
         let mut result = AutonomyStates::default();
         for (path, text) in files {
@@ -213,9 +218,14 @@ mod tests {
             .collect();
         assert_eq!(order, ["known", "scripted", "bare"]);
         assert_eq!(warnings.len(), 3, "{warnings:?}");
-        assert!(warnings[0].contains("not a plain number"));
-        assert!(warnings[1].contains("no min_freedom_level"));
-        assert!(warnings[2].contains("no id"));
+        assert!(
+            warnings
+                .iter()
+                .all(|(kind, _)| *kind == DiagnosticKind::Refused)
+        );
+        assert!(warnings[0].1.contains("not a plain number"));
+        assert!(warnings[1].1.contains("no min_freedom_level"));
+        assert!(warnings[2].1.contains("no id"));
     }
 
     #[test]
@@ -230,7 +240,7 @@ mod tests {
         )]);
         for id in ["suffix", "exponent", "block"] {
             assert_eq!(read.get(id).unwrap().min_freedom_level, None);
-            assert!(warnings.iter().any(|warning| warning.contains(id)));
+            assert!(warnings.iter().any(|(_, warning)| warning.contains(id)));
         }
         assert_eq!(warnings.len(), 3);
         assert_eq!(read.get("signed").unwrap().min_freedom_level, Some(60_000));

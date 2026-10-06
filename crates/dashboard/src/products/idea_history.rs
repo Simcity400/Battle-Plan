@@ -17,7 +17,7 @@ use super::{
     CountryParams, LoadContext, Product,
     idea_format::{LocalisedText, ModifierFormat},
     identity::{NamingCountry, built_template, character_script_token},
-    politics_content::{IdeaCountry, PoliticsContent, RecordedName, politics_content},
+    politics_content::{IdeaCountry, PoliticsContent, politics_content},
 };
 use crate::{
     Artwork, Source,
@@ -471,10 +471,22 @@ fn line(modifier: &Modifier, hidden: bool) -> EffectLine {
 }
 
 /// A lookup's answer, and the gap's text when content cannot say.
-fn known<'a, T>(found: Result<Option<&'a T>, &Gap>) -> (Option<&'a T>, Option<String>) {
+fn known<'a, T>(
+    found: Result<Option<&'a T>, &Gap>,
+    subject: &str,
+    findings: &mut Vec<crate::content_check::Finding>,
+) -> (Option<&'a T>, Option<String>) {
     match found {
         Ok(found) => (found, None),
-        Err(gap) => (None, Some(gap.to_string())),
+        Err(gap) => {
+            let reason = gap.to_string();
+            findings.push(crate::content_check::Finding::new(
+                crate::content_check::Kind::Refused,
+                subject,
+                &reason,
+            ));
+            (None, Some(reason))
+        }
     }
 }
 
@@ -543,26 +555,41 @@ fn lines(modifiers: &Modifiers) -> Vec<EffectLine> {
 /// holder's template, which decides a role the character's alternatives
 /// disagree on ([`installed_content::characters::Characters::held_advisor`]), or why
 /// it is not known.
-pub fn info(
+pub(crate) fn prepare_info(
     content: &Joined,
     token: &str,
     recorded_seat: Option<&str>,
     built: Result<&BuiltTemplate, &str>,
-) -> IdeaInfo {
+    offline_holder: bool,
+) -> (IdeaInfo, Vec<crate::content_check::Finding>) {
+    use crate::content_check::{Finding, Kind};
+    let mut findings = Vec::new();
+    let subject = format!("idea {token}");
+    let holder_missing = built.is_err();
     let tags = &content.ideas.tags;
     let mut unknown = Vec::new();
-    let (idea, gap) = known(content.ideas.idea(token));
+    let (idea, gap) = known(content.ideas.idea(token), &subject, &mut findings);
     unknown.extend(gap);
     let authored_role = content
         .characters
         .held_advisor(token, built)
-        .inspect_err(|reason| unknown.push(reason.clone()))
+        .inspect_err(|reason| {
+            unknown.push(reason.clone());
+            findings.push(super::politics_content::advisor_finding(
+                content.characters,
+                token,
+                &subject,
+                reason,
+                offline_holder,
+                holder_missing,
+            ));
+        })
         .ok()
         .flatten();
     // The idea's group resolves to its category as 140A33240 finds it: by
     // the category's name (a national spirit's) or by a slot it holds.
     let (group_category, gap) = match idea {
-        Some(idea) => known(tags.resolve(&idea.group)),
+        Some(idea) => known(tags.resolve(&idea.group), &subject, &mut findings),
         None => (None, None),
     };
     unknown.extend(gap.clone());
@@ -579,7 +606,7 @@ pub fn info(
     let category = match (group_category, &slot) {
         (Some(category), None) => Some(category.name.clone()),
         (_, Some(slot)) => {
-            let (category, gap) = known(tags.resolve(slot));
+            let (category, gap) = known(tags.resolve(slot), &subject, &mut findings);
             unknown.extend(gap);
             category.map(|category| category.name.clone())
         }
@@ -592,7 +619,19 @@ pub fn info(
     let traits = trait_tokens
         .iter()
         .map(|trait_token| {
-            let (found, unknown) = known(content.traits.get(trait_token));
+            let trait_subject = format!("idea {token} trait {trait_token}");
+            let (found, unknown) = known(
+                content.traits.get(trait_token),
+                &trait_subject,
+                &mut findings,
+            );
+            if found.is_none() && unknown.is_none() {
+                findings.push(Finding::new(
+                    Kind::Fallback,
+                    &trait_subject,
+                    "trait definition is missing; its name and effects are unavailable",
+                ));
+            }
             TraitEffects {
                 token: trait_token.clone(),
                 known: found.is_some(),
@@ -628,29 +667,81 @@ pub fn info(
         .map(|idea| &idea.research_bonuses)
         .or_else(|| authored_role.map(|role| &role.research_bonuses));
     let effects_known = idea.is_some() || authored_role.is_some();
-    IdeaInfo {
-        token: token.to_owned(),
-        category,
-        slot,
-        law: idea.is_some_and(|idea| idea.law),
-        designer: idea.is_some_and(|idea| idea.designer),
-        effects: modifiers.map(lines).unwrap_or_default(),
-        targeted: idea
-            .map(|idea| targeted(&idea.targeted))
-            .unwrap_or_default(),
-        equipment: idea
-            .map(|idea| equipment(&idea.equipment_bonuses))
-            .unwrap_or_default(),
-        research: research
-            .map(|bonuses| bonuses.iter().map(|m| line(m, false)).collect())
-            .unwrap_or_default(),
-        traits,
-        tooltips: modifiers.map(Modifiers::tooltips).unwrap_or_default(),
-        effects_known,
-        unknown: (!effects_known || !unknown.is_empty())
-            .then(|| unknown.join("; "))
-            .filter(|text| !text.is_empty()),
+    if category.is_none() && unknown.is_empty() {
+        findings.push(Finding::new(
+            Kind::Refused,
+            &subject,
+            "idea is in no category the content defines",
+        ));
     }
+    (
+        IdeaInfo {
+            token: token.to_owned(),
+            category,
+            slot,
+            law: idea.is_some_and(|idea| idea.law),
+            designer: idea.is_some_and(|idea| idea.designer),
+            effects: modifiers.map(lines).unwrap_or_default(),
+            targeted: idea
+                .map(|idea| targeted(&idea.targeted))
+                .unwrap_or_default(),
+            equipment: idea
+                .map(|idea| equipment(&idea.equipment_bonuses))
+                .unwrap_or_default(),
+            research: research
+                .map(|bonuses| bonuses.iter().map(|m| line(m, false)).collect())
+                .unwrap_or_default(),
+            traits,
+            tooltips: modifiers.map(Modifiers::tooltips).unwrap_or_default(),
+            effects_known,
+            unknown: (!effects_known || !unknown.is_empty())
+                .then(|| unknown.join("; "))
+                .filter(|text| !text.is_empty()),
+        },
+        findings,
+    )
+}
+
+/// Tooltip dependencies shared by the recorded reply and the offline check.
+pub(crate) fn effect_keys(ideas: &[IdeaInfo]) -> (BTreeSet<String>, BTreeSet<String>) {
+    // YES/NO: FormatValue 14054FE50 (YES at 142760760).
+    let mut modifier_keys = BTreeSet::new();
+    let mut text_keys: BTreeSet<String> = ["YES", "NO"].map(str::to_owned).into();
+    let mut effects = |lines: &[EffectLine], targeted: &[EffectGroup], tooltips: &[String]| {
+        modifier_keys.extend(
+            lines
+                .iter()
+                .chain(targeted.iter().flat_map(|group| &group.lines))
+                .map(|line| line.key.clone()),
+        );
+        text_keys.extend(tooltips.iter().cloned());
+        text_keys.extend(
+            targeted
+                .iter()
+                .flat_map(|group| group.tooltips.iter().cloned()),
+        );
+    };
+    for idea in ideas {
+        effects(&idea.effects, &idea.targeted, &idea.tooltips);
+        for found in &idea.traits {
+            effects(&found.lines, &found.targeted, &found.tooltips);
+        }
+    }
+    for idea in ideas {
+        // _research: CCountryTechnologyView::BuildTooltip 1415E5420, 1427516B0.
+        text_keys.extend(
+            idea.research
+                .iter()
+                .map(|line| format!("{}_research", line.key)),
+        );
+        text_keys.extend(
+            idea.equipment
+                .iter()
+                .chain(idea.traits.iter().flat_map(|found| &found.equipment))
+                .filter_map(|group| group.target.clone()),
+        );
+    }
+    (modifier_keys, text_keys)
 }
 
 /// Every category read, in load order. When a file that could declare one
@@ -845,18 +936,19 @@ fn reply(
             Some(Some(Err(reason))) => Err(reason.as_str()),
             Some(None) | None => Err("no recorded holder names its template"),
         };
-        let found = info(
+        let (found, _) = prepare_info(
             &joined,
             token,
             latest.and_then(|span| span.slot.as_deref()),
             built,
+            false,
         );
         if found.category.is_none() {
             unplaced.push(token.to_owned());
         }
         // A holder's artwork: the content's for its script token, named as recorded.
         let holder_art = |script: Option<&str>, saved: &str| {
-            let (mut art, mut problem) = content.idea_artwork(token, script, country);
+            let (mut art, mut problem) = content.held_idea_artwork(token, script, saved, country);
             // Without a script token the content cannot say whose portrait
             // this is; the idea's authored advisor may be someone else.
             if script.is_none() {
@@ -864,12 +956,6 @@ fn reply(
                 problem = Some(format!(
                     "{token}: artwork is unknown because the holder has no recorded script token; a placeholder is shown"
                 ));
-            }
-            // The saved name first, so a renamed character shows its current name.
-            match content.recorded_name(saved) {
-                RecordedName::Named(name) => art.name = Some(name),
-                RecordedName::Unresolved(_) => art.name = None,
-                RecordedName::None => {}
             }
             (art, problem)
         };
@@ -920,43 +1006,7 @@ fn reply(
                 .join(", ")
         ));
     }
-    // YES/NO: FormatValue 14054FE50 (YES at 142760760).
-    let mut modifier_keys = BTreeSet::new();
-    let mut text_keys: BTreeSet<String> = ["YES", "NO"].map(str::to_owned).into();
-    let mut effects = |lines: &[EffectLine], targeted: &[EffectGroup], tooltips: &[String]| {
-        modifier_keys.extend(
-            lines
-                .iter()
-                .chain(targeted.iter().flat_map(|group| &group.lines))
-                .map(|line| line.key.clone()),
-        );
-        text_keys.extend(tooltips.iter().cloned());
-        text_keys.extend(
-            targeted
-                .iter()
-                .flat_map(|group| group.tooltips.iter().cloned()),
-        );
-    };
-    for idea in &ideas {
-        effects(&idea.effects, &idea.targeted, &idea.tooltips);
-        for found in &idea.traits {
-            effects(&found.lines, &found.targeted, &found.tooltips);
-        }
-    }
-    for idea in &ideas {
-        // _research: CCountryTechnologyView::BuildTooltip 1415E5420, 1427516B0.
-        text_keys.extend(
-            idea.research
-                .iter()
-                .map(|line| format!("{}_research", line.key)),
-        );
-        text_keys.extend(
-            idea.equipment
-                .iter()
-                .chain(idea.traits.iter().flat_map(|found| &found.equipment))
-                .filter_map(|group| group.target.clone()),
-        );
-    }
+    let (modifier_keys, text_keys) = effect_keys(&ideas);
     let (modifiers, format_warnings) = super::idea_format::modifier_formats(
         replay,
         params.branch(),

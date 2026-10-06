@@ -76,7 +76,7 @@ use ts_rs::TS;
 
 pub struct WarCasualties;
 // Native diplomacy tooltip entry, 140d19cf0/140d1a550.
-const UNKNOWN_LABEL: &str = "CASUALTIES_UNKNOWN";
+pub(crate) const UNKNOWN_LABEL: &str = "CASUALTIES_UNKNOWN";
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

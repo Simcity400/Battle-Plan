@@ -194,7 +194,7 @@ fn country_key(catalogue: &Catalogue, tag: &str, key: &str) -> String {
 fn icon_key(
     project: &installed_content::special_projects::Project,
     token: &str,
-    tag: &str,
+    tag: Option<&str>,
     has: impl Fn(&str) -> Result<bool, String>,
 ) -> Result<String, String> {
     if let Some(icon) = project.icon.as_ref().filter(|icon| !icon.is_empty()) {
@@ -205,9 +205,11 @@ fn icon_key(
     } else {
         "GFX_"
     };
-    let country = format!("{prefix}{tag}_{token}");
-    if has(&country)? {
-        return Ok(country);
+    if let Some(tag) = tag {
+        let country = format!("{prefix}{tag}_{token}");
+        if has(&country)? {
+            return Ok(country);
+        }
     }
     let generic = format!("{prefix}{token}");
     Ok(if has(&generic)? {
@@ -225,6 +227,15 @@ struct Content {
 }
 
 impl Content {
+    fn load(politics: Arc<PoliticsContent>) -> io::Result<Self> {
+        Ok(Self {
+            catalogue: Arc::clone(&politics.catalogue),
+            definitions: Catalog::read(&politics.catalogue.content.layers)?,
+            politics,
+            icons: BTreeMap::new(),
+        })
+    }
+
     fn icon(&mut self, key: &str) -> Result<String, String> {
         self.icons
             .entry(key.to_owned())
@@ -265,18 +276,20 @@ impl Content {
         // TAG_key if defined, then scope expansion in the owner's country.
         // Template post-load 140A852A0 writes the LexerToken string to
         // template+0x238 (narrative+0x48), proving the default key.
-        let key = definition
-            .name
-            .as_deref()
-            .filter(|name| !name.is_empty())
-            .unwrap_or(token);
-        let selected = country_key(&self.catalogue, tag, key);
-        if !needs_scope(&self.catalogue.localisation, &selected) {
-            return self.catalogue.localised(&selected, View::Scripted);
+        let selected = country_key(&self.catalogue, tag, project_name_key(definition, token));
+        self.name_for(&selected, Some((slot, frame)))
+    }
+
+    fn name_for(&self, selected: &str, recorded: Option<(u32, &DecodedFrame)>) -> Option<String> {
+        if !needs_scope(&self.catalogue.localisation, selected) {
+            return self.catalogue.localised(selected, View::Scripted);
         }
+        let Some((slot, frame)) = recorded else {
+            return self.catalogue.localised_offline_country(selected);
+        };
         let scripted = self.catalogue.scripted_content().ok()?;
         self.catalogue.localise_in(
-            &selected,
+            selected,
             &crate::scripted_text::ScriptedText::new(
                 frame,
                 &self.catalogue.localisation,
@@ -284,6 +297,14 @@ impl Content {
                 slot,
             ),
         )
+    }
+
+    fn specialization_name(&self, kind: &str, tag: Option<&str>) -> Option<String> {
+        let key = tag.map_or_else(
+            || kind.to_owned(),
+            |tag| country_key(&self.catalogue, tag, kind),
+        );
+        self.catalogue.localised(&key, View::Plain)
     }
 
     fn iterations(&self, count: Option<i32>) -> Option<String> {
@@ -296,6 +317,107 @@ impl Content {
             View::Plain,
         )
     }
+}
+
+fn project_name_key<'a>(
+    definition: &'a installed_content::special_projects::Project,
+    token: &'a str,
+) -> &'a str {
+    definition
+        .name
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(token)
+}
+
+/// Country-independent presentation inputs; the recorded path selects country
+/// overrides and provides scoped name and character inputs.
+pub(crate) fn check_content(
+    politics: Arc<PoliticsContent>,
+) -> io::Result<Vec<crate::content_check::Finding>> {
+    use crate::content_check::{Finding, Kind};
+    let mut content = Content::load(politics)?;
+    let mut findings: Vec<_> = content
+        .definitions
+        .warnings
+        .iter()
+        .cloned()
+        // Catalog::warnings names file or definition reads it could not follow.
+        .map(|message| Finding::new(Kind::Refused, "special-project preparation", message))
+        .collect();
+    if let Some(reason) = &content.definitions.unsettled {
+        findings.push(Finding::new(
+            Kind::Refused,
+            "special project inventory",
+            reason,
+        ));
+        return Ok(findings);
+    }
+    for (token, definition) in content.definitions.projects.clone() {
+        let subject = format!("special project {token}");
+        if let Some(reason) = definition.refusal.as_ref() {
+            findings.push(Finding::new(Kind::Refused, subject, reason));
+            continue;
+        }
+        content.name_for(project_name_key(&definition, &token), None);
+        if let Some(kind) = &definition.specialization {
+            if content.definitions.specializations.contains(kind) {
+                content.specialization_name(kind, None);
+            } else {
+                findings.push(Finding::new(
+                    Kind::Refused,
+                    &subject,
+                    format!("Project {token}: specialization {kind} is absent from content"),
+                ));
+            }
+        }
+        let key = icon_key(&definition, &token, None, |key| {
+            content
+                .catalogue
+                .sprites
+                .find(key)
+                .map(|sprite| sprite.is_some())
+                .map_err(|e| e.to_string())
+        });
+        match key {
+            Ok(key)
+                if key != PLACEHOLDER_ICON
+                    || definition
+                        .icon
+                        .as_ref()
+                        .is_some_and(|icon| !icon.is_empty()) =>
+            {
+                if let Err(reason) = content.icon(&key) {
+                    findings.push(Finding::new(
+                        Kind::Fallback,
+                        &subject,
+                        format!("{reason}; a placeholder is shown"),
+                    ));
+                }
+            }
+            Ok(_) => {}
+            Err(reason) => findings.push(Finding::new(Kind::Refused, &subject, reason)),
+        }
+        findings.extend(
+            content
+                .catalogue
+                .take_findings()
+                .into_iter()
+                .map(|mut finding| {
+                    finding.subject = subject.clone();
+                    finding
+                }),
+        );
+        findings.push(Finding::new(Kind::Offline, &subject,
+            "special-project country name/specialization overrides need the recorded owner; unavailable offline"));
+        if definition.icon.as_ref().is_none_or(|icon| icon.is_empty()) {
+            findings.push(Finding::new(Kind::Offline, &subject,
+                "special-project country-prefixed icon selection needs the recorded owner; unavailable offline"));
+        }
+        findings.push(Finding::new(Kind::Offline, &subject,
+            "special-project iteration counts and scientist names/portraits need recorded project/program/character rows; unavailable offline"));
+    }
+    Ok(findings)
 }
 
 #[derive(Default)]
@@ -555,16 +677,14 @@ impl Builder {
                 // not blueprint_image or a vanilla type enumeration.
                 if let Some(kind) = &definition.specialization {
                     if content.definitions.specializations.contains(kind) {
-                        info.specialization_name = content
-                            .catalogue
-                            .localised(&country_key(&content.catalogue, tag, kind), View::Plain);
+                        info.specialization_name = content.specialization_name(kind, Some(tag));
                     } else {
                         self.warn(format!(
                             "Project {token}: specialization {kind} is absent from content"
                         ));
                     }
                 }
-                let art = icon_key(&definition, &token, tag, |key| {
+                let art = icon_key(&definition, &token, Some(tag), |key| {
                     content
                         .catalogue
                         .sprites
@@ -1040,13 +1160,8 @@ impl Product for SpecialProjects {
             cache.replies.clear();
             cache.content_error = None;
             cache.content = match politics.as_ref() {
-                Ok(politics) => match Catalog::read(&politics.catalogue.content.layers) {
-                    Ok(definitions) => Some(Content {
-                        catalogue: Arc::clone(&politics.catalogue),
-                        politics: Arc::clone(politics),
-                        definitions,
-                        icons: BTreeMap::new(),
-                    }),
+                Ok(politics) => match Content::load(Arc::clone(politics)) {
+                    Ok(content) => Some(content),
                     Err(error) => {
                         cache.content_error =
                             Some(format!("Special-project content unavailable: {error}"));
@@ -1639,7 +1754,7 @@ mod tests {
         let key = icon_key(
             &catalog.projects["base_project"],
             "base_project",
-            "opaque tag",
+            Some("opaque tag"),
             |key| {
                 sprites
                     .find(key)
@@ -1753,22 +1868,30 @@ mod tests {
     fn icon_lookup_does_not_mask_a_missing_authored_icon() {
         let mut project = installed_content::special_projects::Project::default();
         assert_eq!(
-            icon_key(&project, "mod_project", "tag with spaces", |key| Ok(
+            icon_key(&project, "mod_project", Some("tag with spaces"), |key| Ok(
                 key == "GFX_tag with spaces_mod_project"
             ))
             .unwrap(),
             "GFX_tag with spaces_mod_project"
         );
         assert_eq!(
-            icon_key(&project, "mod_project", "X", |key| Ok(
+            icon_key(&project, "mod_project", Some("X"), |key| Ok(
                 key == "GFX_mod_project"
             ))
             .unwrap(),
             "GFX_mod_project"
         );
+        assert_eq!(
+            icon_key(&project, "mod_project", None, |key| {
+                assert_eq!(key, "GFX_mod_project");
+                Ok(true)
+            })
+            .unwrap(),
+            "GFX_mod_project"
+        );
         project.icon = Some("GFX_missing_mod_icon".into());
         assert_eq!(
-            icon_key(&project, "mod_project", "X", |_| Ok(true)).unwrap(),
+            icon_key(&project, "mod_project", Some("X"), |_| Ok(true)).unwrap(),
             "GFX_missing_mod_icon"
         );
     }

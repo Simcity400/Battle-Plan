@@ -1,5 +1,80 @@
 use super::*;
 
+/// 140AAD450's nonpositive and duplicate IDs are registration skips. Other
+/// reading diagnostics must retain their own kinds for live consumers.
+#[test]
+fn loader_warnings_are_only_nonpositive_and_duplicate_id_skips() {
+    use crate::DiagnosticKind;
+    struct Folder(std::path::PathBuf);
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let folder = Folder(std::env::temp_dir().join(format!(
+        "states-warning-kinds-{}-{nonce}",
+        std::process::id()
+    )));
+    for (path, text) in [
+        (
+            "history/states/0-discarded.txt",
+            "state={id=0} state={id=-2}",
+        ),
+        (
+            "history/states/1-kept.txt",
+            "@a bad state={id=1 impassable=maybe resources={unknown=2} state_startup_effect={free_operative={operative=authored}}}",
+        ),
+        (
+            "history/states/2-duplicate.txt",
+            "state={id=1 name=DISCARDED}",
+        ),
+    ] {
+        let path = folder.0.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let layers = ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+    let defines = Defines::new().unwrap();
+    defines
+        .load(
+            "test.lua",
+            b"NDefines={NBuildings={MAX_BUILDING_LEVELS=15}}",
+        )
+        .unwrap();
+    let (states, notes) = read(&layers, &defines, &BTreeMap::new()).unwrap();
+    assert_eq!(states.definitions().len(), 1);
+    assert_eq!(states.source(1), Some("history/states/1-kept.txt"));
+    let warnings: Vec<_> = notes
+        .iter()
+        .filter(|(kind, _)| *kind == DiagnosticKind::Warning)
+        .map(|(_, message)| message.as_str())
+        .collect();
+    assert_eq!(
+        warnings,
+        [
+            "history/states/0-discarded.txt state id 0 is not positive; the game discards the template; the state follows the game's reading",
+            "history/states/0-discarded.txt state id -2 is not positive; the game discards the template; the state follows the game's reading",
+            "state 1 is defined by both history/states/1-kept.txt and history/states/2-duplicate.txt; the game keeps the first",
+        ]
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|(kind, _)| *kind == DiagnosticKind::Misread),
+        "{notes:?}"
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|(kind, _)| *kind == DiagnosticKind::Unsupported),
+        "{notes:?}"
+    );
+}
+
 #[test]
 fn state_reading_note_keeps_misread_kind() {
     let names = KeyNames::default();

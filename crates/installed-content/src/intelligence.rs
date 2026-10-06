@@ -2,7 +2,7 @@
 //! Native readers consume every field; only names and authored sprites are projected.
 
 use crate::{
-    ResolvedLayers,
+    Diagnostic, DiagnosticKind, ResolvedLayers,
     fields::invalid,
     key_names::KeyNames,
     modifiers,
@@ -29,6 +29,7 @@ pub struct Intelligence {
     pub operations: BTreeMap<String, Operation>,
     /// An uncertain stream can register an earlier token, so no lookup guesses.
     pub operation_refusals: Vec<String>,
+    pub notes: Vec<Diagnostic>,
     pub warnings: Vec<String>,
 }
 
@@ -142,6 +143,15 @@ pub fn parse_operations(
     names: &KeyNames,
     earlier: &BTreeSet<String>,
 ) -> io::Result<(Vec<Operation>, Vec<String>)> {
+    parse_operations_with_notes(input, names, earlier, &mut Vec::new())
+}
+
+fn parse_operations_with_notes(
+    input: &[u8],
+    names: &KeyNames,
+    earlier: &BTreeSet<String>,
+    notes: &mut Vec<Diagnostic>,
+) -> io::Result<(Vec<Operation>, Vec<String>)> {
     let mut seen = earlier.clone();
     let read = native::read(
         input,
@@ -172,8 +182,15 @@ pub fn parse_operations(
             },
         },
     );
+    notes.extend(
+        read.misreads
+            .iter()
+            .map(|note| (note.kind, note.to_string())),
+    );
     if let Some(cause) = read.unsettled {
-        return Err(invalid(format!("operation definitions: {cause}")));
+        let reason = format!("operation definitions: {cause}");
+        notes.push((DiagnosticKind::Unsettled, reason.clone()));
+        return Err(invalid(reason));
     }
     let mut operations = Vec::new();
     let mut projected = earlier.clone();
@@ -181,7 +198,7 @@ pub fn parse_operations(
         let Some(fields) = item.value.items() else {
             continue;
         };
-        let token = token(&item)?;
+        let token = token(&item).map_err(|why| note_refusal(notes, why))?;
         // RecordError's skipped duplicate retains a tree placeholder, not a
         // registered operation (1401674C0).
         if !projected.insert(token.to_ascii_lowercase()) {
@@ -193,9 +210,9 @@ pub fn parse_operations(
         };
         for field in fields {
             if field.keyword_is("name") {
-                operation.name = string(field)?;
+                operation.name = string(field).map_err(|why| note_refusal(notes, why))?;
             } else if field.keyword_is("icon") {
-                operation.sprite = string(field)?;
+                operation.sprite = string(field).map_err(|why| note_refusal(notes, why))?;
             }
         }
         operations.push(operation);
@@ -209,12 +226,18 @@ pub fn parse_operations(
     ))
 }
 
+fn note_refusal(notes: &mut Vec<Diagnostic>, why: io::Error) -> io::Error {
+    notes.push((DiagnosticKind::Refused, why.to_string()));
+    why
+}
+
 pub fn read(layers: &ResolvedLayers) -> io::Result<Intelligence> {
     let names = layers.key_names()?;
     let mut result = Intelligence::default();
     let mut earlier = BTreeSet::new();
     for path in script_files::paths(layers, "common/operations/", Some(".txt")) {
-        match parse_operations(&layers.read(&path)?, &names, &earlier) {
+        let mut notes = Vec::new();
+        match parse_operations_with_notes(&layers.read(&path)?, &names, &earlier, &mut notes) {
             Ok((operations, warnings)) => {
                 result
                     .warnings
@@ -227,6 +250,11 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Intelligence> {
             }
             Err(why) => result.operation_refusals.push(format!("{path}: {why}")),
         }
+        result.notes.extend(
+            notes
+                .into_iter()
+                .map(|(kind, reason)| (kind, format!("{path}: {reason}"))),
+        );
     }
     result
         .warnings
@@ -754,6 +782,23 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(why.contains("target_array") && why.contains("line 1"));
+    }
+
+    #[test]
+    fn intelligence_operation_notes_keep_native_deferred_kind_and_public_parser_output() {
+        let input = b"custom = { on_start = { free_operative = { operative = custom_name } } }";
+        let mut notes = Vec::new();
+        let parsed =
+            parse_operations_with_notes(input, &KeyNames::default(), &BTreeSet::new(), &mut notes)
+                .unwrap();
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].0, DiagnosticKind::Unsupported);
+        assert!(notes[0].1.contains("Deferred effect `free_operative`"));
+        assert_eq!(parsed.1, vec![notes[0].1.clone()]);
+        assert_eq!(
+            parse_operations(input, &KeyNames::default(), &BTreeSet::new()).unwrap(),
+            parsed
+        );
     }
 
     #[test]

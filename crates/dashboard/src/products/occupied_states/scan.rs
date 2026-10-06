@@ -49,7 +49,9 @@ impl<'a> Scan<'a> {
             .transpose();
         let (names, defines) = match content {
             Ok(Some(content)) => {
-                result.warnings.extend(content.warnings);
+                result.warnings.extend(
+                    scripted_text::live_state_warnings(&content.warnings).map(str::to_owned),
+                );
                 (content.names, Some(content.defines))
             }
             Ok(None) => (BTreeMap::new(), None),

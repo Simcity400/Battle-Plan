@@ -72,21 +72,36 @@ impl FlagSet {
 /// file with status 0; this refuses one, which is stricter, and allocates the
 /// output only once the file holds every pixel.
 pub fn decode(bytes: &[u8], cell: [u32; 2]) -> Option<Rgba8Image> {
-    let head = bytes.get(..18)?;
+    decode_checked(bytes, cell).ok()
+}
+
+/// Distinguish the engine's header refusal from the port's stricter bounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecodeFailure {
+    EngineRefused,
+    Truncated,
+}
+
+/// DecodeFlagTga 14122AB00 tests the header, but ignores failed pixel reads.
+/// A truncated input is therefore a port refusal, not evidence of engine parity.
+pub fn decode_checked(bytes: &[u8], cell: [u32; 2]) -> Result<Rgba8Image, DecodeFailure> {
+    let head = bytes.get(..18).ok_or(DecodeFailure::Truncated)?;
     let size = [[head[12], head[13]], [head[14], head[15]]].map(u16::from_le_bytes);
     if head[1] != 0 || head[2] != 2 || size.map(u32::from) != cell || size.contains(&0) {
-        return None;
+        return Err(DecodeFailure::EngineRefused);
     }
     let unit = match head[16] >> 3 {
         unit @ (3 | 4) => usize::from(unit),
-        _ => return None,
+        _ => return Err(DecodeFailure::EngineRefused),
     };
     let start = match head[0] as i8 {
         0 => 18,
-        id => usize::try_from(i32::from(id) + 20).ok()?,
+        id => usize::try_from(i32::from(id) + 20).map_err(|_| DecodeFailure::EngineRefused)?,
     };
     let [width, height] = size.map(usize::from);
-    let stored = bytes.get(start..start + width * height * unit)?;
+    let stored = bytes
+        .get(start..start + width * height * unit)
+        .ok_or(DecodeFailure::Truncated)?;
     let mut pixels = Vec::with_capacity(width * height * 4);
     for row in stored.chunks_exact(width * unit).rev() {
         for pixel in row.chunks_exact(unit) {
@@ -94,7 +109,7 @@ pub fn decode(bytes: &[u8], cell: [u32; 2]) -> Option<Rgba8Image> {
             pixels.extend_from_slice(&[pixel[2], pixel[1], pixel[0], alpha]);
         }
     }
-    Some(Rgba8Image {
+    Ok(Rgba8Image {
         width: cell[0],
         height: cell[1],
         pixels,
@@ -149,5 +164,27 @@ mod tests {
         assert!(decode(&targa(&[], 2, 16, 0, &body), [1, 2]).is_none());
         assert!(decode(&targa(&[], 2, 32, 0, &body), [2, 1]).is_none());
         assert!(decode(&targa(&[], 2, 32, 0, &body[..7]), [1, 2]).is_none());
+        assert!(matches!(
+            decode_checked(&targa(&[], 10, 32, 0, &body), [1, 2]),
+            Err(DecodeFailure::EngineRefused)
+        ));
+        assert!(matches!(
+            decode_checked(&targa(&[], 2, 32, 0, &body[..7]), [1, 2]),
+            Err(DecodeFailure::Truncated)
+        ));
+    }
+
+    #[test]
+    fn identification_lengths_before_the_file_are_engine_header_refusals() {
+        let mut bytes = targa(&[], 2, 32, 0, &[0; 8]);
+        for id in 128..=235 {
+            bytes[0] = id;
+            assert!(matches!(
+                decode_checked(&bytes, [1, 2]),
+                Err(DecodeFailure::EngineRefused)
+            ));
+        }
+        bytes[0] = 236;
+        assert!(decode_checked(&bytes, [1, 2]).is_ok());
     }
 }

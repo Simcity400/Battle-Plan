@@ -88,7 +88,15 @@ pub(crate) struct StateContent {
     pub defines: installed_content::defines::Defines,
     pub states: installed_content::states::States,
     pub names: StateNames,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<installed_content::Diagnostic>,
+}
+
+pub(crate) fn live_state_warnings(notes: &[installed_content::Diagnostic]) -> impl Iterator<Item = &str> {
+    // States' Warning channel contains 140AAD450's nonpositive-ID and
+    // duplicate-ID skips. Both keep exactly the templates the game keeps.
+    notes.iter().filter_map(|(kind, message)| {
+        (*kind != installed_content::DiagnosticKind::Warning).then_some(message.as_str())
+    })
 }
 
 /// Shared state templates and name keys, resolved through the recorded stack.
@@ -108,7 +116,11 @@ pub(crate) fn read_state_content(
 fn read_state_templates(
     layers: &installed_content::ResolvedLayers,
     defines: &installed_content::defines::Defines,
-) -> std::io::Result<(installed_content::states::States, StateNames, Vec<String>)> {
+) -> std::io::Result<(
+    installed_content::states::States,
+    StateNames,
+    Vec<installed_content::Diagnostic>,
+)> {
     let map = installed_content::terrain::read_default_map(layers)?;
     let provinces = installed_content::map::parse_definitions(&layers.read(&map.file("definitions")?)?)?;
     let (states, warnings) = installed_content::states::read(layers, defines, &provinces)?;
@@ -117,11 +129,7 @@ fn read_state_templates(
         .iter()
         .map(|(&id, state)| (id, state.name_key.clone()))
         .collect();
-    Ok((
-        states,
-        names,
-        warnings.into_iter().map(|(_, message)| message).collect(),
-    ))
+    Ok((states, names, warnings))
 }
 
 pub(crate) struct Environment {
@@ -231,7 +239,7 @@ impl EnvironmentInputs {
             .and_then(|(graph, _)| graph.neighbor_states(&state_provinces))
             .map_err(|e| e.to_string());
         Ok(Self {
-            warnings,
+            warnings: live_state_warnings(&warnings).map(str::to_owned).collect(),
             state_provinces,
             impassable: states
                 .iter()

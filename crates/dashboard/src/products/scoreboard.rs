@@ -308,7 +308,7 @@ fn descriptor(key: ScoreboardColumnKey) -> ColumnDescriptor {
     }
 }
 
-fn registry(catalogue: Option<&Catalogue>) -> Vec<ScoreboardColumn> {
+pub(crate) fn registry(catalogue: Option<&Catalogue>) -> Vec<ScoreboardColumn> {
     ScoreboardColumnKey::ALL
         .into_iter()
         .map(|key| {

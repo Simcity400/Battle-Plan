@@ -11,7 +11,7 @@
 
 use super::politics_content::PoliticsContent;
 use crate::{catalogue, metadata::validate_campaign};
-use installed_content::localisation::{Argument, Localisation};
+use installed_content::localisation::Argument;
 use replay::{
     container::Replay,
     frame::{FrameDecoder, SharedView, TableView},
@@ -144,23 +144,54 @@ fn recorded(
 /// it: through the game's localiser with its stored argument as the string
 /// `ARG` (type 1) when it has one, else with none. A key the content lacks is
 /// its own bytes (142230940); the error names why the text cannot be shown.
-fn localised_name(
-    localisation: &Localisation,
-    key: &str,
-    argument: &str,
-) -> Result<String, String> {
-    let arguments = [("ARG", Argument::Text(argument))];
-    let arguments: &[_] = if argument.is_empty() { &[] } else { &arguments };
-    // Idea effects are listed by FormatScopedModifierDescription (14054E520
-    // -> 1410CF560), which expands them.
-    catalogue::localised_with(localisation, key, arguments, catalogue::View::Scripted)
+fn name_arguments(argument: &str) -> Vec<(&str, Argument<'_>)> {
+    if argument.is_empty() {
+        Vec::new()
+    } else {
+        vec![("ARG", Argument::Text(argument))]
+    }
 }
 
-/// [`localised_name`], a refusal noted in the catalogue by key.
+/// The same argument selection, with recoveries and refusals noted by key.
 fn label(content: &PoliticsContent, key: &str, argument: &str) -> Option<String> {
-    localised_name(&content.catalogue.localisation, key, argument)
-        .inspect_err(|reason| content.catalogue.refuse(reason, key))
-        .ok()
+    content
+        .catalogue
+        .localised_with(key, &name_arguments(argument), catalogue::View::Scripted)
+}
+
+/// A scripted modifier's display, shared by the reply and offline preparation.
+pub(crate) fn content_format(content: &PoliticsContent, key: &str) -> Option<ModifierFormat> {
+    let definition = content.modifier_definitions.get(key)?;
+    let postfix = definition.postfix_key();
+    Some(ModifierFormat {
+        key: key.to_owned(),
+        index: None,
+        // Its name is its localisation key, as first registered.
+        label: label(content, &definition.token, ""),
+        postfix: postfix.and_then(|key| content.localised(key, catalogue::View::Scripted)),
+        postfix_key: postfix.map(str::to_owned),
+        flags: definition.flags,
+        // Scripted definitions register with no feature (FindOrRegisterDynamicModifierDefinition).
+        feature: 0,
+        precision: definition.precision,
+        source: "content".into(),
+    })
+}
+
+/// Formats available without a recording. A built-in key names the missing
+/// recorded table rather than acquiring a guessed display definition.
+pub(crate) fn content_formats(
+    content: &PoliticsContent,
+    keys: &BTreeSet<String>,
+) -> Vec<crate::content_check::Finding> {
+    use crate::content_check::{Finding, Kind};
+    let mut findings = Vec::new();
+    for key in keys {
+        if content_format(content, key).is_none() {
+            findings.push(Finding::new(Kind::Offline, format!("modifier {key}"), "the modifier's display definition needs the recorded ModifierDefinitions table; unavailable offline"));
+        }
+    }
+    findings
 }
 
 /// The formats of `keys`, each a modifier as the game identifies it (its
@@ -213,21 +244,8 @@ pub fn modifier_formats(
         // definition first registered under the key's name
         // (FindOrRegisterDynamicModifierDefinition 1405FF750), which a key
         // finds folded (1424A7A90, 1424A5EE0).
-        if let Some(definition) = content.modifier_definitions.get(key) {
-            let postfix = definition.postfix_key();
-            formats.push(ModifierFormat {
-                key: key.clone(),
-                index: None,
-                // Its name is its localisation key, as first registered.
-                label: label(content, &definition.token, ""),
-                postfix: postfix.and_then(|key| content.localised(key, catalogue::View::Scripted)),
-                postfix_key: postfix.map(str::to_owned),
-                flags: definition.flags,
-                // Scripted definitions register with no feature (FindOrRegisterDynamicModifierDefinition).
-                feature: 0,
-                precision: definition.precision,
-                source: "content".into(),
-            });
+        if let Some(format) = content_format(content, key) {
+            formats.push(format);
         }
     }
     if arguments {
@@ -252,7 +270,7 @@ pub fn texts(content: &PoliticsContent, keys: &BTreeSet<String>) -> Vec<Localise
 
 #[cfg(test)]
 mod tests {
-    use super::localised_name;
+    use super::{catalogue, name_arguments};
 
     /// The game's localiser fills `ARG` at every nested level (142230940), a
     /// `$KEY|format$` that is no argument looks up the whole operand, which no
@@ -269,25 +287,46 @@ mod tests {
             " GAP:0 \"a¤b\"\n",
         ));
         assert_eq!(
-            localised_name(&localisation, "NAME", "Luftstreitkräfte"),
+            catalogue::localised_with(
+                &localisation,
+                "NAME",
+                &name_arguments("Luftstreitkräfte"),
+                catalogue::View::Scripted
+            ),
             Ok("Luftstreitkräfte speed".into())
         );
         assert_eq!(
-            localised_name(&localisation, "NAME", ""),
+            catalogue::localised_with(
+                &localisation,
+                "NAME",
+                &name_arguments(""),
+                catalogue::View::Scripted
+            ),
             Ok(" speed".into())
         );
         assert_eq!(
-            localised_name(&localisation, "FORMATTED", ""),
+            catalogue::localised_with(
+                &localisation,
+                "FORMATTED",
+                &name_arguments(""),
+                catalogue::View::Scripted
+            ),
             Ok("xy".into())
         );
         assert_eq!(
-            localised_name(&localisation, "GAP", ""),
+            catalogue::localised_with(&localisation, "GAP", &name_arguments(""), catalogue::View::Scripted),
             Err(
                 "localisation GAP holds the control byte 0x14 (an authored `¤`), which plain text cannot show".into()
             )
         );
         assert_eq!(
-            localised_name(&localisation, "ABSENT", "x").as_deref(),
+            catalogue::localised_with(
+                &localisation,
+                "ABSENT",
+                &name_arguments("x"),
+                catalogue::View::Scripted
+            )
+            .as_deref(),
             Ok("ABSENT")
         );
     }

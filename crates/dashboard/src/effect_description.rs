@@ -311,7 +311,7 @@ impl CachedContent {
             notes.extend(database.misreads.iter().cloned());
         }
         let autonomy_states = autonomy_states.map(|(states, warnings)| {
-            notes.extend(warnings);
+            notes.extend(warnings.into_iter().map(|(_, message)| message));
             states
         });
         let (ideas, advisor_templates) = match ideas {
