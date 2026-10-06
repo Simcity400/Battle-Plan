@@ -3,9 +3,9 @@
 //! Ranges append, with template ranges before side ranges (140A7F510).
 
 use crate::{
-    ResolvedLayers,
-    gui::native::FormattedLocalization,
-    ideas, modifiers,
+    ResolvedLayers, ideas,
+    key_names::KeyNames,
+    modifiers,
     parser::{
         self, Item,
         native::{self, Shape},
@@ -137,16 +137,9 @@ pub struct Range {
     pub modifiers: modifiers::Modifiers,
     /// One boolean per executable rule, including the defaults (14062BED0).
     pub rules: Vec<bool>,
-    pub activation: Vec<Effect>,
-    pub deactivation: Vec<Effect>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Effect {
-    Tooltip(FormattedLocalization),
-    Group(Vec<Effect>),
-    Hidden(Vec<Effect>),
-    Unported(Vec<u8>),
+    /// Full native bodies, including scopes, operands and conditional siblings.
+    pub activation: Vec<Item>,
+    pub deactivation: Vec<Item>,
 }
 
 #[derive(Default)]
@@ -199,16 +192,19 @@ enum Node {
     Range,
     Modifier(modifiers::Node),
     Rule(ideas::RuleNode),
-    Effect,
 }
 
-fn read_file(input: &[u8], registry: modifiers::Registry<'_>) -> Result<native::Read, String> {
+fn read_file(
+    input: &[u8],
+    registry: modifiers::Registry<'_>,
+    names: &KeyNames,
+) -> Result<native::Read, String> {
     let mut undecided = Vec::new();
     let read = native::read(
         input,
         native::Mode::KeepMark,
         native::Top::File(Node::Top),
-        None,
+        Some(names),
         &mut |node, field| match node {
             Node::Top => Shape::Object(Node::Balance),
             Node::Balance => match field.keyword().as_deref() {
@@ -232,19 +228,13 @@ fn read_file(input: &[u8], registry: modifiers::Registry<'_>) -> Result<native::
                 Some(b"min" | b"max") => Shape::One,
                 Some(b"modifier") => Shape::Object(Node::Modifier(modifiers::Node::Modifier)),
                 Some(b"rule") => Shape::Object(Node::Rule(ideas::RuleNode::Rule)),
-                Some(b"on_activate" | b"on_deactivate") => Shape::Body(Node::Effect),
+                Some(b"on_activate" | b"on_deactivate") => Shape::Effect,
                 _ => Shape::Skip,
             },
             Node::Modifier(node) => {
                 modifiers::shape(node, field, registry, &mut undecided).map(Node::Modifier)
             }
             Node::Rule(node) => ideas::rule_field(node, field).map(Node::Rule),
-            // 140534280 requires blocks: 1405306C0 clears the assign flag.
-            // 141384F50/142390E40 take tooltip values from the resolved slot.
-            Node::Effect => match field.keyword().as_deref() {
-                Some(b"effect_tooltip" | b"hidden_effect") => Shape::Body(Node::Effect),
-                _ => native::untraced(field),
-            },
         },
     );
     if let Some(reason) = undecided
@@ -255,25 +245,6 @@ fn read_file(input: &[u8], registry: modifiers::Registry<'_>) -> Result<native::
         return Err(reason);
     }
     Ok(read)
-}
-
-fn effects(items: &[Item]) -> Vec<Effect> {
-    items
-        .iter()
-        .map(|item| match item.keyword().map(|k| k.folded()).as_deref() {
-            Some(b"custom_effect_tooltip") => match item.value.scalar() {
-                Some(text) => Effect::Tooltip(FormattedLocalization::parse(parser::c_string(text))),
-                None => Effect::Unported(b"custom_effect_tooltip bound localisation".to_vec()),
-            },
-            Some(b"effect_tooltip") => {
-                Effect::Group(effects(item.value.items().unwrap_or_default()))
-            }
-            Some(b"hidden_effect") => {
-                Effect::Hidden(effects(item.value.items().unwrap_or_default()))
-            }
-            _ => Effect::Unported(item.key.clone().unwrap_or_default()),
-        })
-        .collect()
 }
 
 fn range(items: &[Item], notes: &mut Vec<String>, registry: modifiers::Registry<'_>) -> Range {
@@ -291,10 +262,10 @@ fn range(items: &[Item], notes: &mut Vec<String>, registry: modifiers::Registry<
                 .read_all(item.value.items().unwrap_or_default()),
             Some(b"on_activate") => range
                 .activation
-                .extend(effects(item.value.items().unwrap_or_default())),
+                .extend_from_slice(item.value.items().unwrap_or_default()),
             Some(b"on_deactivate") => range
                 .deactivation
-                .extend(effects(item.value.items().unwrap_or_default())),
+                .extend_from_slice(item.value.items().unwrap_or_default()),
             Some(b"rule") => {
                 for rule in item.value.items().unwrap_or_default() {
                     if let Some(at) = RULES.iter().position(|r| rule.keyword_is(r.0)) {
@@ -341,8 +312,9 @@ fn range(items: &[Item], notes: &mut Vec<String>, registry: modifiers::Registry<
 /// by file and reader: its unread suffix could replace any template.
 pub fn read(layers: &ResolvedLayers, registry: modifiers::Registry<'_>) -> io::Result<Database> {
     let mut database = Database::default();
+    let names = layers.key_names()?;
     for path in layers.directory_files("common/bop", ".txt")? {
-        let read = read_file(&layers.read_uncovered(&path)?, registry).map_err(|e| {
+        let read = read_file(&layers.read_uncovered(&path)?, registry, &names).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("{path}: 1 unread balance file: {e}"),
@@ -400,132 +372,4 @@ pub fn read(layers: &ResolvedLayers, registry: modifiers::Registry<'_>) -> io::R
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn native_range_values_and_rule_defaults() {
-        let read = read_file(
-            br#"@value = 0.25 @tip = TIP balance = { range = { id = @value
-            modifier = { first = @value hidden_modifier = { first = 2 } first = 3 }
-            rule = { can_create_factions = yes can_join_factions = invalid }
-            on_activate = { add_political_power = 1 }
-            on_activate = { custom_effect_tooltip = @tip
-                effect_tooltip { custom_effect_tooltip = IGNORED }
-                effect_tooltip = { custom_effect_tooltip = @tip } }
-            on_deactivate = { hidden_effect = { custom_effect_tooltip = HIDDEN } }
-        } }"#,
-            &|_| Some(true),
-        )
-        .unwrap();
-        let mut notes = Vec::new();
-        let range = range(
-            read.items[0].value.items().unwrap()[0]
-                .value
-                .items()
-                .unwrap(),
-            &mut notes,
-            &|_| Some(true),
-        );
-        assert_eq!(range.id, b"@value");
-        assert_eq!(range.modifiers.values[0].value, 300_000);
-        assert!(range.modifiers.listed().next().is_none());
-        let rule = |name| range.rules[RULES.iter().position(|r| r.0 == name).unwrap()];
-        assert!(rule("can_create_factions"));
-        assert!(!rule("can_join_factions"));
-        assert!(rule("can_puppet"));
-        assert!(notes.iter().any(|note| note.contains("can_join_factions")));
-        assert_eq!(
-            range.activation,
-            [
-                Effect::Unported(b"add_political_power".to_vec()),
-                Effect::Tooltip(FormattedLocalization::Key(b"TIP".to_vec())),
-                Effect::Group(Vec::new()),
-                Effect::Group(vec![Effect::Tooltip(FormattedLocalization::Key(
-                    b"TIP".to_vec()
-                ))]),
-            ]
-        );
-        assert_eq!(
-            range.deactivation,
-            [Effect::Hidden(vec![Effect::Tooltip(
-                FormattedLocalization::Key(b"HIDDEN".to_vec())
-            )])]
-        );
-    }
-
-    #[test]
-    fn unsettled_modifier_and_effect_are_named() {
-        let error = read_file(
-            b"balance={range={modifier={unknown={a=1}}}}",
-            modifiers::UNKNOWN,
-        )
-        .unwrap_err();
-        assert!(error.contains("unknown") && error.contains("1406042A0"));
-        let error = read_file(
-            b"balance={range={on_activate={x @value=1}}}",
-            modifiers::UNKNOWN,
-        )
-        .unwrap_err();
-        assert!(error.contains("@value") && error.contains("line 1"));
-    }
-
-    #[test]
-    fn layered_templates_replace_and_root_ranges_precede_sides() {
-        let root = std::env::temp_dir().join(format!(
-            "bop-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let base = root.join("base");
-        let overlay = root.join("overlay");
-        for folder in [&base, &overlay] {
-            std::fs::create_dir_all(folder.join("common/bop")).unwrap();
-        }
-        std::fs::write(
-            base.join("common/bop/a.txt"),
-            b"\"BALANCE\"={range={id=old}} discarded={range={id=old}}",
-        )
-        .unwrap();
-        std::fs::write(overlay.join("common/bop/b.txt"), b"balance={side={range={id=same modifier={value=2}}} range={id=same modifier={value=1}}} unnamed={range={modifier={value=7}}}").unwrap();
-        let layers = ResolvedLayers::from_folders(&[(&base, &[]), (&overlay, &[])]).unwrap();
-        let database = read(&layers, &|_| Some(true)).unwrap();
-        assert!(
-            database
-                .range(b"BALANCE", b"old")
-                .unwrap_err()
-                .contains("missing authored range old")
-        );
-        assert_eq!(
-            database.balances[b"balance".as_slice()]
-                .iter()
-                .map(|r| r.modifiers.values[0].value)
-                .collect::<Vec<_>>(),
-            [100_000, 200_000]
-        );
-        assert!(
-            database
-                .range(b"BaLaNcE", b"same")
-                .unwrap_err()
-                .contains("2 ranges named same")
-        );
-        assert!(
-            database
-                .range(b"unnamed", b"")
-                .unwrap_err()
-                .contains("1 unnamed authored ranges")
-        );
-        let layers =
-            ResolvedLayers::from_folders(&[(&base, &[]), (&overlay, &["common/bop"])]).unwrap();
-        assert!(
-            read(&layers, &|_| Some(true))
-                .unwrap()
-                .range(b"discarded", b"old")
-                .is_err()
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-}
+mod tests;

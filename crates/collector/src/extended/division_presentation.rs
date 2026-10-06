@@ -778,11 +778,13 @@ mod tests {
             path_len: 3,
             path_total: 300,
             strategic_redeployment: 1,
-            strategic_action: carmy::StrategicAction::Available(carmy::StrategicRedeploymentInputs {
-                country_modifier: i64::MIN,
-                state_modifier: None,
-                friendly_state_modifier: None,
-            }),
+            strategic_action: carmy::StrategicAction::Available(
+                carmy::StrategicRedeploymentInputs {
+                    country_modifier: i64::MIN,
+                    state_modifier: None,
+                    friendly_state_modifier: None,
+                },
+            ),
             alternate_start: 3,
             alternate_len: 1,
             alternate_total: 1,

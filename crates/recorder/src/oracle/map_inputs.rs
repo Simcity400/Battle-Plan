@@ -69,6 +69,7 @@ fn countries(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Resu
     report.limitation("graphical_culture (CCountry+0x1028) is not serialized by the country writer; it comes from the country's content file and needs a matched-hour screenshot of a model or portrait that depends on it", "CountryAppearance.graphical_culture");
     report.limitation("graphical_culture_2d (CCountry+0x1050) is not serialized by the country writer; it comes from the country's content file and needs a matched-hour screenshot of an equipment icon that depends on it", "CountryAppearance.graphical_culture_2d");
     report.limitation("the old-name caches (CCountry+0x90, +0xB0, +0xD0) are runtime text: CCountry::Write (14070C580) does not save them and only 140709950 writes them, so a save cannot certify them; they need a live check of GetOld* text", "CountryAppearance old names");
+    report.limitation("CDiplomacyStatus::Serialize@140D32BD0 does not save the ordered subject roster at +0x170/count +0x17C; active_relations do not certify this array's order, repeats or raw reference words", "CountryAppearance.subjects");
     Ok(())
 }
 

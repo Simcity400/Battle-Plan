@@ -52,6 +52,8 @@ mod country_appearance_tests {
 // Variable records borrow their typed values during encoding and allocate only on decode.
 opaque_value!(Option<Vec<u8>>);
 opaque_value!(Vec<i64>);
+opaque_value!(Vec<i32>);
+opaque_value!(Option<Option<i32>>);
 opaque_value!(Option<i16>);
 
 #[cfg(test)]
@@ -60,3 +62,7 @@ pub(crate) use fixtures::sample_extended_table;
 #[cfg(test)]
 #[path = "extended_rows/fixtures.rs"]
 mod fixtures;
+
+#[cfg(test)]
+#[path = "extended_rows/border_effects/tests.rs"]
+mod border_effect_tests;

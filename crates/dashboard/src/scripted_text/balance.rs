@@ -21,59 +21,52 @@ const PROPERTIES: [&str; 13] = [
 impl ScriptedText<'_> {
     fn active_range_effects(
         &self,
-        effects: &[installed_content::power_balance::Effect],
+        effects: &[installed_content::parser::Item],
         refused: &mut Vec<String>,
         slot: u32,
         name: &str,
         scopes: &ExpansionScopes,
     ) -> Result<String, String> {
-        use installed_content::{gui::native::FormattedLocalization, power_balance::Effect};
-        let mut text = String::new();
-        for effect in effects {
-            let line = match effect {
-                Effect::Tooltip(FormattedLocalization::Key(key)) => {
-                    // 1413832B0: bound localisation in the supplied country scope.
-                    let text = self.localisation.localise(key).map_err(|e| e.to_string())?;
-                    self.expand_fresh_country(&text, slot, name, scopes)?
-                }
-                Effect::Tooltip(FormattedLocalization::Token(token)) => {
-                    refused.push(format!(
-                        "custom_effect_tooltip token:{}",
-                        String::from_utf8_lossy(token)
-                    ));
-                    String::new()
-                }
-                Effect::Tooltip(FormattedLocalization::Formatter { formatter, token }) => {
-                    refused.push(format!(
-                        "custom_effect_tooltip {}|{}",
-                        String::from_utf8_lossy(formatter),
-                        String::from_utf8_lossy(token)
-                    ));
-                    String::new()
-                }
-                Effect::Group(children) => {
-                    self.active_range_effects(children, refused, slot, name, scopes)?
-                }
-                Effect::Hidden(children) => {
-                    // 1413818F0 renders before discarding; failures still matter.
-                    self.active_range_effects(children, refused, slot, name, scopes)?;
-                    String::new()
-                }
-                Effect::Unported(key) => {
-                    refused.push(String::from_utf8_lossy(key).into_owned());
-                    String::new()
-                }
-            };
-            // 140532780 suppresses child descriptions of signed byte length <=1.
-            if line.len() as i32 <= 1 {
-                continue;
-            }
-            if !text.is_empty() && !text.ends_with('\n') {
-                text.push('\n');
-            }
-            text.push_str(&line);
+        if effects.is_empty() {
+            return Ok(String::new());
         }
-        Ok(text)
+        if scopes.needs_large_stack() {
+            return self.on_large_stack(scopes, |scopes| {
+                self.active_range_effects(effects, refused, slot, name, scopes)
+            });
+        }
+        let depth = scopes.fresh_depth.get();
+        if scopes.active.borrow().len() + depth >= MAX_SCRIPTED_NESTING {
+            return Err(nesting_refusal(name));
+        }
+        scopes.fresh_depth.set(depth + 1);
+        let result = (|| {
+            let content = self.content.effects()?;
+            let mut context = crate::effect_description::Context::new(
+                self,
+                self.localisation,
+                self.root, // Viewing country, native CContextLocalizationText +0x520/+0x524.
+                name,
+                content.view(None),
+            )
+            .with_expansion_scopes(scopes);
+            // Nested BuildDescription preserves active TLS (1405354A0/140544190).
+            let session = scopes.session.borrow().clone();
+            if let Some(session) = &session {
+                context = context.with_variable_session(session);
+            }
+            let mut graph = EventScopes::new(vec![EventScope::of(EventObject::Country(slot))]);
+            let description = crate::effect_description::describe(effects, &context, &mut graph);
+            if session.is_some() {
+                scopes.session.replace(context.variable_session());
+            }
+            for (reason, count) in description.refusals {
+                refused.extend(std::iter::repeat_n(reason, count));
+            }
+            Ok(description.text)
+        })();
+        scopes.fresh_depth.set(depth);
+        result
     }
 
     fn active_range_description(
@@ -479,239 +472,4 @@ impl ScriptedText<'_> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use replay::rows::*;
-
-    fn fixture(
-        bop: Option<&str>,
-    ) -> (
-        crate::catalogue::Catalogue,
-        crate::catalogue::tests::Folder,
-        DecodedFrame,
-    ) {
-        let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
-            (
-                "common/defines/test.lua",
-                "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
-            ),
-            (
-                "common/bop/test.txt",
-                bop.unwrap_or(
-                    r#"balance = {
-                side = { id = side range = { id = active
-                    modifier = { second = 1 first = 0.1 hidden_modifier = { hidden = 1 }
-                        added_modifier = { first = 9 } custom_modifier_tooltip = TIP }
-                    modifier = { first = 0.25 }
-                    rule = { can_create_factions = yes can_join_factions = no
-                        can_send_volunteers = no desc = IGNORED override = { 12 = IGNORED } }
-                    on_activate = { custom_effect_tooltip = ONE custom_effect_tooltip = ACTIVATION
-                        hidden_effect = { custom_effect_tooltip = ACTIVATION }
-                        effect_tooltip = { custom_effect_tooltip = NEXT } }
-                    on_deactivate = { custom_effect_tooltip = DEACTIVATION }
-                } }
-            }"#,
-                ),
-            ),
-            (
-                "localisation/test_l_english.yml",
-                concat!(
-                    "\u{feff}l_english:\n",
-                    " GER:0 \"Country\"\n FIRST:0 \"First\"\n SECOND:0 \"Second\"\n",
-                    " TIP:0 \"[ROOT.GetTag] tip\"\n PROGRESS_SECTION_MODIFIER:0 \"Modifiers:\\n$DESC$\"\n",
-                    " PROGRESS_SECTION_RULE:0 \"Rules:\\n$DESC$\"\n",
-                    " TRIGGER_FULLFILLED_PREFIX:0 \"Yes: \"\n TRIGGER_UNFULLFILLED_PREFIX:0 \"No: \"\n",
-                    " CAN_CREATE_FACTIONS:0 \"Create factions\"\n CAN_JOIN_FACTIONS:0 \"Join factions\"\n",
-                    " ACTIVATION:0 \"[ROOT.GetTag] activated\"\n NEXT:0 \"Next effect\"\n",
-                    " ONE:0 \"x\"\n",
-                    " DEACTIVATION:0 \"[ROOT.GetTag] deactivated\"\n",
-                    " PROGRESS_SECTION_ACTIVATION_EFFECT:0 \"Activate:\\n$DESC$\"\n",
-                    " PROGRESS_SECTION_DEACTIVATION_EFFECT:0 \"Deactivate:\\n$DESC$\"\n"
-                ),
-            ),
-        ]);
-        let mut frame = crate::scope::tests::frame();
-        *frame.tables[TableId::PowerBalances.index()] =
-            TableView::Complete(TableRows::PowerBalances(vec![PowerBalanceRow {
-                balance: b"balance".to_vec(),
-                active_range: b"active".to_vec(),
-                ..Default::default()
-            }]));
-        *frame.tables[TableId::PowerBalanceMembers.index()] =
-            TableView::Complete(TableRows::PowerBalanceMembers(vec![
-                PowerBalanceMemberRow {
-                    country: 100,
-                    ..Default::default()
-                },
-            ]));
-        *frame.tables[TableId::LexicalTokens.index()] =
-            TableView::Complete(TableRows::LexicalTokens(
-                ["first", "second", "hidden"]
-                    .into_iter()
-                    .enumerate()
-                    .map(|(at, key)| LexicalTokenRow {
-                        token: at as u32 + 1,
-                        literal: key.as_bytes().to_vec(),
-                    })
-                    .collect(),
-            ));
-        *frame.tables[TableId::ModifierDefinitions.index()] =
-            TableView::Complete(TableRows::ModifierDefinitions(
-                ["FIRST", "SECOND", "HIDDEN"]
-                    .into_iter()
-                    .enumerate()
-                    .map(|(at, key)| ModifierDefinitionRow {
-                        index: at as u32 + 1,
-                        token: at as u32 + 1,
-                        name_key: key.as_bytes().to_vec(),
-                        category_mask: u32::MAX,
-                        precision: 2,
-                        flags: 3,
-                        ..Default::default()
-                    })
-                    .collect(),
-            ));
-        (catalogue, folder, frame)
-    }
-
-    fn description(
-        catalogue: &crate::catalogue::Catalogue,
-        frame: &DecodedFrame,
-        property: &str,
-    ) -> Result<String, String> {
-        let text = ScriptedText::new(
-            frame,
-            &catalogue.localisation,
-            catalogue.scripted_content()?,
-            0,
-        );
-        crate::catalogue::localised_in(
-            &catalogue.localisation,
-            &format!("[ROOT.{property}]"),
-            &[],
-            &text,
-        )
-    }
-
-    #[test]
-    fn active_range_mod_description() {
-        let (catalogue, _folder, frame) = fixture(None);
-        assert_eq!(
-            description(&catalogue, &frame, "GetActiveRangeModDesc").unwrap(),
-            "Modifiers:\nFirst: +25.00%\nSecond: +100.00%\nGER tip\n"
-        );
-    }
-
-    #[test]
-    fn active_range_modifier_feature_gate() {
-        let (catalogue, _folder, mut frame) = fixture(None);
-        for (mask, eligibility, shown) in [
-            (0b1010, 1, true),
-            (0b0010, 1, true),
-            (0b1000, 1, true),
-            (0b0001, 1, false),
-            (0, 1, false),
-            (0b1010, 0, false),
-        ] {
-            if let TableView::Complete(TableRows::ModifierDefinitions(rows)) =
-                &mut *frame.tables[TableId::ModifierDefinitions.index()]
-            {
-                rows[0].feature_selector = 0b1010;
-                rows[0].eligibility = eligibility;
-            }
-            *frame.tables[TableId::SimulationFeatures.index()] =
-                TableView::Complete(TableRows::SimulationFeatures(vec![SimulationFeatureRow {
-                    dlc_mask: mask,
-                    ..Default::default()
-                }]));
-            assert_eq!(
-                description(&catalogue, &frame, "GetActiveRangeModDesc").unwrap(),
-                if shown {
-                    "Modifiers:\nFirst: +25.00%\nSecond: +100.00%\nGER tip\n"
-                } else {
-                    "Modifiers:\nSecond: +100.00%\nGER tip\n"
-                },
-                "mask {mask:#x}, eligibility {eligibility}"
-            );
-        }
-    }
-
-    #[test]
-    fn active_range_rule_description() {
-        let (catalogue, _folder, frame) = fixture(None);
-        assert_eq!(
-            description(&catalogue, &frame, "GetActiveRangeRuleDesc").unwrap(),
-            "Rules:\nYes: Create factions\nNo: Join factions\n"
-        );
-    }
-
-    #[test]
-    fn active_range_activation_effect_description() {
-        let (catalogue, _folder, frame) = fixture(None);
-        assert_eq!(
-            description(&catalogue, &frame, "GetActiveRangeActivationEffect").unwrap(),
-            "Activate:\nGER activated\nNext effect\n"
-        );
-    }
-
-    #[test]
-    fn active_range_deactivation_effect_description() {
-        let (catalogue, _folder, frame) = fixture(None);
-        assert_eq!(
-            description(&catalogue, &frame, "GetActiveRangeDeactivationEffect").unwrap(),
-            "Deactivate:\nGER deactivated\n"
-        );
-    }
-
-    #[test]
-    fn active_range_effect_refusals_are_named_and_counted() {
-        let (catalogue, _folder, frame) = fixture(Some(
-            r#"balance={range={id=active
-            on_activate={unported=1 hidden_effect={other=2}
-                custom_effect_tooltip="fmt|value" custom_effect_tooltip={localization_key=KEY}}
-        }}"#,
-        ));
-        let error = description(&catalogue, &frame, "GetActiveRangeActivationEffect").unwrap_err();
-        for name in [
-            "4 unsupported effect descriptions",
-            "unported",
-            "other",
-            "fmt|value",
-            "bound localisation",
-        ] {
-            assert!(error.contains(name), "{error}");
-        }
-        assert_eq!(
-            description(&catalogue, &frame, "GetActiveRangeDeactivationEffect").unwrap(),
-            ""
-        );
-    }
-
-    #[test]
-    fn active_range_missing_feature_mask_and_null_balance() {
-        let (catalogue, _folder, mut frame) = fixture(None);
-        if let TableView::Complete(TableRows::ModifierDefinitions(rows)) =
-            &mut *frame.tables[TableId::ModifierDefinitions.index()]
-        {
-            for row in &mut rows[..2] {
-                row.feature_selector = 1;
-                row.eligibility = 1;
-            }
-        }
-        let error = description(&catalogue, &frame, "GetActiveRangeModDesc").unwrap_err();
-        assert!(
-            error.contains("2 feature-gated modifiers (first, second)")
-                && error.contains("SimulationFeatures.dlc_mask")
-        );
-        *frame.tables[TableId::PowerBalanceMembers.index()] =
-            TableView::Complete(TableRows::PowerBalanceMembers(Vec::new()));
-        for property in [
-            "GetActiveRangeModDesc",
-            "GetActiveRangeRuleDesc",
-            "GetActiveRangeActivationEffect",
-            "GetActiveRangeDeactivationEffect",
-        ] {
-            assert_eq!(description(&catalogue, &frame, property).unwrap(), "");
-        }
-    }
-}
+mod tests;

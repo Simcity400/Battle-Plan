@@ -40,6 +40,7 @@ pub mod bitmap_font_text_color;
 pub mod blend_state_description_layout;
 pub mod blend_state_wrapper_layout;
 pub mod border_bucket_row_layout;
+pub mod border_effect_demand;
 pub mod border_palette_globals;
 pub mod build;
 pub mod building_content_functions;

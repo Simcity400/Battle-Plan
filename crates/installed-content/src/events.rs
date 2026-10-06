@@ -21,6 +21,38 @@ pub struct Event {
     pub options: Vec<Vec<Item>>,
     pub refused: Option<String>,
 }
+
+impl Event {
+    /// 14116C180 returns its sole candidate before evaluating its trigger.
+    /// Several candidates need the unrecorded high-resolution seed.
+    pub fn sole_title_key(&self) -> Result<Option<&[u8]>, String> {
+        match self.titles.as_slice() {
+            [] => Ok(None),
+            [item] => {
+                let key = item
+                    .value
+                    .scalar()
+                    .or_else(|| {
+                        item.value
+                            .items()?
+                            .iter()
+                            .rev()
+                            .find(|item| item.keyword_is("text"))?
+                            .value
+                            .scalar()
+                    })
+                    .unwrap_or_default();
+                let key = crate::parser::c_string(key);
+                Ok((!key.is_empty()).then_some(key))
+            }
+            _ => Err(format!(
+                "{} event {} has multiple title candidates; 14116C180 selects with an unrecorded high-resolution seed",
+                self.source,
+                String::from_utf8_lossy(&self.id)
+            )),
+        }
+    }
+}
 #[derive(Clone, Debug, Default)]
 pub struct Events {
     pub entries: BTreeMap<Vec<u8>, Event>,

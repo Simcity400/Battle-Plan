@@ -1,4 +1,9 @@
 //! CDecision definition identity. Completion/effect functions are retained knowledge only.
+//! Authored CDecision+0x140 is the token's folded FNV-1a hash: loader
+//! 1407198A0/hash 140BBA1B0 and authored constructor 140716650. The default
+//! constructor 140716320 instead writes the 0xFFFFFFFF sentinel from
+//! 1427C79D0 at 1407163A5; its only caller 140716C90 creates the database's
+//! TNullObject placeholder, then replaces its vtable, outside content reach.
 //! Effect ownership follows the authored-definition argument and its +0x120 token read;
 //! the old untyped hook ABI does not independently establish the methods' RTTI owner.
 
@@ -7,6 +12,8 @@ use crate::{Memory, msvc_string, read};
 /// CDecision MSVC string token; offsets.rs:292 and direct_frd_transitions_live/a729_hook.rs:41,1374 agree on the read.
 pub const TOKEN: usize = 0x120;
 pub const VTABLE_RVA: usize = 0x027d_4f00;
+/// Native fixed_random_seed content byte; reader@140725B40 (token 0x398D).
+pub const FIXED_RANDOM_SEED: usize = 0x962;
 
 /// Exact token location. The caller copies bytes into its preallocated arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

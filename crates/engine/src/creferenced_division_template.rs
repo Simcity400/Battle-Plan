@@ -15,6 +15,8 @@ pub const ID: usize = 0x0c;
 pub const COMPOSITION: usize = 0x18;
 /// CReferencedDivisionTemplate name MSVC string; old recorder_host/native_design_catalog.rs:492 receives registry primary pointer.
 pub const NAME: usize = 0x20;
+/// Composition+0x28 fallback localisation key; GetDisplayName@140B91170.
+pub const NAME_KEY: usize = COMPOSITION + 0x28;
 /// CReferencedDivisionTemplate grid dimensions, columns low16/rows high16; old native_design_catalog.rs:493-495.
 pub const GRID_DIMENSIONS: usize = 0x60;
 /// CReferencedDivisionTemplate regiment CSubUnitDefinition pointer-vector data; old native_design_catalog.rs:500.
@@ -104,6 +106,7 @@ pub struct Row {
     pub template: u64,
     pub owner: u32,
     pub name: Span,
+    pub name_key: Span,
     /// Engine category, NOT a verified frame in the legacy twelve-frame strip.
     pub unit_type: i32,
 }
@@ -678,13 +681,13 @@ const fn record_field(source_offset: usize, destination_offset: usize, len: usiz
 /// holding every fixed scalar and the model entity string's header.
 const TAIL: usize = PRIORITY_UNIT;
 const TAIL_END: usize = UNIT_TYPE_OVERRIDE + 4;
-/// Where the tail sits in both records, after three 16-byte-aligned spans.
-const TAIL_AT: usize = 48;
+/// Daily tail after the identity and the two MSVC string headers.
+const TAIL_AT: usize = 80;
 const RECORD: usize = TAIL_AT + TAIL_END - TAIL;
 /// The daily row's fixed fields: identity, name header and the tail.
 const DAILY_FIELDS: [RecordField; 3] = [
     record_field(0, 0, 16),
-    record_field(NAME, 16, msvc_string::STRIDE),
+    record_field(NAME, 16, msvc_string::STRIDE * 2),
     record_field(TAIL, TAIL_AT, TAIL_END - TAIL),
 ];
 const DAILY_LAYOUT: RecordLayout<'static> =
@@ -875,6 +878,12 @@ pub fn walk(
                     .ok_or("template name address overflow")?,
                 record[16..48].try_into().unwrap(),
             )?;
+            let name_key = Descriptor::from_header(
+                memory,
+                at.checked_add(NAME_KEY)
+                    .ok_or("template name key address overflow")?,
+                record[48..80].try_into().unwrap(),
+            )?;
             let mut unit_type = dword(record, tail(UNIT_TYPE_OVERRIDE));
             if unit_type == 0 {
                 let category = match word(record, tail(CATEGORY_UNIT)) as usize {
@@ -893,8 +902,11 @@ pub fn walk(
             result.required_bytes = result
                 .required_bytes
                 .checked_add(name.len)
+                .and_then(|n| n.checked_add(name_key.len))
                 .ok_or("template byte arena overflow")?;
-            if len == rows.len() || name.len > bytes.len() - result.bytes_len {
+            if len == rows.len()
+                || name.len.saturating_add(name_key.len) > bytes.len() - result.bytes_len
+            {
                 missing = missing
                     .checked_add(1)
                     .ok_or("template row count overflow")?;
@@ -903,12 +915,19 @@ pub fn walk(
             let start = result.bytes_len;
             name.copy(memory, &mut bytes[start..])?;
             result.bytes_len += name.len;
+            let key_start = result.bytes_len;
+            name_key.copy(memory, &mut bytes[key_start..])?;
+            result.bytes_len += name_key.len;
             rows[len] = Row {
                 template: word(record, 8),
                 owner,
                 name: Span {
                     start,
                     len: name.len,
+                },
+                name_key: Span {
+                    start: key_start,
+                    len: name_key.len,
                 },
                 unit_type,
             };

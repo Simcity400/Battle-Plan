@@ -4,7 +4,10 @@ use super::{
     binding::{TextIcons, builtin, token},
 };
 use crate::{document::Document, map::raids::tooltips::Tooltip, table_access::rows};
-use dashboard::scripted_text::{EventObject, EventScope, EventScopes, Link, ScriptedText};
+use dashboard::{
+    effect_description::{self, Context as EffectContext},
+    scripted_text::{EventObject, EventScope, EventScopes, Link, ScriptedText},
+};
 use installed_content::{
     events::Event,
     localisation::{Argument, Localisation},
@@ -86,58 +89,11 @@ impl Description {
     }
 }
 
-fn effects(
-    items: &[Item],
-    render: &impl Fn(&[u8]) -> Result<String, String>,
-    event: &Event,
-    out: &mut Description,
-) -> String {
-    let mut body = String::new();
-    for item in items {
-        let key = item.key.as_deref().unwrap_or_default();
-        let line = if item.keyword_is("custom_effect_tooltip") {
-            match item.value.scalar() {
-                Some(value) if !value.contains(&b'|') => {
-                    match render(installed_content::parser::c_string(value)) {
-                        Ok(line) => line,
-                        Err(why) => {
-                            out.refuse(format!(
-                                "{} event {} custom_effect_tooltip: {why}",
-                                event.source,
-                                String::from_utf8_lossy(&event.id)
-                            ));
-                            String::new()
-                        }
-                    }
-                }
-                _ => {
-                    out.refuse(format!("{} event {} custom_effect_tooltip bound formatter is not ported (1413832B0)", event.source, String::from_utf8_lossy(&event.id)));
-                    String::new()
-                }
-            }
-        } else if item.keyword_is("effect_tooltip") {
-            effects(item.value.items().unwrap_or_default(), render, event, out)
-        } else if item.keyword_is("hidden_effect") {
-            // 1413818F0 builds, then discards its description; count failures too.
-            effects(item.value.items().unwrap_or_default(), render, event, out);
-            String::new()
-        } else {
-            out.refuse(format!("{} event {} effect {} description is not ported (CEffect::BuildDescription 140532780); its scope/conditional/value evaluator is unavailable",
-                event.source, String::from_utf8_lossy(&event.id), String::from_utf8_lossy(key)));
-            String::new()
-        };
-        // Native suppresses descriptions of signed byte length <=1.
-        if line.len() as i32 > 1 {
-            newline(&mut body);
-            body.push_str(&line);
-        }
-    }
-    body
-}
-
 fn event_description(
     event: &Event,
-    render: &impl Fn(&[u8]) -> Result<String, String>,
+    describe: &impl Fn(&[Item], &mut EventScopes) -> effect_description::Description,
+    scopes: &mut EventScopes,
+    render: &impl Fn(&[u8], &EventScopes) -> Result<String, String>,
     icons: &dyn TextIcons,
     loc: &Localisation,
 ) -> Description {
@@ -147,44 +103,22 @@ fn event_description(
         return out;
     }
     if event.options.len() < 2 {
-        out.body = effects(&event.immediate, render, event, &mut out);
-        newline(&mut out.body);
-        if let Some(option) = event.options.first() {
-            let body = effects(option, render, event, &mut out);
-            out.body.push_str(&body);
+        // 14116B330/14116B230: separate sessions, the same caller graph.
+        for items in std::iter::once(&event.immediate).chain(event.options.first()) {
+            let description = describe(items, scopes);
+            for (why, count) in description.refusals {
+                *out.refused.entry(why).or_default() += count;
+            }
+            out.body
+                .push_str(effect_description::trim_description(&description.text));
             newline(&mut out.body);
         }
     } else {
         // 14116B3B0/14116C180 choose a scoped title, not any effect body.
-        let title = match event.titles.as_slice() {
-            [] => Ok(String::new()),
-            [item] => {
-                // 14116C180 returns the sole candidate before trigger evaluation.
-                let key = item
-                    .value
-                    .scalar()
-                    .or_else(|| {
-                        item.value
-                            .items()?
-                            .iter()
-                            .rev()
-                            .find(|item| item.keyword_is("text"))?
-                            .value
-                            .scalar()
-                    })
-                    .unwrap_or_default();
-                if key.is_empty() {
-                    Ok(String::new())
-                } else {
-                    render(installed_content::parser::c_string(key))
-                }
-            }
-            _ => Err(format!(
-                "{} event {} has multiple title candidates; 14116C180 selects with an unrecorded high-resolution seed",
-                event.source,
-                String::from_utf8_lossy(&event.id)
-            )),
-        };
+        let title = event.sole_title_key().and_then(|key| match key {
+            Some(key) => render(key, scopes),
+            None => Ok(String::new()),
+        });
         match title.and_then(|title| {
             builtin(
                 icons,
@@ -331,6 +265,11 @@ pub(super) fn append(
             },
         )
     };
+    // All outcomes use one hour and viewing perspective; the event graph picks THIS.
+    let scripted = document
+        .scripted
+        .as_ref()
+        .map(|content| ScriptedText::new(frame, loc, content, viewer));
     let event = |id: &[u8], index: usize| {
         let result = (|| {
             let event = icons.border_events.get(id)?;
@@ -338,15 +277,41 @@ pub(super) fn append(
             let own = &border.sides[index];
             let enemy = &border.sides[1 - index];
             let own_country = canonical(own.country, links)?;
-            let scopes = scopes(
+            let mut scopes = scopes(
                 own_country,
                 own.state as u32,
                 canonical(enemy.country, links)?,
                 enemy.state as u32,
             );
-            let scripted = ScriptedText::new(frame, loc, content, own_country);
-            let render = |key: &[u8]| scripted.expand_in(&token(icons, loc, key)?, &scopes);
-            Ok::<_, String>(event_description(&event, &render, icons, loc))
+            let scripted = scripted.as_ref().map_err(|why| (*why).clone())?;
+            let event_loader = |id: &[u8]| icons.border_events.get(id);
+            let describe = |items: &[Item], scopes: &mut EventScopes| {
+                let result = (|| {
+                    let context = EffectContext::new(
+                        scripted,
+                        loc,
+                        viewer,
+                        &event.source,
+                        content.effects()?.view(Some(&event_loader)),
+                    );
+                    Ok::<_, String>(effect_description::describe(items, &context, scopes))
+                })();
+                result.unwrap_or_else(|why| effect_description::Description {
+                    refusals: [(why, 1)].into_iter().collect(),
+                    ..Default::default()
+                })
+            };
+            let render = |key: &[u8], scopes: &EventScopes| {
+                scripted.expand_in(&token(icons, loc, key)?, scopes)
+            };
+            Ok::<_, String>(event_description(
+                &event,
+                &describe,
+                &mut scopes,
+                &render,
+                icons,
+                loc,
+            ))
         })();
         result.unwrap_or_else(|why| {
             let mut out = Description::default();

@@ -25,6 +25,9 @@ use replay::Hour;
 mod aliases;
 mod coded;
 mod eval;
+pub(crate) mod event_scopes;
+pub use event_scopes::EventGraphGuard;
+pub(crate) use event_scopes::event_tooltip_target;
 mod load;
 mod operands;
 pub(crate) mod saved_event_targets;
@@ -34,7 +37,7 @@ mod tests;
 mod variables;
 mod world;
 
-pub use eval::{Combat, Evaluator};
+pub use eval::{Combat, Evaluator, VariableSession};
 pub use operands::{Selected, Selector, compare, scope_selector, shown, trigger_boolean};
 pub use variables::Temps;
 pub(crate) use world::fixed_round;
@@ -174,6 +177,8 @@ pub struct Scopes {
     /// THIS was set with clearing (14052F3F0), so it carries no character
     /// (+0x50) from the scope it was entered from.
     pub bare: bool,
+    /// Cursor in the evaluator's caller-owned CEventScope graph.
+    pub cursor: Option<usize>,
 }
 
 /// Which of ROOT, FROM and PREV a caller cannot describe.
@@ -212,6 +217,7 @@ impl Scopes {
             target_leader: None,
             unknown: UnknownLinks::default(),
             bare: false,
+            cursor: None,
         }
     }
 
@@ -238,6 +244,7 @@ impl Scopes {
                 ..self.unknown
             },
             bare: true,
+            cursor: None,
             ..self
         }
     }

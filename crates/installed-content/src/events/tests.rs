@@ -1,4 +1,31 @@
 use super::*;
+
+#[test]
+fn sole_event_title_preserves_c_string_last_field_and_trigger_bypass() {
+    let mut event = Event {
+        titles: crate::parser::parse(b"title={text=FIRST text=LAST trigger={always=no}}")
+            .unwrap()
+            .items,
+        ..Default::default()
+    };
+    let crate::parser::Value::Block(fields) = &mut event.titles[0].value else {
+        unreachable!()
+    };
+    fields[1].value = crate::parser::Value::Scalar(b"LAST\0ignored".to_vec());
+    assert_eq!(event.sole_title_key(), Ok(Some(b"LAST".as_slice())));
+    event.titles = crate::parser::parse(b"title=EMPTY").unwrap().items;
+    event.titles[0].value = crate::parser::Value::Scalar(b"\0ignored".to_vec());
+    assert_eq!(event.sole_title_key(), Ok(None));
+    event.titles.push(event.titles[0].clone());
+    assert!(
+        event
+            .sole_title_key()
+            .unwrap_err()
+            .contains("high-resolution seed")
+    );
+    event.titles.clear();
+    assert_eq!(event.sole_title_key(), Ok(None));
+}
 #[test]
 fn border_events_keep_immediate_and_option_order_through_native_effect_reader() {
     let input = b"add_namespace=synthetic country_event={id=synthetic.1 title=TITLE immediate={custom_effect_tooltip=FIRST} option={name=A custom_effect_tooltip=SECOND} option={name=B hidden_effect={custom_effect_tooltip=HIDDEN}}}";

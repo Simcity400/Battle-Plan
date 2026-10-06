@@ -96,36 +96,139 @@ fn border_marker_membership_and_event_scopes_use_native_alias_and_copy_links() {
     assert_eq!(values[0].prev, Link::Itself);
 }
 
+struct Folder(std::path::PathBuf);
+impl Drop for Folder {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn with_effects(loc: &Localisation, run: impl FnOnce(&EffectContext<'_, '_>)) {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_border_effect_adapter_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _folder = Folder(root.clone());
+    std::fs::create_dir_all(root.join("common/defines")).unwrap();
+    std::fs::create_dir_all(root.join("common/buildings")).unwrap();
+    std::fs::create_dir_all(root.join("map")).unwrap();
+    std::fs::write(
+        root.join("common/defines/synthetic.lua"),
+        "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 }, NBuildings = { MAX_BUILDING_LEVELS = 10, INFRASTRUCTURE_RESOURCE_BONUS = 0, SUPPLY_ROUTE_RESOURCE_BONUS = 0 } }",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("common/buildings/synthetic.txt"),
+        "buildings={synthetic={}}",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("map/default.map"),
+        "definitions=\"definition.csv\" provinces=\"p.bmp\" terrain=\"t.bmp\" rivers=\"r.bmp\" heightmap=\"h.bmp\" tree_definition=\"trees.bmp\"",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("map/definition.csv"),
+        "1;1;1;1;land;false;synthetic;1\n",
+    )
+    .unwrap();
+    let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let content = dashboard::scripted_text::ScriptedContent::read(
+        std::sync::Arc::new(installed_content::content::ResolvedContent {
+            layers,
+            stats: Default::default(),
+        }),
+        "english".into(),
+    )
+    .unwrap();
+    let mut frame = DecodedFrame {
+        branch: 1,
+        hour: 10,
+        tables: std::array::from_fn(|i| {
+            replay::frame::TableView::Complete(replay::rows::TableRows::empty(
+                replay::rows::TableId::ALL[i],
+            ))
+            .into()
+        }),
+        metrics: Default::default(),
+    };
+    for (id, tag) in [(7, "AAA"), (9, "BBB")] {
+        let replay::frame::TableView::Complete(replay::rows::TableRows::Countries(rows)) =
+            &mut *frame.tables[replay::rows::TableId::Countries.index()]
+        else {
+            unreachable!()
+        };
+        rows.push(replay::rows::CountryRow {
+            id,
+            canonical_slot: id,
+            tag: tag.as_bytes().to_vec(),
+            ..Default::default()
+        });
+        let replay::frame::TableView::Complete(replay::rows::TableRows::CountryLinks(rows)) =
+            &mut *frame.tables[replay::rows::TableId::CountryLinks.index()]
+        else {
+            unreachable!()
+        };
+        rows.push(replay::rows::CountryLinkRow {
+            id,
+            canonical_slot: id,
+        });
+    }
+    let scripted = ScriptedText::new(&frame, loc, &content, 7);
+    let context = EffectContext::new(&scripted, loc, 7, "synthetic event", Default::default());
+    run(&context);
+}
+
 #[test]
-fn border_marker_event_effects_or_title_follow_option_count_and_named_refusals() {
+fn border_marker_event_native_effects_or_title_follow_option_count() {
     let events = installed_content::events::parse(b"add_namespace=s country_event={id=s.1 title={text=IGNORED text=TITLE trigger={always=no}} immediate={custom_effect_tooltip=FIRST hidden_effect={custom_effect_tooltip=HIDDEN} add_political_power=2} option={name=A effect_tooltip={custom_effect_tooltip=SECOND}}}", "events/synthetic.txt", &installed_content::key_names::KeyNames::default());
     let mut event = events.get(b"S.01").unwrap().clone();
-    let render = |key: &[u8]| Ok(format!("Text {}", String::from_utf8_lossy(key)));
-    let text = event_description(&event, &render, &NoIcons, &localisation());
-    assert_eq!(text.body, "Text FIRST\nText SECOND\n");
-    assert_eq!(text.refused.values().sum::<usize>(), 1);
-    assert!(
-        text.refused
-            .keys()
-            .next()
-            .unwrap()
-            .contains("add_political_power")
-    );
-    event.options.push(Vec::new());
-    // Native accepts the sole title before its trigger, even always=no.
-    let text = event_description(&event, &render, &NoIcons, &localisation());
-    assert_eq!(text.body, "Event Text TITLE");
-    assert!(text.refused.is_empty());
-    event.titles.push(event.titles[0].clone());
-    let text = event_description(&event, &render, &NoIcons, &localisation());
-    assert!(text.body.is_empty());
-    assert!(
-        text.refused
-            .keys()
-            .next()
-            .unwrap()
-            .contains("high-resolution seed")
-    );
+    let base = localisation();
+    let loc = base
+        .iter()
+        .map(|(key, text)| (key.into(), text.into()))
+        .chain(
+            [
+                ("FIRST", "Text FIRST"),
+                ("HIDDEN", "Text HIDDEN"),
+                ("SECOND", "Text SECOND"),
+                ("POLITICS_ADD_POLITICAL_POWER", "PP $VAL|=+0$"),
+            ]
+            .into_iter()
+            .map(|(key, text)| (key.into(), text.into())),
+        )
+        .collect();
+    with_effects(&loc, |context| {
+        let calls = std::cell::Cell::new(0);
+        let describe = |items: &[Item], graph: &mut EventScopes| {
+            calls.set(calls.get() + 1);
+            effect_description::describe(items, context, graph)
+        };
+        let render =
+            |key: &[u8], _: &EventScopes| Ok(format!("Text {}", String::from_utf8_lossy(key)));
+        let mut graph = scopes(7, 11, 9, 13);
+        let text = event_description(&event, &describe, &mut graph, &render, &NoIcons, &loc);
+        assert!(text.refused.is_empty(), "{:?}", text.refused);
+        assert_eq!(text.body, "Text FIRST\nPP \u{11}G+2\u{11}!\nText SECOND\n");
+        assert_eq!(calls.get(), 2);
+        event.options.push(Vec::new());
+        // Native accepts the sole title before its trigger and skips effect bodies.
+        let text = event_description(&event, &describe, &mut graph, &render, &NoIcons, &loc);
+        assert_eq!(text.body, "Event Text TITLE");
+        assert!(text.refused.is_empty());
+        assert_eq!(calls.get(), 2);
+        event.titles.push(event.titles[0].clone());
+        let text = event_description(&event, &describe, &mut graph, &render, &NoIcons, &loc);
+        assert!(text.body.is_empty());
+        assert!(
+            text.refused
+                .keys()
+                .next()
+                .unwrap()
+                .contains("high-resolution seed")
+        );
+    });
 }
 
 #[test]
@@ -168,6 +271,7 @@ fn covered_event_keeps_text_and_operative_reader_refusal_still_suppresses_it() {
         std::process::id(),
         std::thread::current().id()
     ));
+    let _folder = Folder(root.clone());
     std::fs::create_dir_all(root.join("events")).unwrap();
     std::fs::write(
         root.join("events/synthetic.txt"),
@@ -176,27 +280,37 @@ fn covered_event_keeps_text_and_operative_reader_refusal_still_suppresses_it() {
     .unwrap();
     let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
     let events = installed_content::events::LazyEvents::new(std::sync::Arc::new(layers));
-    let render = |key: &[u8]| Ok(String::from_utf8_lossy(key).into_owned());
-    let text = event_description(
-        &events.get(b"s.1").unwrap(),
-        &render,
-        &NoIcons,
-        &localisation(),
-    );
-    assert_eq!(text.body, "TEXT\n");
-    assert!(text.refused.is_empty());
-    let text = event_description(
-        &events.get(b"s.2").unwrap(),
-        &render,
-        &NoIcons,
-        &localisation(),
-    );
-    assert!(text.body.is_empty());
-    assert_eq!(text.refused.values().sum::<usize>(), 1);
-    assert!(
-        text.refused
-            .keys()
-            .any(|key| key.contains("operative_leader_event"))
-    );
-    std::fs::remove_dir_all(root).unwrap();
+    let render = |key: &[u8], _: &EventScopes| Ok(String::from_utf8_lossy(key).into_owned());
+    let loc = localisation();
+    with_effects(&loc, |context| {
+        let describe = |items: &[Item], graph: &mut EventScopes| {
+            effect_description::describe(items, context, graph)
+        };
+        let mut graph = scopes(7, 11, 9, 13);
+        let text = event_description(
+            &events.get(b"s.1").unwrap(),
+            &describe,
+            &mut graph,
+            &render,
+            &NoIcons,
+            &loc,
+        );
+        assert_eq!(text.body, "TEXT\n");
+        assert!(text.refused.is_empty());
+        let text = event_description(
+            &events.get(b"s.2").unwrap(),
+            &describe,
+            &mut graph,
+            &render,
+            &NoIcons,
+            &loc,
+        );
+        assert!(text.body.is_empty());
+        assert_eq!(text.refused.values().sum::<usize>(), 1);
+        assert!(
+            text.refused
+                .keys()
+                .any(|key| key.contains("operative_leader_event"))
+        );
+    });
 }

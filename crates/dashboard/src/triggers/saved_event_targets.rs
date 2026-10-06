@@ -133,15 +133,32 @@ impl Evaluator<'_, '_> {
         scopes: Scopes,
     ) -> Result<Option<Scopes>, String> {
         let recorded = self.world().recorded();
+        if let Some(mut this) = self.graph_saved(name, reader, scopes)? {
+            if matches!(reader, Reader::CountrySelector) && !matches!(this, Scope::Country(_)) {
+                return Ok(None);
+            }
+            if matches!(reader, Reader::Variable)
+                && let Scope::Leader(reference) = this
+            {
+                this = Scope::Character(
+                    self.world()
+                        .unit_leader(reference)?
+                        .ok_or("saved target unit leader is not recorded")?
+                        .character_id,
+                );
+            }
+            return self.with_this(scopes, this).map(Some);
+        }
         let selected = recorded.saved_selection(name, reader)?;
-        Ok(selected
+        selected
             .scope(recorded, scopes.this, name, reader)?
             .map(|this| {
-                let mut entered = scopes.with_this(this);
+                let mut entered = self.with_this(scopes, this)?;
                 if selected == Selected::Caller {
                     entered.bare = scopes.bare;
                 }
-                entered
-            }))
+                Ok(entered)
+            })
+            .transpose()
     }
 }

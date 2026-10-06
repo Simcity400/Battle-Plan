@@ -710,6 +710,7 @@ fn decisions_compare_signed_target_bits_and_detect_missing_source_rows() {
     pack.countries.get_mut(b"AAA".as_slice()).unwrap().decisions = Some(saved::Decisions {
         taken: Vec::new(),
         containers,
+        random_items: Vec::new(),
     });
     *frame.tables[TableId::DecisionCounts.index()] =
         TableView::Complete(TableRows::DecisionCounts(vec![DecisionCountsRow {
@@ -729,6 +730,7 @@ fn decisions_compare_signed_target_bits_and_detect_missing_source_rows() {
             country_target: u32::MAX,
             numeric_target: 0x8000_0000,
             ignore: 1,
+            description_seed: None,
         }]));
     let mut report = Report::default();
     compare_decisions(&frame, &pack, &links, &mut report).unwrap();
@@ -751,6 +753,94 @@ fn decisions_compare_signed_target_bits_and_detect_missing_source_rows() {
         reason: "fault".into(),
     };
     assert!(compare_decisions(&frame, &pack, &links, &mut Report::default()).is_err());
+}
+
+#[test]
+fn decision_description_seeds_compare_native_first_match_and_known_absence() {
+    let (mut frame, mut pack, country) = fixture();
+    let links = BTreeMap::from([(11, &country), (12, &country)]);
+    for (country_target, numeric_target, saved_target, seed_target) in [
+        (12, 0, saved::Target::Country(b"AAA".to_vec()), 7),
+        (
+            u32::MAX,
+            i32::MIN as u32,
+            saved::Target::Numeric(i32::MIN as u32),
+            i32::MIN,
+        ),
+    ] {
+        let mut containers: [Vec<saved::Decision>; 5] = Default::default();
+        containers[3].push(saved::Decision {
+            token: b"mission".to_vec(),
+            days: 0,
+            lifecycle: Some(0),
+            target: Some(saved_target),
+            ignore: Some(false),
+        });
+        pack.countries.get_mut(b"AAA".as_slice()).unwrap().decisions = Some(saved::Decisions {
+            taken: Vec::new(),
+            containers,
+            random_items: vec![
+                saved::DecisionRandomItem {
+                    token: b"other".to_vec(),
+                    count: 3,
+                    target: seed_target,
+                },
+                saved::DecisionRandomItem {
+                    token: b"MiSsIoN".to_vec(),
+                    count: i32::MIN,
+                    target: seed_target,
+                },
+                saved::DecisionRandomItem {
+                    token: b"mission".to_vec(),
+                    count: i32::MAX,
+                    target: seed_target,
+                },
+            ],
+        });
+        let mut row = DecisionRow {
+            country: 11,
+            container: 3,
+            token: b"mission".to_vec(),
+            country_target,
+            numeric_target,
+            target_kind: if country_target as i32 > 0 { 1 } else { 2 },
+            description_seed: Some(Some(i32::MIN)),
+            ..Default::default()
+        };
+        let compare = |row: DecisionRow, pack: &saved::Pack, frame: &mut DecodedFrame| {
+            *frame.tables[TableId::Decisions.index()] =
+                TableView::Complete(TableRows::Decisions(vec![row]));
+            let mut report = Report::default();
+            compare_decisions(frame, pack, &links, &mut report).unwrap();
+            report
+        };
+        assert!(
+            compare(row.clone(), &pack, &mut frame)
+                .differences
+                .is_empty()
+        );
+        row.description_seed = Some(None);
+        let report = compare(row.clone(), &pack, &mut frame);
+        assert_eq!(report.differences.len(), 1);
+        assert!(report.differences[0].contains("description_seed"));
+        pack.countries
+            .get_mut(b"AAA".as_slice())
+            .unwrap()
+            .decisions
+            .as_mut()
+            .unwrap()
+            .random_items
+            .clear();
+        assert!(
+            compare(row.clone(), &pack, &mut frame)
+                .differences
+                .is_empty()
+        );
+        row.description_seed = Some(Some(0));
+        assert_eq!(compare(row.clone(), &pack, &mut frame).differences.len(), 1);
+        row.description_seed = None;
+        assert!(compare(row, &pack, &mut frame).differences.is_empty());
+    }
 }
 
 #[test]

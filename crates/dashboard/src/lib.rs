@@ -8,6 +8,7 @@ pub mod config;
 pub mod content;
 pub mod cryptology;
 mod dto;
+pub mod effect_description;
 pub mod map_settings;
 pub mod metadata;
 pub mod modifier_text;

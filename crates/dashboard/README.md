@@ -10,7 +10,7 @@ Opened metadata carries the replay's terminal partial marker separately from bra
 |---|---|
 | `source.rs` | One opened recording: replay bytes, metadata, resolved game content and each product's per-source cache. |
 | `catalogue.rs` | Content facts every product shares, read once per source, folders and game language: the localisation (the same parse country naming uses, from `content::localisation`; every text goes through the shared game localiser in `installed_content::localisation`; a refusal, such as a scripted expression or a control plain text cannot show, is kept apart from a missing key and noted by reason and key for the product warnings) and interface sprites, plus the texture decoding, within a budget, and PNG encoding every image reply uses. |
-| `triggers.rs` | The one trigger evaluator: raid, combat-tactic, scripted-localisation, equipment-graphics pool and adjacency-rule triggers decided from one recorded hour. Each key is dispatched as `CTrigger::LoadKey` does (`installed_content::trigger_keys`), each coded trigger checked against its class's accepted scopes first. Only the children LoadKey adds count: a key that names nothing adds none, `else`/`else_if` attach to the last `if` added, and `World::has_children` is the emptiness test every consumer reads. A key names a character by the content's character templates; scope keys resolve through `scope.rs`, and a FROM read through ROOT, FROM or PREV is refused outside the combat scope, since those copy their own scope's links. Tag aliases resolve as `AliasResolve` does (`triggers/aliases.rs`). Script variable operands (`check_variable`, `has_variable`, `var:` keys, variable counts, country and state operands, arrays and tag alias variables) are evaluated as `CScopedVariable::Evaluate` does over the recorded `ScriptVariables` stores (`triggers/variables.rs`); unreproduced built-in game variables, random draws, unsupported temp writers and outside-context residual temps are refused by name. A combat scope's own triggers come from its caller (`Combat`). A caller without a country uses `Scopes::empty`, the default event scope: no carried objects, and THIS/ROOT/FROM/PREV all empty. Scope-masked triggers are false there; country-tag scopes resolve normally over the recorded World. A context trigger targeting an empty scope is false by its own mask, including an empty ROOT block. What the recording cannot answer is `Eval::Unknown` with its reason. |
+| `triggers.rs` | The one trigger evaluator: raid, combat-tactic, scripted-localisation, equipment-graphics pool and adjacency-rule triggers decided from one recorded hour. Each key is dispatched as `CTrigger::LoadKey` does (`installed_content::trigger_keys`), each coded trigger checked against its class's accepted scopes first. Only the children LoadKey adds count: a key that names nothing adds none, `else`/`else_if` attach to the last `if` added, and `World::has_children` is the emptiness test every consumer reads. A key names a character by the content's character templates; scope keys resolve through `scope.rs`, and deeper links use the caller's `EventScopes` graph when supplied; flattened callers still refuse a link they cannot describe. Tag aliases resolve as `AliasResolve` does (`triggers/aliases.rs`). Script variable operands (`check_variable`, `has_variable`, `var:` keys, variable counts, country and state operands, arrays and tag alias variables) are evaluated as `CScopedVariable::Evaluate` does over the recorded `ScriptVariables` stores (`triggers/variables.rs`); unreproduced built-in game variables, random draws, unsupported temp writers and outside-context residual temps are refused by name. A combat scope's own triggers come from its caller (`Combat`). A caller without a country uses `Scopes::empty`, the default event scope: no carried objects, and THIS/ROOT/FROM/PREV all empty. Scope-masked triggers are false there; country-tag scopes resolve normally over the recorded World. A context trigger targeting an empty scope is false by its own mask, including an empty ROOT block. What the recording cannot answer is `Eval::Unknown` with its reason. |
 | `scope.rs` | Script scope targets resolved over one recorded hour (`RecordedScopes`), including the faction leader from `FactionMembers` order for triggers and scripted text, with `_CountriesForOriginalTags` derived from the branch (`scope/original_tags.rs`). |
 | `metadata.rs` | Branch ranges, gaps and the first readable country catalogue, and the helpers every product shares: frame checks, a tag's country this hour (`tagged_country`: found, absent, or unresolved when the links cannot tell which country holds it; `tagged_countries` gives every tag's in one pass), a raw link's canonical slot (`link_slot`) and which hours read a daily table (`slot_read`: its cadence slot hour, or a timed walk within its slot on a forced full hour; CountryIntel requires its own measured walk and is no evidence for its slot peers, as in the fresh-save oracle; a product dating values by their read uses it). |
 | [cryptology.rs](src/cryptology.rs) | Native cipher thresholds, full-decryption predicate and progress meter frames, shared with viewer raid tooltips. |
@@ -24,6 +24,8 @@ Opened metadata carries the replay's terminal partial marker separately from bra
 | `map_settings.rs`, `config.rs`, `content.rs` | Map preferences, game folders and content verification. |
 | `bin/dashboard-bridge.rs` | Development-only stdio adapter for browser UI work. |
 | `bin/export-types.rs` | Generates the TypeScript contract. |
+
+Border-event descriptions share the evaluator's caller-owned `EventScopes` graph and active variable session. Scope switches preserve ROOT, FROM and PREV links and both native seed words. Description-only targets are stored by scope identity: saving follows ROOT, lookup follows FROM, and outer completion clears only terminal-FROM tooltip targets and global tooltip targets. `has_event_target` reads saved targets only. Scripted-localisation conditions and variable operands use the same graph and session. `num_owned_states` reads `CountryCounterInputs`; `has_template` compares native display-name bytes, resolving the recorded fallback key through the recording language and template country. Template names retain their recorded daily freshness. `any_owned_state` derives nonempty owned membership from `States` and `Provinces`; order-sensitive predicates refuse the unrecorded native roster order.
 
 ## Products
 
@@ -149,15 +151,41 @@ from [installed-content](../installed-content/src/power_balance.rs), recorded mo
 and the same value formatter. Wrappers and custom tooltips expand in a fresh
 country scope. Feature gates use the recorded simulation mask; missing masks and
 ambiguous range identities remain named, counted refusals.
-Activation and deactivation descriptions render empty
-effects, ordinary custom tooltip keys and nested `effect_tooltip` blocks;
-hidden blocks still validate their children. Other effect classes, bound
-tooltip arguments and formatted tooltip tokens refuse by name and count.
-Neither effect entrypoint is called by the installed localisation corpus.
+Activation/deactivation and the viewer's border-war event tails use one
+[effect description dispatcher](src/effect_description.rs). It ports the reached
+country/state leaves, numeric fixed5 values, faction and doctrine descriptions,
+targeted decisions and timed ideas, with the native conditional/context/state-list
+builders. Own lines use three spaces per level; `IndentNonEmptyLines` uses one.
+Context layout repeats native description probes instead of counting rendered
+newlines; a failed probe counts one context refusal. Unattached conditional
+continuations are named refusals. State leaves require the complete state roster
+before applying native invalid-state behavior. Default `every_state` lists its targets but describes the body once in
+the first target. Hidden effects build and discard text while retaining failures.
+
+Effect conditions and values share the trigger evaluator and its full scope
+graph. Description-only targets save through terminal ROOT and look up through
+terminal FROM. Separate immediate/option calls preserve caller storage but clear
+only terminal-FROM/global tooltip targets at each completion. Ordinary setters
+do not execute while being described. Faction subject order, template fallback
+names and targeted-decision seeds read their replay operands at each table's
+existing cadence; decision definition seeds derive from the authored identifier.
+Content databases are cached per stack, with independent reader failures refused
+only by dependent leaves. Referenced event titles load by ID and never recursively
+describe their event bodies. Corpus-only effect classes, bound custom tooltip
+forms, nonempty timed-idea research/equipment/trait forms and operative-event
+descriptions remain named, counted refusals; doctrine technology operands are
+also refused by name rather than dropped from a folder-only description.
+Balance callers keep their strict
+refusal policy; event tails retain known native lines alongside refusal counts.
+Neither balance effect entrypoint is called by the installed localisation corpus.
 
 MTTH evaluation tests obtain weight fields through the native tactic reader, so the modifier's own `factor` and `add` operands are read before its trigger conditions (140545820).
 
 Scripted entries restart ProcessString at depth zero and reject repeated effective contexts; growing histories and fresh-context nesting are refused at our 10,000-level backstop on a dedicated large-stack thread.
+Effect descriptions retain that caller's entry history, fresh-context depth and
+large-stack state. Their evaluator and World are acquired only when an operand
+or condition needs them, so custom tooltip text can render without those inputs.
+Balance context headers use the viewing country's perspective.
 
 `opinion@target` evaluates its country target in the native callback scope and reads the directed cached opinion from RelationOpinions, at that table's daily slice cadence. A missing nonzero row in a complete table means zero; country zero uses an unrecorded reserved relation slot and remains a named refusal. `num_owned_controlled_states` counts nonempty owned states whose recorded controller is the same country, including country aliases. Both callbacks precede stored keys; unavailable inputs remain unknown. MIO and special-project variable callbacks, outside-context residual temps and other unreproduced built-ins remain named, counted refusals.
 

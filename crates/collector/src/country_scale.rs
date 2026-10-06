@@ -964,8 +964,39 @@ mod tests {
         // Per-country packs publish complete rows on the first capture.
         let mut appearance =
             country_appearance::Captured::with_capacities(&sizing.extended.country_appearance);
-        appearance.capture(&memory, BASE, STATE);
+        // Every country has one stored subject: the live-country sizing path
+        // must also admit its positive-count payload on the first capture.
+        struct Subjects<'a>(&'a World);
+        impl engine::Memory for Subjects<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                if !self.0.copy(address, destination) {
+                    return false;
+                }
+                let start = DIPLOMACY + engine::cdiplomacy_status::SUBJECTS;
+                let mut header = [0; 16];
+                header[..8].copy_from_slice(&(BLOC_LINKS as u64).to_le_bytes());
+                header[8..12].copy_from_slice(&1_u32.to_le_bytes());
+                header[12..].copy_from_slice(&1_u32.to_le_bytes());
+                for (index, byte) in destination.iter_mut().enumerate() {
+                    let at = address + index;
+                    if (start..start + 16).contains(&at) {
+                        *byte = header[at - start];
+                    } else if (BLOC_LINKS..BLOC_LINKS + 4).contains(&at) {
+                        *byte = 17_i32.to_le_bytes()[at - BLOC_LINKS];
+                    }
+                }
+                true
+            }
+        }
+        appearance.capture(&Subjects(&memory), BASE, STATE);
         assert_eq!(appearance.outcomes()[0], Outcome::Rows { len: COUNTRIES });
+        let [replay::frame::TableView::Complete(replay::rows::TableRows::CountryAppearance(rows))] =
+            appearance.tables()
+        else {
+            panic!("presized subject capture must be complete");
+        };
+        assert_eq!(rows.len(), COUNTRIES);
+        assert!(rows.iter().all(|row| row.subjects == [17]));
         let mut counters =
             country_counters::Captured::with_capacities(&sizing.extended.country_counters);
         counters.capture(&memory, BASE, STATE);

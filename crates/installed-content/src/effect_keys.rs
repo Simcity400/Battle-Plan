@@ -15,7 +15,7 @@
 use crate::{
     key_names::KeyNames,
     parser::{
-        c_string,
+        Item, c_string,
         native::{Field, Kind, Shape},
     },
     trigger_keys::ScopeStep,
@@ -1169,6 +1169,36 @@ pub fn class(token: u32) -> Option<(u64, u64)> {
         .binary_search_by_key(&token, |(id, _, _)| *id)
         .ok()
         .map(|index| (EFFECT_CLASSES[index].1, EFFECT_CLASSES[index].2))
+}
+
+/// Whether ReadEffect adds a child. Conditional tails attach to the last
+/// added if, so invalid/skipped keys must not break their adjacency (1405345D0).
+pub fn adds_child(item: &Item, names: &KeyNames) -> Result<bool, String> {
+    let keyword = item.keyword().map(|keyword| keyword.folded());
+    if matches!(keyword.as_deref(), Some(b"else" | b"else_if")) {
+        return Ok(false);
+    }
+    if keyword.as_deref().and_then(registered).is_some() {
+        return Ok(true);
+    }
+    let key = c_string(item.key.as_deref().unwrap_or_default());
+    if item.value.items().is_some() {
+        match names.scope(key, item.key_quoted) {
+            ScopeStep::Scope(_) => return Ok(true),
+            ScopeStep::NotScope => {}
+            ScopeStep::Unknown(why) => return Err(why),
+        }
+    }
+    Ok(names.scripted_effects.contains(&key.to_ascii_lowercase()))
+}
+
+/// CBoundLocalization::vf3 (142390E40), shared with authored folder names.
+pub(crate) fn bound_localization_shape(field: &Field<'_>) -> Shape<()> {
+    if field.opens() {
+        Shape::EffectValueKeys(0x1423912A0)
+    } else {
+        Shape::One
+    }
 }
 
 pub(crate) fn body_error(key: &str, value: &str) -> String {

@@ -121,6 +121,16 @@ pub struct Decisions {
     pub taken: Vec<Vec<u8>>,
     /// Source positions: re-enable, remove, timed, targeted, targeted-timed.
     pub containers: [Vec<Decision>; 5],
+    /// Status +0x148, written in order by 14072BE70 as repeated `random_item`.
+    pub random_items: Vec<DecisionRandomItem>,
+}
+
+/// 14072C2E0 always writes the definition token, signed count and signed target.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecisionRandomItem {
+    pub token: Vec<u8>,
+    pub count: i32,
+    pub target: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -445,8 +455,24 @@ fn parse_decisions(items: &[Item]) -> io::Result<Decisions> {
     Ok(Decisions {
         taken: list(items, b"decisions_taken")?,
         containers,
+        random_items: items
+            .iter()
+            .filter(|item| item.key.as_deref() == Some(b"random_item"))
+            .map(|entry| {
+                let fields = block(&entry.value)?;
+                Ok(DecisionRandomItem {
+                    token: required_literal(fields, b"decision")?,
+                    count: integer(&required_bytes(fields, b"count")?)?,
+                    target: integer(&required_bytes(fields, b"target")?)?,
+                })
+            })
+            .collect::<io::Result<_>>()?,
     })
 }
+
+#[cfg(test)]
+#[path = "governance/border_effects/tests.rs"]
+mod border_effect_tests;
 
 pub(crate) fn parse_dynamic_modifiers(items: &[Item]) -> io::Result<Vec<DynamicModifier>> {
     let Some(items) = optional_block(items, b"dynamic_modifier")? else {

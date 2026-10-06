@@ -167,11 +167,7 @@ pub(super) fn shape(value: u64, key: u64, field: &Field<'_>) -> Option<Shape<()>
             });
         }
         Form::Localization => {
-            return Some(if field.opens() {
-                Shape::EffectValueKeys(BOUND_LOCALIZATION_READ)
-            } else {
-                Shape::One
-            });
+            return Some(super::bound_localization_shape(field));
         }
         Form::RoleKeys(source) => match field.effect_scope {
             Some(scope) if scope == ScopeKind::Character.bit() => {

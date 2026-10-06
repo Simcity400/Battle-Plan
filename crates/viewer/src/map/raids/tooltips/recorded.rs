@@ -139,6 +139,7 @@ fn event_scopes(scopes: Scopes) -> EventScopes {
         Scope::Combat => unreachable!("a raid condition is never checked in a combat scope"),
     };
     let unknown = |scope| EventScope {
+        random_counter: 0x5ea6_ba9e,
         this: target(scope),
         root: Link::Unknown,
         from: Link::Unknown,
@@ -171,6 +172,7 @@ fn event_scopes(scopes: Scopes) -> EventScopes {
         let prev = link(scopes.prev, scopes.unknown.prev);
         let from = link(scopes.from, scopes.unknown.from);
         let current = EventScope {
+            random_counter: 0x5ea6_ba9e,
             this: target(scopes.this),
             root: if scopes.unknown.root {
                 Link::Unknown
@@ -185,14 +187,13 @@ fn event_scopes(scopes: Scopes) -> EventScopes {
     };
     // The target variables stay set while the condition's text is built
     // (141580600 sets them for the raid scope's whole evaluation).
-    EventScopes {
-        scopes: list,
-        variables: ScopeVariables {
-            target_state: scopes.target_state,
-            target_province: scopes.target_province,
-            target_leader: scopes.target_leader,
-        },
-    }
+    let mut graph = EventScopes::new(list);
+    graph.variables = ScopeVariables {
+        target_state: scopes.target_state,
+        target_province: scopes.target_province,
+        target_leader: scopes.target_leader,
+    };
+    graph
 }
 
 impl Context<'_, '_> {
@@ -558,6 +559,7 @@ impl Context<'_, '_> {
     }
     fn scopes(&self, scope: &RaidScope) -> Result<Scopes> {
         Ok(Scopes {
+            cursor: None,
             root: Scope::Country(self.ours),
             this: Scope::Country(self.ours),
             prev: None,

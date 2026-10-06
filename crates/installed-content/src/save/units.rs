@@ -127,6 +127,8 @@ pub struct DivisionTemplate {
     pub template: u64,
     pub country: Vec<u8>,
     pub name: Vec<u8>,
+    /// Composition +0x28; 140B977F0 writes `localization_key` only when nonempty.
+    pub name_key: Vec<u8>,
     pub custom_icon: i32,
     pub custom_icon_nato: bool,
     /// `foreign_template_tag`, verbatim.
@@ -308,6 +310,7 @@ pub(super) fn parse_division_templates(
             template,
             country: required_bytes(fields, b"country")?,
             name: bytes(fields, b"name")?.unwrap_or_default(),
+            name_key: bytes(fields, b"localization_key")?.unwrap_or_default(),
             custom_icon: integer(&required_bytes(fields, b"template_counter")?)?,
             custom_icon_nato: boolean(
                 field(fields, b"ingame_set_template_counter")?
@@ -323,6 +326,10 @@ pub(super) fn parse_division_templates(
     }
     Ok(result)
 }
+
+#[cfg(test)]
+#[path = "units/tests.rs"]
+mod tests;
 
 pub(super) fn parse_railway_gun(roster_owner: &[u8], items: &[Item]) -> io::Result<RailwayGun> {
     // CUnit and its supply-consumer base can both write the same reference.

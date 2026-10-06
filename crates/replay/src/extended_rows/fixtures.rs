@@ -221,7 +221,28 @@ fixture!(PoliticsRow, |key| {country: key as u32}, {last_election: i32, election
 fixture!(PoliticalPartyRow, |key| {country: (key >> 32) as u32, id: key as u32}, {popularity: i64, is_ruling: u8, token: Vec<u8>, tag: u32, name_default: u8, name: Vec<u8>, long_name: Vec<u8>});
 fixture!(ActiveIdeaRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {token: Vec<u8>});
 fixture!(DecisionCountsRow, |key| {country: key as u32}, {taken: u32, re_enable: u32, remove: u32, timed: u32, targeted_timed: u32, targeted: u32});
-fixture!(DecisionRow, |key| {country: (key >> 40) as u32, container: (key >> 32) as u8, ordinal: key as u32}, {token: Vec<u8>, days: i32, lifecycle: i32, target_kind: u8, country_target: u32, numeric_target: u32, ignore: u8});
+impl Fixture for DecisionRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        let container = (key >> 32) as u8;
+        Self {
+            country: (key >> 40) as u32,
+            container,
+            ordinal: key as u32,
+            token: Vec::<u8>::sample(tick),
+            days: i32::sample(tick),
+            lifecycle: i32::sample(tick),
+            target_kind: u8::sample(tick),
+            country_target: u32::sample(tick),
+            numeric_target: u32::sample(tick),
+            ignore: u8::sample(tick),
+            description_seed: if container >= 3 {
+                Option::<Option<i32>>::sample(tick)
+            } else {
+                None
+            },
+        }
+    }
+}
 fixture!(DynamicModifierRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {scope_country: u32, scope_state: i32, days_remaining: i32, enabled: u8, token: Vec<u8>, values: Vec<i64>});
 fixture!(PreferredTacticRow, |key| {country: key as u32}, {tactic_id: i32, token: Vec<u8>});
 fixture!(CountryTacticUnlockRow, |key| {country: key as u32}, {unlocked_tactic_ids: Vec<u32>});
@@ -738,7 +759,7 @@ fixture!(NavalCombatShipRow, |key| { combat: (key >> 33) as u64, side: ((key >> 
 fixture!(NavalCombatResultDetailsRow, |key| { result: key as u64 }, { sides: [NavalResultSideDetails;2] });
 // Combat fixture end
 fixture!(TrainInventoryRow, |key| {country: key as u32}, {node_count: u32, allocations: Vec<TrainAllocation>, controller_access: SparseBytes});
-fixture!(CountryAppearanceRow, |key| {country: key as u32}, {red: u32, green: u32, blue: u32, alpha: u32, cosmetic_tag: Vec<u8>, name_tag: Vec<u8>, leader_ideology: Vec<u8>, overlord: i32, graphical_culture: Vec<u8>, leader_character: Option<u32>, old_name: Option<Vec<u8>>, old_adjective: Option<Vec<u8>>, old_definite_name: Option<Vec<u8>>, ui_red: u32, ui_green: u32, ui_blue: u32, ui_alpha: u32, graphical_culture_2d: Vec<u8>});
+fixture!(CountryAppearanceRow, |key| {country: key as u32}, {red: u32, green: u32, blue: u32, alpha: u32, cosmetic_tag: Vec<u8>, name_tag: Vec<u8>, leader_ideology: Vec<u8>, overlord: i32, graphical_culture: Vec<u8>, leader_character: Option<u32>, old_name: Option<Vec<u8>>, old_adjective: Option<Vec<u8>>, old_definite_name: Option<Vec<u8>>, ui_red: u32, ui_green: u32, ui_blue: u32, ui_alpha: u32, graphical_culture_2d: Vec<u8>, subjects: Vec<i32>});
 fixture!(ArmyIconInputRow, |key| {division: key as u64}, {separate_counter: u8, alternate_template: u64});
 fixture!(ProvinceUnitOrderRow,|key| {province:key as u32},{mixed:Vec<u64>,naval:Vec<u64>});
 sample_struct!(CharacterPortrait {category:u32,size:u32,is_set:u8,kind:u32,identity:Vec<u8>});
@@ -994,7 +1015,7 @@ sample_struct!(TemplateSubunit {
     local: u8,
     count: i32
 });
-fixture!(DivisionTemplateRow, |key| {template: key as u64}, {owner: u32, name: Vec<u8>, unit_type: i32});
+fixture!(DivisionTemplateRow, |key| {template: key as u64}, {owner: u32, name: Vec<u8>, unit_type: i32, name_key: Vec<u8>});
 fixture!(DivisionTemplateIconRow, |key| {template: key as u64}, {priority_unit: u32, priority_unit_name: Vec<u8>, custom_icon: i32, custom_icon_nato: u8, representative: u32, representative_local: u8, subunits: Vec<TemplateSubunit>, country: i32, foreign_country: i32, model_category: Option<u64>, model_entity: Vec<u8>, excluded_variants: Vec<u64>, model_unreadable: u8});
 fixture!(LandCombatProgressRow, |key| {combat: key as u64}, {attacker_progress: i64, defender_progress: i64, direction_attacker: u64, direction_province: u32});
 fixture!(ThreatSourceRow, |key| {ordinal: key as u32}, {country: u32, second_country: u32, current_raw: i64, final_raw: i64, daily_raw: i64, date: i32, reason: Vec<u8>});
@@ -2046,6 +2067,7 @@ fn country_appearance_preserves_float_bits_and_literal_tag_transitions() {
         ui_blue: 0x7fc0_0001,  // NaN payload.
         ui_alpha: 0xbf80_0000, // Negative one.
         graphical_culture_2d: b"western_european_2d".to_vec(),
+        subjects: vec![7, -1],
     };
     let mut bytes = Vec::new();
     encode_row(&previous, 0, &mut bytes).unwrap();

@@ -860,6 +860,7 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
             template,
             country: b"GER".to_vec(),
             name: vec![b'A', 0, 255],
+            name_key: b"FALLBACK".to_vec(),
             custom_icon: -1,
             custom_icon_nato: false,
             foreign_template_tag: Some(b"---".to_vec()),
@@ -874,6 +875,7 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
         template,
         owner: 102,
         name: vec![b'A', 0, 255],
+        name_key: b"FALLBACK".to_vec(),
         ..Default::default()
     };
     *frame.tables[TableId::DivisionTemplates.index()] =
@@ -885,6 +887,22 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
     report.record_tables(&frame);
     compare_division_templates(&frame, &saved, &countries, &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
+    saved
+        .division_templates
+        .get_mut(&template)
+        .unwrap()
+        .name_key
+        .clear();
+    let mut report = Report::default();
+    report.record_tables(&frame);
+    compare_division_templates(&frame, &saved, &countries, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains("name_key"));
+    saved
+        .division_templates
+        .get_mut(&template)
+        .unwrap()
+        .name_key = b"FALLBACK".to_vec();
     *frame.tables[TableId::DivisionTemplates.index()] =
         TableView::Complete(TableRows::DivisionTemplates(vec![]));
     let countries = country_context(&frame).unwrap();

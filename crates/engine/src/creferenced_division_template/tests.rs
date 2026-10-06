@@ -62,6 +62,7 @@ fn fixture() -> Fixture {
     memory.word(0x5000, VTABLE_RVA as u64);
     memory.word(0x5008, 0xffff_ffff_0000_0034);
     memory.text(0x5000 + NAME, &[b'A', 0, 255]);
+    memory.text(0x5000 + NAME_KEY, b"fallback");
     memory.text(0x5000 + MODEL_ENTITY, b"");
     memory.array(0x5000 + REGIMENT_DATA, 0x6000, 2);
     memory.word(0x6000, 0x7000);
@@ -217,7 +218,8 @@ fn daily_rows_keep_names_and_the_category_without_the_model_inputs() {
         (0xffff_ffff_0000_0034, 1)
     );
     assert_eq!(rows[0].unit_type, 1);
-    assert_eq!(bytes, b"A\0\xff");
+    assert_eq!(bytes, b"A\0\xfffallback");
+    assert_eq!(rows[0].name_key, Span { start: 3, len: 8 });
     let reads = memory.1.borrow();
     assert_eq!(
         reads
@@ -291,7 +293,7 @@ fn capacity_omits_whole_rows_and_bad_identity_never_becomes_empty() {
                 len: 0,
                 unread_rows: 1
             },
-            3
+            11
         )
     );
     // An index naming no database entry is a fault, not a global

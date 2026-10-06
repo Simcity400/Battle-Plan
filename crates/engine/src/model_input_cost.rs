@@ -147,6 +147,7 @@ fn build(countries: u32, templates: usize) -> Bench {
                 (id << 32) | u64::from(template::REFERENCE_TYPE),
             );
             inline_text(&mut world, at + template::NAME, b"Infantry");
+            inline_text(&mut world, at + template::NAME_KEY, b"");
             inline_text(&mut world, at + template::MODEL_ENTITY, b"");
             world.u64(
                 at + template::PRIORITY_UNIT,

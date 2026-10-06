@@ -136,3 +136,18 @@ The StateFlags oracle also compares the mandatory saved `is_border_conflict` boo
 The [weather save parser](../installed-content/src/save/weather.rs) and [weather oracle](src/oracle/weather.rs) compare province temperature as an exact signed fixed5 word. The native serializer always writes temperature, including zero; a missing temperature is a difference. Raw mud is compared by zero/nonzero truth, the information the native Boolean serializer preserves, with an explicit limitation for nonzero byte identity. SimulationFeatures weather-suspension bytes have no established text-save join. Synthetic comparisons and read-failure tests do not establish live agreement; use the fresh-save workflow above in the coordinated game session.
 
 The [character oracle](src/oracle/characters.rs) compares UnitLeaders exile country with `government_in_exile_tag` (`140C0D920`) through CountryLinks: positive references must resolve to the exact saved tag; nonpositive references require omission, and exact negative magnitudes are a named limitation. The [combat detail oracle](src/oracle/combat_details.rs) compares border-war class against the enclosing save key independently of transfer-key presence, then transfer truth, country tags, state IDs and exact nonempty win/lose event strings with `1413DAC80`/`1413DAD10` output. Saves certify transfer truth but not an unusual nonzero raw byte. Synthetic comparisons do not certify fresh-save agreement, smoke or live badge/marker parity; those remain coordinated live checks.
+
+The border-effect operands use the existing [template](src/oracle/military.rs) and
+[decision](src/oracle/governance.rs) comparisons. Template fallback name keys
+compare with `localization_key`; omission means an empty key (`140B977F0`). For
+demanded targeted decisions, the additive description seed compares exactly with
+the first matching `decision_status.random_item` entry's signed `count`, including
+proved lookup absence (`140721170`, `14072BE70`, `14072C2E0`). Country targets use
+their canonical slot and numeric targets retain their signed bits (`140720D40`).
+Undemanded random-item entries are outside that comparison; both tables keep
+their existing daily freshness rules. A border war beginning between decision passes can lack its description seed for up to one day; the viewer refuses that effect line until the next pass. The definition seed is derived from the
+authored decision token and is not recorded. The ordered subject roster on
+CountryAppearance has no save counterpart: `CDiplomacyStatus::Serialize@140D32BD0`
+does not save its `+0x170` array. Saved relations cannot certify that array's
+order, repeats or raw reference words. Fresh-save agreement, smoke and live
+border-effect text remain unverified until the coordinated game run.

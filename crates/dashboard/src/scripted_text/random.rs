@@ -6,7 +6,7 @@ use installed_content::scripted_localisation::RandomList;
 
 /// CEventScope's seeded constructor (1405286D0) stores this second hash
 /// lane at +0x0C. 1410CDDF0 constructs promoted objects with 424242.
-pub(super) fn scope_seed(seed: u32) -> u32 {
+pub(crate) fn scope_seed(seed: u32) -> u32 {
     lane(seed, 0x205a_d647, 0xb4f3_c315, 0x387a_9f3a)
 }
 
@@ -19,9 +19,18 @@ fn lane(seed: u32, first: u32, add: u32, last: u32) -> u32 {
 
 /// 140A9CF4A..140A9D025: two hash lanes, combined and mixed in u32,
 /// then the sign bit cleared. No key, date, player or global seed is read.
+pub(crate) fn scope_counter(seed: u32) -> u32 {
+    lane(seed, 0x7eb8_da44, 0x10d8_365e, 0x6d22_f31b)
+}
+
 fn draw(seed: u32) -> i32 {
-    let a = lane(seed, 0x7eb8_da44, 0x10d8_365e, 0x6d22_f31b);
-    let b = scope_seed(seed);
+    scoped_draw(scope_seed(seed), scope_counter(seed))
+}
+
+/// Scoped draw used by decision highlight@14071C840.
+pub(crate) fn scoped_draw(seed: u32, counter: u32) -> i32 {
+    let a = counter;
+    let b = seed;
     let value = a.wrapping_sub(b.wrapping_mul(0x4ad6_85b3));
     let value = (value ^ (value >> 8)).wrapping_add(0x68e3_1da4);
     let value = ((value << 8) ^ value).wrapping_mul(0x1b56_c4e9);
@@ -76,7 +85,7 @@ impl<'a> ScriptedText<'a> {
                 .iter()
                 .any(|member| !member.modifiers.is_empty())
         {
-            Some(Evaluator::new(self.world()?, None).with_temps(temps))
+            Some(bound.evaluator(self.world()?, temps))
         } else {
             None
         };
@@ -99,7 +108,7 @@ impl<'a> ScriptedText<'a> {
                 let evaluator = match evaluator {
                     Some(evaluator) => evaluator,
                     None => {
-                        seeded = Evaluator::new(self.world()?, None).with_temps(temps);
+                        seeded = bound.evaluator(self.world()?, temps);
                         &seeded
                     }
                 };
@@ -108,6 +117,11 @@ impl<'a> ScriptedText<'a> {
                     .unwrap_or(default))
             },
         )?;
+        if bound.session.borrow().is_some()
+            && let Some(evaluator) = evaluator
+        {
+            bound.session.replace(Some(evaluator.variable_session()));
+        }
         Ok(index.map(|i| list.members[i].key.as_slice()))
     }
 }
@@ -121,6 +135,8 @@ mod tests {
         // 140A9CF4A..140A9D025: lanes 0x926D254E/0x1EF7E295,
         // final draw 683596854; %60 = 54, minus 10 then 20 then 30.
         assert_eq!(scope_seed(424242), 0xa4fb_a302);
+        assert_eq!(scope_counter(424242), 0xf827_aabc);
+        assert_eq!(scoped_draw(1, 0x5ea6_ba9e), 411_376_010);
         assert_eq!(draw(1), 683_596_854);
         assert_eq!(pick(3, |i| Ok([10, 20, 30][i]), || Ok(1)), Ok(Some(2)));
     }

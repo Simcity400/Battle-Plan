@@ -663,6 +663,33 @@ fn compare_decisions(
                 u8::from(saved.ignore.unwrap()),
             );
         }
+        if let Some(seed) = row.description_seed {
+            if row.container < 3 {
+                return Err(invalid("untargeted decision has a description seed"));
+            }
+            // 140720D40 passes the canonical country slot or signed numeric target
+            // to the first-match lookup 140721170. 14072C2E0 saves its raw count.
+            let target = if (row.country_target as i32) > 0 {
+                links
+                    .get(&row.country_target)
+                    .ok_or_else(|| invalid("decision seed target has no CountryLinks row"))?
+                    .canonical_slot as i32
+            } else {
+                row.numeric_target as i32
+            };
+            let items = &country.decisions.as_ref().unwrap().random_items;
+            let token = literal(report, &subject, &row.token);
+            let saved_seed = items
+                .iter()
+                .find(|item| item.token.eq_ignore_ascii_case(token) && item.target == target)
+                .map(|item| item.count);
+            equal(
+                report,
+                format!("{subject}.description_seed"),
+                seed,
+                saved_seed,
+            );
+        }
         row_count += 1;
     }
     for (tag, country) in &pack.countries {
@@ -682,6 +709,7 @@ fn compare_decisions(
     }
     report.compared("Decisions", row_count);
     report.limitation("target serializer selects the positive signed country reference or the numeric word; the unused target word is not save-comparable; cooldown rows do not serialize lifecycle/target/ignore", "Decisions");
+    report.limitation("description seeds are captured only for demanded targeted decision rows; unrelated random_item entries and undemanded seed lookups are outside this comparison", "Decisions.description_seed");
     Ok(())
 }
 

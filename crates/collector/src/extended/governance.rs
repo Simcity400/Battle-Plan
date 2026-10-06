@@ -105,6 +105,11 @@ pub struct Capacities {
     party_countries: usize,
     idea_countries: usize,
     decision_countries: usize,
+    effect_tokens: usize,
+    effect_frames: usize,
+    effect_names: usize,
+    effect_bytes: usize,
+    effect_events: usize,
     dictionary: usize,
 }
 impl Default for Capacities {
@@ -126,6 +131,11 @@ impl Default for Capacities {
             party_countries: 2048,
             idea_countries: 16384,
             decision_countries: 8192,
+            effect_tokens: 128,
+            effect_frames: 128,
+            effect_names: 128,
+            effect_bytes: 4096,
+            effect_events: 128,
             dictionary: 8192,
         }
     }
@@ -208,6 +218,11 @@ pub struct Captured {
     decision_countries: Arena<u32>,
     dictionary: Vec<ctechnology_template::Entry>,
     dictionary_required: usize,
+    effect_tokens: Arena<engine::border_effect_demand::Token>,
+    effect_frames: Arena<engine::border_effect_demand::Frame>,
+    effect_names: Arena<engine::border_effect_demand::Name>,
+    effect_bytes: Arena<u8>,
+    effect_events: Arena<u32>,
     /// Owned acquisition gate for the scheduled focus pair (Focus,
     /// CompletedFocuses). Set for an accepted World payload; `capture` skips
     /// duplicate focus walks and the decode worker installs the owned rows
@@ -451,6 +466,11 @@ impl Captured {
             party_countries: 0,
             idea_countries: 0,
             decision_countries: 0,
+            effect_tokens: 0,
+            effect_frames: 0,
+            effect_names: 0,
+            effect_bytes: 0,
+            effect_events: 0,
             dictionary: 0,
         })
     }
@@ -469,6 +489,11 @@ impl Captured {
             ideas: CaptureRows::new(capacity.rows[7]),
             counts: CaptureRows::new(capacity.rows[8]),
             decisions: CaptureRows::new(capacity.rows[9]),
+            effect_tokens: Arena::new(capacity.effect_tokens),
+            effect_frames: Arena::new(capacity.effect_frames),
+            effect_names: Arena::new(capacity.effect_names),
+            effect_bytes: Arena::new(capacity.effect_bytes),
+            effect_events: Arena::new(capacity.effect_events),
             modifiers: CaptureRows::new(capacity.rows[10]),
             tactics: CaptureRows::new(capacity.rows[11]),
             sharing: CaptureRows::new(capacity.rows[12]),
@@ -586,6 +611,11 @@ impl Captured {
         self.ideas.reset();
         self.counts.reset();
         self.decisions.reset();
+        self.effect_tokens.reset();
+        self.effect_frames.reset();
+        self.effect_names.reset();
+        self.effect_bytes.reset();
+        self.effect_events.reset();
         self.modifiers.reset();
         self.tactics.reset();
         self.sharing.reset();
@@ -626,6 +656,11 @@ impl Captured {
             + self.ideas.allocated_bytes()
             + self.counts.allocated_bytes()
             + self.decisions.allocated_bytes()
+            + self.effect_tokens.allocated_bytes()
+            + self.effect_frames.allocated_bytes()
+            + self.effect_names.allocated_bytes()
+            + self.effect_bytes.allocated_bytes()
+            + self.effect_events.allocated_bytes()
             + self.modifiers.allocated_bytes()
             + self.tactics.allocated_bytes()
             + self.sharing.allocated_bytes()
@@ -682,6 +717,11 @@ impl Captured {
         self.ideas.grow(&mut capacity.rows[7]);
         self.counts.grow(&mut capacity.rows[8]);
         self.decisions.grow(&mut capacity.rows[9]);
+        self.effect_tokens.grow(&mut capacity.effect_tokens);
+        self.effect_frames.grow(&mut capacity.effect_frames);
+        self.effect_names.grow(&mut capacity.effect_names);
+        self.effect_bytes.grow(&mut capacity.effect_bytes);
+        self.effect_events.grow(&mut capacity.effect_events);
         self.modifiers.grow(&mut capacity.rows[10]);
         self.tactics.grow(&mut capacity.rows[11]);
         self.sharing.grow(&mut capacity.rows[12]);
@@ -754,6 +794,11 @@ impl Captured {
             ideas: &mut self.ideas.rows,
             counts: &mut self.counts.rows,
             decisions: &mut self.decisions.rows,
+            effect_tokens: &mut self.effect_tokens,
+            effect_frames: &mut self.effect_frames,
+            effect_names: &mut self.effect_names,
+            effect_bytes: &mut self.effect_bytes,
+            effect_events: &mut self.effect_events,
             modifiers: &mut self.modifiers.rows,
             tactics: &mut self.tactics.rows,
             sharing: &mut self.sharing.rows,
@@ -1000,6 +1045,11 @@ struct Buffers<'a> {
     ideas: &'a mut [cpolitical_status::IdeaRow],
     counts: &'a mut [CountryRow<cdecision_status::Counts>],
     decisions: &'a mut [cdecision_status::Row],
+    effect_tokens: &'a mut Arena<engine::border_effect_demand::Token>,
+    effect_frames: &'a mut Arena<engine::border_effect_demand::Frame>,
+    effect_names: &'a mut Arena<engine::border_effect_demand::Name>,
+    effect_bytes: &'a mut Arena<u8>,
+    effect_events: &'a mut Arena<u32>,
     modifiers: &'a mut [cdynamic_modifier_container::Row],
     tactics: &'a mut [TacticRow],
     sharing: &'a mut [ctechnology_sharing_group::Row],
@@ -1063,6 +1113,56 @@ fn acquire(
             };
         }
     }
+    let demand_failure = if enabled[9] {
+        let started = qpc();
+        let _reads = read_accounting::table(TABLES[9]);
+        let demand = engine::border_effect_demand::walk(
+            memory,
+            base,
+            game_state,
+            &mut b.effect_tokens.first,
+            &mut b.effect_frames.first,
+            &mut b.effect_events.first,
+        );
+        b.effect_tokens.len = demand.len;
+        b.effect_tokens.required = demand.required_rows;
+        b.effect_frames.required = demand.required_stack;
+        b.effect_events.required = demand.required_events;
+        b.effect_names.required = demand.required_rows;
+        let failure = match demand.outcome {
+            Outcome::Rows { .. } => {
+                let tokens = &b.effect_tokens.first[..demand.len];
+                match tokens
+                    .iter()
+                    .try_fold(0_usize, |total, token| total.checked_add(token.len))
+                {
+                    Some(required) => {
+                        b.effect_bytes.required = required;
+                        match engine::border_effect_demand::copy_names(
+                            memory,
+                            tokens,
+                            &mut b.effect_names.first,
+                            &mut b.effect_bytes.first,
+                        ) {
+                            Ok(len) => {
+                                b.effect_names.len = demand.len;
+                                b.effect_bytes.len = len;
+                                None
+                            }
+                            Err(reason) => Some(reason),
+                        }
+                    }
+                    None => Some("border demand byte count overflow"),
+                }
+            }
+            Outcome::Unavailable { reason } => Some(reason),
+            Outcome::Truncated { .. } => Some("border effect demand token capacity"),
+        };
+        o.ticks[9] += elapsed(started);
+        failure
+    } else {
+        None
+    };
     let started = qpc();
     let mut unused_entries = Vec::new();
     let mut unused_names = Vec::new();
@@ -1277,13 +1377,27 @@ fn acquire(
                         let first = o.outcomes[9].len();
                         let text = o.lens[4];
                         let capacity = b.decisions.len().min(b.decision_countries.len());
-                        let result = cdecision_status::walk(
-                            memory,
-                            base,
-                            country.pointer,
-                            &mut b.decisions[first..capacity],
-                            &mut b.decision_text[text..],
-                        );
+                        let result = match demand_failure {
+                            None => cdecision_status::walk_with_description_demand(
+                                memory,
+                                base,
+                                game_state,
+                                country.pointer,
+                                &mut b.decisions[first..capacity],
+                                &mut b.decision_text[text..],
+                                engine::border_effect_demand::Demand {
+                                    names: &b.effect_names.first[..b.effect_names.len],
+                                    bytes: &b.effect_bytes.first[..b.effect_bytes.len],
+                                },
+                            ),
+                            Some(_) => cdecision_status::walk(
+                                memory,
+                                base,
+                                country.pointer,
+                                &mut b.decisions[first..capacity],
+                                &mut b.decision_text[text..],
+                            ),
+                        };
                         for row in &mut b.decisions[first..first + result.outcome.len()] {
                             row.token_start += text;
                         }
@@ -1365,6 +1479,9 @@ fn acquire(
                 }
             }
         }
+    }
+    if let Some(reason) = demand_failure {
+        o.outcomes[9] = Outcome::Unavailable { reason };
     }
     if enabled[2] {
         if census {
@@ -1723,6 +1840,7 @@ impl Captured {
                     country_target: r.country_target,
                     numeric_target: r.numeric_target,
                     ignore: r.ignore,
+                    description_seed: r.description_seed,
                 },
             )),
             wrap(view::<tables::DynamicModifiers, _>(
@@ -2024,6 +2142,11 @@ pub(crate) fn allocation_failure_fixture() -> impl FnOnce() -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod border_effects {
+    mod tests;
+}
 
 #[cfg(test)]
 #[path = "governance_research_tests.rs"]

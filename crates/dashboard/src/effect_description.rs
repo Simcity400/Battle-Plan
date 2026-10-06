@@ -1,0 +1,413 @@
+//! CEffect::BuildDescription (140532780), shared by event and balance tooltips.
+use std::{
+    cell::{OnceCell, RefCell},
+    collections::BTreeMap,
+    rc::Rc,
+    sync::Arc,
+};
+
+use crate::{
+    scripted_text::{EventScopes, ExpansionScopes, ScriptedText},
+    triggers::{Evaluator, Scopes, World},
+};
+use installed_content::{
+    localisation::{Argument, Localisation},
+    parser::Item,
+};
+
+mod controls;
+mod decision;
+mod leaves;
+#[cfg(test)]
+mod tests;
+mod timed_idea;
+
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct Description {
+    pub text: String,
+    pub refusals: BTreeMap<String, usize>,
+}
+
+/// Content already cached by the caller. Referenced events remain lazy.
+#[derive(Default, Clone, Copy)]
+pub struct Content<'a> {
+    pub doctrines: Option<&'a installed_content::doctrines::Database>,
+    pub decisions: Option<&'a installed_content::decisions::Database>,
+    pub ideas: Option<&'a installed_content::ideas::IdeaContent>,
+    pub name_lists: Option<&'a installed_content::names::NameLists>,
+    pub events: Option<&'a dyn Fn(&[u8]) -> Result<Arc<installed_content::events::Event>, String>>,
+    pub key_names: Option<&'a installed_content::key_names::KeyNames>,
+    pub gaps: Option<&'a BTreeMap<&'static str, String>>,
+}
+
+/// Per recorded content stack. Event bodies use the caller's lazy ID cache.
+pub struct CachedContent {
+    doctrines: Option<installed_content::doctrines::Database>,
+    decisions: Option<installed_content::decisions::Database>,
+    ideas: Option<installed_content::ideas::IdeaContent>,
+    name_lists: Option<installed_content::names::NameLists>,
+    key_names: Option<installed_content::key_names::KeyNames>,
+    gaps: BTreeMap<&'static str, String>,
+    pub notes: Vec<String>,
+}
+
+impl CachedContent {
+    pub fn read(layers: &installed_content::ResolvedLayers) -> std::io::Result<Self> {
+        fn keep<T>(
+            read: std::io::Result<T>,
+            key: &'static str,
+            gaps: &mut BTreeMap<&'static str, String>,
+        ) -> Option<T> {
+            read.map_err(|why| {
+                gaps.insert(key, why.to_string());
+            })
+            .ok()
+        }
+        let mut gaps = BTreeMap::new();
+        let doctrines = keep(installed_content::doctrines::read(layers), "doctrines", &mut gaps);
+        let decisions = keep(installed_content::decisions::read(layers), "decisions", &mut gaps);
+        let read_ideas = || {
+            let officers = installed_content::defines::read(layers)?
+                .strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")?;
+            installed_content::ideas::read(layers, &officers)
+        };
+        let ideas = keep(read_ideas(), "ideas", &mut gaps);
+        let mut notes = doctrines
+            .as_ref()
+            .map(|db| db.notes.clone())
+            .unwrap_or_default();
+        notes.extend(
+            decisions
+                .as_ref()
+                .map(|db| db.notes.clone())
+                .unwrap_or_default(),
+        );
+        let ideas = ideas.map(|(ideas, _, warnings)| {
+            notes.extend(warnings.into_iter().map(|(_, why)| why));
+            ideas
+        });
+        let name_lists = keep(installed_content::names::read(layers), "name lists", &mut gaps);
+        let key_names = keep(
+            installed_content::key_names::KeyNames::read(layers),
+            "effect key names",
+            &mut gaps,
+        );
+        Ok(Self {
+            doctrines,
+            decisions,
+            ideas,
+            name_lists,
+            key_names,
+            gaps,
+            notes,
+        })
+    }
+
+    pub fn view<'a>(
+        &'a self,
+        events: Option<&'a dyn Fn(&[u8]) -> Result<Arc<installed_content::events::Event>, String>>,
+    ) -> Content<'a> {
+        Content {
+            doctrines: self.doctrines.as_ref(),
+            decisions: self.decisions.as_ref(),
+            ideas: self.ideas.as_ref(),
+            name_lists: self.name_lists.as_ref(),
+            key_names: self.key_names.as_ref(),
+            gaps: Some(&self.gaps),
+            events,
+        }
+    }
+}
+
+impl crate::scripted_text::ScriptedContent {
+    pub fn effects(&self) -> Result<&CachedContent, String> {
+        self.effects
+            .get_or_init(|| {
+                CachedContent::read(&self.layers.layers)
+                    .map_err(|why| format!("effect description content: {why}"))
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+}
+
+/// One hour's immutable inputs; the mutable event graph belongs to its caller.
+pub struct Context<'c, 'f> {
+    text: &'c ScriptedText<'f>,
+    localisation: &'c Localisation,
+    session: RefCell<Option<crate::triggers::VariableSession>>,
+    nested_session: bool,
+    expansion: Option<&'c ExpansionScopes>,
+    perspective: u32,
+    source: &'c str,
+    content: Content<'c>,
+}
+
+impl<'c, 'f> Context<'c, 'f> {
+    pub fn new(
+        text: &'c ScriptedText<'f>,
+        localisation: &'c Localisation,
+        perspective: u32,
+        source: &'c str,
+        content: Content<'c>,
+    ) -> Self {
+        Self {
+            text,
+            localisation,
+            session: RefCell::new(None),
+            nested_session: false,
+            expansion: None,
+            perspective,
+            source,
+            content,
+        }
+    }
+
+    fn world(&self) -> Result<&'c World<'f>, String> {
+        self.text.world()
+    }
+
+    pub(crate) fn with_variable_session(
+        mut self,
+        session: &crate::triggers::VariableSession,
+    ) -> Self {
+        self.session.replace(Some(session.clone()));
+        self.nested_session = true;
+        self
+    }
+
+    pub(crate) fn with_expansion_scopes(mut self, scopes: &'c ExpansionScopes) -> Self {
+        self.expansion = Some(scopes);
+        self
+    }
+
+    pub(crate) fn variable_session(&self) -> Option<crate::triggers::VariableSession> {
+        self.session.borrow().clone()
+    }
+}
+
+/// Each call is its own native variable/description session. Cleanup follows FROM;
+/// targets on a distinct ROOT endpoint may survive into the next call (140529520).
+pub fn describe(
+    items: &[Item],
+    context: &Context<'_, '_>,
+    scopes: &mut EventScopes,
+) -> Description {
+    if !context.nested_session {
+        context.session.replace(None);
+    }
+    let graph = Rc::new(RefCell::new(scopes.clone()));
+    let mut out = Renderer {
+        context,
+        graph,
+        evaluator: OnceCell::new(),
+        out: Description::default(),
+    };
+    let projected = crate::triggers::event_scopes::project(&out.graph.borrow(), 0);
+    match projected {
+        Ok(scopes) => {
+            out.out.text = out.group(items, scopes, 0);
+            if let Some(Ok(evaluator)) = out.evaluator.get() {
+                let result = evaluator.end_description(scopes);
+                context.session.replace(Some(evaluator.variable_session()));
+                if let Err(why) = result {
+                    out.refuse("description cleanup", why);
+                }
+            } else if !context.nested_session {
+                let result = crate::triggers::event_scopes::cleanup_description(
+                    &mut out.graph.borrow_mut(),
+                    0,
+                );
+                if let Err(why) = result {
+                    out.refuse("description cleanup", why);
+                }
+            }
+        }
+        Err(why) => out.refuse("event scope", why),
+    }
+    *scopes = out.graph.borrow().clone();
+    out.out
+}
+
+struct Renderer<'r, 'c, 'f> {
+    context: &'r Context<'c, 'f>,
+    graph: Rc<RefCell<EventScopes>>,
+    evaluator: OnceCell<Result<Evaluator<'c, 'f>, String>>,
+    out: Description,
+}
+
+/// 1424B7400 trims exactly these four ASCII bytes.
+pub fn trim_description(text: &str) -> &str {
+    text.trim_matches(['\n', '\t', '\r', ' '])
+}
+
+/// 1424B7850 prefixes one space per level, leaving empty lines untouched.
+fn indent_nonempty_lines(text: &str, indent: usize) -> String {
+    let prefix = " ".repeat(indent);
+    let mut out = String::new();
+    for line in text.split_inclusive('\n') {
+        if line != "\n" {
+            out.push_str(&prefix);
+        }
+        out.push_str(line);
+    }
+    out
+}
+
+fn append_description(text: &mut String, child: &str) {
+    if child.len() as i32 <= 1 {
+        return;
+    }
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(child);
+}
+
+fn field<'a>(items: &'a [Item], name: &str) -> Option<&'a Item> {
+    items.iter().rev().find(|item| item.keyword_is(name))
+}
+
+fn children(item: &Item) -> &[Item] {
+    item.value.items().unwrap_or_default()
+}
+fn key(item: &Item) -> String {
+    String::from_utf8_lossy(item.key.as_deref().unwrap_or_default()).into_owned()
+}
+
+impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
+    fn evaluator(&self) -> Result<&Evaluator<'c, 'f>, String> {
+        self.evaluator
+            .get_or_init(|| {
+                let mut evaluator = Evaluator::new(self.context.world()?, None)
+                    .with_event_scopes(Rc::clone(&self.graph));
+                if let Some(session) = self.context.session.borrow().as_ref() {
+                    evaluator = evaluator.with_variable_session(session);
+                }
+                evaluator.begin_description();
+                Ok(evaluator)
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    fn refuse(&mut self, key: &str, why: String) {
+        *self
+            .out
+            .refusals
+            .entry(format!("{} effect {key}: {why}", self.context.source))
+            .or_default() += 1;
+    }
+
+    fn expanded(&self, text: &str, scopes: Scopes) -> Result<String, String> {
+        let session = self
+            .evaluator
+            .get()
+            .and_then(|result| result.as_ref().ok())
+            .map(Evaluator::variable_session)
+            .or_else(|| self.context.variable_session());
+        let (result, session) = self.context.text.expand_in_description(
+            text,
+            &self.graph.borrow(),
+            scopes.cursor.unwrap_or(0),
+            session,
+            self.context.expansion,
+        );
+        if let Some(session) = &session
+            && let Some(Ok(evaluator)) = self.evaluator.get()
+        {
+            evaluator.restore_variable_session(session);
+        }
+        self.context.session.replace(session);
+        result
+    }
+
+    fn content_gap(&self, name: &'static str) -> String {
+        self.context
+            .content
+            .gaps
+            .and_then(|gaps| gaps.get(name))
+            .map(|why| format!("{name} content unavailable: {why}"))
+            .unwrap_or_else(|| format!("{name} content unavailable"))
+    }
+
+    fn localised(
+        &self,
+        key: &[u8],
+        args: &[(&str, Argument<'_>)],
+        scopes: Scopes,
+        expand: bool,
+    ) -> Result<String, String> {
+        let text = self
+            .context
+            .localisation
+            .localise_with(key, args)
+            .map_err(|why| why.to_string())?;
+        if expand {
+            self.expanded(&text, scopes)
+        } else {
+            Ok(text)
+        }
+    }
+
+    fn own(&mut self, item: &Item, scopes: Scopes) -> String {
+        match self.leaf(item, scopes) {
+            Ok(text) => text,
+            Err(why) => {
+                self.refuse(&key(item), why);
+                String::new()
+            }
+        }
+    }
+
+    fn builder(&mut self, item: &Item, scopes: Scopes, indent: usize) -> String {
+        if item.keyword_is("every_state") {
+            return self.every_state(item, scopes, indent);
+        }
+        if self.is_context(item) {
+            return self.context_effect(item, scopes, indent);
+        }
+        if item.keyword_is("effect_tooltip") {
+            return self.group(children(item), scopes, indent);
+        }
+        if item.keyword_is("hidden_effect") {
+            self.group(children(item), scopes, indent);
+            return String::new();
+        }
+        let own = self.own(item, scopes);
+        if own.len() as i32 <= 1 {
+            return String::new();
+        }
+        // vf14 and generic own-line prefix, 140532780. Custom event desc differs.
+        if self.indents(item) {
+            format!("{}{own}", "   ".repeat(indent))
+        } else {
+            own
+        }
+    }
+
+    fn indents(&self, item: &Item) -> bool {
+        // Context vf14 is needed here for its parent's first-child header clear.
+        // The builder returns context descriptions before its own-line prefix.
+        // CIfEffect vf14 is ReturnTrue@1401802A0 (1427BE590 + 0x70).
+        !self.is_context(item)
+            && !(item.keyword_is("country_event")
+                && field(children(item), "desc")
+                    .and_then(|item| item.value.read_string())
+                    .is_some_and(|desc| !desc.is_empty()))
+    }
+
+    fn group(&mut self, items: &[Item], scopes: Scopes, indent: usize) -> String {
+        let mut text = String::new();
+        for (item, branches) in self.attached(items, true) {
+            let line = if item.keyword_is("if") {
+                self.if_chain(item, &branches, scopes, indent, false)
+                    .unwrap_or_default()
+            } else {
+                self.builder(item, scopes, indent)
+            };
+            append_description(&mut text, &line);
+        }
+        text
+    }
+}

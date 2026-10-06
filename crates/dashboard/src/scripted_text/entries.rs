@@ -1,7 +1,10 @@
 //! Ordered scripted entries and content used by recorded triggers.
 use super::*;
-use crate::triggers::{ContentFacts, Eval, Evaluator, LeaderRoles, Scope, Scopes, Temps, World};
+use crate::triggers::{ContentFacts, Eval, LeaderRoles, Scope, Scopes, Temps, World};
 use std::collections::{BTreeMap, BTreeSet};
+
+#[cfg(test)]
+mod tests;
 
 pub(crate) type StateNames = BTreeMap<u32, Result<String, String>>;
 
@@ -31,13 +34,13 @@ impl ActiveEntry {
         }
         // Equivalent graphs have the same PREV distance to a different object or unknown link.
         // This skips full graph walks for a growing PREV history.
-        if scopes.valid_links {
+        if scopes.valid_links.get() {
             let distance = scopes.prev_distance.borrow();
             if distance[self.at] != distance[at] {
                 return false;
             }
         }
-        let valid_links = scopes.valid_links;
+        let valid_links = scopes.valid_links.get();
         let scopes = scopes.scopes.borrow();
         if scopes[self.at].random_seed != scopes[at].random_seed {
             return false;
@@ -231,9 +234,17 @@ impl<'a> ScriptedText<'a> {
     }
 
     /// The hour's trigger inputs, read on first use.
-    pub(super) fn world(&self) -> Result<&World<'a>, String> {
+    pub(crate) fn world(&self) -> Result<&World<'a>, String> {
         self.world
-            .get_or_init(|| World::new(self.frame, self.environment()?.facts()))
+            .get_or_init(|| {
+                World::new(self.frame, self.environment()?.facts()).map(|world| {
+                    world.with_template_names(
+                        &self.content.template_names,
+                        &self.content.layers.layers,
+                        &self.content.recorded_language,
+                    )
+                })
+            })
             .as_ref()
             .map_err(Clone::clone)
     }
@@ -295,9 +306,16 @@ impl<'a> ScriptedText<'a> {
             }
             let trigger = &text.trigger;
             if !trigger.is_empty() {
-                let scopes = entry_scopes(scopes, at, bare);
-                evaluator = Some(Evaluator::new(self.world()?, None));
-                match evaluator.as_ref().unwrap().evaluate(trigger, scopes) {
+                let projected = entry_scopes(scopes, at, bare);
+                evaluator = Some(scopes.evaluator(self.world()?, Temps::Fresh));
+                let session = scopes.session.borrow().is_some();
+                let checked = evaluator.as_ref().unwrap().evaluate(trigger, projected);
+                if session {
+                    scopes
+                        .session
+                        .replace(Some(evaluator.as_ref().unwrap().variable_session()));
+                }
+                match checked {
                     Eval::False => continue,
                     Eval::True => {}
                     Eval::Unknown(reasons) => {
@@ -341,7 +359,7 @@ impl<'a> ScriptedText<'a> {
         Ok(String::new())
     }
 
-    pub(super) fn state_name(&self, id: u32) -> Result<String, String> {
+    pub(crate) fn state_name(&self, id: u32) -> Result<String, String> {
         let (states, gap) = rows::<tables::States>(self.frame);
         let state = states
             .iter()
@@ -510,6 +528,7 @@ fn bound_scope(object: Object, scopes: &ExpansionScopes, active: usize) -> usize
         from: carried(current.from),
         prev: Link::Scope(active),
         random_seed: super::random::scope_seed(424242),
+        random_counter: super::random::scope_counter(424242),
     });
     scopes.prev_distance.borrow_mut().push(distance);
     at
@@ -555,6 +574,7 @@ fn entry_scopes(scopes: &ExpansionScopes, at: usize, bare: bool) -> Scopes {
         target_state: scopes.variables.get().target_state,
         target_province: scopes.variables.get().target_province,
         target_leader: scopes.variables.get().target_leader,
+        cursor: Some(at),
     }
 }
 

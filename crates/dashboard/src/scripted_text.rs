@@ -35,7 +35,7 @@ mod balance;
 mod entries;
 pub(crate) use entries::{StateNames, read_state_content, state_name_from};
 mod properties;
-mod random;
+pub(crate) mod random;
 
 use properties::Party;
 
@@ -100,6 +100,8 @@ pub struct EventScope {
     pub prev: Link,
     /// CEventScope+0x0C, used by an unseeded random_list (140A9CD70).
     pub random_seed: u32,
+    /// CEventScope+0x10, copied independently of the +0x0C seed.
+    pub random_counter: u32,
 }
 
 impl EventScope {
@@ -112,6 +114,7 @@ impl EventScope {
             from: Link::Itself,
             prev: Link::Itself,
             random_seed: 1, // 140528800; setters preserve the seed words.
+            random_counter: 0x5ea6_ba9e,
         }
     }
 }
@@ -126,6 +129,10 @@ pub struct EventScopes {
     /// The thread-local script variables set while the text is expanded
     /// (InitializeRaidEventScope 141580600 sets these three).
     pub variables: ScopeVariables,
+    /// Description-only stores; save follows ROOT, lookup follows FROM.
+    pub tooltip_targets: std::collections::BTreeMap<usize, Vec<(Vec<u8>, EventObject)>>,
+    pub saved_targets: std::collections::BTreeMap<usize, Vec<(Vec<u8>, EventObject)>>,
+    pub global_tooltip_targets: Vec<(Vec<u8>, EventObject)>,
 }
 
 /// Thread-local script variables a caller has set.
@@ -144,6 +151,9 @@ impl EventScopes {
         Self {
             scopes,
             variables: ScopeVariables::default(),
+            tooltip_targets: Default::default(),
+            saved_targets: Default::default(),
+            global_tooltip_targets: Vec::new(),
         }
     }
 }
@@ -162,12 +172,14 @@ fn linked_scope(length: usize, at: usize, link: Link, name: &str) -> Result<usiz
 
 /// One expansion's scopes, shared by nested entries without copying their history.
 #[derive(Clone)]
-struct ExpansionScopes {
+pub(crate) struct ExpansionScopes {
     scopes: std::cell::RefCell<Vec<EventScope>>,
     variables: std::cell::Cell<ScopeVariables>,
+    targets: std::cell::RefCell<EventScopes>,
+    session: std::cell::RefCell<Option<crate::triggers::VariableSession>>,
     active: std::cell::RefCell<Vec<entries::ActiveEntry>>,
     prev_distance: std::cell::RefCell<Vec<Option<usize>>>,
-    valid_links: bool,
+    valid_links: std::cell::Cell<bool>,
     fresh_depth: std::cell::Cell<usize>,
     on_large_stack: bool,
 }
@@ -200,13 +212,15 @@ impl ExpansionScopes {
         Self {
             scopes: std::cell::RefCell::new(scopes.scopes.clone()),
             variables: std::cell::Cell::new(scopes.variables),
+            targets: std::cell::RefCell::new(scopes.clone()),
+            session: std::cell::RefCell::new(None),
             active: std::cell::RefCell::new(Vec::new()),
             prev_distance: std::cell::RefCell::new(prev_distance),
-            valid_links: scopes.scopes.iter().all(|scope| {
+            valid_links: std::cell::Cell::new(scopes.scopes.iter().all(|scope| {
                 [scope.root, scope.from, scope.prev]
                     .iter()
                     .all(|link| !matches!(link, Link::Scope(to) if *to >= scopes.scopes.len()))
-            }),
+            })),
             fresh_depth: std::cell::Cell::new(0),
             on_large_stack: false,
         }
@@ -216,13 +230,101 @@ impl ExpansionScopes {
         self.scopes.borrow()[at]
     }
 
+    /// Keep entry history and the fresh-context guard across BuildDescription.
+    /// Append its graph so active entries retain their existing cursor identities.
+    fn append_description<'s>(&'s self, scopes: &EventScopes) -> DescriptionScopeGuard<'s> {
+        let next = Self::new(scopes);
+        let offset = self.scopes.borrow().len();
+        let rebase = |link| match link {
+            Link::Scope(at) => Link::Scope(at + offset),
+            other => other,
+        };
+        let appended: Vec<_> = scopes
+            .scopes
+            .iter()
+            .map(|scope| EventScope {
+                root: rebase(scope.root),
+                from: rebase(scope.from),
+                prev: rebase(scope.prev),
+                ..*scope
+            })
+            .collect();
+        self.scopes.borrow_mut().extend(appended);
+        self.prev_distance
+            .borrow_mut()
+            .extend(next.prev_distance.into_inner());
+        let variables = self.variables.replace(scopes.variables);
+        let valid_links = self
+            .valid_links
+            .replace(self.valid_links.get() && next.valid_links.get());
+        let mut targets = self.targets.borrow_mut();
+        for (at, values) in &scopes.tooltip_targets {
+            targets.tooltip_targets.insert(at + offset, values.clone());
+        }
+        for (at, values) in &scopes.saved_targets {
+            targets.saved_targets.insert(at + offset, values.clone());
+        }
+        let globals = std::mem::replace(
+            &mut targets.global_tooltip_targets,
+            scopes.global_tooltip_targets.clone(),
+        );
+        DescriptionScopeGuard {
+            expanded: self,
+            offset,
+            variables,
+            valid_links,
+            globals,
+        }
+    }
+
     fn linked(&self, at: usize, link: Link, name: &str) -> Result<usize, String> {
         linked_scope(self.scopes.borrow().len(), at, link, name)
+    }
+
+    fn evaluator<'e, 'a>(
+        &self,
+        world: &'e crate::triggers::World<'a>,
+        temps: crate::triggers::Temps,
+    ) -> crate::triggers::Evaluator<'e, 'a> {
+        let mut graph = self.targets.borrow().clone();
+        graph.scopes = self.scopes.borrow().clone();
+        graph.variables = self.variables.get();
+        let evaluator = crate::triggers::Evaluator::new(world, None)
+            .with_temps(temps)
+            .with_event_scopes(std::rc::Rc::new(std::cell::RefCell::new(graph)));
+        match self.session.borrow().as_ref() {
+            Some(session) => evaluator.with_variable_session(session),
+            None => evaluator,
+        }
     }
 
     fn needs_large_stack(&self) -> bool {
         // Handoff early enough for ordinary caller stacks; shallow expansions stay local.
         !self.on_large_stack && self.active.borrow().len() + self.fresh_depth.get() >= 8
+    }
+}
+
+struct DescriptionScopeGuard<'s> {
+    expanded: &'s ExpansionScopes,
+    offset: usize,
+    variables: ScopeVariables,
+    valid_links: bool,
+    globals: Vec<(Vec<u8>, EventObject)>,
+}
+
+impl Drop for DescriptionScopeGuard<'_> {
+    fn drop(&mut self) {
+        self.expanded.scopes.borrow_mut().truncate(self.offset);
+        self.expanded
+            .prev_distance
+            .borrow_mut()
+            .truncate(self.offset);
+        self.expanded.variables.set(self.variables);
+        self.expanded.valid_links.set(self.valid_links);
+        let mut targets = self.expanded.targets.borrow_mut();
+        targets.tooltip_targets.retain(|at, _| *at < self.offset);
+        targets.saved_targets.retain(|at, _| *at < self.offset);
+        targets.global_tooltip_targets = std::mem::take(&mut self.globals);
     }
 }
 
@@ -242,6 +344,9 @@ pub struct ScriptedContent {
     /// state names read ([`entries`]).
     pub layers: std::sync::Arc<installed_content::content::ResolvedContent>,
     pub(crate) environment: std::sync::OnceLock<Result<entries::Environment, String>>,
+    pub(crate) template_names: std::sync::OnceLock<Result<Localisation, String>>,
+    pub(crate) effects:
+        std::sync::OnceLock<Result<crate::effect_description::CachedContent, String>>,
 }
 
 impl ScriptedContent {
@@ -268,7 +373,24 @@ impl ScriptedContent {
             recorded_language,
             layers: content,
             environment: std::sync::OnceLock::new(),
+            template_names: std::sync::OnceLock::new(),
+            effects: std::sync::OnceLock::new(),
         })
+    }
+}
+
+#[cfg(test)]
+impl ScriptedContent {
+    pub(crate) fn set_synthetic_environment(
+        &self,
+        state_names: std::collections::BTreeMap<u32, String>,
+    ) {
+        let mut environment = entries::Environment::synthetic();
+        environment.state_names = state_names
+            .into_iter()
+            .map(|(id, name)| (id, Ok(name)))
+            .collect();
+        assert!(self.environment.set(Ok(environment)).is_ok());
     }
 }
 
@@ -382,7 +504,93 @@ impl<'a> ScriptedText<'a> {
         if scopes.scopes.is_empty() {
             return Err("scripted text needs an event scope".into());
         }
-        self.expand_context(text, scopes, Object::Event)
+        self.expand_in_at(text, scopes, 0)
+    }
+
+    /// Expand from a caller-owned scope cursor without flattening its links.
+    pub fn expand_in_at(
+        &self,
+        text: &str,
+        scopes: &EventScopes,
+        at: usize,
+    ) -> Result<String, String> {
+        if at >= scopes.scopes.len() {
+            return Err(format!("scripted text event scope {at} is not given"));
+        }
+        let expanded = ExpansionScopes::new(scopes);
+        self.process(text, 0, &expanded, at, Object::Event)
+    }
+
+    /// Scripted entries inside BuildDescription share its active variable context.
+    pub fn expand_in_session(
+        &self,
+        text: &str,
+        scopes: &EventScopes,
+        at: usize,
+        evaluator: &crate::triggers::Evaluator,
+    ) -> Result<String, String> {
+        let (result, session) =
+            self.expand_in_description(text, scopes, at, Some(evaluator.variable_session()), None);
+        if let Some(session) = session.as_ref() {
+            evaluator.restore_variable_session(session);
+        }
+        result
+    }
+
+    pub(crate) fn expand_in_description(
+        &self,
+        text: &str,
+        scopes: &EventScopes,
+        at: usize,
+        session: Option<crate::triggers::VariableSession>,
+        parent: Option<&ExpansionScopes>,
+    ) -> (
+        Result<String, String>,
+        Option<crate::triggers::VariableSession>,
+    ) {
+        if at >= scopes.scopes.len() {
+            return (
+                Err("scripted text event scope is not given".into()),
+                session,
+            );
+        }
+        let fresh;
+        let expanded = match parent {
+            Some(parent) => parent,
+            None => {
+                fresh = ExpansionScopes::new(&EventScopes::new(Vec::new()));
+                &fresh
+            }
+        };
+        let appended = expanded.append_description(scopes);
+        expanded.session.replace(session);
+        let result = self.process(text, 0, expanded, at + appended.offset, Object::Event);
+        let session = expanded.session.borrow().clone();
+        (result, session)
+    }
+
+    pub(crate) fn recorded(&self) -> &RecordedScopes {
+        &self.scopes
+    }
+    pub(crate) fn frame(&self) -> &'a DecodedFrame {
+        self.frame
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_synthetic_world(&self, world: crate::triggers::World<'a>) {
+        assert!(self.world.set(Ok(world)).is_ok());
+    }
+
+    pub(crate) fn country_name(&self, country: u32, definite: bool) -> Result<String, String> {
+        if definite {
+            self.names.name_with(country, "_DEF")
+        } else {
+            self.names.name(country)
+        }
+    }
+
+    pub(crate) fn recorded_language(&self) -> &str {
+        &self.content.recorded_language
     }
 
     /// An explicit province text context (kind 15, 1410CCE20), with the
@@ -423,20 +631,25 @@ impl<'a> ScriptedText<'a> {
         scopes: &ExpansionScopes,
         expand: impl FnOnce(&ExpansionScopes) -> Result<String, String> + Send,
     ) -> Result<String, String> {
-        let mut scopes = scopes.clone();
-        scopes.on_large_stack = true;
-        std::thread::scope(|thread_scope| {
+        let mut expanded = scopes.clone();
+        expanded.on_large_stack = true;
+        let (result, session) = std::thread::scope(|thread_scope| {
             std::thread::Builder::new()
                 .name("scripted-localisation".into())
                 // Reserve 64 KiB per backstop level for the entry's debug call frames.
                 .stack_size(MAX_SCRIPTED_NESTING * 64 * 1024)
-                .spawn_scoped(thread_scope, move || expand(&scopes))
+                .spawn_scoped(thread_scope, move || {
+                    let result = expand(&expanded);
+                    (result, expanded.session.into_inner())
+                })
                 .map_err(|error| {
                     format!("scripted localisation expansion thread could not start: {error}")
                 })?
                 .join()
-                .map_err(|_| "scripted localisation expansion thread failed".to_owned())?
-        })
+                .map_err(|_| "scripted localisation expansion thread failed".to_owned())
+        })?;
+        scopes.session.replace(session);
+        result
     }
 
     /// 140A7E780 expands in a fresh country event, within the same game world.
@@ -692,7 +905,7 @@ impl<'a> ScriptedText<'a> {
         // 4. Kind 1 only: saved event targets. 1410CFF00 has its own object
         // selector (including text kinds outside this trigger port).
         if object == Object::Event {
-            return self.saved_promotion(segment);
+            return self.saved_promotion(segment, scopes, *active);
         }
         // 5. The kind-2 names, on the current object.
         if named(segment, "Country") && matches!(object, Object::Country(_)) {
@@ -704,7 +917,19 @@ impl<'a> ScriptedText<'a> {
 
     /// 1410CFF00: local tooltip/saved, global tooltip/saved; a missing or
     /// invalid target returns false and PromoteScope leaves its object alone.
-    fn saved_promotion(&self, name: &str) -> Result<Object, String> {
+    fn saved_promotion(
+        &self,
+        name: &str,
+        scopes: &ExpansionScopes,
+        active: usize,
+    ) -> Result<Object, String> {
+        let mut graph = scopes.targets.borrow().clone();
+        graph.scopes = scopes.scopes.borrow().clone();
+        if let Some(target) =
+            crate::triggers::event_tooltip_target(&graph, active, name.as_bytes())?
+        {
+            return self.event_object(target, name);
+        }
         use crate::triggers::saved_event_targets::{Reader, Selected};
         let selected = self.scopes.saved_selection(name.as_bytes(), Reader::Text)?;
         match selected {
@@ -1326,3 +1551,7 @@ mod tests;
 
 #[cfg(test)]
 mod tests_wiring;
+
+#[cfg(test)]
+#[path = "scripted_text/effect_scopes/tests.rs"]
+mod tests_effect_scopes;

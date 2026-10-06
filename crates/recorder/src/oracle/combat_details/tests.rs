@@ -551,6 +551,7 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
         template: 0,
         country: b"SOV".to_vec(),
         name: Vec::new(),
+        name_key: Vec::new(),
         custom_icon: 0,
         custom_icon_nato: false,
         foreign_template_tag: None,

@@ -65,6 +65,25 @@ fn registry_is_sorted_complete_and_names_fold() {
     assert_eq!(class(u32::MAX), None);
 }
 
+#[test]
+fn description_conditional_adjacency_uses_native_added_children() {
+    let mut names = KeyNames::default();
+    names.countries.insert(b"SYN".to_vec());
+    names.scripted_effects.insert(b"authored".to_vec());
+    let parsed = read(
+        b"body = { if = { limit = { always = yes } add_stability = 1 }
+        invalid_effect = { @ignored = 2 } else = { add_political_power = 1 }
+        SYN = { army_experience = 3 } authored = yes }",
+        &names,
+    );
+    let fields = block(&parsed.items, "body");
+    assert!(adds_child(&fields[0], &names).unwrap());
+    assert!(!adds_child(&fields[1], &names).unwrap());
+    assert!(!adds_child(&fields[2], &names).unwrap());
+    assert!(adds_child(&fields[3], &names).unwrap());
+    assert!(adds_child(&fields[4], &names).unwrap());
+}
+
 // Invalid effect + RecordError 1405345D0 -> 1424ACF90 -> 1424AD270.
 #[test]
 fn invalid_effect_skips_without_defining_names() {
