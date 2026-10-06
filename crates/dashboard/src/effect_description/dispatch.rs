@@ -32,7 +32,7 @@ impl Renderer<'_, '_, '_> {
     pub(super) fn leaf(&mut self, item: &Item, scopes: Scopes) -> Option<Result<String, String>> {
         let class = self.effect_class(item)?;
         Some(match class.vtable {
-            // scopes â€” I
+            // scopes — I
             0x14299F6F8 /* CContextEffect */ => self
                 .context_header(item, scopes)
                 .map(|selected| selected.map(|(_, header)| header).unwrap_or_default()),
@@ -92,21 +92,21 @@ impl Renderer<'_, '_, '_> {
             0x14272F680 /* NIndustrialOrganisation::CEveryIndustrialOrgEffect */ => lists::own(), // Build 1402F4200.
             0x14272F590 /* NIndustrialOrganisation::CRandomIndustrialOrgEffect */ => lists::own(), // Build 1402F4BA0.
 
-            // variables â€” I
+            // variables — I
             0x14275F568 /* CClearVariableEffect */ => variables::clear_variable(),
             0x14275A188 /* CSaveEventTargetAsEffect */ => self.save_event_target(item, scopes),
 
-            // lists â€” I
+            // lists — I
             0x1427BE590 /* CIfEffect */ | 0x14299FCB8 /* CHiddenEffect */ | 0x14299FD88 /* CEffectTooltipEffect */ => lists::own(),
 
             0x14299F7C8 /* CScriptedEffect */ | 0x14275FF40 /* CForEachScopeEffect */ | 0x142761860 /* CMetaEffect */ | 0x1429A00F0 /* CRandomEffect */ => lists::own(),
             0x1429A0260 /* CRandomListEffect */ => self.random_list(item, scopes), // 141383AB0.
             0x14299FFF8 /* CWithTooltipOverrideEffect */ => self.override_own(item, scopes), // 141384190.
 
-            // modifiers â€” I
+            // modifiers — I
             0x142751C20 /* CAddTimedIdeaEffect */ => self.timed_idea(item, scopes),
 
-            // numeric â€” I
+            // numeric — I
             0x142751FF8 /* CAddPoliticalPowerEffect */ => {
                 self.numeric_value(item, scopes, b"POLITICS_ADD_POLITICAL_POWER")
             } // 140376050
@@ -239,21 +239,21 @@ impl Renderer<'_, '_, '_> {
             0x14275BB58 /* CSetOobEffect */ => self.politics_oob(item, scopes, b"EFFECT_SET_OOB"), // 140391580
             0x14275ADB0 /* CSetPartyRuleEffect */ => self.politics_rules(item, scopes, true), // 140392590
 
-            // technology â€” F
+            // technology — F
             0x1427BB520 /* NDoctrines::CAddMasteryEffect */ => self.mastery(item, scopes),
             0x14273BC98 /* CAddDoctrineCostReduction */ => self.doctrine_reduction(item, scopes),
 
-            // events â€” F
+            // events — F
             0x14299FF28 /* CCustomEffectTooltipEffect */ => self.custom_tooltip(item, scopes),
             0x142756450 /* CCountryEventEffect */ => self.country_event(item, scopes),
             0x14275E4C0 /* CRemoveTargetedDecisionEffect */ => self.removed_decision(item, scopes),
 
-            // diplomacy â€” D2
+            // diplomacy — D2
             0x142758F98 /* CDeclareWarEffect */ => self.war_or_annex(item, scopes, false),
             0x142756B70 /* CAnnexCountryEffect */ => self.war_or_annex(item, scopes, true),
             0x1427B2A08 /* CAddToFactionEffect */ => self.faction(item, scopes),
 
-            // states â€” D2
+            // states — D2
             0x1427535F8 /* CAddStateClaimEffect */ => self.state_change(item, scopes, b"EFFECT_ADD_STATE_CLAIM"), // 140378010
             0x1427531F8 /* CTransferStateEffect */ => self.state_change(item, scopes, b"EFFECT_TRANSFER_STATE"), // 140398680
             0x1427602D0 /* CStartBorderWarEffect */ => self.start_border_war(item, scopes),
@@ -302,10 +302,10 @@ impl Renderer<'_, '_, '_> {
             0x142729758 /* CSupplyUnits */ => self.supply_units(item, scopes), // 1402EDC70
             0x14273A1F8 /* CTransferStateToEffect */ => self.state_country_to(item, scopes, b"EFFECT_TRANSFER_STATE_TO"), // 1403192B0
 
-            // units â€” D2
+            // units — D2
             0x142760FA8 /* CDeleteTemplateAndItsUnits */ => self.delete_template(item, scopes),
 
-            // empty â€” D2
+            // empty — D2
             0x14275C610 /* CAddAIStrategyEffect */ => empty::describe(), // 140176EE0
             0x142752B58 /* CAddDivisionTemplateEffect */ => empty::describe(), // 140176EE0
             0x1427293C8 /* CClearCharacterFlagEffect */ => empty::describe(), // 140176EE0

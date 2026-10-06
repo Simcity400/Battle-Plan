@@ -162,6 +162,14 @@ shared porting entry points. It ports the reached
 country/state leaves, numeric fixed5 values, faction and doctrine descriptions,
 targeted decisions and timed ideas, with the native conditional/context/state-list
 builders. Own lines use three spaces per level; `IndentNonEmptyLines` uses one.
+`modifier_description_with` exposes raw `FormatDescription` text; `modifier_list_with`
+adds the native scoped expansion. `ModifierListOptions` maps requested precision,
+outer colour, include/exclude category masks, numeric-line separator, fixed5 scale,
+forced plus signs and colour inversion. Defaults keep the existing formatting
+arguments. The separate prefix applies only to numeric lines; custom tooltip
+entries add LF only when needed. Zero visibility stays definition-controlled,
+after native getter clamping and wrapping fixed5 scaling. The options documentation
+maps every native argument and gives the trait, advisor and scientist call values.
 Context layout repeats native description probes instead of counting rendered
 newlines; a failed probe retains its named leaf causes once. Unattached conditional
 continuations are named refusals. State leaves require the complete state roster

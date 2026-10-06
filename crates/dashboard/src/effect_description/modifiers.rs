@@ -169,8 +169,35 @@ impl Renderer<'_, '_, '_> {
         prefix: &str,
         scopes: Scopes,
     ) -> Result<String, String> {
+        self.modifier_list_with(modifiers, prefix, scopes, ModifierListOptions::default())
+    }
+
+    /// 14054E520 expands 14054E050's raw list in the supplied event scope.
+    pub(super) fn modifier_list_with(
+        &self,
+        modifiers: &Modifiers,
+        prefix: &str,
+        scopes: Scopes,
+        options: ModifierListOptions<'_>,
+    ) -> Result<String, String> {
+        self.expanded(&self.modifier_description_with(modifiers, prefix, options)?, scopes)
+    }
+
+    /// 14054E050: raw text; its direct callers choose when to expand it.
+    pub(super) fn modifier_description_with(
+        &self,
+        modifiers: &Modifiers,
+        prefix: &str,
+        options: ModifierListOptions<'_>,
+    ) -> Result<String, String> {
         if let Some(why) = modifiers.unheld.cause() {
             return Err(why.to_owned());
+        }
+        if !options.outer_colour.is_ascii() {
+            return Err(format!(
+                "modifier outer colour byte {:02x} is not UTF-8 (14054E0CC)",
+                options.outer_colour
+            ));
         }
         let frame = self.context.world()?.frame();
         let definitions = frame
@@ -198,10 +225,27 @@ impl Renderer<'_, '_, '_> {
             .collect::<Result<Vec<_>, String>>()?;
         values.sort_by_key(|(_, definition)| definition.index);
         let mut out = String::new();
+        if options.outer_colour != 0 {
+            // 14054E0CC: these bytes precede the first line's separator check.
+            out.push('\u{11}');
+            out.push(char::from(options.outer_colour));
+        }
         for (modifier, definition) in values {
-            if definition.category_mask & 0xff_ffff == 0
-                || (modifier.value == 0 && definition.flags & 0x100 == 0)
+            // 14054F743/14054F74F: separate include/exclude intersections.
+            if definition.category_mask & options.category_mask == 0
+                || definition.category_mask & !options.excluded_category_mask == 0
             {
+                continue;
+            }
+            // Getter 140551820 clamps before 14054E198's wrapping IMUL and
+            // signed /100000; FormatLine 14054F6D0 tests the scaled zero.
+            let effective = if definition.flags & engine::modifier_definition::CLAMP_MAXIMUM != 0 {
+                modifier.value.clamp(0, 100_000)
+            } else {
+                modifier.value
+            };
+            let value = effective.wrapping_mul(options.scale) / 100_000;
+            if value == 0 && definition.flags & 0x100 == 0 {
                 continue;
             }
             if definition.feature_selector != 0 {
@@ -221,23 +265,27 @@ impl Renderer<'_, '_, '_> {
                 &definition.argument,
                 "idea modifier argument",
             )?;
-            let label = self.localised(
-                &definition.name_key,
-                &[("ARG", Argument::Text(&argument))],
-                scopes,
-                false,
+            let label = self
+                .context
+                .localisation
+                .localise_with(&definition.name_key, &[("ARG", Argument::Text(&argument))])
+                .map_err(|why| why.to_string())?;
+            let value = crate::modifier_text::value_text(
+                definition,
+                value,
+                options.precision,
+                options.force_plus,
+                options.invert,
+                |key, _| {
+                    self.context
+                        .localisation
+                        .localise(key)
+                        .map_err(|why| why.to_string())
+                },
             )?;
-            let value = if definition.flags & engine::modifier_definition::CLAMP_MAXIMUM != 0 {
-                modifier.value.clamp(0, 100_000)
-            } else {
-                modifier.value
-            };
-            let value =
-                crate::modifier_text::value_text(definition, value, 2, false, false, |key, _| {
-                    self.localised(key, &[], scopes, false)
-                })?;
             if !out.is_empty() {
-                out.push('\n');
+                // 14054F81D appends the separator as a NUL-terminated string.
+                out.push_str(options.separator.split('\0').next().unwrap_or_default());
             }
             out.push_str(prefix);
             out.push_str(&label);
@@ -245,12 +293,28 @@ impl Renderer<'_, '_, '_> {
             out.push_str(&value);
         }
         for tooltip in modifiers.tooltips() {
-            if !out.is_empty() {
+            if tooltip.is_empty() {
+                continue;
+            }
+            // 14054E296/14054E2AF: LF only if needed, no numeric prefix.
+            if !out.is_empty() && !out.ends_with('\n') {
                 out.push('\n');
             }
-            out.push_str(prefix);
-            out.push_str(&self.localised(tooltip.as_bytes(), &[], scopes, false)?);
+            out.push_str(
+                &self
+                    .context
+                    .localisation
+                    .localise(tooltip.as_bytes())
+                    .map_err(|why| why.to_string())?,
+            );
         }
-        self.expanded(&out, scopes)
+        if options.outer_colour != 0 {
+            // 14054E3DE appends the reset even when there were no lines.
+            out.push_str("\u{11}!");
+        }
+        Ok(out)
     }
 }
+
+#[cfg(test)]
+mod tests;

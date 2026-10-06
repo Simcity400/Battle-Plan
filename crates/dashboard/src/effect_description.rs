@@ -15,7 +15,11 @@
 //!   province naming (140E69320) and country adjective naming (140BA5560).
 //! - `Renderer::evaluator` is the shared trigger/variable/saved-target evaluator;
 //!   `scoped_value` evaluates fixed5 operands (1405382B0).
-//! - `Renderer::modifier_list`, `crate::modifier_text::value_text`, localisation
+//! - `Renderer::modifier_description_with` formats raw modifier text (14054E050);
+//!   `modifier_list_with` expands it in the supplied scope (14054E520/1410CF560).
+//!   `ModifierListOptions` maps the native formatting arguments; `modifier_list`
+//!   uses its defaults. The numeric prefix is a separate `&str` argument.
+//!   `crate::modifier_text::value_text`, localisation
 //!   `Argument`, and `installed_content::fixed5::{fixed5_to_string, fixed5_percent}` retain
 //!   native modifier/number formatting (14054FE50, 142230F20).
 //! - `Renderer::group`, `append_description`, `indent_nonempty_lines`,
@@ -62,6 +66,96 @@ mod technology;
 mod tests;
 mod units;
 mod variables;
+
+/// Native formatter arguments, at the caller's RSP before CALL. 14054E050
+/// has 11 arguments; 14054E520 has 12, inserting an event scope at arg 3
+/// (14054E53A forwards arg 12; 14054E59F/14054E5AE format then expand).
+///
+/// | 14054E050 | 14054E520 | Meaning / port argument |
+/// |---|---|---|
+/// | 1 RCX | 1 RCX | Accumulator / `modifiers`; wrapper adds receiver +0x10 |
+/// | 2 RDX | 2 RDX | Output MSVC string / returned `String` |
+/// | — | 3 R8 | Event scope / `scopes` on `modifier_list_with` |
+/// | 3 R8D | 4 R9D | Signed requested `precision`, capped by definition +0x74 |
+/// | 4 R9B | 5 [rsp+20] byte | `outer_colour`; zero omits the outer controls |
+/// | 5 [rsp+20] | 6 [rsp+28] | C-string `separator`; null means LF (142702E68) |
+/// | 6 [rsp+28] u32 | 7 [rsp+30] u32 | Include `category_mask` |
+/// | 7 [rsp+30] u32 | 8 [rsp+38] u32 | `excluded_category_mask` |
+/// | 8 [rsp+38] i64 | 9 [rsp+40] i64 | Fixed5 `scale`, not a pointer |
+/// | 9 [rsp+40] | 10 [rsp+48] | Nullable MSVC-string numeric `prefix`; null is empty |
+/// | 10 [rsp+48] byte | 11 [rsp+50] byte | `force_plus` (nonzero) |
+/// | 11 [rsp+50] i32 | 12 [rsp+58] i32 | `invert` colour polarity (nonzero) |
+///
+/// Verified callers; omitted fields have the defaults below. Direct 14054E050
+/// callers use `modifier_description_with`, expanding only when their caller does.
+///
+/// Unit-leader trait helper 140AD9060:
+///
+/// | Call | Port value |
+/// |---|---|
+/// | 140AD929B and 140AD9346 | `modifier_description_with` |
+/// | Options | `ModifierListOptions { category_mask: u32::MAX, scale: trait_scale, ..Default::default() }` |
+/// | Prefix | `""` |
+/// | Scale source | Helper R9 copied to RBX at 140AD9089; both calls write inversion 0 (140AD926C/140AD9310) |
+///
+/// Targeted trait helper 140712850:
+///
+/// | Call | Port value |
+/// |---|---|
+/// | 140712BE0 | `modifier_description_with` |
+/// | Options | `ModifierListOptions { separator: caller_separator, ..Default::default() }` |
+/// | Prefix | Localised `EFFECT_CONTEXT_COUNTRY` at [rbp-70], passed by address at 140712BAF |
+/// | Separator source | Helper R8's MSVC string (R14); its SSO/heap bytes become RAX at 140712B99/140712BA3 |
+///
+/// Advisor helper 14036F000:
+///
+/// | Call | Port value |
+/// |---|---|
+/// | 14036F0A2 | `modifier_description_with` |
+/// | Options | `ModifierListOptions { category_mask: u32::MAX, ..Default::default() }` |
+/// | Prefix | `""`; expand the eventual `EFFECT_ASSIGN_ADVISOR` wrapper (1410CF560) |
+///
+/// Scientist helper 1404938C0:
+///
+/// | Call | Port value |
+/// |---|---|
+/// | 140493BF5 | `modifier_list_with` |
+/// | Options | `ModifierListOptions { category_mask: u32::MAX, ..Default::default() }` |
+/// | Prefix / scope | `""` / caller R15; 140493BB9 also writes arg 12 (inversion 0) |
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ModifierListOptions<'a> {
+    /// 14054E050 arg 3 -> 14054F6D0 arg 6 -> 14054FE50 arg 5.
+    pub(super) precision: i32,
+    /// 14054E050 arg 4 wraps the entire list (14054E0CC/14054E3DE).
+    pub(super) outer_colour: u8,
+    /// Include mask: 14054E520 arg 7 -> 14054E050 arg 6 -> 14054F6D0 arg 9 (+0x64).
+    pub(super) category_mask: u32,
+    /// 14054E050 arg 7 -> 14054F6D0 arg 10; an independent intersection (+0x64).
+    pub(super) excluded_category_mask: u32,
+    /// Numeric separator: 14054E520 arg 6 -> 14054E050 arg 5 -> 14054F6D0 arg 8.
+    pub(super) separator: &'a str,
+    /// 14054E050 arg 8: effective value times scale / 100000 (14054E195–1B4).
+    pub(super) scale: i64,
+    /// 14054E050 arg 10 -> 14054FE50 arg 6, overriding definition NO_PLUS.
+    pub(super) force_plus: bool,
+    /// 14054E050 arg 11 -> 14054FE50 arg 7; zero/nonzero changes good/bad polarity.
+    pub(super) invert: bool,
+}
+
+impl Default for ModifierListOptions<'_> {
+    fn default() -> Self {
+        Self {
+            precision: 2,
+            outer_colour: 0,
+            category_mask: 0xff_ffff,
+            excluded_category_mask: 0,
+            separator: "\n",
+            scale: 100_000,
+            force_plus: false,
+            invert: false,
+        }
+    }
+}
 
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct Description {
