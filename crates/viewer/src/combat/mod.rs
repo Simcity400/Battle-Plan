@@ -335,17 +335,23 @@ impl Window {
         self.playing = playing;
     }
     /// What the open window cannot show exactly: its bindings' gaps and the
-    /// combat artwork's. Built on request, never per frame; empty when no
+    /// combat artwork's. Built only for diagnostics and exports; empty when no
     /// window is open.
-    pub fn warnings(&self, document: &Document) -> Vec<String> {
+    pub fn warnings(&self, artwork: &[String]) -> Vec<String> {
         let Some(cache) = self.cached.as_ref().filter(|_| self.selection.is_some()) else {
             return Vec::new();
         };
         let mut warnings: Vec<String> = cache.held.iter().cloned().collect();
         if let Some((_, bindings)) = &cache.contents {
             warnings.extend(bindings.warnings.iter().cloned());
+            for (reason, &count) in bindings.refused() {
+                warnings.push(match count {
+                    1 => reason.clone(),
+                    count => format!("{reason} ({count} times)"),
+                });
+            }
         }
-        warnings.extend(document.icons.combat.warnings.iter().cloned());
+        warnings.extend(artwork.iter().cloned());
         warnings.extend(
             self.refused
                 .iter()
@@ -424,11 +430,12 @@ impl Window {
     pub(crate) fn tooltip(
         &mut self,
         drawn: Option<&Drawn>,
-        assets: &Assets,
+        defines: Option<&tooltip_painter::TooltipDefines>,
         point: Option<[f32; 2]>,
         map: Option<HoverHit<'_>>,
+        now: std::time::Instant,
     ) -> Option<(&str, tooltip_painter::TooltipPosition)> {
-        let defines = assets.tooltip_defines.as_ref().ok()?;
+        let defines = defines?;
         let combat_hit = point.and_then(|point| {
             drawn?
                 .tooltips
@@ -472,7 +479,7 @@ impl Window {
             .shown(
                 hit.map(|(text, delayed, shortcut, rect, _, _)| (text, delayed, shortcut, rect)),
                 point,
-                std::time::Instant::now(),
+                now,
                 defines.timing,
             )
             .map(|(text, point)| {
@@ -486,10 +493,12 @@ impl Window {
             })
     }
     /// When the tooltip next changes with a still pointer, for a repaint.
-    pub fn tooltip_repaint_after(&self, assets: &Assets) -> Option<std::time::Duration> {
-        let defines = assets.tooltip_defines.as_ref().ok()?;
-        self.hover
-            .next_change(std::time::Instant::now(), defines.timing)
+    pub(crate) fn tooltip_repaint_after(
+        &self,
+        defines: Option<&tooltip_painter::TooltipDefines>,
+        now: std::time::Instant,
+    ) -> Option<std::time::Duration> {
+        self.hover.next_change(now, defines?.timing)
     }
     /// Lays the open window out on a frame of `extent` interface pixels; the
     /// batch and every hit rectangle are in interface pixels too

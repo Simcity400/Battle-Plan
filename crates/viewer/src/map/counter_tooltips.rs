@@ -1,6 +1,6 @@
 //! Normal land-counter tooltip: 1418C00D0 -> 140C6AC80. Missing reached inputs are refused.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use installed_content::{
     country_names::CountryNames,
@@ -71,6 +71,17 @@ fn refuse(out: &mut Tooltip, line: &str, reason: impl Into<String>) {
     *out.refused
         .entry(format!("counter {line}: {}", reason.into()))
         .or_default() += 1;
+}
+
+/// A diagnostics export visits each drawn counter's hover once, without needing a pointer.
+pub fn count_refusals(tooltips: impl IntoIterator<Item = Tooltip>) -> BTreeMap<String, usize> {
+    let mut refused = BTreeMap::new();
+    for tooltip in tooltips {
+        for (reason, count) in tooltip.refused {
+            *refused.entry(reason).or_default() += count;
+        }
+    }
+    refused
 }
 
 fn append(
@@ -223,12 +234,9 @@ impl<'a> Context<'a> {
                     "division {id} name operands are unrecorded outside LandCombatDivisions: {e}"
                 )
             })?;
-        let row = rows
-            .iter()
-            .find(|row| row.division == id)
-            .ok_or_else(|| {
-                format!("division {id} name operands are unrecorded outside LandCombatDivisions")
-            })?;
+        let row = rows.iter().find(|row| row.division == id).ok_or_else(|| {
+            format!("division {id} name operands are unrecorded outside LandCombatDivisions")
+        })?;
         // Both callers use GetName@140C72F00's +60 cache; the combat reader renders its operands.
         let name =
             crate::combat::details::division_name(row, self.names).map_err(|e| e.to_string())?;
@@ -545,7 +553,22 @@ fn build_context(context: &Context<'_>, input: &CounterHover, nato: bool) -> Too
                     },
                 )
             })();
+            let before = out.body.len();
             append(&mut out, context, true, "arrival", arrival);
+            if !out.body[before..]
+                .trim_matches(['\n', '\t', '\r', ' '])
+                .is_empty()
+            {
+                // 140BED3A0 fills the cache; 140BE9902 seeds five updates,
+                // and 140BF08E0 in 140BF0300 decrements each entry's lifetime.
+                refuse(
+                    &mut out,
+                    "destination ETA",
+                    "uses the stored route (the division panel's value); the native counter's \
+                     client-UI path-cache cost filled by hover/selection queries, retained for \
+                     five unit updates, is unrecorded",
+                );
+            }
             let next = (|| {
                 let members = input
                     .members
@@ -940,8 +963,16 @@ mod tests {
             named.body,
             "arrival 1d 5h\nnext 2h\n\norg 10/20\nstr 50%\n2\u{13}unit_Foot_icon_small|1 "
         );
-        assert_eq!(named.refused.len(), 2);
-        assert_eq!(named.refused.values().copied().sum::<usize>(), 2);
+        assert_eq!(named.refused.len(), 3);
+        assert_eq!(named.refused.values().copied().sum::<usize>(), 3);
+        assert_eq!(
+            named
+                .refused
+                .iter()
+                .find(|(key, _)| key.starts_with("counter destination ETA:"))
+                .map(|(_, &count)| count),
+            Some(1)
+        );
         assert_eq!(
             named
                 .refused
@@ -961,6 +992,15 @@ mod tests {
                 .map(|(_, &count)| count),
             Some(1)
         );
+        let reason = "counter division name: division 1 name operands are unrecorded \
+                      outside LandCombatDivisions";
+        crate::app::tests::assert_diagnostics(
+            || crate::app::tooltip_warning_lines(&unnamed.refused).collect(),
+            &[format!("Tooltip: 1 × {reason}")],
+        );
+        // The dump/capture census builds these hovers without a pointer, counting each once.
+        let refused = count_refusals([unnamed.clone(), unnamed]);
+        assert_eq!(refused[reason], 2);
     }
 
     #[test]
@@ -1037,6 +1077,12 @@ mod tests {
                     "counter railway gun: railway-gun branch of 1418C00D0 is not ported".into(),
                     1
                 )])
+            );
+            let refused = count_refusals([out]);
+            crate::app::tests::assert_diagnostics(
+                || crate::app::tooltip_warning_lines(&refused).collect(),
+                &["Tooltip: 1 × counter railway gun: railway-gun branch of 1418C00D0 is not ported"
+                    .into()],
             );
         }
     }
@@ -1124,7 +1170,7 @@ mod tests {
                 .map(|(_, &count)| count),
             Some(1)
         );
-        assert_eq!(detailed.refused.len(), 2);
+        assert_eq!(detailed.refused.len(), 3);
         assert!(
             detailed
                 .refused
@@ -1185,6 +1231,15 @@ mod tests {
             let vision = Vision::sharing(ours, [1]);
             let visible = tooltip(&frame, &[1], false, false, &vision);
             let hidden = tooltip(&frame, &[1], false, true, &vision);
+            let limitations = |out: &Tooltip| {
+                out.refused
+                    .iter()
+                    .filter(|(key, _)| key.starts_with("counter destination ETA:"))
+                    .map(|(_, &count)| count)
+                    .sum::<usize>()
+            };
+            assert_eq!(limitations(&visible), 1);
+            assert_eq!(limitations(&hidden), usize::from(ours == 1));
             if ours == 1 {
                 assert_eq!(hidden.body, visible.body);
             } else {
@@ -1200,6 +1255,76 @@ mod tests {
                         .any(|key| key.starts_with("counter arrival:"))
                 );
             }
+        }
+    }
+
+    #[test]
+    fn destination_eta_limitation_requires_a_displayed_line() {
+        let vision = Vision::sharing(1, []);
+        let names = installed_content::division_names::Database::default();
+        let units = Err("unused".into());
+        for (remaining, moving, replacement) in [
+            (Some(2_900_000), true, None),
+            (Some(0), true, None),
+            (None, true, None),
+            (Some(2_900_000), false, None),
+            (Some(2_900_000), true, Some("@AAA")),
+            (Some(2_900_000), true, Some("")),
+        ] {
+            let mut frame = frame(true);
+            if !moving {
+                put(
+                    &mut frame,
+                    TableRows::DivisionMovement(vec![DivisionMovementRow {
+                        division: 1,
+                        ..Default::default()
+                    }]),
+                );
+            }
+            let loc = if let Some(text) = replacement {
+                [("UNIT_MOVING_DAYS_HOURS".into(), text.into())]
+                    .into_iter()
+                    .collect()
+            } else {
+                loc()
+            };
+            let context = Context {
+                loc: &loc,
+                icons: &crate::combat::binding::NoIcons,
+                names: &names,
+                units: &units,
+                frame: &frame,
+                vision: &vision,
+                links: frame
+                    .complete::<tables::CountryLinks>()
+                    .map_err(|e| e.to_string()),
+            };
+            let hover = CounterHover {
+                rect: [0.0; 4],
+                members: vec![1].into(),
+                timing: vec![Timing {
+                    next: Some(100_001),
+                    kind: Some(2),
+                }]
+                .into(),
+                coarse: false,
+                hidden: false,
+                railway_gun: false,
+                remaining,
+                ours: true,
+            };
+            let out = build_context(&context, &hover, false);
+            let count: usize = out
+                .refused
+                .iter()
+                .filter(|(key, _)| key.starts_with("counter destination ETA:"))
+                .map(|(_, &count)| count)
+                .sum();
+            assert_eq!(
+                count,
+                usize::from(remaining == Some(2_900_000) && moving && replacement.is_none())
+            );
+            assert_eq!(count == 1, out.body.starts_with("arrival"));
         }
     }
 

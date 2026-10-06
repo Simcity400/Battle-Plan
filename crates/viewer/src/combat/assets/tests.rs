@@ -73,7 +73,7 @@ fn combat_shortcut_assets_request_the_first_keycap_without_localisation() {
             containerWindowType={name=header
                 buttonType={name=close shortcut=ESCAPE shortcut=F12}}}}"#,
     );
-    let assets = native_window_assets(&windows, &Default::default());
+    let assets = tooltip_assets(&windows, &Default::default());
     assert!(assets.sprites.contains(b"GFX_ESCAPE".as_slice()));
     assert!(!assets.sprites.contains(b"GFX_F12".as_slice()));
 }
@@ -90,8 +90,10 @@ fn tga(width: u16, height: u16) -> Vec<u8> {
 }
 
 #[test]
-fn combat_inline_and_naval_air_sprites_render_through_loaded_inventory() {
-    use crate::combat::{binding::Bindings, gui_resources, tooltip_painter};
+fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
+    use crate::combat::{
+        Selection, Window, binding::Bindings, gui_resources, tooltip_painter, tooltips,
+    };
     use crate::map::{native_gui::Resources, sprites::Batch};
 
     let root = std::env::temp_dir().join(format!(
@@ -106,7 +108,14 @@ fn combat_inline_and_naval_air_sprites_render_through_loaded_inventory() {
         .chain([b"unit_counter_navy".as_slice(), b"naval_combat_mapicon"])
     {
         let text = if name == b"landcombatview" {
-            r#"instantTextBoxType = { name = "fixture_text" font = "fixture_font" }"#
+            r#"instantTextBoxType = { name = "fixture_text" font = "fixture_font" }
+                buttonType = { name = "fixture_missing" shortcut = "FIXTURE_MISSING" }"#
+        } else if name == b"navalcombatview" {
+            r#"size = { width = 80 height = 50 }
+                containerWindowType = { name = header_container size = { width = 80 height = 50 }
+                    buttonType = { name = close spriteType = GFX_fixture_substituted
+                        buttonFont = fixture_font position = { x = 10 y = 10 }
+                        shortcut = "ESCAPE" } }"#
         } else {
             ""
         };
@@ -123,6 +132,7 @@ fn combat_inline_and_naval_air_sprites_render_through_loaded_inventory() {
         ("interface/fixture.gui", declaration.into_bytes()),
         ("interface/fixture.gfx", br#"spriteTypes = {
             spriteType = { name = "GFX_fixture_substituted" textureFile = "gfx/icon.tga" }
+            spriteType = { name = "GFX_ESCAPE" textureFile = "gfx/icon.tga" }
             spriteType = { name = "GFX_navalcombat_air_icon_fixture_bomber" textureFile = "gfx/icon.tga" noOfFrames = 2 }
             spriteType = { name = "GFX_navalcombat_air_icon_fixture_fighter" textureFile = "gfx/icon.tga" noOfFrames = 2 }
         }
@@ -131,7 +141,7 @@ fn combat_inline_and_naval_air_sprites_render_through_loaded_inventory() {
             rivers = "x" heightmap = "x" tree_definition = "x""#.to_vec()),
         ("common/terrain/fixture.txt", b"categories = { fixture = {} }".to_vec()),
         ("common/combat_tactics.txt", Vec::new()),
-        ("localisation/english/fixture.yml", "\u{feff}l_english:\n fixture_unlisted_modifier:0 \"A £$fixture_icon_name$\"\n fixture_icon_name:0 \"fixture_substituted\"\n".as_bytes().to_vec()),
+        ("localisation/english/fixture.yml", "\u{feff}l_english:\n fixture_unlisted_modifier:0 \"A £$fixture_icon_name$\"\n fixture_icon_name:0 \"fixture_substituted\"\n SHORTCUT:0 \"Shortcut: $KEY$\"\n".as_bytes().to_vec()),
         ("gfx/icon.tga", tga(4, 4)),
         ("gfx/fonts/fixture.tga", tga(2, 2)),
         ("gfx/fonts/fixture.fnt", b"info face=\"fixture\" size=4\ncommon lineHeight=4 base=3 scaleW=2 scaleH=2 pages=1\npage id=0 file=\"fixture.tga\"\nchars count=1\nchar id=65 x=0 y=0 width=1 height=1 xoffset=0 yoffset=0 xadvance=1 page=0 chnl=15\n".to_vec()),
@@ -184,9 +194,25 @@ fn combat_inline_and_naval_air_sprites_render_through_loaded_inventory() {
     let localisation = installed_content::localisation::read(&shared, "english").unwrap();
     // The same inventory and load calls MapIcons::load_gui uses; no test-only merge.
     let (extra, _) = combat.localisation_assets(&localisation);
-    combat
+    let warnings = combat
         .load_gui(&shared, &localisation, &extra, &mut images)
         .unwrap();
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|warning| warning.contains("GFX_FIXTURE_MISSING"))
+            .count(),
+        1
+    );
+    let map_assets =
+        crate::map::counters::gui_assets(&windows, &interface.registry, &localisation, extra);
+    let mut map_gui = GuiResources::new(
+        interface.registry.clone(),
+        b"l_english",
+        [10, 10],
+        Decode::default(),
+    );
+    map_gui.load(&shared, &map_assets, &mut images).unwrap();
     let inventory = gui_resources::GuiAssets::new(&combat, &Bindings::default());
     let resources = gui_resources::GuiResources::new(
         &combat,
@@ -204,7 +230,7 @@ fn combat_inline_and_naval_air_sprites_render_through_loaded_inventory() {
             b"NDefines = { NInterface = {
         TOOLTIP_SCREEN_LEFT_OFFSET_X = 0, TOOLTIP_SCREEN_TOP_OFFSET_Y = 0,
         TOOLTIP_SCREEN_RIGHT_OFFSET_X = 0, TOOLTIP_SCREEN_BOTTOM_OFFSET_Y = 0
-    }, NGraphics = { TOOLTIP_SHOW_DELAY = 0, TOOLTIP_DELAYED_DELAY = 0, TOOLTIP_HIDE_DELAY = 0 } }",
+    }, NGraphics = { TOOLTIP_SHOW_DELAY = 0.05, TOOLTIP_DELAYED_DELAY = 0, TOOLTIP_HIDE_DELAY = 0 } }",
         )
         .unwrap();
     let mut batch = Batch::default();
@@ -220,7 +246,6 @@ fn combat_inline_and_naval_air_sprites_render_through_loaded_inventory() {
         &tooltip_painter::TooltipDefines::read(&defines).unwrap(),
         0.0,
     );
-    std::fs::remove_dir_all(root).unwrap();
     assert!(refused.is_empty(), "{refused:?}");
     assert!(!batch.is_empty(), "the combat popup must draw");
     assert!(resources.sprite(b"GFX_fixture_substituted").is_some());
@@ -238,6 +263,89 @@ fn combat_inline_and_naval_air_sprites_render_through_loaded_inventory() {
             .any(|draw| draw.textures.contains(&(0, Some(icon)))),
         "the popup bake must draw its substituted inline sprite"
     );
+
+    // Runtime binds the parsed button, hit-tests its retained GUI, then paints with map resources.
+    let mut bindings = Bindings::default();
+    tooltips::bind_authored(
+        &mut bindings,
+        &combat,
+        &localisation,
+        &windows,
+        Selection::Naval(7),
+    );
+    assert!(bindings.refused().is_empty());
+    let mut gui = super::super::gui::Windows::default();
+    let drawn = gui
+        .draw(
+            &windows,
+            &resources,
+            &bindings,
+            1,
+            Selection::Naval(7),
+            [0.0; 2],
+            false,
+            &mut None,
+            [640.0, 480.0],
+            true,
+            native_gui::lifecycle::Tick { time: 0.0, dt: 0.0 },
+            false,
+        )
+        .unwrap();
+    assert!(drawn.refused.is_empty(), "{:?}", drawn.refused);
+    let defines = tooltip_painter::TooltipDefines::read(&defines).unwrap();
+    let mut window = Window::default();
+    let start = std::time::Instant::now();
+    let point = Some([12.0, 12.0]);
+    assert!(
+        window
+            .tooltip(Some(&drawn), Some(&defines), point, None, start)
+            .is_none()
+    );
+    assert_eq!(
+        window.tooltip_repaint_after(Some(&defines), start),
+        Some(
+            std::time::Duration::from_secs_f32(defines.timing[0])
+                + std::time::Duration::from_nanos(1),
+        )
+    );
+    let (text, position) = window
+        .tooltip(
+            Some(&drawn),
+            Some(&defines),
+            point,
+            None,
+            start + std::time::Duration::from_secs(1),
+        )
+        .expect("the close button shows its shortcut after the normal delay");
+    assert_eq!(text, "Shortcut: \u{13}ESCAPE");
+    let map_resources = crate::map::counters::gui_windows::GuiAssets {
+        gui: &map_gui,
+        windows: &windows,
+        localisation: &localisation,
+        flags: None,
+    };
+    let mut batch = Batch::default();
+    let refused = tooltip_painter::draw(
+        &map_resources,
+        &mut batch,
+        text,
+        position,
+        [640.0, 480.0],
+        &defines,
+        0.0,
+    );
+    assert!(refused.is_empty(), "{refused:?}");
+    let keycap = map_gui.sheet(b"GFX_ESCAPE").unwrap().texture;
+    assert!(
+        batch
+            .quads
+            .iter()
+            .filter_map(|quad| quad.exact.as_ref()?.native.as_ref()?.bake.as_ref())
+            .flat_map(|bake| &bake.draws)
+            .any(|draw| draw.textures.contains(&(0, Some(keycap)))),
+        "the shared tooltip painter must draw the close shortcut keycap"
+    );
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

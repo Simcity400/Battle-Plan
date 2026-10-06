@@ -138,15 +138,10 @@ fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_
                 .specializations
                 .push("test".into());
             assets.tooltip.intel = Ok(intel::Defines::default());
+            let mut project = installed_content::special_projects::Project::default();
+            project.name = narrative.map(Into::into);
             let mut projects = installed_content::special_projects::Catalog::default();
-            projects.projects = [(
-                "oilfield".into(),
-                installed_content::special_projects::Project {
-                    name: narrative.map(Into::into),
-                    ..Default::default()
-                },
-            )]
-            .into();
+            projects.projects = [("oilfield".into(), project)].into();
             assets.tooltip.projects = Ok(projects);
             let mut frame = frame();
             // The project owner's country supplies the naming scope, even when
@@ -377,16 +372,10 @@ fn trigger_inversion_indentation_custom_override_and_named_unsupported_leaf() {
 fn raid_tooltip_regression_special_project_requirement_uses_native_name_and_inversion() {
     use super::super::super::tests::put;
     let mut assets = assets();
+    let mut project = installed_content::special_projects::Project::default();
+    project.name = Some("project_name".into());
     let mut projects = installed_content::special_projects::Catalog::default();
-    projects.projects = [(
-        "oilfield".into(),
-        installed_content::special_projects::Project {
-            name: Some("project_name".into()),
-            ..Default::default()
-        },
-    )]
-    .into_iter()
-    .collect();
+    projects.projects = [("oilfield".into(), project)].into();
     assets.tooltip.projects = Ok(projects);
     let mut frame = frame();
     put::<tables::CountryAppearance>(
@@ -562,11 +551,17 @@ fn event_scopes_keep_the_raid_links_leaders_and_target_variables() {
         EventObject::IndustrialOrganisation(organisation)
     );
     for (scope, object) in [
-        (Scope::Project { owner: 100, id: 9 }, EventObject::Project { owner: 100, id: 9 }),
+        (
+            Scope::Project { owner: 100, id: 9 },
+            EventObject::Project { owner: 100, id: 9 },
+        ),
         (Scope::Raid(7 << 32 | 84), EventObject::Raid(7 << 32 | 84)),
         (Scope::Unit(8 << 32 | 55), EventObject::Unit(8 << 32 | 55)),
     ] {
-        let nested = event_scopes(Scopes { this: scope, ..raid });
+        let nested = event_scopes(Scopes {
+            this: scope,
+            ..raid
+        });
         assert_eq!(nested.scopes[0].this, object);
         assert_eq!(nested.scopes[0].root, Link::Scope(1));
     }

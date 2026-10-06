@@ -332,11 +332,7 @@ impl Viewer {
         let mut messages = self
             .document
             .as_ref()
-            .map(|document| {
-                let mut warnings = self.collect_warnings(document);
-                warnings.extend(self.combat.warnings(document));
-                warnings
-            })
+            .map(|document| self.collect_warnings(document))
             .unwrap_or_default();
         messages.extend(self.error.iter().cloned());
         messages.extend(self.map_error.iter().cloned());

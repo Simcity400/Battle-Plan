@@ -123,6 +123,10 @@ impl Assets {
             .into_iter()
             .map(|(name, why)| format!("Combat UI: texture {name}: {why} (1 missing_texture)."))
             .collect();
+        warnings.extend(sprite_warnings(
+            &self.gui,
+            &shortcut_assets(&self.native_windows).sprites,
+        ));
         for name in &assets.fonts {
             let Some(font) = self.gui.font(name) else {
                 warnings.push(format!(
@@ -168,7 +172,7 @@ impl Assets {
         &self,
         localisation: &installed_content::localisation::Localisation,
     ) -> (native_gui::Assets, Vec<String>) {
-        let mut assets = native_gui::Assets::from_localisation(localisation);
+        let mut assets = tooltip_assets(&self.native_windows, localisation);
         let mut warnings = Vec::new();
         // 141006BC0 generates inline sub-unit sprite names from data, not localisation.
         match self.commander_tooltips.sub_units() {
@@ -452,6 +456,24 @@ fn native_window_assets(
             &|name| windows.gui_type(name),
             localisation,
         ));
+    }
+    assets
+}
+
+fn tooltip_assets(
+    windows: &NativeWindows,
+    localisation: &installed_content::localisation::Localisation,
+) -> native_gui::Assets {
+    // 14162E880 / 142223EB0: inline icons use the global sprite registry.
+    // Both combat drawing and the shared map tooltip painter load this inventory.
+    let mut assets = native_gui::Assets::from_localisation(localisation);
+    assets.extend(shortcut_assets(windows));
+    assets
+}
+
+fn shortcut_assets(windows: &NativeWindows) -> native_gui::Assets {
+    let mut assets = native_gui::Assets::default();
+    for root in native_templates(windows) {
         for (_, element) in super::gui::elements(root) {
             // 1422B4460 / 1402A2810: the first shortcut supplies inline keycap sprites.
             // The hover binder names and refuses non-UTF-8 shortcuts.

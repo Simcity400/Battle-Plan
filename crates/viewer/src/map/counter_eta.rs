@@ -9,13 +9,13 @@
 //! (`ccountry_tag::same_country` against the idler's country). The viewer has no division view, so
 //! its counter hover carries the line, in the counter tooltip's own wording.
 //!
-//! **UNVERIFIED**: the native counter tooltip reads `ForwardCachedPathCost` (`140BED280`), the
-//! pathfinder's cached estimate, where the division view reads `eta_remaining`. Only the latter is
-//! reconstructed here. On a cache miss 140BED3A0 finds a new path, which need not be the stored
-//! route; its cache also retains the original result until 140BF0300 expires it. Native counter
-//! parity therefore needs both path selection and client cache history, not just fresh operands.
-//! Fresh sample H showed 38 h natively and 30 h here: UI cache history is unrecorded, and
-//! 140BED280 → 140BED3A0 searches a route rather than using 140BECF90's stored route.
+//! Counter tooltip ETA uses the stored route (the division panel's value); the native counter
+//! shows a client-UI path-cache cost filled by hover/selection queries (140BED3A0), which is
+//! unrecorded. The seed is five unit updates (140BE9902); 140BF0300 also decays viewer levels,
+//! but its tail at 140BF08E0 decrements entry+0x10 in the stride-0x18 path-cache vector at
+//! CUnit+0x308/count+0x314 and compacts expired entries. Each shown destination-ETA line counts
+//! this limitation. Fresh sample H showed 38 h natively and 30 h here: on a cache miss,
+//! 140BED280 → 140BED3A0 searches a route instead of using 140BECF90's stored route.
 //!
 //! Both sites do the same arithmetic: [`engine::cunit::eta_hours`] (`14047BDE0`), narrowed to i32,
 //! shown only when positive, split into `hours / 24` days and `hours % 24` hours.

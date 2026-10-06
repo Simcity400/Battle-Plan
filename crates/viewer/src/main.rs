@@ -945,6 +945,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             omitted,
             options.counter_settings(document.game_counters),
         )?;
+        let mut combat_warnings = Vec::new();
         if let Some(selector) = options.combat {
             let mut window = combat::Window::default();
             let selection = selector.resolve(&document)?;
@@ -968,7 +969,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             };
             // The window's warnings say why an undecided flag showed nothing, so they print
             // whether or not it drew.
-            for warning in window.warnings(&document) {
+            combat_warnings = window.warnings(&document.icons.combat.warnings);
+            for warning in &combat_warnings {
                 eprintln!("Warning: {warning}");
             }
             if let Some(drawn) = drawn {
@@ -1086,16 +1088,34 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for warning in label_report.warnings() {
             eprintln!("Warning: {warning}");
         }
+        let frame = document.frame()?;
+        let tooltips = counter_report.land_hovers.iter().map(|hover| {
+            map::counter_tooltips::build(
+                &document.content,
+                frame,
+                hover,
+                &counter_report.perspective,
+                options.counter_settings(document.game_counters).nato,
+            )
+        });
+        let tooltip_refused = map::counter_tooltips::count_refusals(tooltips);
+        for warning in app::tooltip_warning_lines(&tooltip_refused) {
+            eprintln!("Warning: {warning}");
+        }
         if let Some(path) = &options.counters_json {
             let mut census =
                 document
                     .icons
                     .counters
                     .census(&label_batch, &document.icons.fonts, ui_scale);
-            // The same combat lines the dump prints, so the export names the
-            // combats whose icons were undecided or drawn with a limited value.
-            census["combat_diagnostics"] =
-                serde_json::json!(counter_report.combat_gap_lines().collect::<Vec<_>>());
+            // The same counted marker and open-window limitations the dump prints.
+            census["combat_diagnostics"] = serde_json::json!(
+                counter_report
+                    .combat_gap_lines()
+                    .chain(combat_warnings)
+                    .collect::<Vec<_>>()
+            );
+            census["tooltip_diagnostics"] = serde_json::json!(tooltip_refused);
             std::fs::write(path, serde_json::to_vec_pretty(&census)?)?;
         }
         for warning in &report.pass_warnings {

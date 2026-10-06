@@ -304,6 +304,41 @@ struct Uploaded {
 /// the panel and left the map one pixel tall.
 const WARNING_SHARE: f32 = 0.4;
 
+/// Reserve the panel before sizing the map, but collect and draw its warnings after the overlay.
+fn finish_warnings(
+    ui: &mut egui::Ui,
+    rect: Option<egui::Rect>,
+    enabled: bool,
+    collect: impl FnOnce() -> Vec<String>,
+) -> Vec<String> {
+    let warnings = if enabled { collect() } else { Vec::new() };
+    if let Some(rect) = rect {
+        let mut panel = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("warnings_panel")
+                .max_rect(rect),
+        );
+        egui::ScrollArea::vertical()
+            .id_salt("warnings")
+            .max_height(rect.height())
+            .auto_shrink([false, true])
+            .show(&mut panel, |ui| {
+                for warning in &warnings {
+                    ui.colored_label(egui::Color32::YELLOW, warning);
+                }
+            });
+    }
+    warnings
+}
+
+pub(crate) fn tooltip_warning_lines(
+    refused: &BTreeMap<String, usize>,
+) -> impl Iterator<Item = String> + '_ {
+    refused
+        .iter()
+        .map(|(reason, count)| format!("Tooltip: {count} × {reason}"))
+}
+
 /// The height the recorded-table list scrolls within, for the same reason: 148
 /// tables wrap to twenty lines, and the bottom panel grew to hold every one.
 const TABLE_LIST_HEIGHT: f32 = 96.0;
@@ -1091,23 +1126,18 @@ impl Viewer {
         }
     }
 
-    /// Everything the hour on screen could not draw exactly. The hour's own
-    /// gaps lead, because they are the part that changes with the hour; the
-    /// persistent content limitations and the political layer's follow, in
-    /// the order `--dump` prints them, so a capture beside a dump lists the
-    /// same lines in the same order. Names, labels, raid icons and counters
-    /// are drawn later in the frame, so theirs (with their refused tokens)
-    /// come from the last drawn frame, which is this hour's after the first
-    /// repaint. Every per-hour line is replaced with its hour, so a refusal
-    /// the next hour recovers from goes. The Match game UI scale's note follows when
-    /// that scale is in use. The open battle window's gaps are not included:
-    /// the frame adds them after it draws the window, and
-    /// `report_map_details` adds them itself.
+    /// Everything the hour on screen could not draw exactly, collected after its overlay and
+    /// hover. Current tooltip and combat gaps lead; persistent content notes follow. Each
+    /// frame replaces the per-hour report, so recovered refusals go away with the next draw.
     fn collect_warnings(&self, document: &Document) -> Vec<String> {
         let Some(shown) = &self.shown else {
             return Vec::new();
         };
-        let mut warnings = shown.limitations.lines();
+        // Current hover and combat gaps lead so they stay visible above persistent content notes.
+        let mut warnings: Vec<_> = tooltip_warning_lines(&self.tooltip_refused).collect();
+        warnings.extend(self.counter_report.combat_gap_lines());
+        warnings.extend(self.combat.warnings(&document.icons.combat.warnings));
+        warnings.extend(shown.limitations.lines());
         // The viewer's device, when it lacks a feature some content needs to draw exactly.
         if let Some((device, _)) = &self.gpu {
             warnings.extend(render::device_requirements(device.features()));
@@ -1121,20 +1151,12 @@ impl Viewer {
             warnings.extend(placements.warnings.iter().cloned());
         }
         warnings.extend(self.label_report.warnings());
-        // Combats whose icon is undecided (for example while the engaged
-        // index has not yet covered a session-start branch's hour).
-        warnings.extend(self.counter_report.combat_gap_lines());
         // The overlay's refused tokens: the raid icons' as laid out for this
         // camera, the counters' (with the naval mission icons' gaps) as last drawn.
         if let Some(overlay) = &self.prepared_overlay {
             warnings.extend(overlay.raid_report().warnings());
         }
         warnings.extend(self.counter_report.warnings());
-        warnings.extend(
-            self.tooltip_refused
-                .iter()
-                .map(|(reason, count)| format!("Tooltip: {count} × {reason}")),
-        );
         if let Some(scene) = &self.scene {
             warnings.extend(scene.pass_warnings());
             warnings.extend(
@@ -1885,28 +1907,21 @@ impl Viewer {
         // shows it and only a capture prints it (the desktop's on-demand
         // report rebuilds it in `report_map_details`).
         let build_warnings = self.diagnostics || self.capture.is_some();
-        let mut warnings = if build_warnings {
-            self.collect_warnings(document)
-        } else {
-            Vec::new()
-        };
-        laps.lap("limitations");
         self.interface_points =
             map::ui_scale::points(1.0, raster.screen_scale(), ui.ctx().pixels_per_point());
-        if self.diagnostics && !self.dashboard_map && self.embedded.is_none() {
-            egui::ScrollArea::vertical()
-                .id_salt("warnings")
-                .max_height(ui.available_height() * WARNING_SHARE)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    for warning in &warnings {
-                        ui.colored_label(egui::Color32::YELLOW, warning);
-                    }
-                });
+        // A changing hover report must not move the map and invalidate its own hit region.
+        let warnings_rect = if self.diagnostics && !self.dashboard_map && self.embedded.is_none() {
+            let (_, rect) = ui.allocate_space(egui::vec2(
+                ui.available_width(),
+                ui.available_height() * WARNING_SHARE,
+            ));
             for line in shown.stats() {
                 ui.weak(line);
             }
-        }
+            Some(rect)
+        } else {
+            None
+        };
         let size = ui.available_size().max(egui::vec2(1.0, 1.0));
         // capture: `--window-dump` renders at the size it was asked for rather
         // than at the size the panels left over, so the frame it writes does not
@@ -2349,18 +2364,16 @@ impl Viewer {
         if self.combat.gui_active() {
             ui.ctx().request_repaint();
         }
-        if build_warnings {
-            warnings.extend(self.combat.warnings(document));
-        }
         let map_hit = self.map_tooltip(document, point.filter(|_| !over_combat), extent, ui.ctx());
         let mut tooltip_refused = map_hit
             .as_ref()
             .map(|(text, _, _)| text.refused.clone())
             .unwrap_or_default();
         let mut additions = Batch::default();
+        let tooltip_time = Instant::now();
         if let Some((text, anchor)) = self.combat.tooltip(
             drawn.as_ref(),
-            &document.icons.combat,
+            document.icons.combat.tooltip_defines.as_ref().ok(),
             point,
             map_hit.as_ref().map(|(text, rect, province)| {
                 (
@@ -2370,6 +2383,7 @@ impl Viewer {
                     *province,
                 )
             }),
+            tooltip_time,
         ) {
             let refused = self
                 .prepared_overlay
@@ -2381,8 +2395,34 @@ impl Viewer {
                 *tooltip_refused.entry(reason).or_default() += count;
             }
         }
+        // Captures inventory reachable counter hovers even when the pointer left the plate.
+        if self.capture.is_some()
+            && let crate::playback::Current::Frame(frame) = document.playback.current()
+        {
+            let tooltips = self.counter_report.land_hovers.iter().map(|hover| {
+                map::counter_tooltips::build(
+                    &document.content,
+                    frame,
+                    hover,
+                    &self.counter_report.perspective,
+                    self.counter_view.settings.nato,
+                )
+            });
+            let refused = map::counter_tooltips::count_refusals(tooltips);
+            for (reason, count) in refused {
+                let current = tooltip_refused.entry(reason).or_default();
+                *current = (*current).max(count);
+            }
+        }
         self.tooltip_refused = tooltip_refused;
-        if let Some(delay) = self.combat.tooltip_repaint_after(&document.icons.combat) {
+        let warnings = finish_warnings(ui, warnings_rect, build_warnings, || {
+            self.collect_warnings(document)
+        });
+        laps.lap("limitations");
+        if let Some(delay) = self.combat.tooltip_repaint_after(
+            document.icons.combat.tooltip_defines.as_ref().ok(),
+            tooltip_time,
+        ) {
             ui.ctx().request_repaint_after(delay);
         }
         if let Some(drawn) = drawn {
@@ -3114,8 +3154,84 @@ fn engaged_relayout(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// Uses the runtime's reserved panel and late collector, including its painted text.
+    pub(crate) fn assert_diagnostics(
+        mut collect: impl FnMut() -> Vec<String>,
+        expected: &[String],
+    ) {
+        let ctx = egui::Context::default();
+        let mut warnings = Vec::new();
+        let output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 800.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                let (_, rect) = ui.allocate_space(egui::vec2(1300.0, 300.0));
+                warnings = finish_warnings(ui, Some(rect), true, &mut collect);
+            },
+        );
+        let labels: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for line in expected {
+            assert!(warnings.contains(line), "missing reported warning: {line}");
+            assert!(
+                labels.contains(&line.as_str()),
+                "missing painted warning: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn diagnostics_collect_after_the_overlay_and_before_drawing() {
+        use crate::combat::icon_frames::{Kept, LAND_NO_HISTORY};
+        let mut report = map::counters::CounterReport::default();
+        let expected = format!(
+            "Land combats: 1 {}; combats 7",
+            Kept::Unindexed.limitation(LAND_NO_HISTORY)
+        );
+        assert_diagnostics(
+            || {
+                // The current overlay publishes this after the panel reserves its rectangle.
+                report.combat_limits.insert(
+                    ("Land", Kept::Unindexed.limitation(LAND_NO_HISTORY)),
+                    [7].into(),
+                );
+                report.combat_gap_lines().collect()
+            },
+            &[expected],
+        );
+    }
+
+    #[test]
+    fn hidden_diagnostics_do_not_collect_and_exports_do_not_draw_a_panel() {
+        let ctx = egui::Context::default();
+        let mut warnings = Vec::new();
+        let output = ctx.run_ui(Default::default(), |ui| {
+            let hidden = finish_warnings(ui, None, false, || panic!("hidden collector"));
+            assert!(hidden.is_empty());
+            warnings = finish_warnings(ui, None, true, || vec!["export limitation".into()]);
+        });
+        assert_eq!(warnings, ["export limitation"]);
+        assert!(
+            !output
+                .shapes
+                .iter()
+                .any(|shape| matches!(&shape.shape, egui::Shape::Text(_)))
+        );
+    }
 
     /// A prebuilt or window overlay without the index is laid out again once
     /// the index covers its hour, while paused or while advancing through
