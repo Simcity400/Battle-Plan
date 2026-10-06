@@ -93,7 +93,7 @@ impl HoverState {
     /// the show delay applies only while the CTextBox is hidden in the game.
     pub(super) fn shown(
         &mut self,
-        hit: Option<(&str, Option<&str>, [f32; 4])>,
+        hit: Option<(&str, Option<&str>, Option<&str>, [f32; 4])>,
         point: Option<[f32; 2]>,
         now: Instant,
         timing: [f32; 3],
@@ -105,12 +105,14 @@ impl HoverState {
         }
         // 1402A4080 tests the stored byte lengths, then appends those bytes.
         // Spaces and authored leading newlines are part of the tooltip.
-        let hit = point.and(hit).filter(|(text, delayed, _)| {
-            !text.is_empty() || delayed.is_some_and(|s| !s.is_empty())
+        let hit = point.and(hit).filter(|(text, delayed, shortcut, _)| {
+            !text.is_empty()
+                || delayed.is_some_and(|s| !s.is_empty())
+                || shortcut.is_some_and(|s| !s.is_empty())
         });
         let mut candidate = std::mem::take(&mut self.candidate);
         candidate.clear();
-        if let Some((text, delayed, rect)) = hit {
+        if let Some((text, delayed, shortcut, rect)) = hit {
             if self.target != Some(rect) {
                 self.target = Some(rect);
                 self.entered = Some(now);
@@ -125,6 +127,13 @@ impl HoverState {
                     candidate.push_str("\n--------------\n");
                 }
                 candidate.push_str(delayed);
+            }
+            // 1402A4080 appends the shortcut after the currently admitted body.
+            if let Some(shortcut) = shortcut.filter(|text| !text.is_empty()) {
+                if !candidate.is_empty() {
+                    candidate.push_str("\n--------------\n");
+                }
+                candidate.push_str(shortcut);
             }
         } else {
             self.target = None;

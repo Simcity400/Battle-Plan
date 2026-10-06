@@ -429,29 +429,34 @@ impl Window {
         map: Option<HoverHit<'_>>,
     ) -> Option<(&str, tooltip_painter::TooltipPosition)> {
         let defines = assets.tooltip_defines.as_ref().ok()?;
-        let hit = point
-            .and_then(|point| {
-                drawn?
-                    .tooltips
-                    .iter()
-                    .rev()
-                    .find(|hit| contains(hit.rect, point))
-            })
+        let combat_hit = point.and_then(|point| {
+            drawn?
+                .tooltips
+                .iter()
+                .rev()
+                .find(|hit| contains(hit.rect, point))
+        });
+        let hit = combat_hit
             .map(|hit| {
                 (
                     hit.text.as_deref().unwrap_or_default(),
                     hit.description.as_deref(),
+                    hit.shortcut.as_deref(),
                     hit.rect,
                     None,
                     (hit.anchor == TooltipAnchor::NavalWindow)
                         .then(|| drawn.expect("combat hover has a drawn window").rect),
                 )
             })
-            .or_else(|| map.map(|(text, body, rect, province)| (text, body, rect, province, None)));
+            .or_else(|| {
+                map.map(|(text, body, rect, province)| (text, body, None, rect, province, None))
+            });
         self.hover
-            .bind_province(hit.and_then(|(_, _, _, province, _)| province));
-        if let Some((text, delayed, _, _, window)) = hit
-            && (!text.is_empty() || delayed.is_some_and(|text| !text.is_empty()))
+            .bind_province(hit.and_then(|(_, _, _, _, province, _)| province));
+        if let Some((text, delayed, shortcut, _, _, window)) = hit
+            && (!text.is_empty()
+                || delayed.is_some_and(|text| !text.is_empty())
+                || shortcut.is_some_and(|text| !text.is_empty()))
         {
             self.hover.anchor =
                 window
@@ -465,7 +470,7 @@ impl Window {
         let anchor = self.hover.anchor;
         self.hover
             .shown(
-                hit.map(|(text, delayed, rect, _, _)| (text, delayed, rect)),
+                hit.map(|(text, delayed, shortcut, rect, _, _)| (text, delayed, shortcut, rect)),
                 point,
                 std::time::Instant::now(),
                 defines.timing,
@@ -663,6 +668,7 @@ struct TooltipHit {
     rect: [f32; 4],
     text: Option<HoverText>,
     description: Option<HoverText>,
+    shortcut: Option<HoverText>,
     anchor: TooltipAnchor,
 }
 
@@ -710,6 +716,8 @@ pub struct Widget {
     /// Hover text, and the delayed body shown after its longer delay.
     pub tooltip: Option<HoverText>,
     pub tooltip_description: Option<HoverText>,
+    /// Native shortcut tail, appended after the immediate and delayed strings (1402A4080).
+    pub tooltip_shortcut: Option<HoverText>,
     pub tooltip_anchor: TooltipAnchor,
     /// A dynamic hover builder owns both strings ([`tooltips::set_hover`]):
     /// the window's update (1415C1A60, 1415BF4B0, 1415C0AE0) replaces the

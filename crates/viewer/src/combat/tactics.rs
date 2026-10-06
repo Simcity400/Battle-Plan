@@ -1439,10 +1439,12 @@ pub(super) fn bind(
             None
         }
     };
-    menu.values
-        .entry("current_phase".into())
-        .or_default()
-        .tooltip = description.map(Into::into);
+    super::tooltips::set_hover(
+        &mut menu.values,
+        "current_phase",
+        description.map(Into::into),
+        None,
+    );
     let mut order: Vec<usize> = (0..candidates.len()).collect();
     if unlocked.iter().all(Option::is_some) && chances.iter().all(Option::is_some) {
         native_sort(&mut order, |a, b| {

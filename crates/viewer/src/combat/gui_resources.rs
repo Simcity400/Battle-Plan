@@ -123,6 +123,7 @@ fn active(values: &Values, sprites: &mut BTreeSet<Vec<u8>>, flags: &mut BTreeSet
             .into_iter()
             .chain(widget.tooltip.as_deref())
             .chain(widget.tooltip_description.as_deref())
+            .chain(widget.tooltip_shortcut.as_deref())
         {
             inline.add_text(text);
         }

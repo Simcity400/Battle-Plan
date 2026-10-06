@@ -10,7 +10,7 @@ fn province_binding_restarts_delayed_body_but_hour_refresh_does_not() {
     let mut hover = HoverState::default();
     hover.bind_province(Some(7));
     hover.shown(
-        Some(("Forest", Some("details"), rect)),
+        Some(("Forest", Some("details"), None, rect)),
         point,
         start,
         timing,
@@ -18,7 +18,7 @@ fn province_binding_restarts_delayed_body_but_hour_refresh_does_not() {
     hover.bind_province(Some(7));
     assert_eq!(
         hover.shown(
-            Some(("Storm", Some("details"), rect)),
+            Some(("Storm", Some("details"), None, rect)),
             point,
             start + Duration::from_millis(1001),
             timing
@@ -28,7 +28,7 @@ fn province_binding_restarts_delayed_body_but_hour_refresh_does_not() {
     hover.bind_province(Some(8));
     assert_eq!(
         hover.shown(
-            Some(("Hills", Some("details"), rect)),
+            Some(("Hills", Some("details"), None, rect)),
             point,
             start + Duration::from_millis(1002),
             timing
@@ -38,7 +38,7 @@ fn province_binding_restarts_delayed_body_but_hour_refresh_does_not() {
     hover.bind_province(None);
     assert_eq!(
         hover.shown(
-            Some(("Raid", Some("raid body"), rect)),
+            Some(("Raid", Some("raid body"), None, rect)),
             point,
             start + Duration::from_millis(1003),
             timing
@@ -157,7 +157,7 @@ fn naval_ship_tooltip_anchors_to_the_free_window_side_at_y_plus_250() {
 fn hover_uses_strict_show_and_delayed_deadlines() {
     let start = Instant::now();
     let mut hover = HoverState::default();
-    let hit = Some(("Header", Some("Body"), RECT));
+    let hit = Some(("Header", Some("Body"), None, RECT));
     assert_eq!(hover.shown(hit, POINT, start, TIMING), None);
     assert!(hover.next_change(start, TIMING).is_some());
     assert_eq!(
@@ -183,6 +183,46 @@ fn hover_uses_strict_show_and_delayed_deadlines() {
 }
 
 #[test]
+fn shortcut_only_hover_waits_for_show_delay_and_tail_follows_delayed_body() {
+    let start = Instant::now();
+    let shortcut = "Shortcut: \u{13}ESCAPE";
+    let mut hover = HoverState::default();
+    let hit = Some(("", None, Some(shortcut), RECT));
+    // 1402A4080 appends the shortcut before applying the ordinary show deadline.
+    assert_eq!(hover.shown(hit, POINT, start, TIMING), None);
+    assert_eq!(
+        hover.shown(hit, POINT, start + Duration::from_millis(50), TIMING),
+        None
+    );
+    assert_eq!(
+        hover.shown(hit, POINT, start + Duration::from_millis(51), TIMING),
+        Some((shortcut, POINT.unwrap()))
+    );
+    let hit = Some(("Main", Some("Body"), Some(shortcut), RECT));
+    assert_eq!(
+        hover.shown(hit, POINT, start + Duration::from_millis(51), TIMING),
+        Some(("Main\n--------------\nShortcut: \u{13}ESCAPE", POINT.unwrap()))
+    );
+    assert_eq!(
+        hover.shown(hit, POINT, start + Duration::from_millis(1001), TIMING),
+        Some((
+            "Main\n--------------\nBody\n--------------\nShortcut: \u{13}ESCAPE",
+            POINT.unwrap()
+        ))
+    );
+    // A new hit owns every part; a shortcut never leaks to the next widget.
+    assert_eq!(
+        hover.shown(
+            Some(("Next", None, None, RECT)),
+            POINT,
+            start + Duration::from_millis(1002),
+            TIMING
+        ),
+        Some(("Next", POINT.unwrap()))
+    );
+}
+
+#[test]
 fn hover_preserves_authored_whitespace_in_tooltip_parts() {
     // The clock runs a second before the hover, so a zero delay's
     // deadline is set (above 0).
@@ -190,7 +230,7 @@ fn hover_preserves_authored_whitespace_in_tooltip_parts() {
     let start = clock + Duration::from_secs(1);
     let mut hover = HoverState::default();
     hover.shown(None, None, clock, [0.0; 3]);
-    let hit = Some((" \n", Some(" x "), RECT));
+    let hit = Some((" \n", Some(" x "), None, RECT));
     assert_eq!(hover.shown(hit, POINT, start, [0.0; 3]), None);
     assert_eq!(
         hover.shown(hit, POINT, start + Duration::from_millis(1), [0.0; 3]),
@@ -202,16 +242,21 @@ fn hover_preserves_authored_whitespace_in_tooltip_parts() {
 fn hovering_new_values_keeps_clock_but_a_new_binding_restarts_delayed_text() {
     let start = Instant::now();
     let mut hover = HoverState::default();
-    hover.shown(Some(("10", Some("details"), RECT)), POINT, start, TIMING);
     hover.shown(
-        Some(("10", Some("details"), RECT)),
+        Some(("10", Some("details"), None, RECT)),
+        POINT,
+        start,
+        TIMING,
+    );
+    hover.shown(
+        Some(("10", Some("details"), None, RECT)),
         POINT,
         start + Duration::from_millis(51),
         TIMING,
     );
     assert_eq!(
         hover.shown(
-            Some(("11", Some("updated"), RECT)),
+            Some(("11", Some("updated"), None, RECT)),
             POINT,
             start + Duration::from_millis(1001),
             TIMING
@@ -221,7 +266,7 @@ fn hovering_new_values_keeps_clock_but_a_new_binding_restarts_delayed_text() {
     let next_rect = [5.0, 2.0, 3.0, 4.0];
     assert_eq!(
         hover.shown(
-            Some(("New", Some("later"), next_rect)),
+            Some(("New", Some("later"), None, next_rect)),
             POINT,
             start + Duration::from_millis(1100),
             TIMING
@@ -234,7 +279,7 @@ fn hovering_new_values_keeps_clock_but_a_new_binding_restarts_delayed_text() {
 fn hide_delay_retains_last_text_and_reentry_cancels_hiding() {
     let start = Instant::now();
     let mut hover = HoverState::default();
-    let hit = Some(("Header", None, RECT));
+    let hit = Some(("Header", None, None, RECT));
     hover.shown(hit, POINT, start, TIMING);
     hover.shown(hit, POINT, start + Duration::from_millis(51), TIMING);
     assert_eq!(
@@ -284,7 +329,7 @@ fn negative_delays_follow_the_native_comparisons() {
     let start = clock + Duration::from_secs(2);
     let mut hover = HoverState::default();
     hover.shown(None, None, clock, timing);
-    let hit = Some(("Header", Some("Body"), RECT));
+    let hit = Some(("Header", Some("Body"), None, RECT));
     assert_eq!(
         hover.shown(hit, POINT, start, timing),
         Some(("Header\n--------------\nBody", POINT.unwrap()))
@@ -317,7 +362,7 @@ fn a_deadline_at_or_below_zero_on_the_presentation_clock_is_unset() {
     let at = |millis| clock + Duration::from_millis(millis);
     let timing = [-1.0, 1.0, -1.0];
     let mut hover = HoverState::default();
-    let hit = Some(("Header", None, RECT));
+    let hit = Some(("Header", None, None, RECT));
     assert_eq!(hover.shown(hit, POINT, clock, timing), None);
     assert_eq!(hover.shown(hit, POINT, at(500), timing), None);
     // The deadline holds once the clock passes one second.
@@ -346,7 +391,7 @@ fn a_deadline_at_or_below_zero_on_the_presentation_clock_is_unset() {
 fn delayed_only_tooltip_waits_for_body_then_show_delay_without_separator() {
     let start = Instant::now();
     let mut hover = HoverState::default();
-    let hit = Some(("", Some("Details"), RECT));
+    let hit = Some(("", Some("Details"), None, RECT));
     assert_eq!(hover.shown(hit, POINT, start, TIMING), None);
     assert_eq!(
         hover.shown(hit, POINT, start + Duration::from_millis(1001), TIMING),

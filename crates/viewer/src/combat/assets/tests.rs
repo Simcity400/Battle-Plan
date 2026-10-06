@@ -66,6 +66,18 @@ fn combat_native_assets_follow_global_templates_and_scrollbars() {
     assert!(!assets.sprites.contains(b"GFX_old".as_slice()));
 }
 
+#[test]
+fn combat_shortcut_assets_request_the_first_keycap_without_localisation() {
+    let windows = crate::map::native_gui::tests::windows(
+        br#"guiTypes={containerWindowType={name=landcombatview
+            containerWindowType={name=header
+                buttonType={name=close shortcut=ESCAPE shortcut=F12}}}}"#,
+    );
+    let assets = native_window_assets(&windows, &Default::default());
+    assert!(assets.sprites.contains(b"GFX_ESCAPE".as_slice()));
+    assert!(!assets.sprites.contains(b"GFX_F12".as_slice()));
+}
+
 fn tga(width: u16, height: u16) -> Vec<u8> {
     let mut bytes = vec![0; 18];
     bytes[2] = 2;

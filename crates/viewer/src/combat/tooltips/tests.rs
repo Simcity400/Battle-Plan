@@ -2,6 +2,58 @@ use super::*;
 use crate::combat::binding::NoIcons;
 
 #[test]
+fn combat_close_hovers_use_first_authored_shortcut_and_keep_tooltip_parts() {
+    let loc = loc(&[
+        ("SHORTCUT", "Shortcut: $KEY$"),
+        ("MAIN", "Main"),
+        ("DELAYED", "Body"),
+    ]);
+    let windows = windows(
+        br#"containerWindowType={name=view
+            buttonType={name=close shortcut=ESCAPE shortcut=F12
+                pdx_tooltip=MAIN pdx_tooltip_delayed=DELAYED}}"#,
+    );
+    let gui = Gui {
+        icons: &NoIcons,
+        loc: &loc,
+        windows: &windows,
+    };
+    let mut values = Values::new();
+    values.entry("CLOSE".into()).or_default();
+    let mut refused = BTreeMap::new();
+    authored(
+        &gui,
+        windows.gui_type(b"view").unwrap(),
+        "",
+        &mut values,
+        &mut refused,
+    );
+    assert!(refused.is_empty(), "{refused:?}");
+    assert_eq!(values.len(), 1);
+    let close = &values["CLOSE"];
+    assert_eq!(close.tooltip.as_deref(), Some("Main"));
+    assert_eq!(close.tooltip_description.as_deref(), Some("Body"));
+    assert_eq!(
+        close.tooltip_shortcut.as_deref(),
+        Some("Shortcut: \u{13}ESCAPE")
+    );
+    let missing = Gui {
+        loc: &Localisation::default(),
+        ..gui
+    };
+    assert_eq!(
+        shortcut_tooltip(&missing, b"ESCAPE", "close"),
+        Ok("SHORTCUT".into())
+    );
+    assert_eq!(shortcut_keycaps(" Ctrl + A "), "\u{13}Ctrl +\u{13}A ");
+    assert_eq!(shortcut_keycaps("+AA"), "+\u{13}AA ");
+    assert_eq!(shortcut_keycaps("+A"), "\u{13}+A ");
+    assert_eq!(shortcut_keycaps(","), "\u{13}COMMA ");
+    assert_eq!(shortcut_keycaps("."), "\u{13}PERIOD ");
+    assert_eq!(shortcut_keycaps(" \r\n\t"), "");
+}
+
+#[test]
 fn naval_progress_has_outlook_and_delayed_description_on_both_skins() {
     let loc: Localisation = [
         ("COMBAT_UNDECIDED", "Undecided"),

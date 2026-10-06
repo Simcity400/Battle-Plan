@@ -41,3 +41,9 @@ the balance icons receive hovers. Ship group hovers anchor beside the combat
 window (`1417D47E0`); sunk entries follow the authored grid slots (`1417D05D0`).
 Carrier grouping shares the equipment-pool predicate used by sortie modifiers
 (`14195ED00`, `140C2B7E0`), and runtime air sprites load from the stacked registry.
+
+Combat hovers reject transparent text and follow graphical attach order
+(`1422D8240`, `142226BD0`). Authored button shortcuts append native keycaps and
+use the normal show delay (`1402A2810`, `1402A4080`). Naval header skills use
+recorded component values and retained definitions (`141DF4270`, `140AD9010`);
+trait hovers are refused by name and counted until timed traits are recorded.

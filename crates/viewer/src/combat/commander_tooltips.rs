@@ -1,4 +1,4 @@
-//! Land commander hover text, rebuilt from recorded identities and content.
+//! Commander hover text, rebuilt from recorded identities and content.
 //!
 //! Portrait: 1415C4AF0, which appends learning traits only for the viewing
 //! country. The land helper constructs
@@ -25,14 +25,16 @@ use installed_content::{
     localisation::{Argument, Localisation},
     tokens::Token,
     unit_leader::{
-        Adjuster, Leaders, Skills, SubUnit, SubUnits, TraitEffects, TraitReference, Traits,
+        Adjuster, Component, Leaders, Skills, SubUnit, SubUnits, TraitEffects, TraitReference,
+        Traits,
     },
 };
 use replay::{
     frame::DecodedFrame,
     rows::{
         CharacterRoleTraitRow, CharacterRow, CountryRow, LandCombatCommanderLearningTrait,
-        LandCombatCommanderTimedTrait, LandCombatCommanderTrait, UnitLeaderRow, tables,
+        LandCombatCommanderTimedTrait, LandCombatCommanderTrait, NavalCommanderInputs,
+        UnitLeaderRow, tables,
     },
 };
 use std::{
@@ -553,7 +555,14 @@ fn sub_units(
             Block::build(definitions, &entry.block).map_err(EffectRefusal::Modifier)?;
         dropped.extend(names.into_iter().map(Dropped::Modifier));
         // Copied into the entry, then into the array (1405492D0 twice).
-        block.custom_tooltips = block.custom_tooltips.copied().copied();
+        block.custom_tooltips = entry
+            .block
+            .tooltip_table()
+            .copied()
+            .copied()
+            .keys()
+            .map(|key| key.as_bytes().to_vec())
+            .collect();
         if block.kept(definitions).map_err(EffectRefusal::Modifier)? {
             blocks.insert(index, block);
         }
@@ -1316,6 +1325,229 @@ pub(super) fn bind(
             },
             &effect_context,
         );
+    }
+    Ok(())
+}
+
+/// 141DF3A30 installs 141DF4270 on both the icon and its skill text.
+fn naval_skills(
+    out: &mut Bindings,
+    icons: &dyn TextIcons,
+    loc: &Localisation,
+    skills: &Skills,
+    definitions: Result<&Definitions<'_>, &Refusal>,
+    commander: &NavalCommanderInputs,
+    prefix: &str,
+) {
+    let levels = Definitions::settle(definitions, skills.component_conditions());
+    for (index, (component, stat)) in [
+        (Component::Attack, "attack"),
+        (Component::Defense, "defense"),
+        (Component::Maneuvering, "maneuvering"),
+        (Component::Coordination, "coordination"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let text = (|| -> Result<String, String> {
+            let key = super::tooltips::LEADER_SKILL_DESC;
+            // 142230940 displays a missing localisation key itself.
+            let mut text = builtin(
+                icons,
+                loc,
+                key,
+                &[("S", Argument::Int32(commander.skills[index + 1]))],
+            )?;
+            text.push('\n');
+            let selected = &commander.skill_definitions[index + 1];
+            if selected.present == 0 {
+                return Err("the selected component skill definition is null".into());
+            }
+            // 141DF4270 reads the retained +F70/+F80/+F90/+FA0 definition,
+            // not a fresh lookup from the displayed component level.
+            // 140AD4190 constructs the null skill with an empty CModifier.
+            if selected.valid == 0 {
+                return Ok(text);
+            }
+            levels.clone()?;
+            let authored = skills
+                .component_modifiers(component, selected.level, selected.category)?
+                .ok_or_else(|| {
+                    format!(
+                        "the content has no {stat} skill definition at level {} in category {}",
+                        selected.level, selected.category
+                    )
+                })?;
+            if let Some(reason) = authored.unheld.cause() {
+                return Err(format!("the {stat} skill modifier: {reason}"));
+            }
+            let definitions = definitions.map_err(ToString::to_string)?;
+            let (mut block, dropped) =
+                Block::build(definitions, authored).map_err(|reason| reason.to_string())?;
+            for name in dropped {
+                out.refuse(format!("Naval commander skill {prefix}/{stat}: content modifier {name} has no recorded definition; the native reader drops it"));
+            }
+            // Content supplies the hidden set; keep the retained definition's
+            // recorded values and custom tooltip slot order (140AD9010 -> 14054E050).
+            block.values = commander
+                .modifiers
+                .iter()
+                .filter(|modifier| modifier.source == index as u8 + 1)
+                .map(|modifier| (modifier.id, modifier.value))
+                .collect();
+            let mut tooltips: Vec<_> = commander
+                .tooltips
+                .iter()
+                .filter(|tooltip| tooltip.source == index as u8 + 1)
+                .collect();
+            tooltips.sort_by_key(|tooltip| tooltip.bucket);
+            block.custom_tooltips = tooltips.iter().map(|tooltip| tooltip.text.clone()).collect();
+            // 140AD9010 -> 14054E050: precision 2, all categories, no
+            // indentation, scale 1.0. Reuse its shared modifier formatter.
+            text.push_str(
+                &block
+                    .describe(definitions, icons, loc, super::fixed::ONE, "", u32::MAX)
+                    .map_err(|reason| reason.to_string())?,
+            );
+            Ok(text)
+        })();
+        let text = match text {
+            Ok(text) => hover_text(&text),
+            Err(reason) => {
+                out.refuse(format!(
+                    "Naval commander skill {prefix}/{stat} hover is omitted: {reason}"
+                ));
+                None
+            }
+        };
+        for kind in ["icon", "text"] {
+            // 141DF3A30 binds leader_stat_{attack,defense,maneuvering,coordination}_{icon,text}.
+            set_hover(
+                &mut out.values,
+                format!("{prefix}/leader_stat_{stat}_{kind}"),
+                text.clone(),
+                None,
+            );
+        }
+    }
+}
+
+fn refuse_naval_traits(
+    out: &mut Bindings,
+    windows: &NativeWindows,
+    key: &str,
+    traits: &[LandCombatCommanderTrait],
+) {
+    let Some(grid) = out.values.get_mut(key) else {
+        out.warnings.push(format!(
+            "Combat trait hover {key}: the trait grid is not bound; its hovers are omitted."
+        ));
+        return;
+    };
+    let shown: Vec<_> = traits
+        .iter()
+        .filter(|item| item.kind != 0 && item.relevant != 0)
+        .collect();
+    let entry_count = grid.entries.len();
+    let mut refused = Vec::new();
+    for (index, (entry, &item)) in grid.entries.iter_mut().zip(&shown).enumerate() {
+        if item.kind != 6 {
+            // 141C5EF70 installs the ordinary trait handler only on Background.
+            refuse_hovers(entry, ["Background"]);
+        } else {
+            // Exile handlers propagate to the authored tree (1422AF2D0 / 14229D3A0).
+            let template = grid
+                .entry_templates
+                .get(&index)
+                .or(grid.entry_template.as_ref());
+            let keys: Vec<_> = template
+                .and_then(|name| windows.gui_type(name.as_bytes()))
+                .map(|root| {
+                    super::gui::elements(root)
+                        .into_iter()
+                        .map(|(path, _)| path)
+                        .collect()
+                })
+                .unwrap_or_else(|| entry.keys().cloned().collect());
+            refuse_hovers(entry, keys);
+        }
+        // 141C5F730 unconditionally queries 140C0B3C0 / 140C07810:
+        // CUnitLeader+0xDE0 pointer, +0xDEC count; stride 0x10, definition +0, days +8.
+        // The naval recording has no timed-trait vector, including zero-day entries.
+        refused.push(format!(
+            "Naval trait {} hover is omitted: the commander's timed-trait entries are not recorded",
+            String::from_utf8_lossy(&item.token)
+        ));
+    }
+    if entry_count != shown.len() {
+        out.warnings.push(format!(
+            "Combat trait hover {key}: the grid has {entry_count} entries for {} shown traits; the unmatched ones have no hover.",
+            shown.len()
+        ));
+    }
+    for reason in refused {
+        out.refuse(reason);
+    }
+}
+
+pub(super) fn bind_naval(
+    out: &mut Bindings,
+    document: &Document,
+    frame: &DecodedFrame,
+    selection: Selection,
+) -> io::Result<()> {
+    if let Selection::NavalResult(id) = selection {
+        let details = rows::<tables::NavalCombatResultDetails>(frame)?;
+        if let Some(detail) = details.rows().iter().find(|row| row.result == id) {
+            for (side, label) in detail.sides.iter().zip(["attacker", "defender"]) {
+                if let Some(commander) = &side.commander_context
+                    && commander.commander != 0
+                {
+                    // 1417C71F0 / 1417C6800 bind {attacker,defender}_leader/traits_grid.
+                    refuse_naval_traits(
+                        out,
+                        &document.icons.combat.native_windows,
+                        &format!("{label}_leader/traits_grid"),
+                        &commander.traits,
+                    );
+                }
+            }
+        }
+        return Ok(());
+    }
+    let Selection::Naval(id) = selection else {
+        return Ok(());
+    };
+    let details = rows::<tables::NavalCombatDetails>(frame)?;
+    let Some(detail) = details.rows().iter().find(|row| row.combat == id) else {
+        return Ok(());
+    };
+    let definitions = Definitions::read(frame, &document.modifier_names)?;
+    let content = &document.icons.combat.commander_tooltips;
+    let read = content.settled(definitions.as_ref());
+    for (side, label) in detail.sides.iter().zip(["attacker", "defender"]) {
+        // 1417D81B0 binds header_container/{attacker,defender}_stats.
+        let prefix = format!("header_container/{label}_stats");
+        if let Some(commander) = &side.commander_inputs {
+            // 1417D81B0 binds header_container/traits_grid_{attacker,defender}.
+            refuse_naval_traits(
+                out,
+                &document.icons.combat.native_windows,
+                &format!("header_container/traits_grid_{label}"),
+                &commander.traits,
+            );
+            if commander.commander != 0 {
+                naval_skills(
+                    out,
+                    &document.icons.combat,
+                    &document.names.localisation,
+                    &read.skills,
+                    definitions.as_ref(),
+                    commander,
+                    &prefix,
+                );
+            }
+        }
     }
     Ok(())
 }

@@ -452,6 +452,17 @@ fn native_window_assets(
             &|name| windows.gui_type(name),
             localisation,
         ));
+        for (_, element) in super::gui::elements(root) {
+            // 1422B4460 / 1402A2810: the first shortcut supplies inline keycap sprites.
+            // The hover binder names and refuses non-UTF-8 shortcuts.
+            if let Some(shortcut) = element
+                .button()
+                .and_then(|button| button.shortcuts.first())
+                .and_then(|shortcut| std::str::from_utf8(shortcut).ok())
+            {
+                assets.add_text(&super::tooltips::shortcut_keycaps(shortcut));
+            }
+        }
     }
     assets
 }

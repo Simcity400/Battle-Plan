@@ -84,9 +84,11 @@ struct Prepared {
 }
 
 struct Hover {
+    order: usize,
     region: Region,
     text: Option<super::HoverText>,
     description: Option<super::HoverText>,
+    shortcut: Option<super::HoverText>,
     anchor: super::TooltipAnchor,
 }
 
@@ -570,6 +572,18 @@ impl Retained {
             let Some(positioned) = self.places.get(&group.path) else {
                 continue;
             };
+            let hover_order = if hovers && !positioned.is_empty() {
+                let order = layout
+                    .regions
+                    .iter()
+                    .position(|region| region.path == holder.path);
+                if order.is_none() {
+                    count(refused, &holder.path, "entry hover has no holder region");
+                }
+                order
+            } else {
+                None
+            };
             for (row_index, place) in positioned {
                 let Some(row) = group.rows.get(*row_index) else {
                     count(refused, &group.path, "positioned entry has no bound row");
@@ -609,7 +623,7 @@ impl Retained {
                 items[holder_index].extend(
                     holder.place_parts(*place, prepared.layout.composed_parts(&prepared.items)),
                 );
-                if hovers {
+                if let Some(order) = hover_order {
                     // Native holder placement also moves nested hovers, without comparing their text.
                     let regions: Vec<_> = prepared
                         .hovers
@@ -621,11 +635,14 @@ impl Retained {
                             .place_regions(*place, &regions)
                             .into_iter()
                             .zip(prepared.hovers)
-                            .map(|(region, hit)| Hover { region, ..hit }),
+                            .map(|(region, hit)| Hover { order, region, ..hit }),
                     );
                 }
             }
         }
+        // Collision targets follow graphical attach order, including grid items
+        // before later siblings (142226BD0, 142226CC0, 142225EC0).
+        hovered.sort_by_key(|hit| hit.order);
         Some(Prepared {
             layout,
             items,
@@ -691,7 +708,7 @@ fn repeated(values: &Values) -> Vec<Group<'_>> {
         .collect()
 }
 
-fn elements(root: &Element) -> Vec<(String, &Element)> {
+pub(super) fn elements(root: &Element) -> Vec<(String, &Element)> {
     let mut out = Vec::new();
     let mut pending = vec![(String::new(), root)];
     while let Some((path, element)) = pending.pop() {
@@ -936,19 +953,47 @@ fn region_rect(region: &Region, origin: [i32; 2]) -> Option<[f32; 4]> {
     ])
 }
 
+// ReloadGui binds these native templates (1415C5900, 1417D7450, 1417C71F0).
+pub(super) fn window_name(selection: Selection) -> &'static str {
+    match selection {
+        Selection::Land(_) => "landcombatview",
+        Selection::Naval(_) => "navalcombatview",
+        Selection::NavalResult(_) => "navalcombatresultswindow",
+    }
+}
+
 fn hover_regions(root: &Element, regions: &[Region], values: &Values) -> Vec<Hover> {
     let indexed = bound_values(root, values);
+    // CInstantTextObject::HitTest@1422D8240 rejects the constructor's
+    // always-transparent bit (1422B50A0 -> 1422D7A00), even with a handler.
+    let mut transparent = BTreeSet::new();
+    let mut pending = vec![root];
+    while let Some(element) = pending.pop() {
+        if element.text_box().is_some_and(|text| text.always_transparent) {
+            transparent.insert(element.path.as_str());
+        }
+        pending.extend(element.nested());
+    }
     regions
         .iter()
-        .filter_map(|region| {
+        .enumerate()
+        .filter_map(|(order, region)| {
+            if transparent.contains(region.path.as_str()) {
+                return None;
+            }
             let widget = indexed.get(region.path.as_str())?;
-            if widget.tooltip.is_none() && widget.tooltip_description.is_none() {
+            if widget.tooltip.is_none()
+                && widget.tooltip_description.is_none()
+                && widget.tooltip_shortcut.is_none()
+            {
                 return None;
             }
             Some(Hover {
+                order,
                 region: region.clone(),
                 text: widget.tooltip.clone(),
                 description: widget.tooltip_description.clone(),
+                shortcut: widget.tooltip_shortcut.clone(),
                 anchor: widget.tooltip_anchor,
             })
         })
@@ -997,12 +1042,7 @@ impl Windows {
                 ..Self::default()
             };
         }
-        // ReloadGui binds the native registry's templates (1415C5900/1417D7450).
-        let name = match selection {
-            Selection::Land(_) => "landcombatview",
-            Selection::Naval(_) => "navalcombatview",
-            Selection::NavalResult(_) => "navalcombatresultswindow",
-        };
+        let name = window_name(selection);
         let mut drawn = Drawn::default();
         let root = match template(windows, name) {
             Ok(root) => root,
@@ -1185,6 +1225,7 @@ impl Windows {
                             rect,
                             text: None,
                             description: None,
+                            shortcut: None,
                             anchor: super::TooltipAnchor::Pointer,
                         });
                         append_hovers(&mut drawn.tooltips, prepared.hovers, origin);
@@ -1240,6 +1281,7 @@ fn append_hovers(target: &mut Vec<TooltipHit>, hovers: Vec<Hover>, origin: [i32;
             rect: region_rect(&hit.region, origin)?,
             text: hit.text,
             description: hit.description,
+            shortcut: hit.shortcut,
             anchor: hit.anchor,
         })
     }));

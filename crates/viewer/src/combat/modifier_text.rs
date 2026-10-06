@@ -9,10 +9,7 @@ use super::{
     fixed::{ONE, mul},
 };
 use crate::table_access::{Available, rows};
-use installed_content::{
-    localisation::{Argument, Localisation},
-    modifiers::TooltipTable,
-};
+use installed_content::localisation::{Argument, Localisation};
 use replay::{
     frame::DecodedFrame,
     rows::{ModifierDefinitionRow, tables},
@@ -277,8 +274,8 @@ impl<'frame> Definitions<'frame> {
 pub(super) struct Block {
     pub(super) values: BTreeMap<u32, i64>,
     pub(super) hidden: BTreeSet<u32>,
-    /// The custom tooltip set (+0x68), listed in its slot order.
-    pub(super) custom_tooltips: TooltipTable,
+    /// The custom tooltip keys (+0x68), listed in their slot order.
+    pub(super) custom_tooltips: Vec<Vec<u8>>,
     /// An `added_modifier` child.
     pub(super) added: bool,
 }
@@ -294,7 +291,11 @@ impl Block {
     ) -> Result<(Self, Vec<String>), Refusal> {
         let mut block = Self {
             added: !authored.children.is_empty(),
-            custom_tooltips: authored.tooltip_table().clone(),
+            custom_tooltips: authored
+                .tooltip_table()
+                .keys()
+                .map(|key| key.as_bytes().to_vec())
+                .collect(),
             ..Self::default()
         };
         let mut dropped = Vec::new();
@@ -395,11 +396,11 @@ impl Block {
             text.push_str(&value_text(row, value, 2, false, false, icons, loc)?);
         }
         // The key set in slot order; 14054E050 skips an empty key.
-        for key in self.custom_tooltips.keys().filter(|key| !key.is_empty()) {
+        for key in self.custom_tooltips.iter().filter(|key| !key.is_empty()) {
             if !text.is_empty() && !text.ends_with('\n') {
                 text.push('\n');
             }
-            text.push_str(&token(icons, loc, key.as_bytes()).map_err(Refusal::Localisation)?);
+            text.push_str(&token(icons, loc, key).map_err(Refusal::Localisation)?);
         }
         Ok(text)
     }

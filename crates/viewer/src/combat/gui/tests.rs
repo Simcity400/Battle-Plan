@@ -12,6 +12,114 @@ impl CombatResources for Fixture {
 }
 
 #[test]
+fn combat_box_hovers_pass_through_counts_and_keep_ship_icons_on_both_sides() {
+    use super::super::{Widget, tooltips::set_hover};
+    for (transparent, cover) in [(true, false), (false, false), (true, true)] {
+        let mut source = String::from(
+            "guiTypes={containerWindowType={name=view size={width=640 height=120}",
+        );
+        let mut values = Values::new();
+        let mut groups = Vec::new();
+        let mut entry_values = Values::new();
+        set_hover(&mut entry_values, "icon", Some("Ship".into()), None);
+        set_hover(&mut entry_values, "count", Some("Ship".into()), None);
+        entry_values.entry("count".into()).or_default().text = Some("8".into());
+        for side in 0..2 {
+            for box_index in 0..4 {
+                let key = format!("formation_{side}_{box_index}");
+                let container = format!("box_{side}_{box_index}");
+                let grid = format!("grid_{side}_{box_index}");
+                let (x, y) = (box_index * 160, side * 60);
+                let background = format!(
+                    "containerWindowType={{name={container} position={{x={x} y={y}}} \
+                     size={{width=140 height=40}} background={{name=tooltip \
+                     spriteType=GFX_cornered pdx_tooltip={key}}}}}"
+                );
+                let holder = format!(
+                    "gridBoxType={{name={grid} position={{x={x} y={y}}} \
+                     size={{width=140 height=40}} slotsize={{width=140 height=40}} \
+                     max_slots_horizontal=1 format=UPPER_LEFT}}"
+                );
+                for declaration in if cover {
+                    [&holder, &background]
+                } else {
+                    [&background, &holder]
+                } {
+                    source.push_str(declaration);
+                }
+                values.insert(
+                    format!("{container}/tooltip"),
+                    Widget {
+                        tooltip: Some(key.into()),
+                        ..Default::default()
+                    },
+                );
+                groups.push(Group {
+                    path: grid,
+                    rows: vec![Row {
+                        key: "0".into(),
+                        template: "entry",
+                        values: &entry_values,
+                        explicit: None,
+                    }],
+                });
+            }
+        }
+        source.push_str(&format!(
+            "}} containerWindowType={{name=entry size={{width=140 height=40}} \
+             iconType={{name=icon position={{x=5 y=5}} spriteType=GFX_even}} \
+             instantTextBoxType={{name=count position={{x=30 y=5}} font=Main_14 \
+             maxWidth=100 maxHeight=14 alwaystransparent={}}}}}}}",
+            if transparent { "yes" } else { "no" }
+        ));
+        let windows = windows(source.as_bytes());
+        let root = windows.gui_type(b"view").unwrap();
+        let resources = fixture();
+        let mut retained = Retained::new("view", root, [800, 600], &resources).unwrap();
+        let mut refused = BTreeMap::new();
+        let prepared = retained
+            .prepare(
+                root,
+                &values,
+                groups,
+                &windows,
+                &resources,
+                Tick { time: 0., dt: 0. },
+                1,
+                true,
+                true,
+                true,
+                &mut refused,
+            )
+            .unwrap();
+        assert!(refused.is_empty(), "{refused:?}");
+        let mut hits = Vec::new();
+        append_hovers(&mut hits, prepared.hovers, [0; 2]);
+        let hover = |point| {
+            hits.iter()
+                .rev()
+                .find(|hit| super::super::contains(hit.rect, point))
+                .and_then(|hit| hit.text.as_deref())
+        };
+        for side in 0..2 {
+            for box_index in 0..4 {
+                let key = format!("formation_{side}_{box_index}");
+                let (x, y) = ((box_index * 160) as f32, (side * 60) as f32);
+                assert_eq!(
+                    hover([x + 10., y + 10.]),
+                    Some(if cover { key.as_str() } else { "Ship" }),
+                );
+                assert_eq!(hover([x + 60., y + 30.]), Some(key.as_str()));
+                assert_eq!(
+                    hover([x + 60., y + 10.]),
+                    Some(if transparent || cover { key.as_str() } else { "Ship" }),
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn combat_mixed_grid_rows_are_counted_without_losing_compatible_entries() {
     let windows = windows(
         br#"guiTypes={

@@ -3,6 +3,7 @@ use crate::combat::binding::NoIcons;
 use dashboard::modifier_text::{
     BOOLEAN, NEUTRAL, NO_PLUS, PERCENT, PERCENT_TIMES_HUNDRED, POSITIVE_IS_GOOD,
 };
+use installed_content::modifiers::TooltipTable;
 
 fn loc(entries: &[(&str, &str)]) -> Localisation {
     entries
@@ -86,7 +87,7 @@ fn description_orders_by_index_and_skips_hidden_zero_and_uncategorised_entries()
     let block = Block {
         values: BTreeMap::from([(4, 10_000), (2, -10_000), (1, 10_000), (3, 10_000), (0, 0)]),
         hidden: BTreeSet::from([1]),
-        custom_tooltips: keys(&["custom_tt"]),
+        custom_tooltips: vec![b"custom_tt".to_vec()],
         added: false,
     };
     assert_eq!(
@@ -259,22 +260,22 @@ fn custom_tooltip_keys_follow_the_robin_hood_slot_order() {
     assert_eq!(sorted, expected);
     assert_eq!(many.copied().keys().count(), 20);
     let described = Block {
-        custom_tooltips: keys(&["b", "a"]),
+        custom_tooltips: set.keys().map(|key| key.as_bytes().to_vec()).collect(),
         ..Block::default()
     };
-    let loc = loc(&[("a", "A"), ("b", "B")]);
+    let loc = loc(&[("k6", "Six"), ("k15", "Fifteen"), ("k5", "Five")]);
     let rows: [ModifierDefinitionRow; 0] = [];
     let definitions = Definitions {
         rows: &rows,
         names: std::sync::Arc::new(Ok(BTreeMap::new())),
         features: None,
     };
-    // "a" hashes to bucket 4 and "b" to 5: slot order, not read order.
+    // The described keys keep the source table's slot order.
     assert_eq!(
         described
             .describe(&definitions, &NoIcons, &loc, ONE, "", u32::MAX)
             .unwrap(),
-        "A\nB"
+        "Six\nFifteen\nFive"
     );
 }
 
