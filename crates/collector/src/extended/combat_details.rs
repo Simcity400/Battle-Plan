@@ -860,6 +860,15 @@ impl Destination<'_> {
                     }
                 }
                 row.stored_terrain_name.start += text;
+                // 1413D69D0/1413DAD10 consume these MSVC identifiers, read through
+                // msvc_string::{LENGTH, CAPACITY, INLINE_CAPACITY} (14070E900).
+                // Like the other tokens, their spans are relative to the text slice.
+                if let Some(border) = &mut row.border_war {
+                    for side in &mut border.sides {
+                        side.win_event.start += text;
+                        side.lose_event.start += text;
+                    }
+                }
                 for stored in &mut self.commander_traits[at.traits..at.traits + used.traits] {
                     stored.token_start += text;
                 }

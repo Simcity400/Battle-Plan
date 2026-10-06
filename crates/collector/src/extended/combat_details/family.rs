@@ -1391,6 +1391,119 @@ fn detail_rows(view: &TableView) -> &[LandCombatDetailsRow] {
     }
 }
 
+fn border_war_hooks_after_neighbouring_text(reference: bool) {
+    use engine::{
+        cland_border_war_combat as combat, cland_border_war_combatant as side,
+        cunit_leader as leader, cunit_leader_trait as trait_, msvc_string,
+    };
+    let shape = Shape {
+        countries: 5_000,
+        combats: 3,
+        ..Shape::small()
+    };
+    let mut built = world(&shape);
+    let heap_text = |world: &mut World, at: usize, value: &[u8]| {
+        assert!(value.len() > msvc_string::INLINE_CAPACITY as usize);
+        let heap = world.alloc(value.len() + 1);
+        world.put(heap, value);
+        world.put(heap + value.len(), &[0]);
+        world.u64(at + msvc_string::DATA, heap as u64);
+        world.u64(at + msvc_string::LENGTH, value.len() as u64);
+        world.u64(at + msvc_string::CAPACITY, value.len() as u64);
+    };
+    let name = b"synthetic_commander_name_token";
+    let description = b"synthetic_commander_description";
+    let trait_token = b"synthetic_commander_trait_token";
+    for pointer in army_leaders(&built) {
+        let w = &mut built.world;
+        heap_text(w, pointer + leader::TOKEN, name);
+        heap_text(w, pointer + leader::DESCRIPTION_TOKEN, description);
+        let trait_pointer = w.object(0xb00, trait_::VTABLE_RVA);
+        w.u32(trait_pointer + trait_::TOKEN_ID, 80);
+        w.u32(trait_pointer + trait_::ORDINAL, 1);
+        heap_text(w, trait_pointer + trait_::TOKEN, trait_token);
+        let assigned = w.alloc(8);
+        w.u64(assigned, trait_pointer as u64);
+        w.array(pointer + leader::TRAIT_DATA, assigned, 1);
+        let learning = w.alloc(16);
+        w.u64(learning, trait_pointer as u64);
+        w.array(pointer + leader::TRAIT_EXPERIENCE_DATA, learning, 1);
+    }
+    let win = b"tst_border_incidents_events.1";
+    let lose = b"tst_border_incidents_events.2";
+    for index in 1..shape.combats {
+        let pointer = built.combats[index];
+        let w = &mut built.world;
+        w.u64(pointer, combat::VTABLE_RVA as u64);
+        w.u64(pointer + combat::BODY, combat::BODY_VTABLE_RVA as u64);
+        for (ordinal, pointer) in built.sides[index].into_iter().enumerate() {
+            w.u64(pointer, side::VTABLE_RVA as u64);
+            let state = w.object(0x100, cstate::VTABLE_RVA);
+            w.u32(state + cstate::ID, ordinal as u32 + 1);
+            w.u64(pointer + side::STATE, state as u64);
+            w.u32(pointer + side::COUNTRY, ordinal as u32 + 1);
+            for (offset, value) in
+                [side::WIN_EVENT, side::LOSE_EVENT]
+                    .into_iter()
+                    .zip(if ordinal == 0 {
+                        [win, lose]
+                    } else {
+                        [lose, win]
+                    })
+            {
+                if index == 1 {
+                    heap_text(w, pointer + offset, value);
+                } else {
+                    w.text(pointer + offset, b"");
+                }
+            }
+        }
+    }
+    let mut captured = Captured::with_capacities(&roomy());
+    captured.reference = reference;
+    pass(&mut captured, &built.world);
+    let tables = captured.tables();
+    let rows = detail_rows(&tables[0]);
+    assert_eq!(rows.len(), shape.combats);
+    assert!(rows[0].border_war.is_none());
+    let border = rows[1].border_war.as_ref().unwrap();
+    for (side, expected) in border.sides.iter().zip([[win, lose], [lose, win]]) {
+        assert_eq!(side.win_event, expected[0]);
+        assert_eq!(side.lose_event, expected[1]);
+    }
+    assert!(
+        rows[2]
+            .border_war
+            .as_ref()
+            .unwrap()
+            .sides
+            .iter()
+            .all(|side| side.win_event.is_empty() && side.lose_event.is_empty())
+    );
+    let commanded: Vec<_> = rows
+        .iter()
+        .flat_map(|row| &row.sides)
+        .filter(|side| side.commander != 0)
+        .collect();
+    assert!(!commanded.is_empty());
+    for side in commanded {
+        assert_eq!(side.commander_name_token, name);
+        assert_eq!(side.commander_description_token, description);
+        assert_eq!(side.traits[0].token, trait_token);
+        assert_eq!(side.learning_traits[0].token, trait_token);
+    }
+}
+
+#[test]
+fn border_war_hooks_relocate_after_neighbouring_heap_text() {
+    border_war_hooks_after_neighbouring_text(false);
+}
+
+#[test]
+fn border_war_hooks_reference_relocates_after_neighbouring_heap_text() {
+    border_war_hooks_after_neighbouring_text(true);
+}
+
 /// 140C16FB0 stores a selected commander's +0x20 name as an ordinary MSVC
 /// string and 142230F20 takes any length, empty included; +0x80 is the
 /// same kind of string. A long name omits its combat's detail until the
