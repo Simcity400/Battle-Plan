@@ -442,6 +442,37 @@ dayHours: number,
  * In hour order.
  */
 reads: Array<FuelRead>, warnings: Array<string>, };
+export type CasualtyTop = { count: number, };
+export type CasualtyParams = { branchId: string, tags: Array<string>, top: CasualtyTop | null, };
+export type CasualtyDelta = number | string;
+export type CasualtyValues = [string, Array<CasualtyDelta>];
+export type CasualtyIdentity = { firstHour: number, id: string, };
+export type CasualtySeries = { tag: string,
+/**
+ * First read followed by positive hour deltas. Equal confirmations are implicit.
+ */
+reads: Array<number>,
+/**
+ * [point index, hold endpoint, exceptional confirming read]. Holding is not a read.
+ */
+ends: Array<[number, number, number | null]>, dealt: CasualtyValues, taken: CasualtyValues, unknown: CasualtyValues | null,
+/**
+ * Unknown values cease to be exact at this hour (null means still exact).
+ */
+unknownUntil: number | null, atLeastFrom: number | null, identities: Array<CasualtyIdentity>,
+/**
+ * Every resolved name over the branch, for one stable campaign label column.
+ */
+labels: Array<string>,
+/**
+ * Top-N membership; null for chosen tags. Runs are cut to these hours.
+ */
+membership: Array<HourSpan> | null, };
+export type CasualtyReply = { branchId: string, series: Array<CasualtySeries>,
+/**
+ * Hours where the relation census and endpoint identities were complete.
+ */
+observed: Array<HourSpan>, warnings: Array<string>, unknownLabel: string, hasGap: boolean, };
 export type FactoriesParams = { branchId: string, tags: Array<string>, top: FactoryTop | null, };
 export type FactoryCount = "free" | "built" | "topBar";
 export type FactoryTop = { count: number, mode: FactoryCount,
@@ -2267,4 +2298,4 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, TOO_MANY_SOURCES, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "country-factories", "scoreboard", "country-nukes", "raids", "occupied-states", "occupation-trend", "idea-history", "party-history", "resource-balance", "decryption", "production-lines", "production-line-detail", "equipment-stockpile", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "equipment-losses", "construction-spending", "espionage-log", "agency-comparison"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "research", "country-flags", "land-owners", "country-styles", "country-groups", "country-stability", "stability-parts", "war-casualties", "country-factories", "scoreboard", "country-nukes", "raids", "occupied-states", "occupation-trend", "idea-history", "party-history", "resource-balance", "decryption", "production-lines", "production-line-detail", "equipment-stockpile", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "autonomy", "construction-log", "equipment-losses", "construction-spending", "espionage-log", "agency-comparison"] as const;

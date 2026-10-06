@@ -1,11 +1,19 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { countryRaceEnds, countryRaceHours, countryRaceItems, countryRaceSegments, countryRaceTooltipTags, heldStackSegment, partColours } from './countryRace.ts';
+import { countryRaceEnds, countryRaceHours, countryRaceItems, countryRaceReadHour, countryRaceSegments, countryRaceTooltipTags, heldStackSegment, partColours } from './countryRace.ts';
 import { barExtent, stepRace } from './race.ts';
 import { linesAt, linesTooltip } from './lines.ts';
 import { buildStack, stackedSegments } from '../stack.ts';
 import { lineLabelHours } from '../series.ts';
 import { fitTooltip } from '../tooltip.ts';
+
+test('sampled race actions use each value read and never invent one for a missing sample', () => {
+  const hours = new Map([['mod a|', 119], ['mod b|', 143]]);
+  assert.equal(countryRaceReadHour('mod a|', 150, hours), 119);
+  assert.equal(countryRaceReadHour('mod b|', 150, hours), 143);
+  assert.equal(countryRaceReadHour('unknown', 150, hours), null);
+  assert.equal(countryRaceReadHour('mod a|', 150), 150);
+});
 
 test('country races keep amounts exact while rows move and type colours follow content order', () => {
   const colours = partColours([{ id: 'mod_type', label: 'Mod stockpile' }], ['palette']);

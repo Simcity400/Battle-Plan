@@ -221,3 +221,22 @@ test('the fact store tells a read without a value from one still going', () => {
   // The plain pick leaves both out.
   assert.deepEqual([...store.pick(wanted).keys()], [nameKey(10, 'GER')]);
 });
+
+
+test('exact dated looks use every row read hour while preserving identity and recording bounds', () => {
+  const branch = { firstHour: 100, lastHour: 3000, gaps: [{ firstHour: 210, lastHour: 220 }] };
+  const hours = new Map([['first', 119], ['changed holder', 205], ['gap', 215], ['after gap', 221]]);
+  const segment = (tag: string, hour: number) => tag === 'changed holder' && hour >= 200 ? 200 : 100;
+  const plan = lookPlan(branch, [...hours.keys()], 250, segment, hours, true);
+  assert.deepEqual(plan.samples, [
+    { tag: 'after gap', hour: 221, stretch: 221 },
+    { tag: 'changed holder', hour: 205, stretch: 200 },
+    { tag: 'first', hour: 119, stretch: 100 },
+  ]);
+  const before = { looks: new Map([['changed holder', germany], ['first', germany]]), segments: new Map([['changed holder', 100], ['first', 100]]) };
+  const pending = sampledLooks(before, plan.samples, () => ({ style: undefined, flag: undefined }));
+  assert.equal(pending.looks.has('changed holder'), false);
+  assert.equal(pending.looks.get('first'), germany);
+  const missing = sampledLooks(pending, plan.samples, () => ({ style: null, flag: FAILED_FACT }));
+  assert.deepEqual(missing.looks.get('first'), { name: null, color: null, flag: null });
+});

@@ -23,6 +23,11 @@ export interface CountryRaceLine {
   endLabel?: (hour: number, name: string) => string;
 }
 
+/** A supplied read-hour map dates country looks and actions to each value. */
+export function countryRaceReadHour(tag: string, moment: number, hours?: ReadonlyMap<string, number>): number | null {
+  return hours ? hours.get(tag) ?? null : moment;
+}
+
 /** Content order selects palette positions, so renamed types keep their colour. */
 export function partColours(parts: readonly CountryRacePart[], palette: readonly string[], catalogue?: ReadonlyMap<string, string>): Map<string, string> {
   return new Map(parts.map((part, index) => [part.id, part.color ?? catalogue?.get(part.id) ?? palette[index % Math.max(1, palette.length)]]));

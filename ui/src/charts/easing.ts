@@ -10,6 +10,11 @@ export function approach(current: number, target: number, dtMs: number, tauMs: n
   return Math.abs(next - target) < 1e-6 * Math.max(1, Math.abs(target)) ? target : next;
 }
 
+/** Missing values and recording gaps start afresh; only known shapes glide. */
+export function approachAcrossGap(current: number | null, target: number | null, dtMs: number, tauMs: number, gap: boolean): number | null {
+  return gap || current == null || target == null ? target : approach(current, target, dtMs, tauMs);
+}
+
 /** The easing time for the app's motion setting: shorter at high playback speeds so
  * shapes keep up, and none when the user asked for reduced motion. */
 export function easeTau(feel: MotionFeel, hoursPerSecond: number, reduced: boolean): number {

@@ -9,6 +9,7 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import type { OptionValue } from '../../dashboard/options';
+import { usePlaybackSpeed } from '../../dashboard/playback';
 import { dayLabel, drawBands, drawLine, placeEndLabels } from '../draw';
 import { jumpItem } from '../jump';
 import Legend from '../Legend';
@@ -25,7 +26,7 @@ import { useChartTokens, useViewportHeight } from '../useChartTokens';
 import { shownUntil } from '../view';
 import type { PlaybackMode } from '../view';
 import { useCountryColours } from './countryColours';
-import { countryRaceEnds, countryRaceHours, countryRaceItems, countryRaceSegments, countryRaceTooltipTags, partColours } from './countryRace';
+import { countryRaceEnds, countryRaceHours, countryRaceItems, countryRaceReadHour, countryRaceSegments, countryRaceTooltipTags, partColours } from './countryRace';
 import type { CountryRaceEntry, CountryRaceLine, CountryRacePart } from './countryRace';
 import { linesAt, linesTooltip } from './lines';
 import type { LabelAt } from './lines';
@@ -42,6 +43,8 @@ export interface CountryRaceViewProps {
   raceLegendParts?: readonly CountryRacePart[]; partsLabel?: string;
   mix?: { tag: string; bands?: readonly (readonly Run[])[]; lines?: readonly CountryRaceLine[]; parts?: readonly CountryRacePart[] } | null;
   countryTags?: readonly string[];
+  /** Exact per-country reads for a sampled race's names, flags and Jump to. */
+  countryLookHours?: ReadonlyMap<string, number>;
   segmentAt?: (tag: string, hour: number) => number | null;
   tooltip: (tag: string, hour: number, name: string, colours: ReadonlyMap<string, string>, labelAt: LabelAt) => Iterable<TooltipContent> | null;
   tooltipTags?: (hour: number, tags: readonly string[]) => readonly string[];
@@ -71,10 +74,11 @@ const NO_TAGS: readonly string[] = [];
 /** Race, country lines and one-country mix use the same colours, hour-specific
  * identities, exact reads, chart controls and Jump to across all race widgets. */
 export default function CountryRaceView({ runtime, track, active, options, view, extent, playhead, moment, slots, ranked, lines,
-  parts = NO_PARTS, raceLegendParts = parts, partsLabel = 'Types', mix, countryTags, segmentAt, tooltip, tooltipTags, lineTooltip, timeTooltip,
+  parts = NO_PARTS, raceLegendParts = parts, partsLabel = 'Types', mix, countryTags, countryLookHours, segmentAt, tooltip, tooltipTags, lineTooltip, timeTooltip,
   keyHours: suppliedHours, strip, beforeChart, state, formatAxis, labels: chartLabels, lineEmpty, mixEmpty, resetKey, tooltipResetKey,
   presentation = {}, label, empty, formatValue }: CountryRaceViewProps) {
   const tokens = useChartTokens();
+  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
   const viewport = useViewportHeight();
   const menu = useContextMenu(chartLabels?.actions ?? `${label} actions`);
   const playback = (options.playback as PlaybackMode) ?? 'draw-in';
@@ -93,7 +97,8 @@ export default function CountryRaceView({ runtime, track, active, options, view,
     ?? (view === 'race' ? ranked.map(entry => entry.tag) : view === 'lines' ? lines.map(line => line.tag) : mix ? [mix.tag] : []),
     [presentation.countryLooks, countryTags, view, ranked, lines, mix]);
   const looks = useCountryLooks(runtime.client, track, tags, moment, active, segmentAt,
-    linesView && presentation.lineLooks !== 'moment' ? hours : undefined);
+    view === 'race' ? countryLookHours : linesView && presentation.lineLooks !== 'moment' ? hours : undefined,
+    view === 'race' && countryLookHours !== undefined);
   const country = useCountryColours(tags, looks.color, tokens, looks);
   const colours = useMemo(() => partColours(parts, tokens.categories), [parts, tokens.categories]);
   const items = useMemo(() => countryRaceItems(ranked, colours, country, tokens.muted, presentation.exact !== false),
@@ -146,7 +151,7 @@ export default function CountryRaceView({ runtime, track, active, options, view,
     return forms ? fitTooltip(forms, viewport, { keep: presentation.tooltipKeep ?? 1 }) : null;
   };
   const common = { extent, playhead, playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24,
-    hoursPerSecond: runtime.clock.getSnapshot().hoursPerSecond, branchStart: track.branch.firstHour, active, onContextMenu: jump,
+    hoursPerSecond, branchStart: track.branch.firstHour, active, onContextMenu: jump,
     axes: { xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: linesView && options.log === true } };
   if (view === 'race' && !ranked.length && presentation.raceEmptyState !== false) return <WidgetState kind="empty" message={empty} />;
   if (view === 'lines' && !lines.length && lineEmpty) return <WidgetState kind="empty" {...lineEmpty} />;
@@ -170,7 +175,7 @@ export default function CountryRaceView({ runtime, track, active, options, view,
           if (presentation.raceTooltip === 'sampled') return tipAt(tag, moment, looks.name(tag));
           showTip(moment, [tag]); return tipAt(tag, moment, labels.labelAt(moment)(tag).name);
         }}
-        onContextMenu={(_, x, y) => jump(moment, x, y)} dateOverlay={options.dateOverlay === true ? dayLabel(moment) : null}
+        onContextMenu={(tag, x, y) => { const read = countryRaceReadHour(tag, moment, countryLookHours); if (read !== null) jump(read, x, y); }} dateOverlay={options.dateOverlay === true ? dayLabel(moment) : null}
         empty={empty} hoursPerSecond={common.hoursPerSecond} active={active} resetKey={resetKey ?? `${track.source.id}:${track.branch.id}`} />
         : <TimeChart key={presentation.resetTimeView ? view : undefined} {...common} label={view === 'mix' && mix ? chartLabels?.mix?.(looks.name(mix.tag)) ?? `${label} over time`
           : chartLabels?.lines ?? `${label} over time`} layers={linesView ? lineLayers : mixLayers} strip={strip} formatValue={formatAxis}

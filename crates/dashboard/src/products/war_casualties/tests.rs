@@ -1,0 +1,1555 @@
+use super::*;
+use replay::frame::FrameEncoder;
+use replay::spool::Record;
+use std::path::PathBuf;
+use std::time::Instant;
+fn params(count: u32) -> CasualtyParams {
+    CasualtyParams {
+        branch_id: "1".into(),
+        tags: Vec::new(),
+        top: Some(CasualtyTop { count }),
+    }
+}
+fn chosen() -> CasualtyParams {
+    CasualtyParams {
+        branch_id: "1".into(),
+        tags: vec!["mod country 1| with spaces".into()],
+        top: None,
+    }
+}
+fn opened(replay: Replay) -> Source {
+    Source::from_replay(
+        crate::SourceKey {
+            source_id: "casualties-test".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap()
+}
+fn reply(frames: Vec<DecodedFrame>, request: &CasualtyParams) -> CasualtyReply {
+    let source = opened(research_replay(frames));
+    WarCasualties::load(
+        &source,
+        request,
+        &LoadContext { content: None },
+        &AtomicBool::new(false),
+    )
+    .unwrap()
+}
+fn value(values: &CasualtyValues, index: usize) -> i128 {
+    values.0.parse::<i128>().unwrap()
+        + values
+            .1
+            .iter()
+            .take(index)
+            .map(|d| match d {
+                CasualtyDelta::Small(n) => i128::from(*n),
+                CasualtyDelta::Wide(n) => n.parse::<i128>().unwrap(),
+            })
+            .sum::<i128>()
+}
+fn reads(series: &CasualtySeries) -> Vec<i32> {
+    let mut read = 0;
+    series
+        .reads
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            read = if i == 0 { *n } else { read + *n };
+            i32::try_from(read).unwrap()
+        })
+        .collect()
+}
+fn taken(series: &CasualtySeries) -> Vec<i128> {
+    (0..series.reads.len())
+        .map(|i| value(&series.taken, i))
+        .collect()
+}
+fn members(reply: &CasualtyReply, hour: i32) -> Vec<&str> {
+    reply
+        .series
+        .iter()
+        .filter(|s| {
+            s.membership.as_ref().is_some_and(|spans| {
+                spans
+                    .iter()
+                    .any(|s| s.first_hour <= hour && hour <= s.last_hour)
+            })
+        })
+        .map(|s| s.tag.as_str())
+        .collect()
+}
+
+#[test]
+fn war_casualties_shared_measure_agrees_with_product_reads_and_gaps() {
+    let frames = (100..=145)
+        .filter(|h| !(127..130).contains(h))
+        .map(|h| {
+            casualty_frame(
+                h,
+                (h < 130).then_some((if h < 120 { 10 } else { 30 }, 0)),
+                0,
+            )
+        })
+        .collect();
+    let source = opened(research_replay(frames));
+    let request = chosen();
+    let cancelled = AtomicBool::new(false);
+    let product = WarCasualties::load(
+        &source,
+        &request,
+        &LoadContext { content: None },
+        &cancelled,
+    )
+    .unwrap();
+    let cached = scanned_branch(&source, 1, &cancelled).unwrap();
+    for h in [99, 100, 101, 119, 126, 128, 130, 143, 144, 145, 146] {
+        let from_reply = product
+            .observed
+            .iter()
+            .find(|span| span.first_hour <= h && h <= span.last_hour)
+            .and_then(|_| {
+                product.series.iter().find_map(|series| {
+                    let dates = reads(series);
+                    let index = dates.partition_point(|read| *read <= h).checked_sub(1)?;
+                    let endpoint = series.ends.iter().find(|end| end.0 as usize == index);
+                    let last = endpoint.map_or_else(|| dates[index + 1] - 1, |end| end.1);
+                    if h > last {
+                        return None;
+                    }
+                    let day_end = i64::from(h) - (i64::from(h) + 1).rem_euclid(24);
+                    let exceptional = endpoint.and_then(|end| end.2).filter(|read| *read <= h);
+                    Some(CasualtyMeasure {
+                        read_hour: dates[index]
+                            .max(day_end as i32)
+                            .max(exceptional.unwrap_or(dates[index])),
+                        dealt: value(&series.dealt, index),
+                        taken: value(&series.taken, index),
+                        unknown: series
+                            .unknown
+                            .as_ref()
+                            .filter(|_| series.unknown_until.is_none_or(|until| h < until))
+                            .map(|values| i64::try_from(value(values, index)).unwrap()),
+                        at_least: series.at_least_from.is_some_and(|from| from <= h),
+                    })
+                })
+            });
+        assert_eq!(
+            cached.country_at(&request.tags[0], h),
+            from_reply,
+            "hour {h}"
+        );
+    }
+    assert_eq!(
+        cached.country_at(&request.tags[0], 101).unwrap().read_hour,
+        100
+    );
+    assert!(cached.country_at(&request.tags[0], 128).is_none());
+    let after_gap = cached.country_at(&request.tags[0], 130).unwrap();
+    assert_eq!(
+        (
+            after_gap.dealt,
+            after_gap.taken,
+            after_gap.unknown,
+            after_gap.at_least
+        ),
+        (60, 30, None, true)
+    );
+    assert!(cached.country_at("missing opaque tag", 130).is_none());
+    assert_eq!(cached.has_gap(), product.has_gap);
+    assert!(cached.has_gap());
+    assert!(Arc::ptr_eq(
+        &cached,
+        &scanned_branch(&source, 1, &cancelled).unwrap()
+    ));
+}
+
+#[test]
+fn packed_country_lookup_seeks_across_checkpoints_identities_and_holes() {
+    let mut track = Track::default();
+    let mut country = Country::default();
+    for day in 0..600 {
+        country.taken = i128::from(i64::MAX) + i128::from(day);
+        country.dealt = -country.taken;
+        country.unknown.total = (day < 300).then_some(i64::from(day));
+        country.at_least = day >= 300;
+        let first = -500 + day * 24;
+        track.sample(first, (1, if day < 300 { 100 } else { 101 }), &country);
+        track.tail.as_mut().unwrap().last = first + 22;
+    }
+    assert_eq!(track.checkpoints.len(), 3);
+    for day in [0, 1, 255, 256, 257, 299, 300, 511, 512, 599] {
+        for offset in [-1, 0, 10, 22, 23, 24] {
+            let h = -500 + day * 24 + offset;
+            let expected = track.iter().find(|run| run.first <= h && h <= run.last);
+            let actual = track.at(h);
+            assert_eq!(
+                actual.as_ref().map(|run| (
+                    run.first,
+                    run.last,
+                    run.identity,
+                    run.dealt,
+                    run.taken,
+                    run.unknown,
+                    run.at_least
+                )),
+                expected.as_ref().map(|run| (
+                    run.first,
+                    run.last,
+                    run.identity,
+                    run.dealt,
+                    run.taken,
+                    run.unknown,
+                    run.at_least
+                )),
+                "hour {h}"
+            );
+        }
+    }
+}
+
+use crate::test_fixtures::{CAMPAIGN, records, source};
+use replay::{
+    container::Replay,
+    frame::{DecodedFrame, TableView},
+    rows::{CountryLinkRow, CountryRow, TableId, TableRows},
+};
+fn research_replay(frames: Vec<DecodedFrame>) -> Replay {
+    Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap()
+}
+
+fn casualty_frame(hour: i32, losses: Option<(i64, i64)>, end: i32) -> DecodedFrame {
+    use replay::rows::WarRelationRow;
+    let mut frame = source(1, hour, None);
+    let template = frame.complete::<replay::rows::tables::Countries>().unwrap()[0].clone();
+    *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+        (1..=3)
+            .map(|slot| CountryRow {
+                id: slot * 100,
+                canonical_slot: slot,
+                tag: format!("mod country {slot}| with spaces").into_bytes(),
+                ..template.clone()
+            })
+            .collect(),
+    ));
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        (1..=3)
+            .flat_map(|slot| {
+                [
+                    CountryLinkRow {
+                        id: slot,
+                        canonical_slot: slot,
+                    },
+                    CountryLinkRow {
+                        id: slot * 100,
+                        canonical_slot: slot,
+                    },
+                ]
+            })
+            .collect::<Vec<_>>(),
+    ));
+    if let TableView::Complete(TableRows::CountryLinks(links)) =
+        &mut *frame.tables[TableId::CountryLinks.index()]
+    {
+        links.sort_by_key(|r| r.id);
+    }
+    *frame.tables[TableId::WarRelations.index()] = TableView::Complete(TableRows::WarRelations(
+        losses
+            .map(|(known, unknown)| WarRelationRow {
+                first_country: 1,
+                second_country: 2,
+                start_hour: 90,
+                end_hour: end,
+                first_casualties: known,
+                second_casualties: known * 2,
+                first_unknown_casualties: unknown,
+                ..Default::default()
+            })
+            .into_iter()
+            .collect(),
+    ));
+    frame
+}
+
+#[test]
+fn selection_validation_and_exact_escaped_json_budget() {
+    assert!(WarCasualties::validate(&params(0)).is_err());
+    for count in [31, 5000, u32::MAX] {
+        assert!(WarCasualties::validate(&params(count)).is_ok());
+    }
+    let mut request = params(10);
+    request.tags.push("mod tag".into());
+    assert!(WarCasualties::validate(&request).is_err());
+    let text = "mod tag with spaces";
+    assert_eq!(
+        json_bytes(&text).unwrap(),
+        serde_json::to_vec(&text).unwrap().len()
+    );
+    assert!(check_reply_bytes(MAX_PRODUCT_REPLY_BYTES + 1).is_err());
+}
+#[test]
+fn requests_keep_more_than_thirty_chosen_top_and_all_countries() {
+    let source = opened(research_replay(vec![scale_frame(1), scale_frame(2)]));
+    let cancelled = AtomicBool::new(false);
+    let scanned = scanned_branch(&source, 1, &cancelled).unwrap();
+    for count in [31, 300, 5000] {
+        let top = WarCasualties::load(
+            &source,
+            &params(count),
+            &LoadContext { content: None },
+            &cancelled,
+        )
+        .unwrap();
+        assert_eq!(members(&top, 1).len(), count as usize);
+        let request = CasualtyParams {
+            branch_id: "1".into(),
+            tags: top.series.iter().map(|series| series.tag.clone()).collect(),
+            top: None,
+        };
+        let chosen = WarCasualties::load(
+            &source,
+            &request,
+            &LoadContext { content: None },
+            &cancelled,
+        )
+        .unwrap();
+        assert_eq!(chosen.series.len(), count as usize);
+        for series in &top.series {
+            assert_eq!(
+                value(&series.taken, 0),
+                scanned.country_at(&series.tag, 1).unwrap().taken
+            );
+        }
+    }
+    let all = WarCasualties::load(
+        &source,
+        &CasualtyParams {
+            branch_id: "1".into(),
+            tags: Vec::new(),
+            top: None,
+        },
+        &LoadContext { content: None },
+        &cancelled,
+    )
+    .unwrap();
+    assert_eq!(all.series.len(), 5000);
+    assert!(Arc::ptr_eq(
+        &scanned,
+        &scanned_branch(&source, 1, &cancelled).unwrap()
+    ));
+}
+
+#[test]
+fn top_stream_skips_a_later_holder_that_never_enters_the_ranking() {
+    let first = casualty_frame(100, Some((10, 0)), 0);
+    let mut later = casualty_frame(101, Some((0, 0)), 0);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *later.tables[TableId::Countries.index()]
+    {
+        rows[0].id = 101;
+    }
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *later.tables[TableId::CountryLinks.index()]
+    {
+        rows.iter_mut().find(|row| row.id == 100).unwrap().id = 101;
+    }
+    let product = reply(vec![first, later], &params(1));
+    let former = product
+        .series
+        .iter()
+        .find(|series| series.tag == chosen().tags[0])
+        .unwrap();
+    assert_eq!(former.identities[0].id, "1:100");
+    assert_eq!(members(&product, 100), [chosen().tags[0].as_str()]);
+    assert_eq!(members(&product, 101), ["mod country 2| with spaces"]);
+    assert!(product.series.iter().all(|series| !series.reads.is_empty()));
+}
+
+#[test]
+fn all_countries_includes_a_country_created_after_the_first_catalogue() {
+    let mut first = casualty_frame(100, Some((10, 0)), 0);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *first.tables[TableId::Countries.index()]
+    {
+        rows.pop();
+    }
+    let mut later = casualty_frame(101, Some((10, 0)), 0);
+    if let TableView::Complete(TableRows::WarRelations(rows)) =
+        &mut *later.tables[TableId::WarRelations.index()]
+    {
+        rows.push(replay::rows::WarRelationRow {
+            first_country: 2,
+            second_country: 3,
+            first_casualties: 4,
+            ..Default::default()
+        });
+    }
+    let product = reply(
+        vec![first, later],
+        &CasualtyParams {
+            branch_id: "1".into(),
+            tags: Vec::new(),
+            top: None,
+        },
+    );
+    assert_eq!(product.series.len(), 3);
+    let created = product
+        .series
+        .iter()
+        .find(|series| series.tag == "mod country 3| with spaces")
+        .unwrap();
+    assert_eq!(reads(created), [101]);
+    assert_eq!(value(&created.dealt, 0), 4);
+}
+
+#[test]
+fn complete_reply_refuses_measured_bytes_including_headers_and_escaped_labels() {
+    let source = opened(research_replay(vec![casualty_frame(100, Some((10, 0)), 0)]));
+    let cancelled = AtomicBool::new(false);
+    let scanned = scanned_branch(&source, 1, &cancelled).unwrap();
+    let empty = opened(research_replay(vec![casualty_frame(100, None, 0)]));
+    let empty_scan = scanned_branch(&empty, 1, &cancelled).unwrap();
+    let header = "x".repeat(MAX_PRODUCT_REPLY_BYTES);
+    let refused = empty_scan
+        .reply(&chosen(), &cancelled, None, &header, Vec::new())
+        .unwrap_err();
+    assert!(refused.to_string().contains("more than one reply holds"));
+    let labels = CampaignLabels::from([(
+        chosen().tags[0].clone(),
+        vec!["\\".repeat(MAX_PRODUCT_REPLY_BYTES / 2)],
+    )]);
+    let refused = scanned
+        .reply(
+            &chosen(),
+            &cancelled,
+            Some(&labels),
+            UNKNOWN_LABEL,
+            Vec::new(),
+        )
+        .unwrap_err();
+    assert!(refused.to_string().contains("more than one reply holds"));
+    assert!(check_reply_bytes(MAX_PRODUCT_REPLY_BYTES).is_ok());
+}
+
+#[test]
+fn casualties_daily_points_hold_forward_and_keep_ended_disappeared_totals() {
+    let r = reply(
+        (100..=149)
+            .map(|h| casualty_frame(h, (h <= 122).then_some((i64::from(h), 0)), 122))
+            .collect(),
+        &chosen(),
+    );
+    assert_eq!(reads(&r.series[0]), [100, 119, 143]);
+    assert_eq!(taken(&r.series[0]), [100, 119, 122]);
+    assert_eq!(r.series[0].ends, [(2, 149, Some(149))]);
+    assert!(r.series[0].membership.is_none());
+}
+#[test]
+fn a_pair_lost_in_a_gap_marks_both_endpoints_as_lower_bounds_permanently() {
+    let mut request = chosen();
+    request.tags.push("mod country 2| with spaces".into());
+    let r = reply(
+        vec![
+            casualty_frame(100, Some((10, 0)), 0),
+            casualty_frame(103, None, 0),
+            casualty_frame(104, Some((20, 0)), 0),
+        ],
+        &request,
+    );
+    assert!(r.has_gap);
+    assert_eq!(r.observed.len(), 2);
+    for series in &r.series {
+        assert_eq!(series.at_least_from, Some(103));
+        assert_eq!(series.unknown_until, Some(103));
+    }
+    assert_eq!(taken(&r.series[0]), [10, 10, 20]);
+}
+#[test]
+fn resumed_pairs_and_pairs_already_gone_before_a_gap_are_not_lower_bounds() {
+    for frames in [
+        vec![
+            casualty_frame(100, Some((10, 0)), 0),
+            casualty_frame(103, Some((20, 0)), 0),
+        ],
+        vec![
+            casualty_frame(100, Some((10, 0)), 0),
+            casualty_frame(101, None, 0),
+            casualty_frame(104, None, 0),
+        ],
+    ] {
+        let r = reply(frames, &chosen());
+        assert!(r.has_gap);
+        assert!(r.series[0].at_least_from.is_none());
+    }
+}
+#[test]
+fn a_war_entirely_in_a_gap_still_has_a_widget_note() {
+    let r = reply(
+        vec![casualty_frame(100, None, 0), casualty_frame(103, None, 0)],
+        &params(10),
+    );
+    assert!(r.series.is_empty());
+    assert!(r.has_gap);
+}
+#[test]
+fn casualties_unreadable_hours_flush_endpoints_and_never_bridge_gaps() {
+    let mut missing = casualty_frame(101, None, 0);
+    *missing.tables[TableId::WarRelations.index()] = TableView::Unavailable {
+        reason: "failed walk".into(),
+    };
+    let r = reply(
+        vec![
+            casualty_frame(100, Some((10, 0)), 0),
+            missing,
+            casualty_frame(102, Some((12, 0)), 0),
+        ],
+        &chosen(),
+    );
+    assert_eq!(reads(&r.series[0]), [100, 102]);
+    assert_eq!(r.series[0].ends, [(0, 100, None), (1, 102, None)]);
+    assert_eq!(r.series[0].unknown_until, Some(102));
+}
+#[test]
+fn casualties_unknown_refuses_resets_disagreement_and_disjoint_relations() {
+    for mode in 0..3 {
+        let before = casualty_frame(117, Some((10, 0)), 0);
+        let middle = casualty_frame(118, Some((10, 5)), 0);
+        let mut after = casualty_frame(119, Some((10, if mode == 0 { 3 } else { 9 })), 0);
+        if let TableView::Complete(TableRows::WarRelations(rows)) =
+            &mut *after.tables[TableId::WarRelations.index()]
+        {
+            if mode == 1 {
+                rows.push(replay::rows::WarRelationRow {
+                    second_country: 3,
+                    first_unknown_casualties: 99,
+                    ..rows[0].clone()
+                });
+            }
+            if mode == 2 {
+                rows[0].second_country = 3;
+            }
+        }
+        let r = reply(vec![before, middle, after], &chosen());
+        assert_eq!(r.series[0].unknown_until, Some(119));
+    }
+}
+#[test]
+fn casualties_unknown_is_deduplicated_hourly_before_daily_sampling() {
+    let frames = [0, 5, 9]
+        .into_iter()
+        .enumerate()
+        .map(|(i, unknown)| {
+            let mut f = casualty_frame(117 + i as i32, Some((10, unknown)), 0);
+            if let TableView::Complete(TableRows::WarRelations(rows)) =
+                &mut *f.tables[TableId::WarRelations.index()]
+            {
+                rows.push(replay::rows::WarRelationRow {
+                    second_country: 3,
+                    ..rows[0].clone()
+                });
+            }
+            f
+        })
+        .collect();
+    let r = reply(frames, &chosen());
+    assert_eq!(taken(&r.series[0]), [20, 20]);
+    assert_eq!(value(r.series[0].unknown.as_ref().unwrap(), 1), 9);
+    assert!(
+        reply(vec![casualty_frame(119, Some((10, 5)), 0)], &chosen()).series[0]
+            .unknown
+            .is_none()
+    );
+}
+#[test]
+fn changed_relation_keys_refresh_joins_while_unchanged_keys_keep_reading_counters() {
+    let mut moved = casualty_frame(101, Some((3, 0)), 0);
+    if let TableView::Complete(TableRows::WarRelations(rows)) =
+        &mut *moved.tables[TableId::WarRelations.index()]
+    {
+        rows[0].second_country = 3;
+    }
+    let mut later = moved.clone();
+    later.hour = 102;
+    if let TableView::Complete(TableRows::WarRelations(rows)) =
+        &mut *later.tables[TableId::WarRelations.index()]
+    {
+        rows[0].first_casualties = 4;
+    }
+    let r = reply(
+        vec![casualty_frame(100, Some((10, 0)), 0), moved, later],
+        &chosen(),
+    );
+    assert_eq!(taken(&r.series[0]), [10, 14]);
+}
+
+#[test]
+fn repeated_alias_duplicates_are_never_reused_as_valid_endpoint_joins() {
+    let mut duplicate = casualty_frame(101, Some((11, 0)), 0);
+    if let TableView::Complete(TableRows::WarRelations(rows)) =
+        &mut *duplicate.tables[TableId::WarRelations.index()]
+    {
+        rows.push(replay::rows::WarRelationRow {
+            first_country: 100,
+            second_country: 200,
+            ..rows[0].clone()
+        });
+    }
+    let mut repeated = duplicate.clone();
+    repeated.hour = 102;
+    let r = reply(
+        vec![
+            casualty_frame(100, Some((10, 0)), 0),
+            duplicate,
+            repeated,
+            casualty_frame(103, Some((12, 0)), 0),
+        ],
+        &chosen(),
+    );
+    assert_eq!(
+        r.observed
+            .iter()
+            .map(|span| (span.first_hour, span.last_hour))
+            .collect::<Vec<_>>(),
+        [(100, 100), (103, 103)]
+    );
+    assert_eq!(taken(&r.series[0]), [10, 12]);
+}
+
+#[test]
+fn top_identity_endpoint_and_gap_keep_membership_bounded_and_samples_dated() {
+    let frames = (0..=49)
+        .filter(|h| *h != 25)
+        .map(|h| {
+            let mut f = casualty_frame(h, Some((i64::from(h), 0)), 0);
+            if h >= 24 {
+                if let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *f.tables[TableId::Countries.index()]
+                {
+                    rows[0].id = 101;
+                }
+                if let TableView::Complete(TableRows::CountryLinks(rows)) =
+                    &mut *f.tables[TableId::CountryLinks.index()]
+                {
+                    rows.iter_mut().find(|r| r.id == 100).unwrap().id = 101;
+                }
+            }
+            f
+        })
+        .collect();
+    let r = reply(frames, &params(2));
+    assert_eq!(r.observed.len(), 2);
+    assert!(
+        r.series
+            .iter()
+            .any(|series| series.identities[0].id == "1:101" && reads(series).contains(&24))
+    );
+    for h in 0..=49 {
+        assert!(members(&r, h).len() <= 2);
+    }
+    assert!(members(&r, 25).is_empty());
+}
+#[test]
+fn holder_changes_are_sampled_at_the_first_read_instead_of_the_next_day_end() {
+    let mut changed = casualty_frame(101, Some((3, 0)), 0);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *changed.tables[TableId::Countries.index()]
+    {
+        rows[0].id = 101;
+    }
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *changed.tables[TableId::CountryLinks.index()]
+    {
+        rows.iter_mut().find(|r| r.id == 100).unwrap().id = 101;
+    }
+    let r = reply(
+        vec![
+            casualty_frame(100, Some((10, 0)), 0),
+            changed,
+            casualty_frame(102, None, 0),
+        ],
+        &chosen(),
+    );
+    assert_eq!(reads(&r.series[0]), [100]);
+    assert_eq!(reads(&r.series[1])[0], 101);
+    assert_eq!(taken(&r.series[1])[0], 3);
+}
+#[test]
+fn top_ranks_every_country_by_known_totals_and_ignores_unknown() {
+    for unknown in [0, 1000] {
+        let frames = (0..24)
+            .map(|h| {
+                let mut f = casualty_frame(h, Some((10, if h == 0 { 0 } else { unknown })), 0);
+                if let TableView::Complete(TableRows::WarRelations(rows)) =
+                    &mut *f.tables[TableId::WarRelations.index()]
+                {
+                    rows.push(replay::rows::WarRelationRow {
+                        first_country: 2,
+                        second_country: 3,
+                        first_casualties: 1,
+                        second_casualties: 1,
+                        ..Default::default()
+                    });
+                }
+                f
+            })
+            .collect();
+        let r = reply(frames, &params(1));
+        assert_eq!(r.series.len(), 1);
+        assert_eq!(r.series[0].tag, "mod country 2| with spaces");
+    }
+}
+
+#[test]
+fn a_holder_without_relations_does_not_extend_the_former_holders_row() {
+    let mut changed = casualty_frame(101, None, 0);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *changed.tables[TableId::Countries.index()]
+    {
+        rows[0].id = 101;
+    }
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *changed.tables[TableId::CountryLinks.index()]
+    {
+        rows.iter_mut().find(|r| r.id == 100).unwrap().id = 101;
+    }
+    let mut later = changed.clone();
+    later.hour = 102;
+    let frames = vec![casualty_frame(100, Some((10, 0)), 0), changed, later];
+    let r = reply(frames.clone(), &chosen());
+    assert_eq!(r.series.len(), 1);
+    assert_eq!(r.series[0].ends, [(0, 100, None)]);
+    let top = reply(frames, &params(1));
+    assert_eq!(members(&top, 100), ["mod country 1| with spaces"]);
+    assert_eq!(members(&top, 101), ["mod country 2| with spaces"]);
+    assert_eq!(members(&top, 102), ["mod country 2| with spaces"]);
+}
+
+#[test]
+fn a_holder_change_during_an_unresolved_read_resumes_with_the_new_identity() {
+    let first = casualty_frame(100, Some((10, 0)), 0);
+    let mut changed = casualty_frame(101, Some((3, 0)), 0);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *changed.tables[TableId::Countries.index()]
+    {
+        rows[0].id = 101;
+    }
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *changed.tables[TableId::CountryLinks.index()]
+    {
+        rows.iter_mut().find(|r| r.id == 100).unwrap().id = 101;
+    }
+    let mut later = changed.clone();
+    later.hour = 102;
+    if let TableView::Complete(TableRows::WarRelations(rows)) =
+        &mut *changed.tables[TableId::WarRelations.index()]
+    {
+        rows[0].first_country = u32::MAX;
+    }
+    let r = reply(vec![first, changed, later], &chosen());
+    assert_eq!(
+        r.observed
+            .iter()
+            .map(|s| (s.first_hour, s.last_hour))
+            .collect::<Vec<_>>(),
+        [(100, 100), (102, 102)]
+    );
+    assert_eq!(reads(&r.series[0]), [100]);
+    assert_eq!(r.series[0].ends, [(0, 100, None)]);
+    assert_eq!(reads(&r.series[1]), [102]);
+    assert_eq!(r.series[1].identities[0].id, "1:101");
+}
+#[test]
+fn top_membership_endpoint_is_not_a_confirming_read() {
+    let frames = (0..=23)
+        .map(|hour| {
+            let mut frame = casualty_frame(hour, Some((if hour < 23 { 50 } else { 0 }, 0)), 0);
+            if let TableView::Complete(TableRows::WarRelations(rows)) =
+                &mut *frame.tables[TableId::WarRelations.index()]
+            {
+                rows.push(replay::rows::WarRelationRow {
+                    first_country: 2,
+                    second_country: 3,
+                    first_casualties: if hour < 23 { 0 } else { 100 },
+                    second_casualties: if hour < 23 { 0 } else { 100 },
+                    ..Default::default()
+                });
+            }
+            frame
+        })
+        .collect();
+    let r = reply(frames, &params(1));
+    let former = r.series.iter().find(|s| s.tag == chosen().tags[0]).unwrap();
+    assert_eq!(former.reads, [0]);
+    assert_eq!(former.ends, [(0, 22, None)]);
+    let branch_end = reply(
+        (0..=22)
+            .map(|h| casualty_frame(h, Some((50, 0)), 0))
+            .collect(),
+        &chosen(),
+    );
+    assert_eq!(branch_end.series[0].ends, [(0, 22, Some(22))]);
+}
+
+#[test]
+fn top_membership_tracks_every_entrant_and_smaller_n_is_a_cached_prefix() {
+    let frames = (0..72)
+        .map(|h| {
+            let mut f = casualty_frame(h, Some((if h < 24 { 50 } else { 0 }, 0)), 0);
+            if let TableView::Complete(TableRows::WarRelations(rows)) =
+                &mut *f.tables[TableId::WarRelations.index()]
+            {
+                rows.push(replay::rows::WarRelationRow {
+                    first_country: 2,
+                    second_country: 3,
+                    start_hour: 0,
+                    first_casualties: if h < 24 { 0 } else { 100 },
+                    second_casualties: if h < 24 { 0 } else { 100 },
+                    ..Default::default()
+                });
+            }
+            f
+        })
+        .collect();
+    let source = opened(research_replay(frames));
+    let scanned = scanned_branch(&source, 1, &AtomicBool::new(false)).unwrap();
+    let r = scanned
+        .reply(
+            &params(1),
+            &AtomicBool::new(false),
+            None,
+            UNKNOWN_LABEL,
+            Vec::new(),
+        )
+        .unwrap();
+    assert_eq!(members(&r, 0), ["mod country 1| with spaces"]);
+    assert_eq!(members(&r, 47), ["mod country 2| with spaces"]);
+    let larger = scanned
+        .reply(
+            &params(2),
+            &AtomicBool::new(false),
+            None,
+            UNKNOWN_LABEL,
+            Vec::new(),
+        )
+        .unwrap();
+    for h in 0..72 {
+        for tag in members(&r, h) {
+            assert!(members(&larger, h).contains(&tag));
+        }
+    }
+    assert!(Arc::ptr_eq(
+        &scanned,
+        &scanned_branch(&source, 1, &AtomicBool::new(false)).unwrap()
+    ));
+}
+#[test]
+fn sparse_equal_values_stop_costing_daily_points_and_keep_wide_signed_totals() {
+    let mut f = casualty_frame(-3, Some((0, 0)), 0);
+    if let TableView::Complete(TableRows::WarRelations(rows)) =
+        &mut *f.tables[TableId::WarRelations.index()]
+    {
+        rows[0].first_casualties = i64::MAX;
+        rows.push(replay::rows::WarRelationRow {
+            second_country: 3,
+            ..rows[0].clone()
+        });
+    }
+    let frames = (-3..=300)
+        .map(|h| {
+            let mut f = f.clone();
+            f.hour = h;
+            f
+        })
+        .collect();
+    let r = reply(frames, &chosen());
+    assert_eq!(r.series[0].reads, [-3]);
+    assert_eq!(value(&r.series[0].taken, 0), i128::from(i64::MAX) * 2);
+    assert_eq!(r.series[0].ends, [(0, 300, Some(300))]);
+    assert!(
+        check_cadence(Cadence::Daily(0))
+            .unwrap_err()
+            .to_string()
+            .contains("Unsupported WarRelations cadence")
+    );
+    assert!(matches!(
+        delta(i128::from(i64::MAX)),
+        CasualtyDelta::Wide(_)
+    ));
+}
+fn scale_frame(hour: i32) -> DecodedFrame {
+    let mut f = casualty_frame(hour, None, 0);
+    *f.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+        (1..=5000)
+            .map(|id| CountryRow {
+                id,
+                canonical_slot: id,
+                tag: format!("mod_country{id:04}").into_bytes(),
+                political_power_raw: Some(i64::from(hour)),
+                stability_raw: i64::from(hour),
+                manpower_residual: hour,
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *f.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        (1..=5000)
+            .map(|id| CountryLinkRow {
+                id,
+                canonical_slot: id,
+            })
+            .collect(),
+    ));
+    *f.tables[TableId::WarRelations.index()] = TableView::Complete(TableRows::WarRelations(
+        (1..=5000)
+            .map(|id| replay::rows::WarRelationRow {
+                first_country: id,
+                second_country: id % 5000 + 1,
+                start_hour: 0,
+                first_casualties: i64::from(hour) * i64::from(id),
+                second_casualties: i64::from(hour) * i64::from(id % 5000 + 1),
+                first_unknown_casualties: i64::from(hour),
+                second_unknown_casualties: i64::from(hour),
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    // One holder changes each year; volatile balances still change every hour.
+    let holder = 1 + 5000 * (hour / (365 * 24)) as u32;
+    if holder != 1 {
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *f.tables[TableId::Countries.index()]
+        {
+            rows[0].id = holder;
+            rows.sort_by_key(|r| r.id);
+        }
+        if let TableView::Complete(TableRows::CountryLinks(rows)) =
+            &mut *f.tables[TableId::CountryLinks.index()]
+        {
+            rows.push(CountryLinkRow {
+                id: holder,
+                canonical_slot: 1,
+            });
+        }
+    }
+    *f.tables[TableId::CountryAppearance.index()] =
+        TableView::Complete(TableRows::CountryAppearance(
+            (1..=5000)
+                .map(|country| replay::rows::CountryAppearanceRow {
+                    country: if country == 1 { holder } else { country },
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    *f.tables[TableId::Politics.index()] = TableView::Complete(TableRows::Politics(
+        (1..=5000)
+            .map(|country| replay::rows::PoliticsRow {
+                country: if country == 1 { holder } else { country },
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *f.tables[TableId::CountryAppearance.index()]
+    {
+        rows.sort_by_key(|r| r.country);
+    }
+    if let TableView::Complete(TableRows::Politics(rows)) =
+        &mut *f.tables[TableId::Politics.index()]
+    {
+        rows.sort_by_key(|r| r.country);
+    }
+    *f.tables[TableId::PoliticalParties.index()] =
+        TableView::Complete(TableRows::PoliticalParties(Vec::new()));
+    *f.tables[TableId::Autonomy.index()] = TableView::Complete(TableRows::Autonomy(Vec::new()));
+    f
+}
+struct TestFolder(PathBuf);
+
+impl TestFolder {
+    fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "hoi4-casualties-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        Self(root)
+    }
+}
+
+#[test]
+fn war_casualties_all_new_zero_relations_do_not_prove_a_spanning_unknown_increment() {
+    let before = casualty_frame(117, Some((10, 0)), 0);
+    let mut replacement = casualty_frame(118, Some((0, 0)), 0);
+    if let TableView::Complete(TableRows::WarRelations(rows)) =
+        &mut *replacement.tables[TableId::WarRelations.index()]
+    {
+        rows[0].second_country = 3;
+        rows[0].start_hour = 118;
+    }
+    let source = opened(research_replay(vec![before, replacement]));
+    let scanned = scanned_branch(&source, 1, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        scanned.country_at(&chosen().tags[0], 117).unwrap().unknown,
+        Some(0)
+    );
+    assert_eq!(
+        scanned.country_at(&chosen().tags[0], 118).unwrap().unknown,
+        None
+    );
+    let spanning = reply(
+        vec![
+            casualty_frame(117, Some((10, 0)), 0),
+            casualty_frame(118, Some((10, 0)), 0),
+        ],
+        &chosen(),
+    );
+    assert!(spanning.series[0].unknown.is_some());
+    assert!(spanning.series[0].unknown_until.is_none());
+}
+
+impl Drop for TestFolder {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn loaded_content(source: &Source) -> (LoadContext, TestFolder) {
+    let folder = TestFolder::new();
+    let root = &folder.0;
+    std::fs::create_dir_all(root.join("localisation/english")).unwrap();
+    let mut text = String::from("﻿l_english:\n CASUALTIES_UNKNOWN:0 \"Fixture unknown losses\"\n");
+    for id in 1..=5000 {
+        text.push_str(&format!(" mod_country{id:04}:0 \"Fixture country {id}\"\n"));
+    }
+    std::fs::write(
+        root.join("localisation/english/countries_l_english.yml"),
+        text,
+    )
+    .unwrap();
+    let catalogue = Arc::new(
+        crate::catalogue::Catalogue::of_layers(
+            installed_content::ResolvedLayers::from_folders(&[(root, &[])]).unwrap(),
+            "english",
+        )
+        .unwrap(),
+    );
+    let options = super::super::ContentOptions {
+        options: installed_content::ResolveOptions {
+            game_dir: root.clone(),
+            user_dir: root.clone(),
+            cache_dir: root.join("cache"),
+        },
+        allow_unverified: true,
+    };
+    crate::catalogue::set_test_catalogue(source, &options, catalogue);
+    (
+        LoadContext {
+            content: Some(options),
+        },
+        folder,
+    )
+}
+#[test]
+fn changing_selections_reuses_one_branch_scan_with_content_loaded() {
+    let source = opened(research_replay((0..35).map(scale_frame).collect()));
+    let (context, _content_folder) = loaded_content(&source);
+    let cached = scanned_branch(&source, 1, &AtomicBool::new(false)).unwrap();
+    for n in [1, 30, 10] {
+        let r =
+            WarCasualties::load(&source, &params(n), &context, &AtomicBool::new(false)).unwrap();
+        assert_eq!(members(&r, 34).len(), n as usize);
+        assert!(
+            r.series
+                .iter()
+                .all(|s| s.labels.iter().all(|l| l.starts_with("Fixture country")))
+        );
+        assert_eq!(r.unknown_label, "Fixture unknown losses");
+    }
+    assert!(Arc::ptr_eq(
+        &cached,
+        &scanned_branch(&source, 1, &AtomicBool::new(false)).unwrap()
+    ));
+    assert_eq!(cached.names.len(), 1);
+    assert!(!cached.has_gap());
+}
+
+#[test]
+fn switching_branches_reuses_two_cached_scans_and_evicts_the_oldest() {
+    let mut second = casualty_frame(0, Some((0, 0)), 0);
+    second.branch = 2;
+    let mut third = casualty_frame(0, Some((0, 0)), 0);
+    third.branch = 3;
+    let source = opened(
+        Replay::from_records(
+            CAMPAIGN.into(),
+            &[
+                records(1, vec![casualty_frame(0, Some((0, 0)), 0)]),
+                records(2, vec![second]),
+                records(3, vec![third]),
+            ],
+        )
+        .unwrap(),
+    );
+    let (context, _content_folder) = loaded_content(&source);
+    WarCasualties::load(&source, &chosen(), &context, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        source.state::<LabelScans>().lock().unwrap().entries.len(),
+        1
+    );
+    let scanned = scanned_branch(&source, 2, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        source.state::<LabelScans>().lock().unwrap().entries.len(),
+        1
+    );
+    let first = scanned_branch(&source, 1, &AtomicBool::new(false)).unwrap();
+    assert_eq!(first.country_at(&chosen().tags[0], 0).unwrap().taken, 0);
+    assert_eq!(source.state::<Scans>().lock().unwrap().entries.len(), 2);
+    assert!(Arc::ptr_eq(
+        &scanned,
+        &scanned_branch(&source, 2, &AtomicBool::new(false)).unwrap()
+    ));
+    let mut second_request = chosen();
+    second_request.branch_id = "2".into();
+    WarCasualties::load(&source, &second_request, &context, &AtomicBool::new(false)).unwrap();
+    let mut third_request = chosen();
+    third_request.branch_id = "3".into();
+    WarCasualties::load(&source, &third_request, &context, &AtomicBool::new(false)).unwrap();
+    assert_eq!(source.state::<Scans>().lock().unwrap().entries.len(), 2);
+    assert_eq!(
+        source.state::<LabelScans>().lock().unwrap().entries.len(),
+        2
+    );
+    assert!(
+        source
+            .state::<LabelScans>()
+            .lock()
+            .unwrap()
+            .entries
+            .iter()
+            .all(|(branch, _, _)| *branch != 1)
+    );
+    let rebuilt = scanned_branch(&source, 1, &AtomicBool::new(false)).unwrap();
+    assert!(!Arc::ptr_eq(&first, &rebuilt));
+    assert!(scanned_branch(&source, 999, &AtomicBool::new(false)).is_err());
+}
+
+#[test]
+#[ignore = "nine-year encoded benchmark; run explicitly outside routine checks"]
+fn war_casualties_nine_year_benchmark() {
+    let hours = 9 * 365 * 24 + 7;
+    let fixture_folder = TestFolder::new();
+    let path = std::env::var_os("BATTLE_PLAN_CASUALTIES_BENCH_FIXTURE").or_else(|| std::env::var_os("HOI4_CASUALTIES_BENCH_FIXTURE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| fixture_folder.0.join("nine-years.battleplan"));
+    if !path.exists() {
+        let mut replay = research_replay((0..72).map(scale_frame).collect());
+        for first in (72..hours).step_by(72) {
+            let mut encoder = FrameEncoder::new();
+            let mut batch = vec![Record::BranchStart(replay.branches[0].clone())];
+            batch.extend(
+                (first..(first + 72).min(hours))
+                    .map(|h| Record::Frame(encoder.encode(scale_frame(h), false).unwrap())),
+            );
+            replay = replay.append(&[batch]).unwrap();
+            if first % 7200 == 0 {
+                eprintln!("encoded fixture: {first}/{hours} hours");
+            }
+        }
+        // Reusable fixtures are read-only. New fixtures belong to this test's
+        // temporary folder even when an environment path was supplied.
+        let temporary = fixture_folder.0.join("nine-years.battleplan");
+        replay.write_atomic(&temporary).unwrap();
+    }
+    let path = if path.exists() {
+        path
+    } else {
+        fixture_folder.0.join("nine-years.battleplan")
+    };
+    let source = opened(Replay::open(std::fs::read(path).unwrap()).unwrap());
+    let (context, _content_folder) = loaded_content(&source);
+    let replay = source.replay();
+    let cancelled = AtomicBool::new(false);
+    let mut builder = ScanFrames::new(&replay, 1);
+    let mut stages = Vec::new();
+    let mut peak_scan_bytes = 0;
+    let mut accounting_seconds = 0.0;
+    let start = Instant::now();
+    for block in replay.index.iter().filter(|block| block.branch == 1) {
+        let decoding = Instant::now();
+        let frames = replay.read_block_selected(block, &SCAN_TABLES).unwrap();
+        let block_ms = decoding.elapsed().as_secs_f64() * 1000.0 / frames.len() as f64;
+        let mut decoder = FrameDecoder::for_tables(&SCAN_TABLES);
+        for frame in frames {
+            let built = Instant::now();
+            let decoded = decoder.advance(&frame).unwrap();
+            builder.frame(decoded, &replay);
+            stages.push((built.elapsed().as_secs_f64() * 1000.0, block_ms));
+        }
+        // Benchmark bookkeeping stays outside both the product and hour timings.
+        let accounting = Instant::now();
+        peak_scan_bytes = peak_scan_bytes.max(benchmark_builder_bytes(&builder));
+        accounting_seconds += accounting.elapsed().as_secs_f64();
+    }
+    let accounting = Instant::now();
+    let before_finish = benchmark_builder_bytes(&builder);
+    let track_count = builder.scan.tracks.len();
+    let boundary_count = builder.scan.bounds.len() + builder.scan.observed.len() * 2;
+    accounting_seconds += accounting.elapsed().as_secs_f64();
+    let cached = Arc::new(builder.scan.finish(&cancelled).unwrap());
+    source
+        .state::<Scans>()
+        .lock()
+        .unwrap()
+        .entries
+        .push_back((1, Arc::clone(&cached)));
+    let reply = WarCasualties::load(&source, &params(30), &context, &cancelled).unwrap();
+    let elapsed_seconds = start.elapsed().as_secs_f64() - accounting_seconds;
+    let reply_bytes = serde_json::to_vec(&reply).unwrap().len();
+    let cache_bytes = benchmark_cached_bytes(&cached)
+        + source
+            .state::<LabelScans>()
+            .lock()
+            .unwrap()
+            .entries
+            .iter()
+            .map(|(_, _, labels)| benchmark_label_bytes(labels))
+            .sum::<usize>();
+    // Conservative finalization envelope: old builder and completed cache plus
+    // sort/current-run/index scratch. It may count shared allocations twice.
+    let finish_scratch = boundary_count * std::mem::size_of::<i64>()
+        + track_count
+            * (std::mem::size_of::<(i128, usize)>() + std::mem::size_of::<Option<Sample>>() + 128);
+    let peak_bytes = peak_scan_bytes.max(before_finish + cache_bytes + finish_scratch);
+    assert_eq!(stages.len(), hours as usize);
+    let percentiles = |mut values: Vec<f64>| {
+        values.sort_by(f64::total_cmp);
+        (values[values.len() / 2], values[values.len() * 95 / 100])
+    };
+    let (built_p50, built_p95) = percentiles(stages.iter().map(|(built, _)| *built).collect());
+    let (decode_p50, decode_p95) =
+        percentiles(stages.iter().map(|(_, decoded)| *decoded).collect());
+    let staged_ms = stages
+        .iter()
+        .map(|(built, decoded)| built + decoded)
+        .sum::<f64>();
+    let overhead = (elapsed_seconds * 1000.0 - staged_ms).max(0.0) / f64::from(hours);
+    let (p50, p95) = percentiles(
+        stages
+            .iter()
+            .map(|(built, decoded)| built + decoded + overhead)
+            .collect(),
+    );
+    eprintln!(
+        "casualties nine-year content-loaded: {hours} hours, 5000 countries; p50 {p50:.3} ms/hour, p95 {p95:.3} ms/hour, total {elapsed_seconds:.3} s; top30 {reply_bytes} bytes; retained cache {cache_bytes} bytes; conservative peak upper estimate {peak_bytes} bytes (owned capacities, shared naming tables counted per snapshot; excludes replay/content/decoder scratch); naming snapshots {}",
+        cached.names.len()
+    );
+    eprintln!(
+        "hour build p50/p95: {built_p50:.3}/{built_p95:.3} ms; block decoding amortized p50/p95: {decode_p50:.3}/{decode_p95:.3} ms; finalization and reply overhead: {overhead:.3} ms/hour; profile: Cargo test unoptimized, inherited process priority"
+    );
+    assert!(reply_bytes < 2 * 1024 * 1024);
+    assert_eq!(members(&reply, hours - 1).len(), 30);
+}
+
+fn benchmark_track_bytes(track: &Track) -> usize {
+    std::mem::size_of_val(track)
+        + track.packed.capacity()
+        + track.checkpoints.capacity() * std::mem::size_of::<Checkpoint>()
+}
+
+fn benchmark_label_bytes(labels: &CampaignLabels) -> usize {
+    labels
+        .iter()
+        .map(|(tag, names)| {
+            96 + tag.capacity()
+                + names.capacity() * std::mem::size_of::<String>()
+                + names.iter().map(String::capacity).sum::<usize>()
+        })
+        .sum()
+}
+
+fn benchmark_names_bytes(names: &Vec<DecodedFrame>) -> usize {
+    fn rows_bytes<T>(rows: &Vec<T>) -> usize {
+        rows.capacity() * std::mem::size_of::<T>()
+    }
+    names.capacity() * std::mem::size_of::<DecodedFrame>()
+        + names
+            .iter()
+            .map(|frame| {
+                frame
+                    .tables
+                    .iter()
+                    .map(|table| {
+                        let header =
+                            std::mem::size_of::<TableView>() + 2 * std::mem::size_of::<usize>();
+                        let rows = match &**table {
+                            TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows,
+                            TableView::Unavailable { reason } => return header + reason.capacity(),
+                        };
+                        header
+                            + match rows {
+                                TableRows::Countries(rows) => {
+                                    rows_bytes(rows)
+                                        + rows.iter().map(|row| row.tag.capacity()).sum::<usize>()
+                                }
+                                TableRows::CountryLinks(rows) => rows_bytes(rows),
+                                TableRows::CountryAppearance(rows) => {
+                                    rows_bytes(rows)
+                                        + rows
+                                            .iter()
+                                            .map(|row| {
+                                                row.cosmetic_tag.capacity()
+                                                    + row.name_tag.capacity()
+                                                    + row.leader_ideology.capacity()
+                                                    + row.graphical_culture.capacity()
+                                                    + row.old_name.as_ref().map_or(0, Vec::capacity)
+                                                    + row
+                                                        .old_adjective
+                                                        .as_ref()
+                                                        .map_or(0, Vec::capacity)
+                                                    + row
+                                                        .old_definite_name
+                                                        .as_ref()
+                                                        .map_or(0, Vec::capacity)
+                                            })
+                                            .sum::<usize>()
+                                }
+                                TableRows::Politics(rows) => rows_bytes(rows),
+                                TableRows::PoliticalParties(rows) => {
+                                    rows_bytes(rows)
+                                        + rows
+                                            .iter()
+                                            .map(|row| {
+                                                row.token.capacity()
+                                                    + row.name.capacity()
+                                                    + row.long_name.capacity()
+                                            })
+                                            .sum::<usize>()
+                                }
+                                TableRows::Autonomy(rows) => {
+                                    rows_bytes(rows)
+                                        + rows
+                                            .iter()
+                                            .map(|row| {
+                                                row.state.capacity()
+                                                    + row.previous.as_ref().map_or(0, Vec::capacity)
+                                                    + row.next.as_ref().map_or(0, Vec::capacity)
+                                            })
+                                            .sum::<usize>()
+                                }
+                                _ => 0,
+                            }
+                    })
+                    .sum::<usize>()
+            })
+            .sum::<usize>()
+}
+
+fn benchmark_builder_bytes(builder: &ScanFrames) -> usize {
+    let scan = &builder.scan;
+    std::mem::size_of_val(builder)
+        + benchmark_names_bytes(&scan.names)
+        + scan
+            .tracks
+            .iter()
+            .map(|(tag, track)| tag.capacity() + benchmark_track_bytes(track) + 96)
+            .sum::<usize>()
+        + scan.countries.capacity() * std::mem::size_of::<Country>()
+        + scan.identities.capacity() * std::mem::size_of::<Identity>()
+        + scan.indices.capacity() * (std::mem::size_of::<(Identity, usize)>() + 16)
+        + scan.pairs.capacity() * (std::mem::size_of::<(PairKey, HeldPair)>() + 16)
+        + scan
+            .live
+            .keys()
+            .map(|tag| tag.capacity() + 96)
+            .sum::<usize>()
+        + scan.bounds.len() * 32
+        + scan.observed.capacity() * std::mem::size_of::<HourSpan>()
+        + scan.touched.capacity() * std::mem::size_of::<usize>()
+        + [&scan.active, &scan.changed_tags]
+            .into_iter()
+            .map(|tags| {
+                tags.capacity() * std::mem::size_of::<String>()
+                    + tags.iter().map(String::capacity).sum::<usize>()
+            })
+            .sum::<usize>()
+        + builder
+            .live
+            .keys()
+            .map(|tag| tag.capacity() + 96)
+            .sum::<usize>()
+        + builder.by_slot.capacity() * (std::mem::size_of::<(u32, usize)>() + 16)
+        + builder.seen.capacity() * (std::mem::size_of::<(usize, usize, i32)>() + 16)
+        + builder.endpoints.capacity() * std::mem::size_of::<(usize, usize)>()
+        + builder.relation_keys.capacity() * std::mem::size_of::<(u32, u32, i32)>()
+        + builder.census.as_ref().map_or(0, |(countries, _)| {
+            countries.capacity() * std::mem::size_of::<(u32, u32, Vec<u8>)>()
+                + countries
+                    .iter()
+                    .map(|(_, _, tag)| tag.capacity())
+                    .sum::<usize>()
+        })
+}
+
+fn benchmark_cached_bytes(scan: &ScannedCasualties) -> usize {
+    std::mem::size_of_val(scan)
+        + benchmark_names_bytes(&scan.names)
+        + scan.tracks.capacity() * std::mem::size_of::<(String, Track)>()
+        + scan
+            .tracks
+            .iter()
+            .map(|(tag, track)| {
+                tag.capacity() + benchmark_track_bytes(track) - std::mem::size_of::<Track>()
+            })
+            .sum::<usize>()
+        + scan.observed.capacity() * std::mem::size_of::<HourSpan>()
+        + scan.windows.capacity() * std::mem::size_of::<TopWindow>()
+        + scan
+            .windows
+            .iter()
+            .map(|window| window.order.capacity() * std::mem::size_of::<u32>())
+            .sum::<usize>()
+}
+
+#[test]
+fn war_casualties_waiter_can_cancel_without_blocking_another_branch() {
+    let mut second = casualty_frame(100, Some((10, 0)), 0);
+    second.branch = 2;
+    let source = opened(
+        Replay::from_records(
+            CAMPAIGN.into(),
+            &[
+                records(1, vec![casualty_frame(100, Some((10, 0)), 0)]),
+                records(2, vec![second]),
+            ],
+        )
+        .unwrap(),
+    );
+    let flight = Arc::new(InFlight::default());
+    source
+        .state::<Scans>()
+        .lock()
+        .unwrap()
+        .in_flight
+        .insert(1, Arc::clone(&flight));
+    let cancelled = AtomicBool::new(false);
+    let (started, begun) = std::sync::mpsc::channel();
+    let (finished, done) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            started.send(()).unwrap();
+            let result = scanned_branch(&source, 1, &cancelled);
+            finished.send(result.err().unwrap().kind()).unwrap();
+        });
+        begun
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        let other = scanned_branch(&source, 2, &AtomicBool::new(false)).unwrap();
+        assert!(other.country_at(&chosen().tags[0], 100).is_some());
+        cancelled.store(true, Ordering::Release);
+        assert_eq!(
+            done.recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap(),
+            io::ErrorKind::Interrupted
+        );
+    });
+    assert!(flight.result.lock().unwrap().is_none());
+}
+
+#[test]
+fn war_casualties_stretch_start_waits_for_read_and_nonread_endpoints_do_not_confirm() {
+    for gap in [false, true] {
+        let mut scan = Scan::new();
+        let first = scan.country((1, 100));
+        let second = scan.country((2, 200));
+        let live = BTreeMap::from([
+            ("opaque first".into(), first),
+            ("opaque second".into(), second),
+        ]);
+        for hour in 100..=145 {
+            let read = hour == 102 || hour == 119;
+            scan.begin_hour(hour, &live, hour == 100, read);
+            if read {
+                scan.relation(first, second, 90, [10, 20, 0, 0]);
+            }
+            scan.end_hour(read);
+            if hour == 101 {
+                assert!(scan.tracks.is_empty());
+            }
+        }
+        // A non-read endpoint can extend a hold but cannot create a read date.
+        if gap {
+            scan.gap();
+        }
+        let cached = scan.finish(&AtomicBool::new(false)).unwrap();
+        assert!(cached.country_at("opaque first", 101).is_none());
+        assert_eq!(
+            cached.country_at("opaque first", 102).unwrap().read_hour,
+            102
+        );
+        assert_eq!(
+            cached.country_at("opaque first", 145).unwrap().read_hour,
+            119
+        );
+        let product = cached
+            .reply(
+                &CasualtyParams {
+                    branch_id: "1".into(),
+                    tags: vec!["opaque first".into()],
+                    top: None,
+                },
+                &AtomicBool::new(false),
+                None,
+                UNKNOWN_LABEL,
+                Vec::new(),
+            )
+            .unwrap();
+        assert_eq!(product.series[0].ends.last().unwrap(), &(0, 145, Some(119)));
+    }
+}
+
+#[test]
+fn war_casualties_returning_holder_waits_for_its_own_read() {
+    let mut scan = Scan::new();
+    let former = scan.country((1, 100));
+    let replacement = scan.country((1, 101));
+    let opponent = scan.country((2, 200));
+    for (hour, holder, read) in [
+        (100, former, true),
+        (101, replacement, true),
+        (102, former, false),
+    ] {
+        let live = BTreeMap::from([
+            ("opaque first".into(), holder),
+            ("opaque second".into(), opponent),
+        ]);
+        scan.begin_hour(hour, &live, true, read);
+        if read {
+            scan.relation(holder, opponent, hour, [10, 20, 0, 0]);
+        }
+        scan.end_hour(read);
+    }
+    let cached = scan.finish(&AtomicBool::new(false)).unwrap();
+    assert!(cached.country_at("opaque first", 102).is_none());
+    let request = CasualtyParams {
+        branch_id: "1".into(),
+        tags: vec!["opaque first".into()],
+        top: None,
+    };
+    let product = cached
+        .reply(
+            &request,
+            &AtomicBool::new(false),
+            None,
+            UNKNOWN_LABEL,
+            Vec::new(),
+        )
+        .unwrap();
+    assert_eq!(product.series.len(), 2);
+    assert_eq!(product.series[0].ends[0].1, 100);
+    assert_eq!(product.series[1].ends[0].1, 101);
+}

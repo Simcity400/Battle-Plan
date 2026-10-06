@@ -383,11 +383,11 @@ impl Catalogue {
     }
 }
 
+type Cached = Option<((content::ContentKey, std::path::PathBuf), Arc<Catalogue>)>;
+
 /// The shared catalogue for these folders, loaded on first use and replaced when
-/// the folders, the cache folder or the unverified-content
-/// choice change.
+/// the folders, the cache folder or the unverified-content choice change.
 pub fn catalogue(source: &Source, options: &ContentOptions) -> io::Result<Arc<Catalogue>> {
-    type Cached = Option<((content::ContentKey, std::path::PathBuf), Arc<Catalogue>)>;
     let key = (
         content::content_key(Some(options)).expect("content options given"),
         options.options.cache_dir.clone(),
@@ -402,6 +402,19 @@ pub fn catalogue(source: &Source, options: &ContentOptions) -> io::Result<Arc<Ca
     let catalogue = Arc::new(Catalogue::load(source, options)?);
     *state = Some((key, Arc::clone(&catalogue)));
     Ok(catalogue)
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_catalogue(
+    source: &Source,
+    options: &ContentOptions,
+    catalogue: Arc<Catalogue>,
+) {
+    let key = (
+        content::content_key(Some(options)).expect("content options given"),
+        options.options.cache_dir.clone(),
+    );
+    *source.state::<Cached>().lock().unwrap() = Some((key, catalogue));
 }
 
 /// Loads a texture through the shared native GUI resource path. Textures sit

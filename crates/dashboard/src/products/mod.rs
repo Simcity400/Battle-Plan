@@ -50,6 +50,7 @@ pub mod special_projects;
 pub mod stability_parts;
 pub mod subjects;
 pub mod trade_flows;
+pub mod war_casualties;
 pub mod world_tension;
 
 use std::{io, sync::atomic::AtomicBool};
@@ -272,6 +273,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<stability_parts::StabilityParts>(),
     register::<country_measure::CountryMeasure>(),
     register::<country_fuel::CountryFuel>(),
+    register::<war_casualties::WarCasualties>(),
     register::<country_factories::CountryFactories>(),
     register::<scoreboard::Scoreboard>(),
     register::<country_nukes::CountryNukes>(),

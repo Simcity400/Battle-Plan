@@ -21,8 +21,8 @@ export interface RecordedBranch { firstHour: number; lastHour: number; gaps: rea
  * branch's first hour plus whole steps where that is in the stretch, else the
  * stretch's first hour; never an hour of a gap, so a read never waits on hours the
  * recording lacks. Null when the moment itself is not recorded (in a gap, or
- * outside the branch). */
-export function lookHour(branch: RecordedBranch, hour: number, countryStart?: number | null): { hour: number; stretch: number } | null {
+ * outside the branch). `exact` uses the moment itself instead of the sample grid. */
+export function lookHour(branch: RecordedBranch, hour: number, countryStart?: number | null, exact = false): { hour: number; stretch: number } | null {
   const moment = Math.floor(hour);
   if (countryStart === null || (countryStart !== undefined && countryStart > moment)) return null;
   if (moment < branch.firstHour || moment > branch.lastHour) return null;
@@ -30,18 +30,18 @@ export function lookHour(branch: RecordedBranch, hour: number, countryStart?: nu
   // The stretch starts after the last gap before the moment.
   const stretch = branch.gaps.reduce((start, gap) => gap.lastHour < moment ? Math.max(start, gap.lastHour + 1) : start, Math.max(branch.firstHour, countryStart ?? branch.firstHour));
   const step = branch.firstHour + Math.floor((moment - branch.firstHour) / LOOK_STEP) * LOOK_STEP;
-  return { hour: Math.max(step, stretch), stretch };
+  return { hour: exact ? moment : Math.max(step, stretch), stretch };
 }
 
 /** One identity-bounded sample for every part of a country's look. Optional
  * per-country hours date labels to their own moments; tags remain opaque. */
 export function lookPlan(branch: RecordedBranch | undefined, tags: readonly string[], hour: number, segmentAt?: (tag: string, hour: number) => number | null,
-  hours?: ReadonlyMap<string, number>) {
+  hours?: ReadonlyMap<string, number>, exact = false) {
   const samples = branch ? [...new Set(tags)].sort().flatMap(tag => {
     const at = hours ? hours.get(tag) : hour;
     if (at === undefined) return [];
     const moment = Math.floor(at);
-    const sample = lookHour(branch, moment, segmentAt?.(tag, moment));
+    const sample = lookHour(branch, moment, segmentAt?.(tag, moment), exact);
     return sample ? [{ tag, ...sample }] : [];
   }) : [];
   const wanted = samples.map(({ tag, hour }) => ({ tag, hour }));
@@ -75,16 +75,17 @@ export interface CountryLooks {
  * `segmentAt` gives the first hour of its unbroken identity/data segment, independent
  * of display membership; null means unknown. Without it, use the recorded stretch.
  * Pending parts keep their previous look within the segment; completed missing
- * parts show the fallback. Optional `hours` gives each country its label hour. */
+ * parts show the fallback. Optional `hours` gives each country its label hour;
+ * `exact` reads that hour directly instead of the playback sample grid. */
 export function useCountryLooks(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, tags: readonly string[], hour: number,
-  active: boolean, segmentAt?: (tag: string, hour: number) => number | null, hours?: ReadonlyMap<string, number>): CountryLooks {
+  active: boolean, segmentAt?: (tag: string, hour: number) => number | null, hours?: ReadonlyMap<string, number>, exact = false): CountryLooks {
   const content = useContentRevision(client);
   const moment = Math.floor(hour);
   // The set of countries, not their order: a race re-ranking asks for nothing new.
   const set = [...new Set(tags)].sort();
   const tagKey = JSON.stringify(set);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const plan = useMemo(() => lookPlan(track?.branch, set, moment, segmentAt, hours), [tagKey, track?.branch, moment, segmentAt, hours]);
+  const plan = useMemo(() => lookPlan(track?.branch, set, moment, segmentAt, hours, exact), [tagKey, track?.branch, moment, segmentAt, hours, exact]);
   const { samples, wanted } = plan;
   const styles = useCountryFactsRead(client, track, wanted, active, STYLES, plan.maxHours);
   const flags = useCountryFactsRead(client, track, wanted, active, FLAGS, plan.maxHours);
@@ -97,8 +98,8 @@ export function useCountryLooks(client: DashboardClient, track: Pick<BoundTrack,
   // Memoised, so a render with nothing new keeps the looks object and the chart's layers.
   const heldTags = JSON.stringify([...new Set([...held.looks.keys(), ...set])].sort());
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const segments = useMemo(() => new Map(lookPlan(track?.branch, JSON.parse(heldTags) as string[], moment, segmentAt, hours).samples.map(item => [item.tag, item.stretch])),
-    [heldTags, track?.branch, moment, segmentAt, hours]);
+  const segments = useMemo(() => new Map(lookPlan(track?.branch, JSON.parse(heldTags) as string[], moment, segmentAt, hours, exact).samples.map(item => [item.tag, item.stretch])),
+    [heldTags, track?.branch, moment, segmentAt, hours, exact]);
   return useMemo(() => {
     // Merging what finished is idempotent, so a repeated render changes nothing.
     const next = sampledLooks(held, samples, sample => ({ style: styles.get(nameKey(sample.hour, sample.tag)), flag: flags.get(nameKey(sample.hour, sample.tag)) }), segments);

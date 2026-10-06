@@ -3,6 +3,7 @@ import { registerWidgets } from '../dashboard/definitions.ts';
 import { definition as agencyComparison } from './agency-comparison/definition.ts';
 import { definition as autonomy } from './autonomy/definition.ts';
 import { definition as commandPower } from './command-power/definition.ts';
+import { definition as casualties } from './casualties/definition.ts';
 import { definition as constructionLog } from './construction-log/definition.ts';
 import { definition as constructionSpending } from './construction-spending/definition.ts';
 import { definition as decryption } from './decryption/definition.ts';
@@ -37,6 +38,6 @@ import { definition as subjects } from './subjects/definition.ts';
 import { definition as tradeFlows } from './trade-flows/definition.ts';
 import { definition as worldTension } from './world-tension/definition.ts';
 
-export const widgetMetas = [map, nationalFocus, research, politicalPower, commandPower, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, resourceBalance, equipmentStockpile, fuel, productionLines, factories, equipmentProduced, productionSpending, occupiedStates, occupationTrend, experience, factions, subjects, tradeFlows, worldTension, autonomy, constructionLog, constructionSpending, specialProjects, nuclearArsenal, raidLog, raidTally, decryption, espionageLog, agencyComparison, scoreboard, placeholder] as const;
+export const widgetMetas = [map, nationalFocus, research, politicalPower, commandPower, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, resourceBalance, equipmentStockpile, fuel, productionLines, factories, equipmentProduced, productionSpending, occupiedStates, occupationTrend, experience, factions, subjects, tradeFlows, worldTension, autonomy, constructionLog, constructionSpending, specialProjects, nuclearArsenal, raidLog, raidTally, decryption, espionageLog, agencyComparison, scoreboard, casualties, placeholder] as const;
 
 registerWidgets(widgetMetas);
