@@ -70,6 +70,13 @@ Do not use a fork, mirror, old tags, old branches, or copied `.git` metadata as 
 public starting point. Recheck the snapshot and any added README, licence or build
 artifact before making that new repository public.
 
+The exported tree also leaves out what this repository keeps as development
+evidence: executable addresses and game function names in code, comments and docs;
+game file paths, line citations and installation paths; data extracted from the
+game (`crates/installed-content/src/gui/native/keywords.tsv` and the game-file hash table in
+`crates/viewer/src/map/native_effects.rs`); copied shader text and game formulas in
+comments; and `reference/`. The public build must work without the extracted data.
+
 If the existing repository must become public, coordinate a complete history and
 identity rewrite across every hosted branch/tag and account for old pull-request
 refs, forks, cached commits, comments, logs and artifacts. A force-push alone cannot
