@@ -723,7 +723,7 @@ mod tests {
         history.install(sources(vec![cv, escort]));
         for height in [
             163.710_052_490_234_38_f64 as f32,
-            162.928_390_502_929_69_f64 as f32,
+            162.928_390_502_929_7_f64 as f32,
         ] {
             let mut frame = frame(1.0 / 120.0);
             frame.shown = [height < 120.0, height < 240.0];

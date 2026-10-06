@@ -692,7 +692,7 @@ fn l4e9_kotka_plate_only_when_another_task_force_holds_the_native_visual_slot() 
     );
     for height in [
         163.710_052_490_234_38_f64 as f32,
-        162.928_390_502_929_69_f64 as f32,
+        162.928_390_502_929_7_f64 as f32,
     ] {
         assert!(assets.gates.ships(height));
         let (targets, report) = kotka_hulls(&frame, &assets, false, 0.22);
