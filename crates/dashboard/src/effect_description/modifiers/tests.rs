@@ -2,7 +2,7 @@ use super::*;
 use crate::effect_description::tests::{Fixture, fresh};
 use replay::{frame::TableView, rows::*};
 
-fn fixture() -> Fixture {
+pub(super) fn fixture() -> Fixture {
     let mut fixture = Fixture::new();
     let added = [
         ("EFFECT_ADD_IDEA", "Add $NAME$"),

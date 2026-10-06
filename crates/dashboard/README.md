@@ -507,8 +507,20 @@ modifier catalogues come from the recorded content stack. Balance-of-power
 effects read their values, sides and ordered range identities from the replay;
 range transitions use the native strict interval probe and numeric modifier
 difference. Timed-idea modification/swaps require the unrecorded timed roster
-and remaining days, and advisor-backed ideas require the available-advisor
-roster/cached advisor modifiers; both retain named, counted refusals.
+and remaining days and retain named, counted refusals. Advisor-backed add/remove/
+show idea descriptions use the recorded AvailableAdvisors order before the
+CountryRetiredCharacters order (`1410D69C0`); the primary compares exact idea
+bytes, the fallback compares folded names (`140F8A630`). Multi-idea forms name
+the selected characters without reading caches. Single-idea forms resolve the
+character's first matching role and format AdvisorRoles' numeric cache by
+recorded ModifierDefinitions IDs, retaining array order and the full category
+mask (`14128C670`/`14128C8E0`/`14054E050`). Research, equipment and targeted
+fragments resolve through the content stack and recorded role traits; content
+failures remain named without discarding the numeric fragment. Stored numeric
+caches are never rebuilt from authored modifiers or current traits. The cached
+tooltip-key table still contributes the named, counted refusal
+`advisor cached tooltip keys +0x218 unrecorded until format 99`; older,
+unavailable or absent caches are distinct refusals, never empty blocks.
 Fixed5 numeric leaves share one formatting template, with native rounding,
 truncation, integer clamping and newline rules selected per class. Mines refuse
 the unrecorded strategic-region instance name. Corpus-zero classes and ambiguous

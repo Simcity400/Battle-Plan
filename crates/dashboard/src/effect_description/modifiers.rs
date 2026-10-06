@@ -7,8 +7,9 @@ use crate::{
     triggers::{Scope, Scopes},
 };
 use installed_content::{localisation::crt_case_text, modifiers::Modifiers, scope::Scope as Parsed};
-use replay::rows::tables;
+use replay::rows::{CachedModifier, ModifierDefinitionRow, tables};
 
+mod advisors;
 mod power_balance;
 
 fn text_field<'a>(fields: &'a [Item], name: &str) -> Result<&'a str, String> {
@@ -148,21 +149,7 @@ impl Renderer<'_, '_, '_> {
             if !text.is_empty() {
                 text.push('\n');
             }
-            let category = self.localised(
-                format!("{}_research", bonus.key).as_bytes(),
-                &[],
-                scopes,
-                false,
-            )?;
-            text.push_str(&self.char_native_text(
-                b"POLITICAL_RESEARCH_BONUS_ENTRY",
-                &[
-                    ("CATEGORY", Argument::Text(&category)),
-                    ("FACTOR", Argument::Fixed5(bonus.value)),
-                ],
-                scopes,
-                false,
-            )?);
+            text.push_str(&self.research_bonus_line(bonus, scopes)?);
         }
         newline(&mut text);
         text.push_str(&self.char_equipment_bonuses(&idea.equipment_bonuses, "", scopes)?);
@@ -236,6 +223,22 @@ impl Renderer<'_, '_, '_> {
         Ok(text)
     }
 
+    // 140FB9FF0/1413CA140: authored category key + "_research".
+    fn research_bonus_line(
+        &self,
+        bonus: &installed_content::modifiers::Modifier,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let category = self.localised(
+            format!("{}_research", bonus.key).as_bytes(), &[], scopes, false,
+        )?;
+        self.char_native_text(
+            b"POLITICAL_RESEARCH_BONUS_ENTRY",
+            &[("CATEGORY", Argument::Text(&category)), ("FACTOR", Argument::Fixed5(bonus.value))],
+            scopes, false,
+        )
+    }
+
     // 140FBA570 uses the short wrapper only when the complete detail text is empty.
     fn idea_tooltip(
         &self,
@@ -287,17 +290,16 @@ impl Renderer<'_, '_, '_> {
     }
 
     fn idea_advisor(&self, token: &str) -> Result<bool, String> {
-        self.character_content()?
-            .catalogue
-            .as_ref()
-            .map_err(Clone::clone)?
-            .advisor(token)
-            .map(|role| role.is_some())
-            .map_err(|why| why.to_string())
+        // 1406ACA00: registered advisor tokens take precedence over CIdea.
+        Ok(self.context.text.frame()
+            .complete::<tables::AdvisorTokens>()
+            .map_err(|why| why.to_string())?
+            .iter()
+            .any(|row| row.token.eq_ignore_ascii_case(token.as_bytes())))
     }
 
     pub(super) fn ideas_effect(
-        &self,
+        &mut self,
         item: &Item,
         scopes: Scopes,
         remove: bool,
@@ -306,6 +308,34 @@ impl Renderer<'_, '_, '_> {
         let tokens = idea_tokens(item)?;
         let mut names = Vec::new();
         for token in &tokens {
+            if self.idea_advisor(token)? {
+                let Some(character) = self.advisor_idea_character(token, scopes)? else {
+                    // 140369290 returns empty for a missing association;
+                    // 140394850's multi-token loop continues with other names.
+                    if !show || tokens.len() == 1 {
+                        return Ok(String::new());
+                    }
+                    // 14039504D still tries CIdea when the association misses.
+                    let name = self.idea(token)?
+                        .map(|idea| self.idea_name(idea, scopes)).transpose()?
+                        .unwrap_or_default();
+                    names.push(name);
+                    continue;
+                };
+                let character = self.effect_character(Scope::Character(character))?
+                    .ok_or_else(|| format!("Characters lacks advisor character {character}"))?;
+                names.push(if tokens.len() == 1 {
+                    self.advisor_idea_tooltip(character, token, scopes, remove, show)?
+                } else {
+                    let mut name = self.effect_character_name(character)?;
+                    // 14039504D also tries the CIdea name, even for an advisor.
+                    if show && let Some(idea) = self.idea(token)? {
+                        name.push_str(&self.idea_name(idea, scopes)?);
+                    }
+                    name
+                });
+                continue;
+            }
             let idea = if show {
                 self.idea(token)?
             } else {
@@ -319,8 +349,6 @@ impl Renderer<'_, '_, '_> {
                     // Show calls 1405260E0 at both 140394FC1 and 14039504D.
                     if show { format!("{name}{name}") } else { name }
                 });
-            } else if self.idea_advisor(token)? {
-                return Err("idea advisor description requires the unrecorded available-advisor roster (CCountryCharacters+0x40/+0x4C, 1410D69C0) and CAdvisor+0x1A0 cached modifiers (140523CE0)".into());
             }
         }
         let mut name = names.join(", ");
@@ -787,12 +815,6 @@ impl Renderer<'_, '_, '_> {
         if let Some(why) = modifiers.unheld.cause() {
             return Err(why.to_owned());
         }
-        if !options.outer_colour.is_ascii() {
-            return Err(format!(
-                "modifier outer colour byte {:02x} is not UTF-8 (14054E0CC)",
-                options.outer_colour
-            ));
-        }
         let frame = self.context.world()?.frame();
         let definitions = frame
             .complete::<tables::ModifierDefinitions>()
@@ -814,17 +836,56 @@ impl Renderer<'_, '_, '_> {
                     .ok_or_else(|| {
                         format!("idea modifier {} has no recorded definition", modifier.key)
                     })?;
-                Ok((modifier, definition))
+                Ok((modifier.value, definition))
             })
             .collect::<Result<Vec<_>, String>>()?;
         values.sort_by_key(|(_, definition)| definition.index);
+        self.modifier_description_values(&values, &modifiers.tooltips(), prefix, options)
+    }
+
+    /// 14128C8E0 -> 14054E050: stored definition IDs and numeric-array order.
+    pub(super) fn cached_modifier_description_with(
+        &self,
+        entries: &[CachedModifier],
+        prefix: &str,
+        options: ModifierListOptions<'_>,
+    ) -> Result<String, String> {
+        if entries.is_empty() {
+            return self.modifier_description_values(&[], &[], prefix, options);
+        }
+        let definitions = self.context.text.frame()
+            .complete::<tables::ModifierDefinitions>()
+            .map_err(|why| why.to_string())?;
+        let values = entries.iter().map(|entry| {
+            let definition = definitions.iter()
+                .find(|definition| definition.index == entry.definition)
+                .ok_or_else(|| format!("advisor cached modifier {} has no recorded definition", entry.definition))?;
+            Ok((entry.value, definition))
+        }).collect::<Result<Vec<_>, String>>()?;
+        self.modifier_description_values(&values, &[], prefix, options)
+    }
+
+    fn modifier_description_values(
+        &self,
+        values: &[(i64, &ModifierDefinitionRow)],
+        tooltips: &[String],
+        prefix: &str,
+        options: ModifierListOptions<'_>,
+    ) -> Result<String, String> {
+        if !options.outer_colour.is_ascii() {
+            return Err(format!(
+                "modifier outer colour byte {:02x} is not UTF-8 (14054E0CC)",
+                options.outer_colour
+            ));
+        }
+        let frame = self.context.text.frame();
         let mut out = String::new();
         if options.outer_colour != 0 {
             // 14054E0CC: these bytes precede the first line's separator check.
             out.push('\u{11}');
             out.push(char::from(options.outer_colour));
         }
-        for (modifier, definition) in values {
+        for &(raw_value, definition) in values {
             // 14054F743/14054F74F: separate include/exclude intersections.
             if definition.category_mask & options.category_mask == 0
                 || definition.category_mask & !options.excluded_category_mask == 0
@@ -834,9 +895,9 @@ impl Renderer<'_, '_, '_> {
             // Getter 140551820 clamps before 14054E198's wrapping IMUL and
             // signed /100000; FormatLine 14054F6D0 tests the scaled zero.
             let effective = if definition.flags & engine::modifier_definition::CLAMP_MAXIMUM != 0 {
-                modifier.value.clamp(0, 100_000)
+                raw_value.clamp(0, 100_000)
             } else {
-                modifier.value
+                raw_value
             };
             let value = effective.wrapping_mul(options.scale) / 100_000;
             if value == 0 && definition.flags & 0x100 == 0 {
@@ -886,7 +947,7 @@ impl Renderer<'_, '_, '_> {
             out.push_str(": ");
             out.push_str(&value);
         }
-        for tooltip in modifiers.tooltips() {
+        for tooltip in tooltips {
             if tooltip.is_empty() {
                 continue;
             }

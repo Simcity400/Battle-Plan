@@ -40,6 +40,9 @@
 //!   `modifier_list_with` expands it in the supplied scope (14054E520/1410CF560).
 //!   `ModifierListOptions` maps the native formatting arguments; `modifier_list`
 //!   uses its defaults. The numeric prefix is a separate `&str` argument.
+//!   `cached_modifier_description_with(entries: &[CachedModifier], prefix: &str,
+//!   options: ModifierListOptions) -> Result<String, String>` takes recorded
+//!   definition IDs in native cache order, sharing that formatter (14128C8E0).
 //! - `Content::{static_modifiers, dynamic_modifiers, opinion_modifiers,
 //!   power_balances}` supplies description catalogues from the same stack;
 //!   static descriptions resolve each requested name once (140550940).
