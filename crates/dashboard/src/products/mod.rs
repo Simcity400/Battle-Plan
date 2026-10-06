@@ -128,6 +128,7 @@ reply_warnings!(
     idea_history::IdeaHistoryReply,
     crate::LandOwners,
     national_focus::FocusReply,
+    occupation_trend::OccupationTrendReply,
     occupied_states::OccupiedStatesReply,
     party_history::PartyHistoryReply,
     production_lines::ProductionLinesReply,
@@ -141,6 +142,7 @@ reply_warnings!(
     stability_parts::StabilityPartsReply,
     subjects::SubjectReply,
     trade_flows::TradeFlowsReply,
+    war_casualties::CasualtyReply,
     world_tension::TensionReply,
 );
 

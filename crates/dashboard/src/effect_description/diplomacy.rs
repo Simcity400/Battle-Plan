@@ -615,7 +615,9 @@ impl Renderer<'_, '_, '_> {
         };
         let tables = crate::character_scope::Tables::read(frame);
         let positive = match tables.unit_leader(character)? {
-            Some(crate::character_scope::UnitLeader::Direct(row)) => row.exile_country > 0,
+            Some(crate::character_scope::UnitLeader::Direct(row)) => {
+                *row.exile_country.require("UnitLeaders.exile_country (CUnitLeader +0xED4)")? > 0
+            }
             Some(crate::character_scope::UnitLeader::Referenced(_)) => return Err("referenced operative leader CUnitLeader.exile_country +0xED4 is not recorded by CharacterOperatives (1402EC6F0/140F8A840); no new input is captured".into()),
             None => false,
         };
