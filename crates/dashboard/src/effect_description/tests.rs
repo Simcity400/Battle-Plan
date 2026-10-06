@@ -341,6 +341,117 @@ pub(super) fn fresh() -> EventScopes {
     EventScopes::new(vec![EventScope::of(EventObject::Country(1))])
 }
 
+pub(super) fn synthetic_countries(count: u32) -> Vec<CountryRow> {
+    (1..=count)
+        .map(|slot| {
+            let index = slot - 1;
+            CountryRow {
+                id: slot * 100,
+                canonical_slot: slot,
+                tag: if slot == count {
+                    b"ZZZ".to_vec()
+                } else {
+                    vec![
+                        b'A' + (index / 676) as u8,
+                        b'A' + ((index / 26) % 26) as u8,
+                        b'A' + (index % 26) as u8,
+                    ]
+                },
+                ..Default::default()
+            }
+        })
+        .collect()
+}
+
+fn custom_country_reader_target(body: &str, reader: u64) {
+    let fixture = Fixture::new();
+    let parsed = installed_content::parser::parse(body.as_bytes()).unwrap();
+    let item = &parsed.items[0];
+    let token = installed_content::effect_keys::registered(&item.keyword().unwrap().folded()).unwrap();
+    let (value_reader, key_reader) = installed_content::effect_keys::class(token).unwrap();
+    assert!(value_reader == reader || key_reader == reader);
+    assert!(!installed_content::effect_keys::is_own_field(token, b"target"));
+    let target = fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
+        renderer.country_target(item, Scopes::of(Scope::Country(1)))
+    });
+    assert_eq!(target.unwrap(), Some(2), "{body}");
+}
+
+#[test]
+fn native_country_target_make_puppet_custom_value_reader() {
+    custom_country_reader_target("puppet={target=BBB}", 0x1403A9C70);
+}
+
+#[test]
+fn native_country_target_remove_wargoal_custom_vf4() {
+    custom_country_reader_target("remove_wargoal={target=BBB}", 0x1403B4B00);
+}
+
+#[test]
+fn native_country_target_release_autonomy_custom_vf4() {
+    custom_country_reader_target("release_autonomy={target=BBB}", 0x1403B4480);
+}
+
+#[test]
+fn native_country_target_set_autonomy_custom_vf4() {
+    custom_country_reader_target("set_autonomy={target=BBB}", 0x1403B4CC0);
+}
+
+#[test]
+fn native_country_target_send_equipment_custom_vf4() {
+    custom_country_reader_target("send_equipment={target=BBB}", 0x14049E600);
+}
+
+#[test]
+fn native_country_target_send_equipment_fraction_custom_vf4() {
+    custom_country_reader_target("send_equipment_fraction={target=BBB}", 0x14049E7D0);
+}
+
+#[test]
+fn native_country_target_transfer_units_fraction_custom_vf4() {
+    custom_country_reader_target("transfer_units_fraction={target=BBB}", 0x1403B6280);
+}
+
+#[test]
+fn equipment_and_autonomy_content_is_cached_with_reader_notes() {
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/test.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+        ),
+        (
+            "common/units/equipment/test.txt",
+            "equipments={synthetic_type={is_archetype=yes}} duplicate_archetypes={synthetic_copy={archetype=missing}}",
+        ),
+        (
+            "common/autonomous_states/test.txt",
+            "autonomy_state={id=synthetic_autonomy}",
+        ),
+    ]);
+    let scripted = catalogue.scripted_content().unwrap();
+    let cached = scripted.effects().unwrap();
+    let content = cached.view(None);
+    assert!(content.equipment.unwrap().get("synthetic_type").is_some());
+    assert!(
+        content
+            .autonomy_states
+            .unwrap()
+            .get("synthetic_autonomy")
+            .is_some()
+    );
+    for expected in [
+        "asked to duplicate missing, which is not a known archetype",
+        "autonomy state synthetic_autonomy has no min_freedom_level",
+    ] {
+        assert!(
+            cached.notes.iter().any(|note| note.contains(expected)),
+            "{:?}",
+            cached.notes
+        );
+    }
+    assert!(std::ptr::eq(cached, scripted.effects().unwrap()));
+}
+
 fn country_target_fixture() -> Fixture {
     let mut fixture = Fixture::new();
     if let TableView::Complete(TableRows::States(rows)) =

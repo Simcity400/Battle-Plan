@@ -108,16 +108,16 @@ fn native_empty_containers_keep_child_refusals_once() {
     for class in ["create_dynamic_country", "force_disable_resistance"] {
         let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
         let out = fixture.render(
-            &format!("{class}={{add_political_power=2 add_manpower=1}}"),
+            &format!("{class}={{add_political_power=2 every_purchase_contract={{}}}}"),
             &mut scopes,
             Content::default(),
         );
         assert_eq!(out.text, "PP2\n");
         assert_eq!(out.refusals.values().sum::<usize>(), 1);
         assert!(
-            out.refusals
-                .keys()
-                .all(|why| why.contains("CManpowerAddEffect"))
+            out.refusals.keys().all(|why| {
+                why.contains("NInternationalMarket::CMultiplePurchaseContractTargetEffect")
+            })
         );
     }
 }

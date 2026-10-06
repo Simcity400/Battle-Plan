@@ -66,7 +66,7 @@ fn unknown_keys_and_unported_classes_are_named_and_counted() {
     let fixture = Fixture::new();
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
     let output = fixture.render(
-        "synthetic_unknown_effect=1 add_manpower=1 add_manpower=2",
+        "synthetic_unknown_effect=1 every_purchase_contract={} every_purchase_contract={}",
         &mut scopes,
         Content::default(),
     );
@@ -76,7 +76,9 @@ fn unknown_keys_and_unported_classes_are_named_and_counted() {
         output
             .refusals
             .iter()
-            .find(|(name, _)| name.contains("CManpowerAddEffect"))
+            .find(|(name, _)| {
+                name.contains("NInternationalMarket::CMultiplePurchaseContractTargetEffect")
+            })
             .map(|(_, count)| *count),
         Some(2)
     );

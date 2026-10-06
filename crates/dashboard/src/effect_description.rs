@@ -11,6 +11,9 @@
 //! - `Content::{buildings, resources, max_railway_level}` supplies cached declared
 //!   building labels (1414A4470), resource frames (140BBD150), and NSupply's
 //!   MAX_RAILWAY_LEVEL (14037A240), read once per stack by `CachedContent`.
+//! - `Content::{equipment, autonomy_states}` supplies the complete equipment
+//!   database (1409EB8B0/14139B350) and declared autonomy states (140669480),
+//!   each read once per stack by `CachedContent`, with reader notes retained.
 //! - `ScriptedText::{province_display_name, country_adjective}` shares effect
 //!   province naming (140E69320) and country adjective naming (140BA5560).
 //! - `Renderer::evaluator` is the shared trigger/variable/saved-target evaluator;
@@ -192,6 +195,8 @@ pub struct Content<'a> {
     pub buildings: Option<&'a installed_content::buildings::Buildings>,
     pub resources: Option<&'a [installed_content::resources::Resource]>,
     pub max_railway_level: Option<i32>,
+    pub equipment: Option<&'a installed_content::equipment::Database>,
+    pub autonomy_states: Option<&'a installed_content::autonomy::AutonomyStates>,
     pub gaps: Option<&'a BTreeMap<&'static str, String>>,
 }
 
@@ -213,6 +218,8 @@ pub struct CachedContent {
     buildings: Option<installed_content::buildings::Buildings>,
     resources: Option<Vec<installed_content::resources::Resource>>,
     max_railway_level: Option<i32>,
+    equipment: Option<installed_content::equipment::Database>,
+    autonomy_states: Option<installed_content::autonomy::AutonomyStates>,
     gaps: BTreeMap<&'static str, String>,
     pub notes: Vec<String>,
 }
@@ -243,6 +250,16 @@ impl CachedContent {
         let ideas = keep(read_ideas(), "ideas", &mut gaps);
         let maximum = defines.int32("NSupply", "MAX_RAILWAY_LEVEL");
         let max_railway_level = keep(maximum, "MAX_RAILWAY_LEVEL", &mut gaps);
+        let equipment = keep(
+            installed_content::equipment::Database::load_complete(layers),
+            "equipment",
+            &mut gaps,
+        );
+        let autonomy_states = keep(
+            installed_content::autonomy::read(layers),
+            "autonomy states",
+            &mut gaps,
+        );
         let mut notes = doctrines
             .as_ref()
             .map(|db| db.notes.clone())
@@ -254,6 +271,13 @@ impl CachedContent {
                 .map(|db| db.notes.clone())
                 .unwrap_or_default(),
         );
+        if let Some(database) = &equipment {
+            notes.extend(database.misreads.iter().cloned());
+        }
+        let autonomy_states = autonomy_states.map(|(states, warnings)| {
+            notes.extend(warnings);
+            states
+        });
         let (ideas, advisor_templates) = match ideas {
             Some((ideas, templates, warnings)) => {
                 notes.extend(warnings.into_iter().map(|(_, why)| why));
@@ -350,6 +374,8 @@ impl CachedContent {
             buildings,
             resources,
             max_railway_level,
+            equipment,
+            autonomy_states,
             gaps,
             notes,
         })
@@ -369,6 +395,8 @@ impl CachedContent {
             buildings: self.buildings.as_ref(),
             resources: self.resources.as_deref(),
             max_railway_level: self.max_railway_level,
+            equipment: self.equipment.as_ref(),
+            autonomy_states: self.autonomy_states.as_ref(),
             gaps: Some(&self.gaps),
             events,
         }
@@ -526,6 +554,15 @@ fn field<'a>(items: &'a [Item], name: &str) -> Option<&'a Item> {
     items.iter().rev().find(|item| item.keyword_is(name))
 }
 
+pub(super) fn fixed_field(items: &[Item], name: &str, default: i64) -> i64 {
+    items
+        .iter()
+        .filter(|item| item.keyword_is(name))
+        .filter_map(|item| installed_content::fixed5::script_fixed5(item.value.scalar()?))
+        .next_back()
+        .unwrap_or(default) // ReadFixed5@1424ABB10 retains the previous value on failure.
+}
+
 fn integer(text: &[u8]) -> i32 {
     match installed_content::crt::scan_i32(text) {
         installed_content::crt::Scanned::Stored(value) => value,
@@ -606,23 +643,27 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             let token = item
                 .keyword()
                 .and_then(|key| installed_content::effect_keys::registered(&key.folded()));
-            // Declare-war's custom vf4 handles target outside KEY_READERS (1403B1FE0).
+            // These custom value/key readers own target outside KEY_READERS.
             if !token.is_some_and(|token| {
                 installed_content::effect_keys::is_own_field(token, b"target")
                     || installed_content::effect_keys::class(token)
-                        .is_some_and(|(_, reader)| reader == 0x1403B1FE0)
+                        .is_some_and(|(value_reader, key_reader)| {
+                            value_reader == 0x1403A9C70 // Make puppet's value reader.
+                                || matches!(
+                                    key_reader,
+                                    0x1403B1FE0 // Declare war.
+                                        | 0x1403B4B00 // Remove wargoal.
+                                        | 0x1403B4480 // Release autonomy.
+                                        | 0x1403B4CC0 // Set autonomy.
+                                        | 0x14049E600 // Send equipment.
+                                        | 0x14049E7D0 // Send equipment fraction.
+                                        | 0x1403B6280 // Transfer units fraction.
+                                )
+                        })
             }) {
                 scalar_operand(item)?;
             }
-            let targets = children(item)
-                .iter()
-                .filter(|item| item.keyword_is("target"));
-            if targets.clone().nth(1).is_some()
-                && targets.clone().any(|item| scope_selector(item).is_some())
-            {
-                return Err("repeated target fields with selectors retain CEffect +0x24 flags (140530BB0); this auxiliary native field-reader replay is not ported".into());
-            }
-            let Some(target) = field(children(item), "target") else {
+            let Some(target) = self.country_target_field(item, "target")? else {
                 return Ok(None); // Constructor's zero country/selector.
             };
             target
@@ -697,6 +738,34 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .scoped_country(scalar_operand(item)?, scopes)?,
         };
         Ok(country.filter(|country| *country > 0))
+    }
+
+    pub(super) fn country_target_field<'a>(
+        &self,
+        item: &'a Item,
+        name: &str,
+    ) -> Result<Option<&'a Item>, String> {
+        let fields = children(item).iter().filter(|field| field.keyword_is(name));
+        let chains = item
+            .keyword()
+            .and_then(|key| installed_content::effect_keys::registered(&key.folded()))
+            .and_then(installed_content::effect_keys::class)
+            .is_some_and(|(_, reader)| reader == 0x1403AF5F0);
+        if fields.clone().nth(1).is_some()
+            && fields.clone().any(|field| {
+                scope_selector(field).is_some()
+                    || chains
+                        && field
+                            .value
+                            .scalar()
+                            .is_some_and(|value| value.contains(&b'.'))
+            })
+        {
+            return Err(format!(
+                "repeated {name} fields retain CEffect +0x24 flags or appended scope-link selectors (140530BB0/1403B2390/1403AD690); auxiliary reader replay is unavailable"
+            ));
+        }
+        Ok(fields.last())
     }
 
     fn state_country_selector(

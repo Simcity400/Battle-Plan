@@ -257,6 +257,35 @@ scorer form in the audited corpus.
 
 Hidden effects build and discard text while retaining failures.
 
+The D2 diplomacy family adds its 44 assigned classes alongside declare-war,
+annex and add-to-faction. Its 33 own-text ports preserve native autonomy arithmetic,
+subject/exile and faction gates, relation-factory labels, war targets, border-war
+headings, expansion and LF behavior. Eleven classes retain named, counted output
+refusals; six still describe their native empty branches. Release/set autonomy
+resolve the exact declared state and native free-state sentinel from the cached
+autonomy database. Deferred paths need faction definitions, the shared faction
+expansion environment, selected-party or purchase-contract description helpers,
+or the unrecorded owned wargoal roster used by the native duplicate check.
+Combat-context border data, referenced operative exile and unsupported auxiliary
+target forms retain precise refusals. Faction template tokens never substitute
+for their bound name expression.
+
+The D2 units family dispatches its 32 assigned classes alongside the existing
+template-deletion port. Twenty-six have complete own-description ports, three
+retain form refusals, and three unit-reference classes refuse all forms.
+Experience and manpower, template locks/caps/recruiting, unit and ship creation,
+navy and unit transfers, equipment fractions, raid damage, design bonuses and
+equipment-stat bonuses preserve their native operands, key
+choices, expansion, indentation and LF behavior. Sub-unit names use the cached
+content roster and selected-country localisation. Unit-location admission uses
+the shared evaluator, cached state content and recorded province/access inputs.
+Production, stockpile, equipment variants, ship destruction, equipment transfers
+and subsidies use the cached complete equipment database and native type/module
+lookups. Conditional variant version checks, nonempty unit bonuses needing
+counter preferences, seller-trigger descriptions, and unit-reference paths
+outside the current scope graph retain named, counted refusals. No content
+database is reread by a description leaf.
+
 The D2 empty family dispatches all assigned native classes to empty own text
 (`140176EE0` / `1402E9B40`), including the four empty build overrides. Setters
 never execute during description. `create_dynamic_country` and targeted
@@ -287,11 +316,12 @@ country or retaining caller scope through a context projection. Repeated block
 targets with selectors retain a named auxiliary-reader refusal: their native
 sticky +0x24 flags (`140530BB0`) are not reconstructed from the final field.
 
-The effect content cache also reads declared building names, resource icon frames
-and `NSupply::MAX_RAILWAY_LEVEL` once per stack; its define read is shared with
-idea content. Reader notes and independent gaps are retained. Construction,
-offsite and random provincial buildings, explicit building damage/repair,
-typed state building removal, building-resource changes, resource additions,
+The effect content cache also reads equipment, autonomy states, declared building
+names, resource icon frames and `NSupply::MAX_RAILWAY_LEVEL` once per stack; its
+define read is shared with idea content. Reader notes and independent gaps are
+retained. Construction, offsite and random provincial buildings, explicit
+building damage/repair, typed state building removal, building-resource changes,
+resource additions,
 railway guns and unfiltered explicit railway paths use that content. Resource
 changes distinguish the icon frame from the recorded resource database index.
 One-province railway paths are accepted; unfiltered paths do not inspect interior
@@ -304,10 +334,10 @@ then tries VP text and the state name. Country adjectives reuse country naming.
 Of the 43 states classes, 42 have an output or native empty branch; state category
 is the sole all-form refusal, with no reader for database `1413AFAC0`.
 
-Named, counted form refusals remain for generic child traversal, zero
-colored-percent formatting, marked country names, tag-selected building targets,
-provincial removal's unexposed land flag, strategic-location templates and
-computed/filtered railway paths (`140E7E560`). Differing building declarations
+Named, counted form refusals remain for zero colored-percent formatting,
+marked country names, tag-selected building targets, provincial removal's
+unexposed land flag, strategic-location templates and computed/filtered railway
+paths (`140E7E560`). Differing building declarations
 and unresolved signed resource frames retain content refusals. State-less
 province display needs the unrecorded strategic-region pointer and instance
 name; country-zero naming/adjective/capital inputs also remain absent. Native

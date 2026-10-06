@@ -290,6 +290,51 @@ impl Renderer<'_, '_, '_> {
             0x142756B70 /* CAnnexCountryEffect */ => self.war_or_annex(item, scopes, true),
             0x1427B2A08 /* CAddToFactionEffect */ => self.faction(item, scopes),
 
+            0x14275C810 /* CAddAutonomyRatio */ => self.diplomacy_autonomy_add(item, scopes, true), // 140371210
+            0x14275C6E8 /* CAddAutonomyScoreEffect */ => self.diplomacy_autonomy_add(item, scopes, false), // 140371620
+            0x142763E20 /* CAddCivilWarTarget */ => self.diplomacy_country(item, scopes, b"EFFECT_ADD_CIVIL_WAR_TARGET", false), // 1403719F0
+            0x1427B35C0 /* CAddFactionGoalEffect */ => self.faction_goal_content(scopes), // 1404AA450
+            0x1427B3BF8 /* CAddFactionGoalSlotEffect */ => self.faction_goal_slot(item, scopes), // 1404AA830
+            0x1427B3B10 /* CAddFactionInfluenceRatioEffect */ => Err("native faction influence localisation needs a shared faction expansion environment (1404AAEC0/1404AB530 -> 1410CF4A0; SScriptEnvironment faction +0xC8), which Renderer does not expose; amount and faction membership are recorded, so no new recording field is needed".into()), // 1404AAEC0
+            0x1427B39E0 /* CAddFactionInfluenceScoreEffect */ => Err("native faction influence localisation needs a shared faction expansion environment (1404AAEC0/1404AB530 -> 1410CF4A0; SScriptEnvironment faction +0xC8), which Renderer does not expose; amount and faction membership are recorded, so no new recording field is needed".into()), // 1404AB530
+            0x1427B3798 /* CAddFactionInitiativeEffect */ => self.faction_initiative(item, scopes), // 1404ABBA0
+            0x14275C508 /* CAddToWarEffect */ => self.add_to_war(item, scopes), // 140379070
+            0x142761648 /* CBecomeExiledGovernmentEffect */ => self.diplomacy_become_exiled(item, scopes), // 140379CD0
+            0x142760950 /* CCancelBorderWar */ => self.end_border_war(item, scopes, false), // 14037A900
+            0x1427B23A8 /* CCreateFactionEffect */ => self.create_faction(item, scopes), // 1404AD3D0
+            0x1427B2490 /* CCreateFactionFromTemplateEffect */ => self.create_faction_template(scopes), // 1404AD630
+            0x142759CB8 /* CCreateWargoalEffect */ => Err("wargoal type content lookup (14037DF80/140A2C5D0) and current country's existing wargoal type/claimed-state set (1403A35A0 -> 140D28650, CWargoal+0x40/+0x48/+0x54) are unavailable; cannot determine the native empty branch".into()),
+            0x14275A840 /* CDiplomaticRelationEffect */ => self.diplomatic_relation(item, scopes), // 14037F730
+            0x1427B25E8 /* CDismantleFactionEffect */ => self.dismantle_faction(scopes), // 1404ADAD0
+            0x142761740 /* CEndExileEffect */ => self.diplomacy_end_exile(item, scopes), // 14037FFF0
+            0x142759238 /* CEndPuppetEffect */ => self.diplomacy_pair(item, scopes, b"EFFECT_END_PUPPET", "COUNTRY"), // 1403801E0
+            0x1427607E8 /* CFinalizeBorderWar */ => self.end_border_war(item, scopes, true), // 1403804C0
+            0x1427570E8 /* CGiveGuaranteeEffect */ => self.diplomacy_country(item, scopes, b"EFFECT_GIVE_GUARANTEE", false), // 1403813C0
+            0x142757228 /* CGiveMilitaryAccessEffect */ => self.diplomacy_country(item, scopes, b"EFFECT_GIVE_MILITARY_ACCESS", false), // 140381630
+            0x1427B2D30 /* CLeaveFactionEffect */ => self.leave_faction(scopes), // 1404ADE10
+            0x142759830 /* CMakePuppetEffect */ => self.diplomacy_make_puppet(item, scopes), // 140384910
+            0x142759998 /* CReleaseAutonomyEffect */ => self.diplomacy_autonomy_level(item, scopes, true), // 140387530
+            0x142767B70 /* CReleasePuppetEffect<> */ => self.diplomacy_country(item, scopes, b"EFFECT_RELEASE_PUPPET", false), // 14036E730
+            0x142767C50 /* CReleasePuppetEffect<> */ => self.diplomacy_country(item, scopes, b"EFFECT_RELEASE_PUPPET", false), // 14036E730
+            0x142763F20 /* CRemoveCivilWarTarget */ => self.diplomacy_country(item, scopes, b"EFFECT_REMOVE_CIVIL_WAR_TARGET", false), // 140387E00
+            0x142728100 /* CRemoveExileTagEffect */ => self.diplomacy_remove_exile_tag(scopes), // 1402EC6F0
+            0x1427B36A8 /* CRemoveFactionGoalEffect */ => self.faction_goal_content(scopes), // 1404AE210
+            0x1427B2C30 /* CRemoveFromFactionEffect */ => self.remove_from_faction(item, scopes), // 1404AE5F0
+            0x1427590F8 /* CRemoveWargoalEffect */ => self.diplomacy_pair(item, scopes, b"EFFECT_REMOVE_WARGOAL", "COUNTRY"), // 14038C2C0
+            0x142759AB8 /* CSetAutonomyEffect */ => self.diplomacy_autonomy_level(item, scopes, false), // 14038D870
+            0x142760650 /* CSetBorderWarCombatData */ => self.update_border_war(item, scopes), // 14038DFC0
+            0x142738868 /* CSetBorderWarEffect */ => self.set_border_war(item, scopes), // 140317820
+            0x1427B32B8 /* CSetFactionManifestEffect */ => self.faction_goal_content(scopes), // 1404AEEE0
+            0x1427B3068 /* CSetFactionMemberUpgradeMin */ => self.faction_upgrade_min(scopes), // 1404AF2C0
+            0x1427B34D0 /* CSetFactionMilitaryUnlockedEffect */ => self.faction_military_access(item, scopes), // 1404AF650
+            0x1427B28D0 /* CSetFactionNameEffect */ => self.set_faction_name(item, scopes), // 1404AF850
+            0x1427B2E08 /* CSetFactionRuleEffect */ => self.faction_rule_content(scopes), // 1404AFEB0
+            0x1427B27D8 /* CSetFactionSpyMasterEffect */ => self.set_faction_spymaster(scopes), // 1404B0390
+            0x142758EB0 /* CSetWarSupportEffect */ => self.numeric_value(item, scopes, b"EFFECT_SET_WAR_SUPPORT"), // 140394630
+            0x142756CA8 /* CStartCivilWarEffect */ => Err("native civil-war own text appends politics helper 1403A0010 using selected ideology's party name (14118F860); shared selected-party name accessor and helper are unavailable; no new recording input is required".into()), // 140395FE0
+            0x142733A70 /* NInternationalMarket::CCreatePurchaseContractEffect */ => Err("native purchase-contract own text needs shared CountryTag_FormatMarkedName 140BA59E0 and seller-scoped equipment list description 140306B70/1413A8A20; these description accessors are unavailable".into()), // 1403061D0
+            0x142733EC8 /* NInternationalMarket::CGiveMarketAccessEffect */ => self.diplomacy_country(item, scopes, b"EFFECT_MARKET_GIVE_MARKET_ACCESS", true), // 140306890
+
             // states — D2
             0x1427535F8 /* CAddStateClaimEffect */ => self.state_change(item, scopes, b"EFFECT_ADD_STATE_CLAIM"), // 140378010
             0x1427531F8 /* CTransferStateEffect */ => self.state_change(item, scopes, b"EFFECT_TRANSFER_STATE"), // 140398680
@@ -341,6 +386,38 @@ impl Renderer<'_, '_, '_> {
 
             // units — D2
             0x142760FA8 /* CDeleteTemplateAndItsUnits */ => self.delete_template(item, scopes),
+            0x142759FA0 /* CAddAirExperienceEffect */ => self.numeric_value(item, scopes, b"EFFECT_ADD_AIR_EXPERIENCE"), // 140370DD0
+            0x1427AC2B8 /* CAddDesignTemplateBonusEffect */ => self.units_design_bonus(item, scopes), // 14049B380
+            0x1427AC1C0 /* CAddEquipmentBonus */ => self.units_equipment_bonus(item, scopes), // 14049B640
+            0x1427A76C8 /* CAddEquipmentProduction@?A0x9cb35315 */ => self.units_equipment_production(item, scopes), // 14048EA80
+            0x1427ABA60 /* CAddEquipmentToStockpileEffect */ => self.units_stockpile(item, scopes), // 14049B6D0
+            0x142734050 /* NInternationalMarket::CAddEquipmentSubsidyEffect */ => self.units_subsidy(item, scopes), // 140305540
+            0x142759EB0 /* CAddNavyExperienceEffect */ => self.numeric_value(item, scopes, b"EFFECT_ADD_NAVY_EXPERIENCE"), // 140374F30
+            0x1427655B0 /* CAddUnitBonusEffect */ => self.units_unit_bonus(item), // 1403794A0
+            0x142752CF8 /* CAddUnitsToDivisionTemplateEffect */ => self.units_add_to_template(item, scopes), // 1403794F0
+            0x1427977B8 /* CArmyChangeTemplateEffect */ => Err("CEventScope UNIT_REFERENCE (+0x70/+0x74) is not represented by the event graph (140529260); generic live-division naming operands are not recorded (140C72F00/1409B5640)".into()), // 14045DB70
+            0x142760DA8 /* CClearTemplateDivisionCapEffect */ => self.units_template(item, scopes, units::TemplateDescription::ClearCap), // 14037B560
+            0x1427ABD10 /* CCreateEquipmentVariantEffect */ => self.units_create_variant(item, scopes), // 14049BEA0
+            0x142763928 /* CCreateShipEffect */ => self.units_create_ship(item, scopes), // 14037D200
+            0x14275C8E0 /* CCreateUnitEffect */ => self.units_create(item, scopes), // 14037D490
+            0x1427AEBA0 /* CDamageRaidUnitEffect@?A0x8a0aef5d@NRaids */ => self.units_raid_damage(item, scopes), // 1404A31F0
+            0x142763088 /* CDeleteUnitsEffect */ => self.units_template(item, scopes, units::TemplateDescription::Delete), // 14037EEF0
+            0x14275D3D8 /* CDestroyShipsEffect */ => self.units_destroy_ships(item, scopes), // 14037F150
+            0x1427973F0 /* CDestroyUnitEffect */ => Err("CEventScope UNIT_REFERENCE (+0x70/+0x74) is not represented by the event graph (1405294C0); generic live-unit naming operands are not recorded (140C72F00/1409B5640)".into()), // 14045DF90
+            0x142760B88 /* CLockAllTemplateEffect */ => self.units_lock_all(item, scopes), // 140384680
+            0x142759330 /* CManpowerAddEffect */ => self.units_manpower(item, scopes), // 140384C00
+            0x1427AED68 /* CRaidAddUnitExperienceEffect@?A0x8a0aef5d@NRaids */ => self.numeric_value(item, scopes, b"EFFECT_RAID_GIVE_UNIT_EXPERIENCE"), // 1404A3D00
+            0x1427AB7B8 /* CSendEquipmentEffect */ => self.units_send_equipment(item, scopes), // 14049CAA0
+            0x1427AB950 /* CSendEquipmentFractionEffect */ => self.units_equipment_fraction(item, scopes, true), // 14049CF20
+            0x142760A40 /* CSetDivisionTemplateLockEffect */ => self.units_template(item, scopes, units::TemplateDescription::Lock), // 140390D10
+            0x1427AB6C8 /* CSetEquipmentFraction */ => self.units_equipment_fraction(item, scopes, false), // 14049D1D0
+            0x14275BC28 /* CSetNavalOobEffect */ => self.politics_oob(item, scopes, b"EFFECT_SET_OOB"), // 140391580
+            0x142760CA8 /* CSetTemplateDivisionCapEffect */ => self.units_template(item, scopes, units::TemplateDescription::Cap), // 140393B40
+            0x142760EA0 /* CSetTemplateDivisionForceRecruitingEffect */ => self.units_template(item, scopes, units::TemplateDescription::Recruit), // 140393DE0
+            0x142797D00 /* CSetUnitOrganization */ => Err("CEventScope UNIT_REFERENCE (+0x70/+0x74) is not represented by the event graph (140529260); Divisions already records the handle".into()), // 14045E6D0
+            0x14275D260 /* CTransferNavyEffect */ => self.units_transfer(item, scopes, true), // 1403983B0
+            0x142756ED8 /* CTransferUnitsFractionEffect */ => self.units_transfer(item, scopes, false), // 140398970
+            0x1427BB750 /* NDoctrines::CUnlockSubUnitEffect */ => self.units_unlock(item, scopes), // 14051E3C0
 
             // empty — D2
             0x14275C610 /* CAddAIStrategyEffect */ => empty::describe(), // 140176EE0
