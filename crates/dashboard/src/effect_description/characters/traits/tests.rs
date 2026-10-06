@@ -15,11 +15,11 @@ fn fixture() -> (Fixture, Folder) {
         ),
         (
             "common/country_leader/test.txt",
-            "leader_traits={syn_country={custom_modifier_tooltip=COUNTRY_BODY} syn_old={political_power_gain=0.1} syn_new={political_power_gain=0.3} syn_hidden={hidden_modifier={political_power_gain=0.3} custom_modifier_tooltip=COUNTRY_BODY} syn_equipment={equipment_bonus={syn_gun={soft_attack=0.1 supply_consumption=-0.2}}} syn_targeted={targeted_modifier={tag=BBB political_power_gain=0.2}} syn_targeted_custom={targeted_modifier={tag=BBB custom_modifier_tooltip=TARGET_BODY}} syn_empty={}}",
+            "leader_traits={syn_country={custom_modifier_tooltip=COUNTRY_BODY} syn_old={political_power_gain=0.1} syn_new={political_power_gain=0.3} syn_hidden={hidden_modifier={political_power_gain=0.3} custom_modifier_tooltip=COUNTRY_BODY} syn_equipment={equipment_bonus={syn_gun={soft_attack=0.1 supply_consumption=-0.2}}} syn_targeted={targeted_modifier={tag=BBB political_power_gain=0.2}} syn_targeted_custom={targeted_modifier={tag=BBB custom_modifier_tooltip=TARGET_BODY}} syn_targeted_dynamic={targeted_modifier={tag=event_target:syn_target political_power_gain=0.1}} syn_targeted_multi={targeted_modifier={tag=BBB political_power_gain=0.2 political_power_cost=-0.1} targeted_modifier={tag=ROOT political_power_gain=0.3 custom_modifier_tooltip=TARGET_RAW}} syn_empty={}}",
         ),
         (
             "common/unit_leader/test.txt",
-            "leader_traits={syn_unit={modifier={custom_modifier_tooltip=UNIT_BODY}} syn_held={} syn_second={} syn_full={modifier={political_power_gain=0.1} non_shared_modifier={custom_modifier_tooltip=NON_SHARED} attack_skill=1 defense_skill=1 logistics_skill=1 planning_skill=1 leader_default_proximity_offset=1 trait_xp_factor={syn_unit=0.2}} syn_override={override_effect_tooltip=OVERRIDE custom_effect_tooltip=IGNORED modifier={political_power_gain=0.2}} syn_numeric={modifier={political_power_gain=0.1 political_power_cost=-0.2 custom_modifier_tooltip=UNIT_BODY}} syn_sub={sub_unit_modifiers={syn_foot={} syn_foot={political_power_gain=0.1} syn_foot={political_power_gain=0.2}}} syn_hidden_sub={sub_unit_modifiers={syn_foot={hidden_modifier={political_power_gain=0}} syn_foot={political_power_gain=0.2}}}}",
+            "leader_traits={syn_unit={modifier={custom_modifier_tooltip=UNIT_BODY}} syn_held={} syn_second={} syn_full={modifier={political_power_gain=0.1} non_shared_modifier={custom_modifier_tooltip=NON_SHARED} attack_skill=1 defense_skill=1 logistics_skill=1 planning_skill=1 leader_default_proximity_offset=1 trait_xp_factor={syn_unit=0.2}} syn_override={override_effect_tooltip=OVERRIDE custom_effect_tooltip=IGNORED modifier={political_power_gain=0.2}} syn_numeric={modifier={political_power_gain=0.1 political_power_cost=-0.2 custom_modifier_tooltip=UNIT_BODY}} syn_sub={sub_unit_modifiers={syn_foot={} syn_foot={political_power_gain=0.1} syn_foot={political_power_gain=0.2}}} syn_corps_sub={corps_commander_modifier={political_power_gain=0.3} sub_unit_modifiers={syn_foot={political_power_gain=0.1}}} syn_sub_full={sub_unit_modifiers={syn_foot={political_power_gain=0.1 political_power_cost=-0.2 custom_modifier_tooltip=UNIT_BODY}}} syn_hidden_sub={sub_unit_modifiers={syn_foot={hidden_modifier={political_power_gain=0}} syn_foot={political_power_gain=0.2}}}}",
         ),
         ("common/units/test.txt", "sub_units={syn_foot={}}"),
         (
@@ -32,11 +32,12 @@ fn fixture() -> (Fixture, Folder) {
                 "\u{feff}l_english:\n",
                 " AAA:0 \"Alpha\"\n BBB:0 \"Beta\"\n AAA_DEF:0 \"alpha\"\n BBB_DEF:0 \"beta\"\n",
                 " syn_country:0 \"Country trait\"\n syn_unit:0 \"Unit trait\"\n AAA_syn_unit:0 \"Viewing Unit trait\"\n syn_old:0 \"Old\"\n syn_new:0 \"New\"\n syn_full:0 \"Full\"\n syn_override:0 \"Overriding\"\n syn_numeric:0 \"Numeric\"\n syn_equipment:0 \"Equipment\"\n syn_targeted:0 \"Targeted\"\n syn_empty:0 \"Empty\"\n",
-                " syn_sub:0 \"Sub\"\n syn_hidden_sub:0 \"Hidden sub\"\n syn_foot:0 \"Foot\"\n POWER_SCOPE:0 \"Power [Root.GetTag]\"\n POWER_ARGUMENT:0 \"Power $ARG$\"\n SCOPED_SUFFIX:0 \"[Root.GetTag]\"\n ARG:0 \"Literal argument\"\n",
+                " syn_sub:0 \"Sub\"\n syn_sub_full:0 \"Sub full\"\n syn_corps_sub:0 \"Corps sub\"\n syn_hidden_sub:0 \"Hidden sub\"\n syn_foot:0 \"Foot\"\n POWER_SCOPE:0 \"Power [Root.GetTag]\"\n POWER_ARGUMENT:0 \"Power $ARG$\"\n SCOPED_SUFFIX:0 \"[Root.GetTag]\"\n ARG:0 \"Literal argument\"\n",
                 " syn_hidden:0 \"Hidden\"\n",
                 " syn_held:0 \"Held\"\n",
                 " syn_targeted_custom:0 \"Target custom\"\n TARGET_BODY:0 \"Target first\\n  - target second\\n\"\n POWER_LF:0 \"Power first\\nPower second\"\n POSTFIX_LF:0 \"Postfix first\\nPostfix second\\n\"\n YES:0 \"Yes first\\nYes second\"\n NO:0 \"No\"\n",
                 " syn_scientist:0 \"Synthetic\"\n SCIENTIST_ADD_TRAIT_EFFECT:0 \"scientist[$TRAIT_NAME$]\"\n POWER_SCOPED_LF:0 \"Power [Root.GetTag]\\nAgain\"\n",
+                " TARGET_RAW:0 \"Raw [Root.GetTag]\"\n",
                 " COUNTRY_BODY:0 \"Country body [Root.GetTag]\"\n UNIT_BODY:0 \"Unit body [Root.GetTag]\"\n NON_SHARED:0 \"Other\"\n OVERRIDE:0 \"Override [Root.GetTag]\"\n IGNORED:0 \"Must not appear\"\n",
                 " EFFECT_ADD_TRAIT:0 \"add[$NAME$]/[$TRAITNAME$]|$TRAITMODIFIER$\"\n EFFECT_REMOVE_TRAIT:0 \"remove[$NAME$]/[$TRAITNAME$]|$TRAITMODIFIER$\"\n",
                 " EFFECT_ADD_UNIT_LEADER_TRAIT:0 \"unit+[$TRAITNAME$]|$TRAITMODIFIER$\"\n EFFECT_REMOVE_UNIT_LEADER_TRAIT:0 \"unit-[$TRAITNAME$]|$TRAITMODIFIER$\"\n",
@@ -170,73 +171,63 @@ fn assert_render(body: &str, scopes: &mut EventScopes, expected: &str) {
     assert!(result.refusals.is_empty(), "{:?}", result.refusals);
 }
 
-fn assert_plain_refusal(body: &str, scopes: &mut EventScopes, class: &str) {
-    let (fixture, _folder) = fixture();
-    let result = fixture.render(body, scopes, Content::default());
-    assert_eq!(result.text, "");
-    assert_eq!(result.refusals, BTreeMap::from([(
-        format!("synthetic effect {class}: key {}: native plain modifier description requires core plain/mask/separator/show-zero parameters (14054E050/14054F6D0)", body.split('=').next().unwrap()),
-        1,
-    )]));
-}
-
 // Authored block: common/characters/swe.txt:1731.
 #[test]
 fn add_trait() {
-    assert_plain_refusal(
+    assert_render(
         "add_trait={trait=syn_country}",
         &mut character(),
-        "CAddTraitEffect",
+        "unit+[Country trait]|  -Country body [Root.GetTag]\n",
     );
 }
 
 // Authored block: common/characters/swe.txt:1740.
 #[test]
 fn remove_trait() {
-    assert_plain_refusal(
+    assert_render(
         "remove_trait={trait=syn_country}",
         &mut character(),
-        "CRemoveTraitEffect",
+        "remove[Current]/[Country trait]|  -Country body [Root.GetTag]\n",
     );
 }
 
 // Authored scalar: common/decisions/ast.txt:1484.
 #[test]
 fn add_country_leader_trait() {
-    assert_plain_refusal(
+    assert_render(
         "add_country_leader_trait=syn_country",
         &mut country(),
-        "CAddCountryLeaderTraitEffect",
+        "country+<Current>\n    \u{11}HCountry trait\u{11}!\n  - Country body AAA\n\nEND",
     );
 }
 
 // Authored scalar: common/decisions/ita.txt:2013.
 #[test]
 fn remove_country_leader_trait() {
-    assert_plain_refusal(
+    assert_render(
         "remove_country_leader_trait=syn_country",
         &mut character(),
-        "CRemoveCountryLeaderTraitEffect",
+        "country-<Current>\n    \u{11}HCountry trait\u{11}!\n  - Country body AAA\n\nEND",
     );
 }
 
 // Authored scalar: common/decisions/bul.txt:5238.
 #[test]
 fn add_unit_leader_trait() {
-    assert_plain_refusal(
+    assert_render(
         "add_unit_leader_trait=syn_unit",
         &mut character(),
-        "CAddUnitLeaderTraitEffect",
+        "unit+[Viewing Unit trait]|      - Unit body [Root.GetTag]\n",
     );
 }
 
 // Authored scalar: common/decisions/pol.txt:1011.
 #[test]
 fn remove_unit_leader_trait() {
-    assert_plain_refusal(
+    assert_render(
         "remove_unit_leader_trait=syn_unit",
         &mut character(),
-        "CRemoveUnitLeaderTraitEffect",
+        "unit-[Viewing Unit trait]|      - Unit body [Root.GetTag]\n",
     );
 }
 
@@ -256,40 +247,40 @@ fn untimed_unit_traits_do_not_read_timed_own_fields() {
 // Authored remove/add: common/decisions/formable_nation_decisions.txt:7565.
 #[test]
 fn swap_ruler_traits() {
-    assert_plain_refusal(
+    assert_render(
         "swap_ruler_traits={remove=syn_old add=syn_new}",
         &mut country(),
-        "CSwapRulerTraitsEffect",
+        "swap<Current>/Old/New AAA\nPower: \u{11}G+0.20\u{11}!\n",
     );
 }
 
 // Authored remove/add: common/decisions/swe.txt:1280.
 #[test]
 fn swap_country_leader_traits() {
-    assert_plain_refusal(
+    assert_render(
         "swap_country_leader_traits={remove=syn_old add=syn_new}",
         &mut character(),
-        "CSwapCountryLeaderTraitsEffect",
+        "swap<Current>/Old/New [Root.GetTag]\nPower: \u{11}G+0.20\u{11}!\n",
     );
 }
 
 // Authored days/trait: common/national_focus/siam.txt:403.
 #[test]
 fn add_timed_unit_leader_trait() {
-    assert_plain_refusal(
+    assert_render(
         "add_timed_unit_leader_trait={trait=syn_unit days=010}",
         &mut character(),
-        "CAddTimedUnitLeaderTraitEffect",
+        "timed[Viewing Unit trait]/10|      - Unit body [Root.GetTag]\n",
     );
 }
 
 // Authored list: common/national_focus/china_warlord.txt:1205.
 #[test]
 fn add_random_trait() {
-    assert_plain_refusal(
+    assert_render(
         "add_random_trait={syn_held syn_unit}",
         &mut character(),
-        "CAddRandomTraitEffect",
+        "unit+[Viewing Unit trait]|      - Unit body [Root.GetTag]\n",
     );
 }
 
@@ -309,11 +300,11 @@ fn add_max_trait() {
 }
 
 #[test]
-fn named_character_trait_preserves_named_formatter_refusal() {
-    assert_plain_refusal(
+fn named_character_trait_uses_raw_modifiers() {
+    assert_render(
         "add_trait={character=syn_character trait=syn_country}",
         &mut country(),
-        "CAddTraitEffect",
+        "add[Current]/[Country trait]|  -Country body [Root.GetTag]\n",
     );
 }
 
@@ -337,20 +328,20 @@ fn native_empty_trait_gates_and_swap_error_literal() {
 }
 
 #[test]
-fn numeric_trait_separator_requires_core_options() {
-    assert_plain_refusal(
+fn numeric_trait_preserves_native_separator_and_raw_tooltip() {
+    assert_render(
         "add_unit_leader_trait=syn_numeric",
         &mut character(),
-        "CAddUnitLeaderTraitEffect",
+        "unit+[Numeric]|      - Power: \u{11}G+0.10\u{11}!\n      - Cost: \u{11}R-0.20\u{11}!\nUnit body [Root.GetTag]\n",
     );
 }
 
 #[test]
-fn unit_trait_plain_block_requires_core_options() {
-    assert_plain_refusal(
+fn unit_trait_body_preserves_block_order_and_fixed5_scale() {
+    assert_render(
         "add_trait={trait=syn_full}",
         &mut character(),
-        "CAddTraitEffect",
+        "unit+[Full]|  -Power: \u{11}G+0.10\u{11}!\nOther\nAll=1\nDistance=Medium\nXP=Viewing Unit trait/0.20\n\n",
     );
 }
 
@@ -373,14 +364,87 @@ fn country_helper_equipment_uses_native_stat_labels_and_polarity() {
 }
 
 #[test]
-fn targeted_trait_requires_core_mask_and_plain_options() {
+fn targeted_trait_uses_country_prefix_and_default_mask() {
+    assert_render(
+        "add_country_leader_trait=syn_targeted",
+        &mut character(),
+        "country+<Current>\n    \u{11}HTargeted\u{11}!\n  - @BBB/Beta: Power: \u{11}G+0.20\u{11}!\n\nEND",
+    );
+}
+
+// 140712BE0 uses the caller separator for numeric rows and successive
+// targets; 140712850 resolves ROOT in a fresh empty scope, not our caller.
+#[test]
+fn targeted_trait_keeps_raw_prefix_separator_and_empty_target_scope() {
     let (fixture, _folder) = fixture();
-    let result = fixture.render("add_country_leader_trait=syn_targeted", &mut character(), Content::default());
+    fixture.with_renderer(&mut character(), Content::default(), |renderer| {
+        let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
+        assert_eq!(
+            renderer
+                .char_country_trait_description_with_prefix(b"syn_targeted_multi", scopes, "|/|")
+                .unwrap()
+                .unwrap(),
+            "@BBB/Beta: Power: \u{11}G+0.20\u{11}!|/|@BBB/Beta: Cost: \u{11}R-0.10\u{11}!|/|Power: \u{11}G+0.30\u{11}!\nRaw [Root.GetTag]\n",
+        );
+    });
+}
+
+#[test]
+fn discarded_targeted_operand_refuses_instead_of_inventing_unprefixed_text() {
+    let (fixture, _folder) = fixture();
+    let result = fixture.render(
+        "add_country_leader_trait=syn_targeted_dynamic",
+        &mut character(),
+        Content::default(),
+    );
     assert_eq!(result.text, "");
     assert_eq!(result.refusals, BTreeMap::from([(
-        "synthetic effect CAddCountryLeaderTraitEffect: key add_country_leader_trait: native targeted trait modifiers require core category-mask/plain/separator/show-zero parameters (140712850/14054E050)".into(),
+        "synthetic effect CAddCountryLeaderTraitEffect: key add_country_leader_trait: country trait syn_targeted_dynamic targeted-country operand is not retained by the shared catalogue (1406039B0/140712850)".into(),
         1,
     )]));
+}
+
+// Unit/country blocks use all 32 bits (140AD929B/140712180), while
+// targeted blocks keep FormatDescription's 24-bit mask (140712BE0).
+#[test]
+fn trait_native_masks_keep_high_categories_only_in_primary_blocks() {
+    let (mut fixture, _folder) = fixture();
+    let TableView::Complete(TableRows::ModifierDefinitions(definitions)) =
+        &mut *fixture.frame.tables[TableId::ModifierDefinitions.index()]
+    else {
+        panic!("fixture definitions are complete");
+    };
+    definitions[0].category_mask = 1 << 31;
+    let result = fixture.render(
+        "add_trait={trait=syn_full}",
+        &mut character(),
+        Content::default(),
+    );
+    assert_eq!(
+        result.text,
+        "unit+[Full]|  -Power: \u{11}G+0.10\u{11}!\nOther\nAll=1\nDistance=Medium\nXP=Viewing Unit trait/0.20\n\n",
+    );
+    assert!(result.refusals.is_empty(), "{:?}", result.refusals);
+    let result = fixture.render(
+        "add_country_leader_trait=syn_new",
+        &mut character(),
+        Content::default(),
+    );
+    assert_eq!(
+        result.text,
+        "country+<Current>\n    \u{11}HNew\u{11}!\n  - Power: \u{11}G+0.30\u{11}!\n\nEND",
+    );
+    assert!(result.refusals.is_empty(), "{:?}", result.refusals);
+    fixture.with_renderer(&mut character(), Content::default(), |renderer| {
+        let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
+        assert_eq!(
+            renderer
+                .char_country_trait_description_with_prefix(b"syn_targeted_multi", scopes, "|/|")
+                .unwrap()
+                .unwrap(),
+            "@BBB/Beta: Cost: \u{11}R-0.10\u{11}!|/|Raw [Root.GetTag]\n",
+        );
+    });
 }
 
 #[test]
@@ -404,11 +468,11 @@ fn random_trait_reference_role_uses_recorded_assigned_definition_ordinals() {
         &mut character(),
         Content::default(),
     );
-    assert_eq!(result.text, "");
-    assert_eq!(result.refusals, BTreeMap::from([(
-        "synthetic effect CAddRandomTraitEffect: key add_random_trait: native plain modifier description requires core plain/mask/separator/show-zero parameters (14054E050/14054F6D0)".into(),
-        1,
-    )]));
+    assert_eq!(
+        result.text,
+        "unit+[Viewing Unit trait]|      - Unit body [Root.GetTag]\n"
+    );
+    assert!(result.refusals.is_empty(), "{:?}", result.refusals);
 }
 
 #[test]
@@ -421,7 +485,7 @@ fn empty_country_trait_keeps_native_name_and_bullet() {
 }
 
 #[test]
-fn plain_modifier_options_refuse_without_inspecting_definition_rules() {
+fn unknown_trait_modifier_has_named_definition_refusal() {
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::ModifierDefinitions.index()] =
         TableView::Complete(TableRows::ModifierDefinitions(vec![]));
@@ -432,26 +496,44 @@ fn plain_modifier_options_refuse_without_inspecting_definition_rules() {
     );
     assert_eq!(result.text, "");
     assert_eq!(result.refusals, BTreeMap::from([(
-        "synthetic effect CAddUnitLeaderTraitEffect: key add_unit_leader_trait: native plain modifier description requires core plain/mask/separator/show-zero parameters (14054E050/14054F6D0)".into(),
+        "synthetic effect CAddUnitLeaderTraitEffect: key add_unit_leader_trait: idea modifier political_power_gain has no recorded definition".into(),
         1,
     )]));
 }
 
 #[test]
-fn sub_unit_nonempty_plain_modifiers_require_core_options() {
-    assert_plain_refusal(
+fn sub_unit_modifiers_keep_first_nonempty_definition() {
+    assert_render(
         "add_trait={trait=syn_sub}",
         &mut character(),
-        "CAddTraitEffect",
+        "unit+[Sub]|  -\u{11}HFoot\u{11}!\n    Power: \u{11}G+0.10\u{11}!\n\n",
     );
 }
 
 #[test]
-fn hidden_sub_unit_plain_modifiers_require_core_options() {
-    assert_plain_refusal(
+fn sub_unit_prefix_applies_to_every_numeric_row_and_no_custom_tooltip() {
+    assert_render(
+        "add_trait={trait=syn_sub_full}",
+        &mut character(),
+        "unit+[Sub full]|  -\u{11}HFoot\u{11}!\n    Power: \u{11}G+0.10\u{11}!\n    Cost: \u{11}R-0.20\u{11}!\nUnit body [Root.GetTag]\n\n",
+    );
+}
+
+#[test]
+fn sub_unit_buffer_appends_directly_after_corps_modifiers() {
+    assert_render(
+        "add_trait={trait=syn_corps_sub}",
+        &mut character(),
+        "unit+[Corps sub]|  -Power: \u{11}G+0.30\u{11}!\u{11}HFoot\u{11}!\n    Power: \u{11}G+0.10\u{11}!\n\n",
+    );
+}
+
+#[test]
+fn hidden_sub_unit_keeps_native_header_without_numeric_line() {
+    assert_render(
         "add_trait={trait=syn_hidden_sub}",
         &mut character(),
-        "CAddTraitEffect",
+        "unit+[Hidden sub]|  -\u{11}HFoot\u{11}!\n\n",
     );
 }
 
@@ -500,6 +582,9 @@ fn conditional_unit_catalogue_preserves_shared_token_ambiguity() {
             "common/unit_leader/test.txt",
             "leader_traits={syn_conditional={modifier={syn_modifier={}}}}",
         ),
+        // 140ADD97F -> 1410017D1 tries terrain before the modifier fallback
+        // at 140ADDB66; this fixture must supply that first catalogue.
+        ("common/terrain/test.txt", "categories={syn_plain={}}"),
     ]);
     catalogue
         .scripted_content()
@@ -559,10 +644,10 @@ fn empty_plain_trait_needs_no_recorded_modifier_tables() {
 
 #[test]
 fn swap_root_delta_does_not_copy_custom_tooltips_or_hidden_sets() {
-    assert_plain_refusal(
+    assert_render(
         "swap_ruler_traits={remove=syn_old add=syn_hidden}",
         &mut country(),
-        "CSwapRulerTraitsEffect",
+        "swap<Current>/Old/Hidden AAA\nPower: \u{11}G+0.20\u{11}!\n",
     );
     assert_render(
         "swap_country_leader_traits={remove=syn_country add=syn_country}",
@@ -571,16 +656,13 @@ fn swap_root_delta_does_not_copy_custom_tooltips_or_hidden_sets() {
     );
 }
 
-
 #[test]
-fn targeted_custom_trait_requires_core_options() {
-    let (fixture, _folder) = fixture();
-    let result = fixture.render("add_country_leader_trait=syn_targeted_custom", &mut character(), Content::default());
-    assert_eq!(result.text, "");
-    assert_eq!(result.refusals, BTreeMap::from([(
-        "synthetic effect CAddCountryLeaderTraitEffect: key add_country_leader_trait: native targeted trait modifiers require core category-mask/plain/separator/show-zero parameters (140712850/14054E050)".into(),
-        1,
-    )]));
+fn targeted_custom_trait_keeps_embedded_separator_and_trailing_lf() {
+    assert_render(
+        "add_country_leader_trait=syn_targeted_custom",
+        &mut character(),
+        "country+<Current>\n    \u{11}HTarget custom\u{11}!\n  - Target first\n  - target second\n\nEND",
+    );
 }
 
 #[test]

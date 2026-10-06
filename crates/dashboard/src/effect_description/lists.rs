@@ -351,6 +351,7 @@ impl Renderer<'_, '_, '_> {
                 let mut graph = self.graph.borrow_mut();
                 graph.scopes[cursor].random_seed = seed.random_seed;
                 graph.scopes[cursor].random_counter = seed.random_counter;
+                graph.scopes[cursor].random_seed_refusal = seed.random_seed_refusal;
             }
             let body = self.group(
                 &installed_content::effect_keys::random_member_fields(member),

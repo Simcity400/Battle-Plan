@@ -60,7 +60,7 @@ impl CharacterContent {
 }
 
 impl Renderer<'_, '_, '_> {
-    pub(super) fn character_content(&self) -> Result<&CharacterContent, String> {
+    pub(in crate::effect_description) fn character_content(&self) -> Result<&CharacterContent, String> {
         Ok(&self.context.text.content().effects()?.characters)
     }
 

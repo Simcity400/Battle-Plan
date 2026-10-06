@@ -144,6 +144,7 @@ fn event_scopes(scopes: Scopes) -> EventScopes {
     };
     let unknown = |scope| EventScope {
         random_counter: 0x5ea6_ba9e,
+        random_seed_refusal: None,
         this: target(scope),
         root: Link::Unknown,
         from: Link::Unknown,
@@ -177,6 +178,7 @@ fn event_scopes(scopes: Scopes) -> EventScopes {
         let from = link(scopes.from, scopes.unknown.from);
         let current = EventScope {
             random_counter: 0x5ea6_ba9e,
+            random_seed_refusal: None,
             this: target(scopes.this),
             root: if scopes.unknown.root {
                 Link::Unknown

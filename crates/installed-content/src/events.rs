@@ -1,6 +1,6 @@
-//! CEvent border-outcome tooltip content (1413D69D0), through the recorded stack.
+//! Native CEvent and option tooltip content (1413D69D0/1413832F0), through the recorded stack.
 use crate::{
-    ResolvedLayers,
+    ResolvedContent, ResolvedLayers,
     key_names::KeyNames,
     parser::{
         Item,
@@ -9,6 +9,7 @@ use crate::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ops::Deref,
     sync::{Arc, Mutex},
 };
 
@@ -19,6 +20,8 @@ pub struct Event {
     pub titles: Vec<Item>,
     pub immediate: Vec<Item>,
     pub options: Vec<Vec<Item>>,
+    /// CEventOption+0x178 strings in the same native order as `options`.
+    pub option_names: Vec<Vec<u8>>,
     pub refused: Option<String>,
 }
 
@@ -123,12 +126,12 @@ pub fn identifier_key(id: &[u8]) -> Result<Vec<u8>, String> {
     let id = crate::parser::c_string(id);
     let dot = id.iter().rposition(|byte| *byte == b'.').ok_or_else(|| {
         format!(
-            "border event {} has no namespace; 1401F03A0 cannot resolve it",
+            "event {} has no namespace; 1401F03A0 cannot resolve it",
             String::from_utf8_lossy(id)
         )
     })?;
     if dot == 0 {
-        return Err("border event namespace is empty (1401F03A0)".into());
+        return Err("event namespace is empty (1401F03A0)".into());
     }
     let suffix = id[dot + 1..].iter().fold(0_i32, |value, byte| {
         value
@@ -138,7 +141,7 @@ pub fn identifier_key(id: &[u8]) -> Result<Vec<u8>, String> {
     });
     if !(0..100_000).contains(&suffix) {
         return Err(format!(
-            "border event {} suffix {suffix} crosses a native namespace slot; registration order is unavailable (1401F03A0)",
+            "event {} suffix {suffix} crosses a native namespace slot; registration order is unavailable (1401F03A0)",
             String::from_utf8_lossy(id)
         ));
     }
@@ -154,13 +157,13 @@ impl Events {
         let dot = key.iter().rposition(|byte| *byte == b'.').unwrap();
         if !self.namespaces.contains(&key[..dot]) {
             return Err(format!(
-                "border event {} namespace is not registered through add_namespace (1401F03A0)",
+                "event {} namespace is not registered through add_namespace (1401F03A0)",
                 String::from_utf8_lossy(id)
             ));
         }
         self.entries.get(&key).ok_or_else(|| {
             format!(
-                "border event {} is absent from the resolved event database; {}",
+                "event {} is absent from the resolved event database; {}",
                 String::from_utf8_lossy(id),
                 self.refused.join("; ")
             )
@@ -173,7 +176,7 @@ impl Events {
 /// the effect reader; metadata is not an effect. Unknown descriptions remain
 /// named at the consumer, while native effect parsing still consumes exactly.
 pub fn parse(bytes: &[u8], source: &str, names: &KeyNames) -> Events {
-    parse_selected(bytes, source, names, None)
+    read_events(bytes, names, None).selected(source)
 }
 
 fn event_kind(item: &Item) -> bool {
@@ -189,7 +192,7 @@ fn event_kind(item: &Item) -> bool {
     )
 }
 
-fn parse_selected(bytes: &[u8], source: &str, names: &KeyNames, wanted: Option<&[u8]>) -> Events {
+fn read_events(bytes: &[u8], names: &KeyNames, wanted: Option<&BTreeSet<usize>>) -> EventRead {
     let mut lines = Vec::new();
     let read = native::read(
         bytes,
@@ -208,7 +211,13 @@ fn parse_selected(bytes: &[u8], source: &str, names: &KeyNames, wanted: Option<&
                     // 14116B730 / 14116BDB0, with no subtype token reader.
                     | b"operative_leader_event",
                 ) => {
+                    let ordinal = lines.len();
                     lines.push(field.key.line);
+                    // Static files cannot define variables in skipped bodies;
+                    // only requested event ordinals acquire effect trees.
+                    if wanted.is_some_and(|wanted| !wanted.contains(&ordinal)) {
+                        return Shape::Skip;
+                    }
                     let scope = field
                         .keyword_is("operative_leader_event")
                         .then_some(crate::scope::ScopeKind::Character.bit());
@@ -257,245 +266,231 @@ fn parse_selected(bytes: &[u8], source: &str, names: &KeyNames, wanted: Option<&
             Node::Mtth => native::mean_time_to_happen(field),
         },
     );
-    let mut result = Events::default();
-    result
-        .refused
-        .extend(read.misreads.iter().map(|note| format!("{source}: {note}")));
-    if let Some(why) = &read.unsettled {
-        result.refused.push(format!("{source}: {why}"));
-    }
-    for item in &read.items {
-        if item.keyword_is("add_namespace")
-            && let Some(name) = item.value.scalar()
-        {
-            result.namespaces.insert(
-                crate::parser::c_string(name)
-                    .iter()
-                    .map(u8::to_ascii_lowercase)
-                    .collect(),
-            );
-        }
-    }
-    for (index, (item_index, item)) in read
-        .items
-        .iter()
-        .enumerate()
-        .filter(|(_, item)| event_kind(item))
-        .enumerate()
-    {
-        let fields = item.value.items().unwrap_or_default();
-        let id = fields
-            .iter()
-            .rfind(|item| item.keyword_is("id"))
-            .and_then(|item| item.value.scalar())
-            .map(crate::parser::c_string)
-            .unwrap_or_default()
-            .to_vec();
-        if wanted.is_some_and(|wanted| identifier_key(&id).map_or(true, |key| key != wanted)) {
-            continue;
-        }
+    let event_items = read.items.iter().enumerate().filter(|(_, item)| event_kind(item))
+        .map(|(index, _)| index).collect();
+    EventRead { read, lines, event_items }
+}
+
+struct EventRead {
+    read: native::Read,
+    lines: Vec<u32>,
+    event_items: Vec<usize>,
+}
+
+fn string_field<'a>(fields: &'a [Item], key: &str) -> &'a [u8] {
+    fields.iter().rfind(|field| field.keyword_is(key))
+        .and_then(|field| field.value.scalar())
+        .map(crate::parser::c_string).unwrap_or_default()
+}
+
+fn option_name(fields: &[Item]) -> &[u8] {
+    // CEventOption::vf4@1415279D0 uses ReadStringInto, including its LF check.
+    crate::parser::read_string(string_field(fields, "name"))
+}
+
+fn namespaces(read: &native::Read) -> BTreeSet<Vec<u8>> {
+    read.items.iter().filter(|item| item.keyword_is("add_namespace"))
+        .filter_map(|item| item.value.scalar())
+        .map(|name| crate::parser::c_string(name).to_ascii_lowercase()).collect()
+}
+
+impl EventRead {
+    fn event(&mut self, source: &str, ordinal: usize) -> Result<Event, String> {
+        let read = &mut self.read;
+        let item_index = *self.event_items.get(ordinal)
+            .ok_or_else(|| format!("{source}: event ordinal {ordinal} is not resolved by its native reader"))?;
+        let item = &mut read.items[item_index];
+        let operative = item.keyword_is("operative_leader_event");
+        // Move the requested tree out of the read; cached events never retain
+        // a second copy of its effect bodies. Header-only candidates stay lazy.
+        let fields = match std::mem::replace(&mut item.value, crate::parser::Value::Block(Vec::new())) {
+            crate::parser::Value::Block(fields) => fields, _ => Vec::new(),
+        };
         let mut event = Event {
-            id: id.clone(),
-            source: format!("{source}:{}", lines.get(index).copied().unwrap_or(1)),
+            id: string_field(&fields, "id").to_vec(),
+            source: format!("{source}:{}", self.lines.get(ordinal).copied().unwrap_or(1)),
             ..Default::default()
         };
-        if id.is_empty() {
-            result
-                .refused
-                .push(format!("{}: event identifier absent", event.source));
-            continue;
-        }
-        let blockers: Vec<_> = read.item_misreads[item_index]
-            .iter()
+        let blockers: Vec<_> = read.item_misreads.get(item_index).into_iter().flatten()
             .chain(&read.unattributed_misreads)
-            .filter(|note| {
-                matches!(
-                    note.kind,
-                    crate::DiagnosticKind::ParseFailure
-                        | crate::DiagnosticKind::Unsettled
-                        | crate::DiagnosticKind::Unsupported
-                        | crate::DiagnosticKind::Refused
-                )
-            })
+            .filter(|note| matches!(note.kind, crate::DiagnosticKind::ParseFailure
+                | crate::DiagnosticKind::Unsettled | crate::DiagnosticKind::Unsupported
+                | crate::DiagnosticKind::Refused))
             .map(|note| {
                 let description = note.to_string();
-                if item.keyword_is("operative_leader_event")
+                if operative
                     && (note.what.contains("parse scope unavailable")
                         || note.what.starts_with("Deferred effect `remove_unit_leader_role`"))
                 {
-                    format!(
-                        "COperativeLeaderEventEffect needs the scoped-object parser helper for option+0x8 (1415279D0): {description}"
-                    )
-                } else {
-                    description
-                }
-            })
-            .collect();
+                    format!("COperativeLeaderEventEffect needs the scoped-object parser helper for option+0x8 (1415279D0): {description}")
+                } else { description }
+            }).collect();
         if !blockers.is_empty() {
             event.refused = Some(format!("{}: {}", event.source, blockers.join("; ")));
         }
-        if index + 1 == lines.len()
-            && let Some(why) = &read.unsettled
-        {
+        if ordinal + 1 == self.lines.len() && let Some(why) = &read.unsettled {
             let partial = format!("{}: partial native event read: {why}", event.source);
-            event.refused = Some(
-                if item.keyword_is("operative_leader_event")
-                    && let Some(blockers) = event.refused.take()
-                {
-                    format!("{blockers}; {partial}")
-                } else {
-                    partial
-                },
-            );
+            event.refused = Some(if operative
+                && let Some(blockers) = event.refused.take()
+            { format!("{blockers}; {partial}") } else { partial });
         }
         for field in fields {
-            if field.keyword_is("title") {
-                event.titles.push(field.clone());
-            }
+            if field.keyword_is("title") { event.titles.push(field); continue; }
             if field.keyword_is("immediate") {
-                event
-                    .immediate
-                    .extend_from_slice(field.value.items().unwrap_or_default());
+                if let crate::parser::Value::Block(body) = field.value { event.immediate.extend(body); }
+                continue;
             }
             if field.keyword_is("option") {
-                event.options.push(
-                    field
-                        .value
-                        .items()
-                        .unwrap_or_default()
-                        .iter()
-                        .filter(|item| {
-                            !["name", "trigger", "ai_chance", "original_recipient_only"]
-                                .iter()
-                                .any(|key| item.keyword_is(key))
-                        })
-                        .cloned()
-                        .collect(),
-                );
+                let option = match field.value {
+                    crate::parser::Value::Block(body) => body, _ => Vec::new(),
+                };
+                event.option_names.push(option_name(&option).to_vec());
+                event.options.push(option.into_iter().filter(|item| {
+                    !["name", "trigger", "ai_chance", "original_recipient_only"].iter()
+                        .any(|key| item.keyword_is(key))
+                }).collect());
             }
         }
-        let key = identifier_key(&id).unwrap_or_else(|why| {
-            // Bare IDs are legal definitions but not resolved by this tail.
-            if id.contains(&b'.') {
-                event.refused = Some(format!("{}: {why}", event.source));
-            }
-            id.clone()
-        });
-        if result.entries.contains_key(&key) {
-            event.refused = Some(format!(
-                "{}: repeated event identifier {}; native registration order is not reconstructed",
-                event.source,
-                String::from_utf8_lossy(&id)
-            ));
-        }
-        result.entries.insert(key, event);
+        Ok(event)
     }
-    result
+
+    fn selected(&mut self, source: &str) -> Events {
+        let mut result = Events { namespaces: namespaces(&self.read), ..Default::default() };
+        result.refused.extend(self.read.misreads.iter().map(|note| format!("{source}: {note}")));
+        if let Some(why) = &self.read.unsettled { result.refused.push(format!("{source}: {why}")); }
+        for ordinal in 0..self.event_items.len() {
+            let mut event = self.event(source, ordinal).expect("enumerated event ordinal");
+            let id = event.id.clone();
+            if id.is_empty() {
+                result.refused.push(format!("{}: event identifier absent", event.source));
+                continue;
+            }
+            let key = identifier_key(&id).unwrap_or_else(|why| {
+                // Bare IDs are legal definitions but not resolved by this tail.
+                if id.contains(&b'.') { event.refused = Some(format!("{}: {why}", event.source)); }
+                id.to_vec()
+            });
+            if result.entries.contains_key(&key) {
+                event.refused = Some(format!("{}: repeated event identifier {}; native registration order is not reconstructed",
+                    event.source, String::from_utf8_lossy(&id)));
+            }
+            result.entries.insert(key, event);
+        }
+        result
+    }
 }
 
-/// Only requested outcome events acquire title/effect trees. The first lookup
-/// indexes ID/namespace headers; subsequent aliases share the cached result.
+/// Only requested events acquire title/effect trees. The first lookup indexes
+/// event/option headers; subsequent ID aliases and option lookups share trees.
 pub struct LazyEvents {
-    layers: Arc<ResolvedLayers>,
+    layers: EventLayers,
     cache: Mutex<Cache>,
+}
+
+enum EventLayers {
+    Layers(Arc<ResolvedLayers>),
+    Content(Arc<ResolvedContent>),
+}
+
+impl Deref for EventLayers {
+    type Target = ResolvedLayers;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Layers(layers) => layers,
+            Self::Content(content) => &content.layers,
+        }
+    }
 }
 
 #[derive(Default)]
 struct Cache {
     index: Option<Result<Index, String>>,
     events: BTreeMap<Vec<u8>, Result<Arc<Event>, String>>,
+    // Only nested-variable files retain full reads to settle later headers.
+    files: BTreeMap<String, EventRead>,
+    trees: BTreeMap<EventRef, Result<Arc<Event>, String>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct EventRef {
+    path: String,
+    ordinal: usize,
 }
 
 #[derive(Default)]
 struct Index {
-    files: BTreeMap<Vec<u8>, Vec<String>>,
-    dynamic: Vec<String>,
+    events: BTreeMap<Vec<u8>, Vec<EventRef>>,
+    options: BTreeMap<Vec<u8>, Vec<(EventRef, usize)>>,
     namespaces: BTreeSet<Vec<u8>>,
     refused: Vec<String>,
 }
 
-impl Index {
-    fn add(&mut self, bytes: &[u8], path: &str) {
-        // A variable defined inside an event can affect a later ID or
-        // namespace. Such files need the full reader for every demand.
-        let tokens = native::lex(bytes, native::Mode::SkipMark).tokens;
-        let mut depth = 0_usize;
-        for pair in tokens.windows(2) {
-            match pair[0].kind {
-                native::Kind::Open => depth += 1,
-                native::Kind::Close => depth = depth.saturating_sub(1),
-                _ => {}
-            }
-            if depth != 0 && pair[0].starts_with_at() && pair[1].kind == native::Kind::Equals {
-                self.dynamic.push(path.to_owned());
-                // Header-only reads cannot resolve this file's later
-                // references. Let the native reader supply its headers too.
-                return;
-            }
+#[derive(Clone, Copy)]
+enum Header {
+    File,
+    Event,
+    Option,
+}
+
+fn dynamic_headers(bytes: &[u8]) -> bool {
+    // A nested variable definition can change a later name or identifier.
+    // Only these files need the full native reader before the index is known.
+    let tokens = native::lex(bytes, native::Mode::SkipMark).tokens;
+    let mut depth = 0_usize;
+    for pair in tokens.windows(2) {
+        match pair[0].kind {
+            native::Kind::Open => depth += 1,
+            native::Kind::Close => depth = depth.saturating_sub(1),
+            _ => {}
         }
-        // An inventory, not an event reader: untouched bodies are skipped.
-        let read = native::read(
-            bytes,
-            native::Mode::SkipMark,
-            native::Top::File(false),
-            None,
-            &mut |event, field| {
-                if event {
-                    if field.keyword_is("id") {
-                        Shape::One
-                    } else {
-                        Shape::Skip
-                    }
-                } else if matches!(
-                    field.keyword().as_deref(),
-                    Some(
-                        b"country_event"
-                            | b"news_event"
-                            | b"state_event"
-                            | b"unit_leader_event"
-                            | b"operative_leader_event"
-                    )
-                ) {
-                    Shape::Object(true)
-                } else if field.keyword_is("add_namespace") {
-                    Shape::One
-                } else {
-                    Shape::Skip
-                }
-            },
-        );
-        self.refused.extend(
-            read.misreads
-                .iter()
-                .map(|note| format!("{path}: event index: {note}")),
-        );
+        if depth != 0 && pair[0].starts_with_at() && pair[1].kind == native::Kind::Equals {
+            return true;
+        }
+    }
+    false
+}
+
+fn read_headers(bytes: &[u8]) -> native::Read {
+    // Extend the existing header inventory, not the event grammar: effect
+    // bodies stay unread until a candidate event is requested.
+    native::read(bytes, native::Mode::SkipMark, native::Top::File(Header::File), None,
+        &mut |node, field| match node {
+            Header::File => if matches!(field.keyword().as_deref(), Some(
+                b"country_event" | b"news_event" | b"state_event"
+                    | b"unit_leader_event" | b"operative_leader_event")) {
+                Shape::Object(Header::Event)
+            } else if field.keyword_is("add_namespace") { Shape::One } else { Shape::Skip },
+            Header::Event => if field.keyword_is("id") { Shape::One }
+                else if field.keyword_is("option") { Shape::Object(Header::Option) }
+                else { Shape::Skip },
+            Header::Option => if field.keyword_is("name") { Shape::One } else { Shape::Skip },
+        })
+}
+
+impl Index {
+    fn add(&mut self, read: &native::Read, path: &str, full: bool) {
+        self.namespaces.extend(namespaces(read));
+        if !full {
+            self.refused.extend(read.misreads.iter().map(|note| format!("{path}: event index: {note}")));
+        }
         if let Some(why) = &read.unsettled {
             self.refused.push(format!("{path}: event index: {why}"));
         }
-        for item in read.items {
-            if item.keyword_is("add_namespace") {
-                if let Some(name) = item.value.scalar() {
-                    self.namespaces.insert(
-                        crate::parser::c_string(name)
-                            .iter()
-                            .map(u8::to_ascii_lowercase)
-                            .collect(),
-                    );
-                }
-            } else if event_kind(&item)
-                && let Some(id) = item
-                    .value
-                    .items()
-                    .unwrap_or_default()
-                    .iter()
-                    .rfind(|field| field.keyword_is("id"))
-                    .and_then(|field| field.value.scalar())
-                && let Ok(key) = identifier_key(id)
-            {
-                let paths = self.files.entry(key).or_default();
-                if paths.last().is_none_or(|last| last != path) {
-                    paths.push(path.to_owned());
-                }
+        for (ordinal, item) in read.items.iter().filter(|item| event_kind(item)).enumerate() {
+            let fields = item.value.items().unwrap_or_default();
+            let reference = EventRef { path: path.to_owned(), ordinal };
+            if let Ok(key) = identifier_key(string_field(fields, "id")) {
+                self.events.entry(key).or_default().push(reference.clone());
+            }
+            // 140A01920 routes state events to manager+0x18/+0x24. The
+            // dependent-tooltip scan 1413833BE walks only manager+0/+0x0C.
+            if item.keyword_is("state_event") { continue; }
+            for (option, field) in fields.iter().filter(|field| field.keyword_is("option")).enumerate() {
+                let name = option_name(field.value.items().unwrap_or_default());
+                // 1415279D0 stores raw +0x178; 141383433/14138343D compares
+                // length and bytes, without country/event-id prefixes or folding.
+                self.options.entry(name.to_vec()).or_default().push((reference.clone(), option));
             }
         }
     }
@@ -503,96 +498,132 @@ impl Index {
 
 impl LazyEvents {
     pub fn new(layers: Arc<ResolvedLayers>) -> Self {
-        Self {
-            layers,
-            cache: Mutex::default(),
+        Self { layers: EventLayers::Layers(layers), cache: Mutex::default() }
+    }
+
+    /// Share the existing content owner, including its layer indexes and memos.
+    pub fn from_content(content: Arc<ResolvedContent>) -> Self {
+        Self { layers: EventLayers::Content(content), cache: Mutex::default() }
+    }
+
+    fn index(&self, cache: &mut Cache) -> Result<(), String> {
+        if cache.index.is_none() {
+            cache.index = Some((|| {
+                let mut index = Index::default();
+                // 1409FF340 joins prefetched files before registration;
+                // 140A01920 appends event pointers, including duplicate IDs.
+                for path in self.layers.directory_files("events", ".txt").map_err(|error| error.to_string())? {
+                    let bytes = self.layers.read(&path).map_err(|error| format!("{path}: {error}"))?;
+                    if dynamic_headers(&bytes) {
+                        let names = self.layers.key_names().map_err(|error| error.to_string())?;
+                        let file = read_events(&bytes, &names, None);
+                        index.add(&file.read, &path, true);
+                        cache.files.insert(path, file);
+                    } else {
+                        index.add(&read_headers(&bytes), &path, false);
+                    }
+                }
+                Ok(index)
+            })());
         }
+        let index = cache.index.as_ref().unwrap().as_ref().map_err(Clone::clone)?;
+        if index.refused.is_empty() { Ok(()) } else {
+            Err(format!("event index is incomplete: {}", index.refused.join("; ")))
+        }
+    }
+
+    fn cache_trees<'a>(
+        &self,
+        cache: &mut Cache,
+        references: impl Iterator<Item = &'a EventRef>,
+    ) {
+        let mut wanted: BTreeMap<&str, BTreeSet<usize>> = BTreeMap::new();
+        for reference in references {
+            if !cache.trees.contains_key(reference) {
+                wanted.entry(&reference.path).or_default().insert(reference.ordinal);
+            }
+        }
+        for (path, ordinals) in wanted {
+            if let Some(file) = cache.files.get_mut(path) {
+                for ordinal in ordinals {
+                    let event = file.event(path, ordinal).map(Arc::new);
+                    cache.trees.insert(EventRef { path: path.to_owned(), ordinal }, event);
+                }
+                continue;
+            }
+            // Static files are reader-walked only for the requested ordinals.
+            // Unrelated bodies are neither interpreted nor retained; a later
+            // novel request may walk that file again through the same reader.
+            let file = (|| {
+                let bytes = self.layers.read(path).map_err(|error| format!("{path}: {error}"))?;
+                let names = self.layers.key_names().map_err(|error| error.to_string())?;
+                Ok::<_, String>(read_events(&bytes, &names, Some(&ordinals)))
+            })();
+            match file {
+                Ok(mut file) => for ordinal in ordinals {
+                    let event = file.event(path, ordinal).map(Arc::new);
+                    cache.trees.insert(EventRef { path: path.to_owned(), ordinal }, event);
+                },
+                Err(error) => for ordinal in ordinals {
+                    cache.trees.insert(EventRef { path: path.to_owned(), ordinal }, Err(error.clone()));
+                },
+            }
+        }
+    }
+
+    fn event(&self, cache: &mut Cache, reference: &EventRef) -> Result<Arc<Event>, String> {
+        self.cache_trees(cache, std::iter::once(reference));
+        cache.trees.get(reference).expect("requested event cached").clone()
     }
 
     pub fn get(&self, id: &[u8]) -> Result<Arc<Event>, String> {
         let key = identifier_key(id)?;
         let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(event) = cache.events.get(&key) {
-            return event.clone();
-        }
-        if cache.index.is_none() {
-            cache.index = Some((|| {
-                let mut index = Index::default();
-                for path in self
-                    .layers
-                    .directory_files("events", ".txt")
-                    .map_err(|error| error.to_string())?
-                {
-                    index.add(
-                        &self
-                            .layers
-                            .read(&path)
-                            .map_err(|error| format!("{path}: {error}"))?,
-                        &path,
-                    );
-                }
-                Ok(index)
-            })());
-        }
+        if let Some(event) = cache.events.get(&key) { return event.clone(); }
         let result = (|| {
-            let index = cache
-                .index
-                .as_ref()
-                .unwrap()
-                .as_ref()
-                .map_err(Clone::clone)?;
-            if !index.refused.is_empty() {
-                return Err(format!(
-                    "border event index is incomplete: {}",
-                    index.refused.join("; ")
-                ));
-            }
-            let paths: BTreeSet<_> = index
-                .files
-                .get(&key)
-                .into_iter()
-                .flatten()
-                .chain(&index.dynamic)
-                .collect();
-            let names = self.layers.key_names().map_err(|error| error.to_string())?;
-            let mut found = None;
+            self.index(&mut cache)?;
+            let index = cache.index.as_ref().unwrap().as_ref().unwrap();
             let dot = key.iter().rposition(|byte| *byte == b'.').unwrap();
-            let mut registered = index.namespaces.contains(&key[..dot]);
-            for path in paths {
-                let bytes = self
-                    .layers
-                    .read(path)
-                    .map_err(|error| format!("{path}: {error}"))?;
-                let mut file = parse_selected(&bytes, path, &names, Some(&key));
-                registered |= file.namespaces.contains(&key[..dot]);
-                if let Some(mut event) = file.entries.remove(&key) {
-                    if found.is_some() {
-                        event.refused = Some(format!(
-                            "{}: repeated event identifier {}; native registration order is not reconstructed",
-                            event.source,
-                            String::from_utf8_lossy(id)
-                        ));
-                    }
-                    found = Some(event);
-                } else if !file.refused.is_empty() {
-                    return Err(file.refused.join("; "));
-                }
+            if !index.namespaces.contains(&key[..dot]) {
+                return Err(format!("event {} namespace is not registered through add_namespace (1401F03A0)",
+                    String::from_utf8_lossy(id)));
             }
-            if !registered {
-                return Err(format!(
-                    "border event {} namespace is not registered through add_namespace (1401F03A0)",
-                    String::from_utf8_lossy(id)
-                ));
+            let references = index.events.get(&key).cloned().unwrap_or_default();
+            let reference = references.last().ok_or_else(|| format!(
+                "event {} indexed but not resolved by its native reader", String::from_utf8_lossy(id)))?;
+            let event = self.event(&mut cache, reference)?;
+            if identifier_key(&event.id)? != key {
+                return Err(format!("{}: event index differs from its native reader", event.source));
             }
-            found.map(Arc::new).ok_or_else(|| {
-                format!(
-                    "border event {} indexed but not resolved by its native reader",
-                    String::from_utf8_lossy(id)
-                )
-            })
+            if references.len() == 1 { return Ok(event); }
+            // Preserve the existing ID-lookup refusal. Option lookup separately
+            // keeps every pointer in the native registration array (140A01920).
+            let mut event = (*event).clone();
+            event.refused = Some(format!("{}: repeated event identifier {}; native registration order is not reconstructed",
+                event.source, String::from_utf8_lossy(id)));
+            Ok(Arc::new(event))
         })();
         cache.events.insert(key, result.clone());
         result
+    }
+
+    /// 1413832F0's raw option-name candidates, in registered event/option order.
+    /// The renderer skips candidates containing token 0x3FF4 before describing.
+    /// Empty, bare and non-normalizable event IDs do not affect this name scan.
+    pub fn options(&self, name: &[u8]) -> Result<Vec<(Arc<Event>, usize)>, String> {
+        let name = crate::parser::c_string(name);
+        let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
+        self.index(&mut cache)?;
+        let references = cache.index.as_ref().unwrap().as_ref().unwrap()
+            .options.get(name).cloned().unwrap_or_default();
+        self.cache_trees(&mut cache, references.iter().map(|(reference, _)| reference));
+        references.iter().map(|(reference, ordinal)| {
+            let event = self.event(&mut cache, reference)?;
+            if event.option_names.get(*ordinal).map(Vec::as_slice) != Some(name) {
+                return Err(format!("{}: option-name index differs from its native reader", event.source));
+            }
+            Ok((event, *ordinal))
+        }).collect()
     }
 }
 

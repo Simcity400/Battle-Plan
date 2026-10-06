@@ -42,7 +42,9 @@ impl ActiveEntry {
         }
         let valid_links = scopes.valid_links.get();
         let scopes = scopes.scopes.borrow();
-        if scopes[self.at].random_seed != scopes[at].random_seed {
+        if scopes[self.at].random_seed != scopes[at].random_seed
+            || scopes[self.at].random_seed_refusal != scopes[at].random_seed_refusal
+        {
             return false;
         }
         // Compare reachable values and links, not allocation indices.
@@ -641,6 +643,7 @@ fn bound_scope(object: Object, scopes: &ExpansionScopes, active: usize) -> usize
         prev: Link::Scope(active),
         random_seed: super::random::scope_seed(424242),
         random_counter: super::random::scope_counter(424242),
+        random_seed_refusal: None, // 1410CDDF0 constructs a known fresh seed.
     });
     scopes.prev_distance.borrow_mut().push(distance);
     at

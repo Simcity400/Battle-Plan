@@ -15,9 +15,15 @@ use std::{
 
 #[derive(Default, Clone, Debug)]
 pub struct Template {
+    pub token: Vec<u8>,
     pub include: Option<Vec<u8>>,
     pub delete_visible: bool,
     pub visible: Vec<Item>,
+    pub name: Vec<u8>,
+    pub initial_trait_name: Option<Vec<u8>>,
+    pub delete_name: bool,
+    pub delete_initial_trait: bool,
+    pub delete_initial_name: bool,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -32,6 +38,7 @@ pub struct Database {
 enum Reader {
     File,
     Template,
+    InitialTrait,
 }
 
 impl Database {
@@ -73,10 +80,19 @@ impl Database {
                         Shape::One // Dynamic token +0x10, 140A44C00.
                     } else if field.key.is_keyword("delete_included_values") {
                         Shape::List // Token list +0x18, 1403B7180.
+                    } else if field.key.is_keyword("name") {
+                        Shape::One // 140A44C00 +0x30.
+                    } else if field.key.is_keyword("initial_trait") {
+                        Shape::Object(Reader::InitialTrait) // 140A44C00 +0xB0.
                     } else {
                         Shape::SkipIfOpen // Other template fields do not decide visibility.
                     }
                 }
+                Reader::InitialTrait => if field.key.is_keyword("name") {
+                    Shape::One // 140A41020 +0x18.
+                } else if field.key.is_keyword("delete_included_values") {
+                    Shape::List // 140A41020 +0x3B0.
+                } else { Shape::SkipIfOpen },
             },
         );
         self.notes.extend(duplicate_notes);
@@ -95,8 +111,19 @@ impl Database {
                 self.refusals.insert(name, why.join("; "));
                 continue;
             }
-            let mut template = Template::default();
+            let mut template = Template { token: c_string(item.key.as_deref().unwrap_or_default()).to_vec(), ..Default::default() };
             for field in item.value.items().unwrap_or_default() {
+                if field.keyword_is("name") {
+                    template.name = field.value.read_string().unwrap_or_default().to_vec();
+                } else if field.keyword_is("initial_trait") {
+                    template.initial_trait_name = Some(field.value.items().unwrap_or_default().iter()
+                        .rfind(|field| field.keyword_is("name"))
+                        .and_then(|field| field.value.read_string()).unwrap_or_default().to_vec());
+                    template.delete_initial_name = field.value.items().unwrap_or_default().iter()
+                        .filter(|field| field.keyword_is("delete_included_values"))
+                        .flat_map(|field| field.value.items().unwrap_or_default())
+                        .any(|item| item.value.scalar().is_some_and(|name| name.eq_ignore_ascii_case(b"name")));
+                }
                 if field.keyword_is("include") {
                     template.include = Some(
                         c_string(field.value.scalar().unwrap_or_default()).to_ascii_lowercase(),
@@ -106,6 +133,10 @@ impl Database {
                         .visible
                         .extend(field.value.items().unwrap_or_default().iter().cloned());
                 } else if field.keyword_is("delete_included_values") {
+                    template.delete_name |= field.value.items().unwrap_or_default().iter()
+                        .any(|item| item.value.scalar().is_some_and(|name| name.eq_ignore_ascii_case(b"name")));
+                    template.delete_initial_trait |= field.value.items().unwrap_or_default().iter()
+                        .any(|item| item.value.scalar().is_some_and(|name| name.eq_ignore_ascii_case(b"initial_trait")));
                     template.delete_visible |=
                         field.value.items().unwrap_or_default().iter().any(|value| {
                             value
@@ -150,6 +181,30 @@ impl Database {
                 }
             )
         })
+    }
+
+    /// Include passes 140A45170/140A417D0 preserve nonempty local values and
+    /// reparent the copied initial trait to the child organisation.
+    pub fn display_fields(&self, token: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
+        let mut token = token.to_ascii_lowercase();
+        let mut visited = BTreeSet::new();
+        let mut name = Vec::new();
+        let mut initial = None;
+        let mut deleted_name = false;
+        let mut deleted_initial = false;
+        loop {
+            if !visited.insert(token.clone()) { return Err("MIO include cycle (140A417D0)".into()); }
+            let template = self.template(&token)?;
+            if name.is_empty() && !deleted_name { name.clone_from(&template.name); }
+            if initial.as_ref().is_none_or(Vec::is_empty) && !deleted_initial {
+                if let Some(value) = &template.initial_trait_name { initial = Some(value.clone()); }
+            }
+            deleted_name |= template.delete_name;
+            deleted_initial |= template.delete_initial_trait || template.delete_initial_name;
+            let Some(parent) = &template.include else { break; };
+            token.clone_from(parent);
+        }
+        Ok((name, initial))
     }
 }
 

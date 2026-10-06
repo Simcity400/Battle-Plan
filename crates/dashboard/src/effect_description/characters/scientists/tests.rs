@@ -19,7 +19,8 @@ fn fixture() -> (Fixture, Folder) {
             "common/scientist_traits/test.txt",
             concat!(
                 "scientist_trait_bright={name=BRIGHT_NAME} ",
-                "scientist_trait_fast_learner={modifier={custom_modifier_tooltip=TRAIT_TOOLTIP}}"
+                "scientist_trait_fast_learner={modifier={custom_modifier_tooltip=TRAIT_TOOLTIP}} ",
+                "scientist_trait_scoped={modifier={research_speed_factor=0.25 custom_modifier_tooltip=TRAIT_TOOLTIP}}"
             ),
         ),
         (
@@ -35,7 +36,8 @@ fn fixture() -> (Fixture, Folder) {
                 " EFFECT_GENERATE_SCIENTIST_CHARACTER_TRAIT:0 \"$TRAIT_NAME$\"\n",
                 " EFFECT_REMOVE_SCIENTIST_ROLE:0 \"Remove $NAME$/[Root.GetTag]\"\n",
                 " EFFECT_ADD_SCIENTIST_ROLE:0 \"Add $CHARACTER$/[Root.GetTag]\"\n",
-                " BRIGHT_NAME:0 \"Bright\"\n scientist_trait_fast_learner:0 \"Quick\"\n TRAIT_TOOLTIP:0 \"Tooltip[Root.GetTag]\"\n"
+                " BRIGHT_NAME:0 \"Bright\"\n scientist_trait_fast_learner:0 \"Quick\"\n TRAIT_TOOLTIP:0 \"Tooltip[Root.GetTag]\"\n",
+                " scientist_trait_scoped:0 \"Scope\"\n SCIENTIST_SCOPE:0 \"Research [Root.GetTag]\\nFrom [From.GetTag]\"\n"
             ),
         ),
     ]);
@@ -171,6 +173,55 @@ fn add_scientist_trait() {
         out.refusals
     );
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+// 140493BF5 -> 14054E520: full 32-bit category mask, caller-scope expansion;
+// 1424B7850 indents every nonempty resulting line by two spaces.
+#[test]
+fn scientist_trait_uses_full_category_mask_and_caller_scope() {
+    let (mut fixture, _folder) = fixture();
+    let TableView::Complete(TableRows::LexicalTokens(tokens)) =
+        &mut *fixture.frame.tables[TableId::LexicalTokens.index()]
+    else {
+        unreachable!()
+    };
+    tokens.push(LexicalTokenRow {
+        token: 31,
+        literal: b"research_speed_factor".to_vec(),
+    });
+    *fixture.frame.tables[TableId::ModifierDefinitions.index()] =
+        TableView::Complete(TableRows::ModifierDefinitions(vec![ModifierDefinitionRow {
+            token: 31,
+            category_mask: 1 << 31,
+            flags: crate::modifier_text::POSITIVE_IS_GOOD,
+            precision: 2,
+            name_key: b"SCIENTIST_SCOPE".to_vec(),
+            ..Default::default()
+        }]));
+    let out = fixture.render(
+        "add_scientist_trait=scientist_trait_scoped",
+        &mut caller(),
+        Content::default(),
+    );
+    assert_eq!(
+        out.text,
+        "TraitScope [Root.GetTag]\n  Research AAA\n  From BBB: \u{11}G+0.25\u{11}!\n  TooltipAAA"
+    );
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    fixture.with_renderer(&mut caller(), Content::default(), |renderer| {
+        let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
+        let traits = renderer
+            .character_content()
+            .unwrap()
+            .scientist_traits
+            .as_ref()
+            .unwrap();
+        let modifiers = &traits.get("scientist_trait_scoped").unwrap().unwrap().modifiers;
+        assert_eq!(
+            renderer.modifier_list(modifiers, "", scopes).unwrap(),
+            "TooltipAAA"
+        );
+    });
 }
 
 // Authored witness: common/special_projects/prototype_rewards/generic_nuclear_prototype_rewards.txt:200.

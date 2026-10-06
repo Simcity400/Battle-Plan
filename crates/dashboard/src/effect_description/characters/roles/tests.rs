@@ -208,18 +208,19 @@ fn promoted_role_preserves_traits_and_no_scoped_expansion() {
 }
 
 #[test]
-fn country_role_refusal_keeps_core_children_and_own_projection() {
+fn country_role_description_keeps_trait_lines_and_core_children() {
     let (fixture, _folder) = fixture();
     let out = render(
         &fixture,
         "add_country_leader_role={character=synthetic_character country_leader={ideology=synthetic_ideology traits={synthetic_numeric}} army_experience=2}",
         &mut country_scopes(),
     );
-    assert_eq!(out.text, "XP2\n"); // 1403AEC00 own fields never enter the child array.
-    assert_eq!(out.refusals, BTreeMap::from([(
-        "synthetic effect CAddCountryLeaderRoleEffect: key add_country_leader_role: native plain modifier description requires core plain/mask/separator/show-zero parameters (14054E050/14054F6D0)".into(),
-        1,
-    )]));
+    // 1403AEC00 own fields never enter the child array.
+    assert_eq!(
+        out.text,
+        "Role Current name/Group [Root.GetTag]\n    \u{11}HNumeric\u{11}!\n      - Power: \u{11}G+0.10\u{11}!\n\nXP2\n",
+    );
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
 // common/bop/ITA.txt:158, explicit character/ideology block.
@@ -416,18 +417,74 @@ fn add_advisor_role() {
 }
 
 #[test]
-fn advisor_role_plain_description_requires_core_options() {
-    let (fixture, _folder) = fixture();
+fn advisor_role_sums_trait_and_authored_modifiers_before_formatting() {
+    text(
+        "add_advisor_role={character=synthetic_character advisor={slot=synthetic_slot traits={synthetic_numeric} modifier={political_power_gain=0.2}} activate=yes}",
+        "Appoint Current name/Slot AAA/Power: \u{11}G+0.30\u{11}! AAA",
+    );
+}
+
+// 140370790 passes 0xFFFFFFFF, not the core's default 24-bit mask.
+#[test]
+fn advisor_role_includes_the_high_category_bit() {
+    let (mut fixture, _folder) = fixture();
+    let TableView::Complete(TableRows::ModifierDefinitions(definitions)) =
+        &mut *fixture.frame.tables[TableId::ModifierDefinitions.index()]
+    else {
+        unreachable!()
+    };
+    definitions[0].category_mask = 1 << 31;
     let out = render(
         &fixture,
-        "add_advisor_role={character=synthetic_character advisor={slot=synthetic_slot traits={synthetic_numeric} modifier={political_power_gain=0.2}} activate=yes}",
+        "add_advisor_role={character=synthetic_character advisor={slot=synthetic_slot modifier={political_power_gain=0.1}}}",
         &mut country_scopes(),
     );
-    assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([(
-        "synthetic effect CAddAdvisorRoleEffect: key add_advisor_role: native plain modifier description requires core plain/mask/separator/show-zero parameters (14054E050/14054F6D0)".into(),
-        1,
-    )]));
+    assert_eq!(
+        out.text,
+        "Add advisor Current name/Slot AAA/Power: \u{11}G+0.10\u{11}! AAA",
+    );
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+// 140370790 formats raw modifiers, substitutes MODIFIER, then calls
+// 1410CF560. The wrapper can complete an expression begun in the postfix.
+#[test]
+fn advisor_role_expands_modifiers_only_after_wrapper_substitution() {
+    let (mut fixture, _folder) = fixture();
+    let mut localisation = fixture
+        .catalogue
+        .localisation
+        .iter()
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .chain(
+            [
+                ("ADVISOR_OPEN_SCOPE", "[Root.GetTag"),
+                (
+                    "EFFECT_ADD_ADVISOR_ROLE",
+                    "Add advisor $NAME$/$SLOT$/$MODIFIER$] [Root.GetTag]",
+                ),
+            ]
+            .map(|(key, value)| (key.into(), value.into())),
+        )
+        .collect::<installed_content::localisation::Localisation>();
+    localisation.language = fixture.catalogue.localisation.language.clone();
+    fixture.catalogue.localisation = localisation;
+    let TableView::Complete(TableRows::ModifierDefinitions(definitions)) =
+        &mut *fixture.frame.tables[TableId::ModifierDefinitions.index()]
+    else {
+        unreachable!()
+    };
+    definitions[0].postfix_key = b"ADVISOR_OPEN_SCOPE".to_vec();
+    let out = render(
+        &fixture,
+        "add_advisor_role={character=synthetic_character advisor={slot=synthetic_slot modifier={political_power_gain=0.2}}}",
+        &mut country_scopes(),
+    );
+    assert_eq!(
+        out.text,
+        "Add advisor Current name/Slot AAA/Power: \u{11}G+0.20\u{11}! AAA AAA",
+    );
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
 // common/decisions/GER.txt:16992, no explicit character in character scope.

@@ -233,7 +233,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(event)
     }
 
-    fn char_event_draw(&self, cursor: usize) -> Result<(u32, u32), String> {
+    fn char_event_draw(&self, cursor: usize) -> Result<(u32, u32, Option<&'static str>), String> {
         let mut graph = self.graph.borrow_mut();
         let parent = graph
             .scopes
@@ -241,7 +241,13 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .ok_or("event caller scope is not given")?;
         let seed = random::scoped_draw(parent.random_seed, parent.random_counter) as u32;
         parent.random_seed = parent.random_seed.wrapping_add(1);
-        Ok((random::scope_seed(seed), random::scope_counter(seed)))
+        // 1402EE390/1402F1360 derive title lanes; preserve an unavailable input
+        // until a title selection actually reads them (140A9CD70).
+        Ok((
+            random::scope_seed(seed),
+            random::scope_counter(seed),
+            parent.random_seed_refusal,
+        ))
     }
 
     fn char_event_title(
@@ -272,12 +278,13 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let cursor = scopes
             .cursor
             .ok_or("unit_leader_event needs caller scope graph")?;
-        let (seed, counter) = self.char_event_draw(cursor)?;
+        let (seed, counter, refusal) = self.char_event_draw(cursor)?;
         let at = {
             let mut graph = self.graph.borrow_mut();
             let mut scope = EventScope::of(EventObject::Country(0));
             scope.random_seed = seed;
             scope.random_counter = counter;
+            scope.random_seed_refusal = refusal;
             scope.from = match graph.scopes[cursor].root {
                 Link::Itself => Link::Scope(cursor),
                 link => link,
@@ -330,7 +337,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let cursor = scopes
             .cursor
             .ok_or("operative_leader_event needs caller scope graph")?;
-        let (seed, counter) = self.char_event_draw(cursor)?;
+        let (seed, counter, refusal) = self.char_event_draw(cursor)?;
         // SetUnitLeader 14052EFD0 copies +0xF48, including a referenced role's
         // own character. That field is not present in CharacterOperatives.
         let character = match leader {
@@ -366,6 +373,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             graph.scopes[at].this = EventObject::Character(character);
             graph.scopes[at].random_seed = seed;
             graph.scopes[at].random_counter = counter;
+            graph.scopes[at].random_seed_refusal = refusal;
             graph.scopes[at].from = Link::Scope(from);
         }
         for key in ["set_from", "set_from_from", "set_root"] {

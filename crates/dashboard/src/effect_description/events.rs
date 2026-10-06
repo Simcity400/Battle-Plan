@@ -8,8 +8,11 @@ use crate::{
 use installed_content::decisions::Decision;
 use replay::rows::{DecisionRow, tables};
 
+const DECISION_RANDOM_COUNT_GAP: &str = "CDecisionStatus random-count item +0x10 for this definition/target is not recorded outside a demanded active decision (140721170/1407290D0)";
+
 #[cfg(test)]
 mod tests;
+mod descriptions;
 
 /// 14071C730 compares both native target slots and ignores lifecycle/ignore.
 fn matching<'a>(
@@ -204,6 +207,8 @@ impl Renderer<'_, '_, '_> {
             parent.random_seed = parent.random_seed.wrapping_add(1); // 14037BDC0 advances +0x0C.
             title_scope.random_seed = crate::scripted_text::random::scope_seed(seed);
             title_scope.random_counter = crate::scripted_text::random::scope_counter(seed);
+            // 14037BDC0 derives title lanes; only a later selection needs them.
+            title_scope.random_seed_refusal = parent.random_seed_refusal;
             let at = graph.scopes.len();
             graph.scopes.push(title_scope);
             at
@@ -370,15 +375,6 @@ impl Renderer<'_, '_, '_> {
         row: &DecisionRow,
         owner: u32,
     ) -> Result<Scopes, String> {
-        let game_seed = self
-            .context
-            .world()?
-            .frame()
-            .complete::<tables::Clock>()
-            .map_err(|why| why.to_string())?
-            .first()
-            .ok_or("Clock lacks decision-description seed")?
-            .seed;
         let country_target = if row.country_target == 0 {
             None
         } else {
@@ -391,30 +387,11 @@ impl Renderer<'_, '_, '_> {
             )
         };
         let target = country_target.unwrap_or(row.numeric_target) as i32;
-        let additive = if definition.fixed_random_seed {
-            None
-        } else {
-            *row.description_seed.require("Decisions.description_seed")?
-        };
-        let seed = decision_seed(game_seed, definition, additive, target)?;
-        let (at, from) = {
-            let mut graph = self.graph.borrow_mut();
-            let at = graph.scopes.len();
-            let from = at + 1;
-            let mut own = EventScope::of(EventObject::Country(owner));
-            own.from = Link::Scope(from);
-            own.random_seed = random::scope_seed(seed);
-            own.random_counter = random::scope_counter(seed);
-            let mut target = EventScope::of(match country_target {
+        let seed = self.decision_description_seed(definition, Some(row), target);
+        let (at, from) = self.seeded_decision_graph(owner, Some(match country_target {
                 Some(country) => EventObject::Country(country),
                 None => EventObject::State(row.numeric_target),
-            });
-            // Native 1407290D0 seeds FROM from the already-mixed +0x0C word.
-            target.random_seed = random::scope_seed(own.random_seed);
-            target.random_counter = random::scope_counter(own.random_seed);
-            graph.scopes.extend([own, target]);
-            (at, from)
-        };
+            }), seed);
         let scopes = self.evaluator()?.event_scopes(at)?;
         let highlighted = definition.has_state_targets
             || self
@@ -427,6 +404,70 @@ impl Renderer<'_, '_, '_> {
             graph.scopes[from].from = Link::Scope(index);
         }
         self.evaluator()?.event_scopes(at)
+    }
+
+    fn decision_description_seed(
+        &self,
+        definition: &Decision,
+        row: Option<&DecisionRow>,
+        target: i32,
+    ) -> Result<u32, &'static str> {
+        let game_seed = self
+            .context
+            .world()
+            .map_err(|_| "Clock decision-description seed is unavailable (1407290D0)")?
+            .frame()
+            .complete::<tables::Clock>()
+            .map_err(|_| "Clock decision-description seed is unavailable (1407290D0)")?
+            .first()
+            .ok_or("Clock lacks decision-description seed (1407290D0)")?
+            .seed;
+        let additive = if definition.fixed_random_seed {
+            None
+        } else {
+            *row.ok_or(DECISION_RANDOM_COUNT_GAP)?
+                .description_seed
+                .require("Decisions.description_seed")
+                .map_err(|_| "Decisions.description_seed not recorded (CDecisionStatus random-count item +0x10; 1407290D0)")?
+        };
+        decision_seed(game_seed, definition, additive, target)
+            .map_err(|_| "Decisions description_seed is unread (1407290D0)")
+    }
+
+    // 1407290D0 seeds country and FROM from the stored clock/count. A fresh
+    // scope's FROM is itself; the second write then mixes its own seed again.
+    fn seeded_decision_graph(
+        &self,
+        owner: u32,
+        target: Option<EventObject>,
+        seed: Result<u32, &'static str>,
+    ) -> (usize, usize) {
+        let mut graph = self.graph.borrow_mut();
+        let at = graph.scopes.len();
+        let mut own = EventScope::of(EventObject::Country(owner));
+        let mut from = EventScope::of(target.unwrap_or(EventObject::Country(owner)));
+        match seed {
+            Ok(seed) => {
+                own.random_seed = random::scope_seed(seed);
+                own.random_counter = random::scope_counter(seed);
+                from.random_seed = random::scope_seed(own.random_seed);
+                from.random_counter = random::scope_counter(own.random_seed);
+            }
+            Err(why) => {
+                // No substitute seed is consumed: copies carry this marker to
+                // draw sites 14071CB37/14071D055, 1402F70C0 and 140A9CF9A/BD.
+                own.random_seed_refusal = Some(why);
+                from.random_seed_refusal = Some(why);
+            }
+        }
+        if target.is_some() {
+            own.from = Link::Scope(at + 1);
+            graph.scopes.extend([own, from]);
+            (at, at + 1)
+        } else {
+            graph.scopes.push(from);
+            (at, at)
+        }
     }
 
     fn fresh_country_scope(&self, owner: u32, target: Option<u32>) -> Result<Scopes, String> {
@@ -542,8 +583,7 @@ impl Renderer<'_, '_, '_> {
             .cursor
             .ok_or("decision highlight lacks scope cursor")?];
         // 14071C840 draws on a copy, incrementing no caller seed word.
-        let index = random::scoped_draw(scope.random_seed, scope.random_counter) as usize
-            % candidates.len();
+        let index = scope.random_draw()? as usize % candidates.len();
         Ok(candidates.into_iter().nth(index))
     }
 }

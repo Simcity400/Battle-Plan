@@ -116,6 +116,9 @@ pub struct EventScope {
     pub random_seed: u32,
     /// CEventScope+0x10, copied independently of the +0x0C seed.
     pub random_counter: u32,
+    /// Missing input to these lanes; copies retain it, fresh constructors clear it.
+    /// Only a native random selection needs this input (140A9CD70/1402F70C0).
+    pub random_seed_refusal: Option<&'static str>,
 }
 
 impl EventScope {
@@ -129,7 +132,19 @@ impl EventScope {
             prev: Link::Itself,
             random_seed: 1, // 140528800; setters preserve the seed words.
             random_counter: 0x5ea6_ba9e,
+            random_seed_refusal: None,
         }
+    }
+
+    pub(crate) fn require_random_seed(&self) -> Result<u32, String> {
+        match self.random_seed_refusal {
+            Some(why) => Err(why.into()),
+            None => Ok(self.random_seed),
+        }
+    }
+
+    pub(crate) fn random_draw(&self) -> Result<u32, String> {
+        Ok(random::scoped_draw(self.require_random_seed()?, self.random_counter) as u32)
     }
 }
 
@@ -359,6 +374,7 @@ pub struct ScriptedContent {
     pub layers: std::sync::Arc<installed_content::content::ResolvedContent>,
     pub(crate) environment: std::sync::OnceLock<Result<entries::Environment, String>>,
     pub(crate) template_names: std::sync::OnceLock<Result<Localisation, String>>,
+    event_index: std::sync::OnceLock<installed_content::events::LazyEvents>,
     pub(crate) effects:
         std::sync::OnceLock<Result<crate::effect_description::CachedContent, String>>,
 }
@@ -391,7 +407,14 @@ impl ScriptedContent {
             layers: content,
             environment: std::sync::OnceLock::from(Ok(environment)),
             template_names: std::sync::OnceLock::new(),
+            event_index: std::sync::OnceLock::new(),
             effects: std::sync::OnceLock::new(),
+        })
+    }
+
+    pub(crate) fn event_index(&self) -> &installed_content::events::LazyEvents {
+        self.event_index.get_or_init(|| {
+            installed_content::events::LazyEvents::from_content(std::sync::Arc::clone(&self.layers))
         })
     }
 

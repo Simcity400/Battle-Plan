@@ -11,6 +11,9 @@ use crate::{
 };
 use std::{collections::BTreeMap, io};
 
+mod names;
+pub use names::Name;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Folder {
     pub name: Vec<u8>,
@@ -20,11 +23,24 @@ pub struct Folder {
 #[derive(Clone, Debug, Default)]
 pub struct Database {
     pub entries: BTreeMap<Vec<u8>, Folder>,
+    pub grand: BTreeMap<Token, Name>,
+    pub sub: BTreeMap<Token, Name>,
+    pub tracks: BTreeMap<Token, Name>,
+    /// Technology descriptions share this already cached family database.
+    pub technologies: Option<crate::technology::Catalog>,
     pub notes: Vec<String>,
     unread: Option<String>,
 }
 
 impl Database {
+    pub fn name(&self, kind: u8, token: &[u8]) -> Result<Option<&Name>, String> {
+        if let Some(why) = &self.unread { return Err(why.clone()); }
+        let entries = match kind { 0 => &self.grand, 1 => &self.sub, _ => &self.tracks };
+        let name = entries.get(&Token::c_str(token));
+        if let Some(why) = name.and_then(|name| name.refusal.as_ref()) { return Err(why.clone()); }
+        Ok(name)
+    }
+
     /// Folder token lookup used by mastery selectors (14051EC00).
     pub fn folder_exact(&self, token: &[u8]) -> Result<Option<&Folder>, String> {
         self.lookup(parser::c_string(token), false)
@@ -142,6 +158,14 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
     let mut database = Database::default();
     for path in layers.directory_files("common/doctrines/folders", ".txt")? {
         append(&mut database, &layers.read(&path)?, &path, &names);
+    }
+    names::read(layers, &names, &mut database)?;
+    match crate::technology::Catalog::read(layers, &names) {
+        Ok(catalog) => {
+            database.notes.extend(catalog.notes.iter().cloned());
+            database.technologies = Some(catalog);
+        }
+        Err(why) => database.notes.push(format!("Technology description catalogue unavailable: {why}")),
     }
     Ok(database)
 }

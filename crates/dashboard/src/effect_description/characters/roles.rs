@@ -660,8 +660,14 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
         // 140370790 calls plain FormatDescription 14054E050 with full
         // category mask, precision 2, then expands only its containing line.
-        self.char_trait_plain_modifiers(&modifiers)?;
-        let modifiers = self.modifier_list(&modifiers, "", scopes)?;
+        let modifiers = self.modifier_description_with(
+            &modifiers,
+            "",
+            ModifierListOptions {
+                category_mask: u32::MAX,
+                ..Default::default()
+            },
+        )?;
         self.char_native_text(
             if boolean(item, "activate") {
                 b"EFFECT_ADD_ADVISOR_ROLE_APPOINT"

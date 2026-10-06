@@ -1100,8 +1100,7 @@ impl Renderer<'_, '_, '_> {
             .cursor
             .ok_or("create_unit location needs its copied scope cursor (14036A810)")?;
         let copied = self.graph.borrow().scopes[cursor];
-        let start = crate::scripted_text::random::scoped_draw(copied.random_seed, copied.random_counter)
-            as usize % provinces.len();
+        let start = copied.random_draw()? as usize % provinces.len();
         self.graph.borrow_mut().scopes[cursor].random_seed = copied.random_seed.wrapping_add(1);
         // 14036A810 changes only the copied +0x0C seed, preserving caller +0x10.
         let impassable = parser::parse(b"impassable=yes")

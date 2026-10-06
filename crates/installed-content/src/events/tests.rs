@@ -73,6 +73,7 @@ fn border_events_keep_immediate_and_option_order_through_native_effect_reader() 
     assert_eq!(event.titles[0].value.scalar(), Some(b"TITLE".as_slice()));
     assert_eq!(event.immediate[0].value.scalar(), Some(b"FIRST".as_slice()));
     assert_eq!(event.options.len(), 2);
+    assert_eq!(event.option_names, [b"A".to_vec(), b"B".to_vec()]);
     assert!(event.options[0][0].keyword_is("custom_effect_tooltip"));
     assert!(event.options[1][0].keyword_is("hidden_effect"));
     assert!(event.refused.is_none());
@@ -295,4 +296,150 @@ fn lazy_events_read_nothing_until_demand_and_cache_only_requested_identifiers() 
     );
     assert_eq!(events.cache.lock().unwrap().events.len(), 2);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+fn option_index_fixture(files: &[(&str, &[u8])]) -> (LazyEvents, std::path::PathBuf) {
+    let root = std::env::temp_dir().join(format!("hoi4-option-index-{}-{}", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    std::fs::create_dir_all(root.join("events")).unwrap();
+    for (name, bytes) in files { std::fs::write(root.join("events").join(name), bytes).unwrap(); }
+    let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    (LazyEvents::new(Arc::new(layers)), root)
+}
+
+#[test]
+fn lazy_option_index_uses_raw_names_and_native_registration_order() {
+    let (events, root) = option_index_fixture(&[
+        ("a.txt", b"add_namespace=s country_event={id=s.9 option={name=Choice custom_effect_tooltip=FIRST} option={name=Choice custom_effect_tooltip=SECOND}} state_event={id=s.1 option={name=Choice custom_effect_tooltip=STATE}} news_event={id=s.2 option={name=Choice custom_effect_tooltip=NEWS}}"),
+        ("z.txt", b"country_event={id=s.9 option={name=Choice custom_effect_tooltip=DUPLICATE}} unit_leader_event={id=bare option={name=Choice custom_effect_tooltip=LEADER}} operative_leader_event={id=unregistered.4 option={name=Choice custom_effect_tooltip=OPERATIVE}} country_event={id=s.100000 option={name=Choice custom_effect_tooltip=CROSSES_SLOT}} country_event={option={name=Choice custom_effect_tooltip=NO_ID}}"),
+    ]);
+    // 1413833BE walks registration order, not ID order; 140A01920 appends
+    // duplicate-ID objects, and state events use its separate manager array.
+    let choices = events.options(b"Choice\0ignored").unwrap();
+    assert_eq!(choices.iter().map(|(event, option)| event.options[*option][0].value.scalar().unwrap())
+        .collect::<Vec<_>>(), [b"FIRST".as_slice(), b"SECOND", b"NEWS", b"DUPLICATE", b"LEADER", b"OPERATIVE", b"CROSSES_SLOT", b"NO_ID"]);
+    assert!(Arc::ptr_eq(&choices[0].0, &choices[1].0));
+    assert!(choices.iter().all(|(event, _)| event.refused.is_none()));
+    assert!(events.options(b"choice").unwrap().is_empty()); // Byte-exact 14138343D.
+    assert!(events.get(b"s.9").unwrap().refused.as_ref().unwrap().contains("repeated event identifier"));
+    assert!(events.get(b"unregistered.4").unwrap_err().contains("not registered"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn lazy_option_index_preserves_macro_names_last_name_and_empty_name() {
+    let (events, root) = option_index_fixture(&[
+        ("a.txt", b"@first=Choice country_event={id=7 option={name=old name=@first @later=Later custom_effect_tooltip=ONE} option={name=@later custom_effect_tooltip=TWO} option={custom_effect_tooltip=EMPTY}}"),
+    ]);
+    // The same CReader dictionary settles names defined inside earlier options;
+    // 1415279D0's repeated ReadStringInto keeps the last authored name.
+    let first = events.options(b"Choice").unwrap();
+    let later = events.options(b"Later").unwrap();
+    let empty = events.options(b"").unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(later[0].1, 1);
+    assert_eq!(empty[0].1, 2);
+    assert_eq!(first[0].0.option_names, [b"Choice".to_vec(), b"Later".to_vec(), Vec::new()]);
+    assert!(Arc::ptr_eq(&first[0].0, &later[0].0));
+    assert!(Arc::ptr_eq(&first[0].0, &empty[0].0));
+    assert!(events.options(b"old").unwrap().is_empty());
+    assert_eq!(events.cache.lock().unwrap().files.len(), 1);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn lazy_option_index_shares_requested_trees_and_keeps_other_files_header_only() {
+    let (events, root) = option_index_fixture(&[
+        ("a.txt", b"@chosen=Chosen add_namespace=s country_event={id=s.1 option={name=@chosen custom_effect_tooltip=ONE}}"),
+        ("unrelated.txt", b"add_namespace=u country_event={id=u.1 option={name=Other hidden_effect={remove_unit_leader_role={character=unsupported}}}}"),
+    ]);
+    assert!(events.cache.lock().unwrap().index.is_none());
+    assert!(events.options(b"Missing").unwrap().is_empty());
+    assert!(events.cache.lock().unwrap().files.is_empty());
+    let first = events.options(b"Chosen").unwrap();
+    assert!(events.cache.lock().unwrap().files.is_empty());
+    assert_eq!(events.cache.lock().unwrap().trees.len(), 1);
+    let by_id = events.get(b"S.01").unwrap();
+    assert!(Arc::ptr_eq(&first[0].0, &by_id));
+    // Neither lookup re-reads the shared tree after its first demand.
+    std::fs::write(root.join("events/a.txt"), b"invalid replacement").unwrap();
+    assert!(Arc::ptr_eq(&first[0].0, &events.options(b"Chosen").unwrap()[0].0));
+    assert!(Arc::ptr_eq(&by_id, &events.get(b"s.1").unwrap()));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn lazy_option_index_skips_unrelated_unsettled_bodies_in_the_same_static_file() {
+    let bytes = b"add_namespace=s country_event={id=s.0 option={name=Other promote_character={character={ignored}}}} country_event={id=s.1 option={name=Chosen custom_effect_tooltip=ONE}} country_event={id=s.2 option={name=Chosen custom_effect_tooltip=TWO}} country_event={id=s.3 option={name=Later custom_effect_tooltip=THREE}}";
+    let (events, root) = option_index_fixture(&[("a.txt", bytes)]);
+    // The unsupported 1403AA3C0 parse-scope branch stops a full native read.
+    // A request for other ordinals must skip that body before effect dispatch.
+    let full = read_events(bytes, &KeyNames::default(), None);
+    assert!(full.read.unsettled.is_some());
+    let chosen = events.options(b"Chosen").unwrap();
+    assert_eq!(chosen.len(), 2);
+    assert_eq!(chosen.iter().map(|(event, option)| event.options[*option][0].value.scalar().unwrap())
+        .collect::<Vec<_>>(), [b"ONE".as_slice(), b"TWO"]);
+    assert!(chosen.iter().all(|(event, _)| event.refused.is_none()));
+    assert!(events.cache.lock().unwrap().files.is_empty());
+    assert_eq!(events.cache.lock().unwrap().trees.len(), 2);
+    let later = events.get(b"s.3").unwrap();
+    assert_eq!(later.options[0][0].value.scalar(), Some(b"THREE".as_slice()));
+    assert_eq!(events.cache.lock().unwrap().trees.len(), 3);
+    assert!(events.cache.lock().unwrap().files.is_empty());
+    // Both matched ordinals are projected by one demand and then shared.
+    std::fs::write(root.join("events/a.txt"), b"invalid replacement").unwrap();
+    assert!(Arc::ptr_eq(&chosen[0].0, &events.get(b"s.1").unwrap()));
+    assert!(Arc::ptr_eq(&chosen[1].0, &events.get(b"s.2").unwrap()));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn lazy_events_share_exact_content_and_viewer_layer_owners_and_memos() {
+    let content = Arc::new(ResolvedContent {
+        layers: ResolvedLayers::default(),
+        stats: Default::default(),
+    });
+    let content_owner = Arc::downgrade(&content);
+    let content_names = content.layers.key_names().unwrap();
+    let events = LazyEvents::from_content(Arc::clone(&content));
+    assert!(std::ptr::eq(&*events.layers, &content.layers));
+    assert_eq!(Arc::strong_count(&content), 2);
+    assert!(Arc::ptr_eq(&content_names, &events.layers.key_names().unwrap()));
+    assert!(events.cache.lock().unwrap().index.is_none());
+    assert!(events.options(b"absent").unwrap().is_empty());
+    assert!(events.cache.lock().unwrap().index.is_some());
+    drop(content);
+    assert!(content_owner.upgrade().is_some());
+    drop(events);
+    assert!(content_owner.upgrade().is_none());
+
+    let layers = Arc::new(ResolvedLayers::default());
+    let viewer_owner = Arc::downgrade(&layers);
+    let viewer_names = layers.key_names().unwrap();
+    let viewer_events = LazyEvents::new(Arc::clone(&layers));
+    assert!(std::ptr::eq(&*viewer_events.layers, layers.as_ref()));
+    assert_eq!(Arc::strong_count(&layers), 2);
+    assert!(Arc::ptr_eq(&viewer_names, &viewer_events.layers.key_names().unwrap()));
+    assert!(viewer_events.cache.lock().unwrap().index.is_none());
+    drop(layers);
+    assert!(viewer_owner.upgrade().is_some());
+    drop(viewer_events);
+    assert!(viewer_owner.upgrade().is_none());
+}
+
+#[test]
+fn event_lookup_diagnostics_name_the_shared_event_database() {
+    assert_eq!(identifier_key(b"42").unwrap_err(),
+        "event 42 has no namespace; 1401F03A0 cannot resolve it");
+    assert_eq!(identifier_key(b".1").unwrap_err(),
+        "event namespace is empty (1401F03A0)");
+    let events = parse(b"add_namespace=s", "events/synthetic.txt", &KeyNames::default());
+    assert_eq!(events.get(b"missing.1").unwrap_err(),
+        "event missing.1 namespace is not registered through add_namespace (1401F03A0)");
+    assert_eq!(events.get(b"s.1").unwrap_err(),
+        "event s.1 is absent from the resolved event database; ");
+    let lazy = LazyEvents::new(Arc::new(ResolvedLayers::default()));
+    assert_eq!(lazy.get(b"missing.1").unwrap_err(),
+        "event missing.1 namespace is not registered through add_namespace (1401F03A0)");
 }

@@ -927,10 +927,9 @@ impl Renderer<'_, '_, '_> {
                     .ok_or("random description needs an event graph cursor")?,
             )
             .ok_or("random description cursor is absent")?;
-        let draw =
-            crate::scripted_text::random::scoped_draw(scope.random_seed, scope.random_counter);
+        let draw = scope.random_draw()?;
         scope.random_seed = scope.random_seed.wrapping_add(1); // 1402F70C0, including singleton.
-        Ok(draw as u32)
+        Ok(draw)
     }
 
     fn targets(

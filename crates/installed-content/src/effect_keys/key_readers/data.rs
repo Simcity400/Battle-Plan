@@ -1452,12 +1452,17 @@ const READER_1404C3B00: KeyReader =
 // 14051BEC0; readers_low/forms.json
 const READER_14051BEC0: KeyReader = KeyReader::Keys(&[], Fallback::One);
 
-// 14051EB60; readers_low/forms.json
+// 14051EB60 delegates selectors to 141468860 before the ReadEffect tail.
 const READER_14051EB60: KeyReader = KeyReader::Keys(
     &[
         ("name", ValueReader::One),
         ("amount", ValueReader::One),
         ("days", ValueReader::One),
+        ("track", ValueReader::One),
+        ("folder", ValueReader::One),
+        ("grand_doctrine", ValueReader::One),
+        ("sub_doctrine", ValueReader::One),
+        ("track_index", ValueReader::One),
     ],
     Fallback::Effect,
 );

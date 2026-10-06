@@ -1,6 +1,27 @@
 use super::*;
 
 #[test]
+fn tooltip_projection_retains_effects_modifiers_and_real_balance_category_binding() {
+    let root = std::env::temp_dir().join(format!("effect-decision-tooltips-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    std::fs::create_dir_all(root.join("common/decisions/categories")).unwrap();
+    std::fs::create_dir_all(root.join("common/bop")).unwrap();
+    std::fs::write(root.join("common/decisions/categories/a.txt"), b"SYN_CATEGORY={name=IGNORED power_balance=IGNORED} SYN_OTHER={}").unwrap();
+    std::fs::write(root.join("common/bop/a.txt"), b"SYN_BALANCE={decision_category=SYN_CATEGORY}").unwrap();
+    std::fs::write(root.join("common/decisions/a.txt"), b"SYN_CATEGORY={SYN_DECISION={name=SYN_NAME complete_effect={custom_effect_tooltip=SELECT} remove_effect={custom_effect_tooltip=REMOVE} days_remove=var:duration modifier={political_power_gain=1}}} SYN_OTHER={OTHER={}}").unwrap();
+    let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let database = read(&layers).unwrap();
+    assert_eq!(database.category(b"SYN_CATEGORY").unwrap(), Some(b"SYN_CATEGORY".as_slice()));
+    let decision = database.decision(b"SYN_DECISION").unwrap().unwrap();
+    assert!(decision.power_balance);
+    assert_eq!(decision.complete_effect[0].value.scalar(), Some(b"SELECT".as_slice()));
+    assert_eq!(decision.remove_effect[0].value.scalar(), Some(b"REMOVE".as_slice()));
+    assert_eq!(decision.days_remove, b"var:duration");
+    assert!(decision.modifier[0].keyword_is("political_power_gain"));
+    assert!(!database.decision(b"OTHER").unwrap().unwrap().power_balance);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn decision_projection_preserves_native_names_seed_and_highlight_inputs() {
     let mut database = Database::default();
     append(
@@ -54,6 +75,20 @@ fn decision_projection_preserves_native_names_seed_and_highlight_inputs() {
             .iter()
             .any(|note| note.contains("duplicate decision"))
     );
+}
+
+#[test]
+fn tooltip_projection_preserves_targeted_modifier_boundaries_and_order() {
+    let mut database = Database::default();
+    append(&mut database, b"category={sample={targeted_modifier={tag=BBB political_power_gain=0.1} targeted_modifier={tag=ROOT political_power_gain=0.2}}}",
+        "synthetic/decisions.txt", &[b"category".to_vec()].into(), &KeyNames::default());
+    let decision = database.decision(b"sample").unwrap().unwrap();
+    // 140399827/140399BF6 walks each native CStaticModifier, not one merged body.
+    assert_eq!(decision.targeted_modifier.len(), 2);
+    assert_eq!(decision.targeted_modifier[0][0].value.scalar(), Some(b"BBB".as_slice()));
+    assert_eq!(decision.targeted_modifier[1][0].value.scalar(), Some(b"ROOT".as_slice()));
+    assert_eq!(crate::modifiers::targeted(&decision.targeted_modifier[0]).modifiers.values[0].value, 10_000);
+    assert_eq!(crate::modifiers::targeted(&decision.targeted_modifier[1]).modifiers.values[0].value, 20_000);
 }
 
 #[test]

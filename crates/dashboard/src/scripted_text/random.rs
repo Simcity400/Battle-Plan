@@ -100,9 +100,8 @@ impl<'a> ScriptedText<'a> {
                 )),
             },
             || {
-                let default = bound.scope(at).random_seed;
                 if list.seed.is_empty() {
-                    return Ok(default);
+                    return bound.scope(at).require_random_seed();
                 }
                 let seeded;
                 let evaluator = match evaluator {
@@ -112,9 +111,12 @@ impl<'a> ScriptedText<'a> {
                         &seeded
                     }
                 };
-                Ok(evaluator
-                    .localisation_seed(list, scopes)?
-                    .unwrap_or(default))
+                // 140A9CF27 uses an explicit seed without reading +0x0C;
+                // 140A9CF9A/140A9CFBD read the default only without that operand.
+                match evaluator.localisation_seed(list, scopes)? {
+                    Some(seed) => Ok(seed),
+                    None => bound.scope(at).require_random_seed(),
+                }
             },
         )?;
         if bound.session.borrow().is_some()

@@ -18,6 +18,8 @@ use std::{
     io,
 };
 mod units;
+mod descriptions;
+pub use descriptions::{Catalog, Definition};
 pub(crate) use units::{StatKey, equipment_pool_roster, equipment_pool_shape, stat_key};
 
 /// Each technology's single unconditional equipment link, when known.
@@ -52,137 +54,7 @@ fn parse_with_registry(
     registry: &units::Registry,
     names: &KeyNames,
 ) -> Result<(EquipmentLinks, Vec<crate::Diagnostic>), (crate::DiagnosticKind, io::Error)> {
-    use Node::*;
-    let mut undecided = Vec::new();
-    let mut refused = Vec::new();
-    let mut leading_limit = true;
-    let modifier_registry = &|key: &[u8]| modifiers::registered(key, Some(names));
-    // CTechnologyDatabase 140ABCFC0 (EOF loop), CTechnologyTemplate
-    // 140AC3960 / 140AC3C70. All dynamic content names come from layers.
-    // CTechnologyDatabase::LoadDirectory (140AC1BA0) constructs each file's
-    // lexer in mode 0 (1424A6370).
-    // CTechnologyTemplate::vf4 140AC3C70 passes country scope at 140AC582B.
-    let read = native::read_in_effect_scope(
-        input,
-        native::Mode::KeepMark,
-        native::Top::File(File),
-        Some(names),
-        ScopeKind::Country.bit(),
-        &mut |node, field| {
-            match (node, field.keyword().as_deref()) {
-                (File, Some(b"technologies")) => Shape::Object(Technologies),
-                (File, Some(b"technology_categories")) => Shape::RawList,
-                (File, Some(b"technology_folders")) => {
-                    refused.push("technology_folders: unsupported folder database reader".into());
-                    Shape::Skip
-                }
-                (File, _) => Shape::Skip,
-                (Technologies, _) => Shape::Object(Technology),
-                (
-                    Technology,
-                    Some(b"allow" | b"unlock" | b"allow_branch" | b"on_research_complete_limit"),
-                ) => Shape::Trigger,
-                (Technology, Some(b"ai_will_do")) => Shape::Object(Mtth),
-                (Technology, Some(b"modifier")) => {
-                    Shape::Object(Modifier(modifiers::Node::Modifier))
-                }
-                (Technology, Some(b"path")) => Shape::Object(Path),
-                (Technology, Some(b"folder")) => Shape::Object(Folder),
-                (Technology, Some(b"dependencies" | b"ai_research_weights")) => {
-                    Shape::Object(Scalars)
-                }
-                (Technology, Some(b"enable_building")) => Shape::Object(Building),
-                (
-                    Technology,
-                    Some(
-                        b"categories"
-                        | b"xor"
-                        | b"sub_technologies"
-                        | b"enable_equipment_modules"
-                        | b"special_project_specialization",
-                    ),
-                ) => Shape::RawList,
-                (Technology, Some(b"enable_equipments")) => Shape::TechnologyEquipment,
-                (Technology, Some(b"enable_subunits")) if field.opens() => {
-                    leading_limit = true;
-                    Shape::Statements(Uniform)
-                }
-                (Technology, Some(b"enable_subunits")) => Shape::One,
-                // 140AB8A50 / 140A83900 accept limit until the first anonymous
-                // statement (140A835F0); other assignments use only the value.
-                (Uniform, Some(b"limit")) if leading_limit => Shape::Trigger,
-                (Uniform, _) => {
-                    if field.key.text.is_empty() {
-                        leading_limit = false;
-                    }
-                    if registry
-                        .units
-                        .contains(&crate::parser::c_string(&field.value.text).to_ascii_lowercase())
-                    {
-                        Shape::One
-                    } else {
-                        Shape::Skip
-                    }
-                }
-                // 140AC3C70 peeks for a leading limit (on_research_complete_limit,
-                // +0x470), then CEffect::ReadScript (140534280) reads the body only
-                // when the value slot is `{`.
-                (Technology, Some(b"on_research_complete")) => Shape::LimitedBody(Effect),
-                (Effect, _) => crate::effect_keys::shape(Some(names), field).map(|()| Effect),
-                (Technology, Some(b"parent" | b"enable_tactic")) => Shape::Current,
-                (
-                    Technology,
-                    Some(
-                        b"is_special_project_tech"
-                        | b"desc"
-                        | b"research_cost"
-                        | b"hidden"
-                        | b"start_year"
-                        | b"max_level"
-                        | b"xp_research_bonus"
-                        | b"doctrine"
-                        | b"show_equipment_icon"
-                        | b"show_effect_as_desc"
-                        | b"force_use_small_tech_layout"
-                        | b"xp_research_cost"
-                        | b"xp_research_type"
-                        | b"doctrine_name"
-                        | b"sub_tech_index"
-                        | b"xp_unlock_cost"
-                        | b"xp_boost_cost",
-                    ),
-                ) => Shape::One,
-                // 140636690 checks subunits, then categories, before CModifier.
-                (Technology, Some(key))
-                    if registry.units.contains(key) || registry.categories.contains(key) =>
-                {
-                    Shape::Object(Unit(units::Node::Stats))
-                }
-                (Technology, _) => modifiers::shape(
-                    modifiers::Node::Modifier,
-                    field,
-                    modifier_registry,
-                    &mut undecided,
-                )
-                .map(Modifier),
-                (Path, Some(b"leads_to_tech" | b"research_cost_coeff" | b"ignore_for_layout")) => {
-                    Shape::One
-                } // 140AC3B00
-                (Folder, Some(b"name")) => Shape::One, // 140AC39C0
-                // 1402C7A50: the lexer's tokens, the value slot unchanged.
-                (Folder, Some(b"position")) if field.opens() => Shape::RawList,
-                (Folder | Path, _) => Shape::Skip,
-                (Scalars | Building, _) => Shape::One, // 1413B04D0 and inline loops
-                (Mtth, _) => native::mean_time_to_happen(field),
-                (Modifier(node), _) => {
-                    modifiers::shape(node, field, modifier_registry, &mut undecided).map(Modifier)
-                }
-                (Unit(node), _) => registry
-                    .shape(node, field, &mut undecided, &mut refused)
-                    .map(Unit),
-            }
-        },
-    );
+    let (read, undecided, refused) = read_templates(input, registry, names);
     if let Some(cause) = read.unsettled {
         return Err((cause.kind, invalid(format!("technology: {cause}"))));
     }
@@ -319,6 +191,141 @@ pub fn read_equipment(
             .collect(),
         warnings,
     ))
+}
+
+fn read_templates(input: &[u8], registry: &units::Registry, names: &KeyNames) -> (native::Read, Vec<String>, Vec<String>) {
+    use Node::*;
+    let mut undecided = Vec::new();
+    let mut refused = Vec::new();
+    let mut leading_limit = true;
+    let modifier_registry = &|key: &[u8]| modifiers::registered(key, Some(names));
+    // CTechnologyDatabase 140ABCFC0 (EOF loop), CTechnologyTemplate
+    // 140AC3960 / 140AC3C70. All dynamic content names come from layers.
+    // CTechnologyDatabase::LoadDirectory (140AC1BA0) constructs each file's
+    // lexer in mode 0 (1424A6370).
+    // CTechnologyTemplate::vf4 140AC3C70 passes country scope at 140AC582B.
+    let read = native::read_in_effect_scope(
+        input,
+        native::Mode::KeepMark,
+        native::Top::File(File),
+        Some(names),
+        ScopeKind::Country.bit(),
+        &mut |node, field| {
+            match (node, field.keyword().as_deref()) {
+                (File, Some(b"technologies")) => Shape::Object(Technologies),
+                (File, Some(b"technology_categories")) => Shape::RawList,
+                (File, Some(b"technology_folders")) => {
+                    refused.push("technology_folders: unsupported folder database reader".into());
+                    Shape::Skip
+                }
+                (File, _) => Shape::Skip,
+                (Technologies, _) => Shape::Object(Technology),
+                (
+                    Technology,
+                    Some(b"allow" | b"unlock" | b"allow_branch" | b"on_research_complete_limit"),
+                ) => Shape::Trigger,
+                (Technology, Some(b"ai_will_do")) => Shape::Object(Mtth),
+                (Technology, Some(b"modifier")) => {
+                    Shape::Object(Modifier(modifiers::Node::Modifier))
+                }
+                (Technology, Some(b"path")) => Shape::Object(Path),
+                (Technology, Some(b"folder")) => Shape::Object(Folder),
+                (Technology, Some(b"dependencies" | b"ai_research_weights")) => {
+                    Shape::Object(Scalars)
+                }
+                (Technology, Some(b"enable_building")) => Shape::Object(Building),
+                (
+                    Technology,
+                    Some(
+                        b"categories"
+                        | b"xor"
+                        | b"sub_technologies"
+                        | b"enable_equipment_modules"
+                        | b"special_project_specialization",
+                    ),
+                ) => Shape::RawList,
+                (Technology, Some(b"enable_equipments")) => Shape::TechnologyEquipment,
+                (Technology, Some(b"enable_subunits")) if field.opens() => {
+                    leading_limit = true;
+                    Shape::Statements(Uniform)
+                }
+                (Technology, Some(b"enable_subunits")) => Shape::One,
+                // 140AB8A50 / 140A83900 accept limit until the first anonymous
+                // statement (140A835F0); other assignments use only the value.
+                (Uniform, Some(b"limit")) if leading_limit => Shape::Trigger,
+                (Uniform, _) => {
+                    if field.key.text.is_empty() {
+                        leading_limit = false;
+                    }
+                    if registry
+                        .units
+                        .contains(&crate::parser::c_string(&field.value.text).to_ascii_lowercase())
+                    {
+                        Shape::One
+                    } else {
+                        Shape::Skip
+                    }
+                }
+                // 140AC3C70 peeks for a leading limit (on_research_complete_limit,
+                // +0x470), then CEffect::ReadScript (140534280) reads the body only
+                // when the value slot is `{`.
+                (Technology, Some(b"on_research_complete")) => Shape::LimitedBody(Effect),
+                (Effect, _) => crate::effect_keys::shape(Some(names), field).map(|()| Effect),
+                (Technology, Some(b"parent" | b"enable_tactic")) => Shape::Current,
+                (
+                    Technology,
+                    Some(
+                        b"is_special_project_tech"
+                        | b"desc"
+                        | b"research_cost"
+                        | b"hidden"
+                        | b"start_year"
+                        | b"max_level"
+                        | b"xp_research_bonus"
+                        | b"doctrine"
+                        | b"show_equipment_icon"
+                        | b"show_effect_as_desc"
+                        | b"force_use_small_tech_layout"
+                        | b"xp_research_cost"
+                        | b"xp_research_type"
+                        | b"doctrine_name"
+                        | b"sub_tech_index"
+                        | b"xp_unlock_cost"
+                        | b"xp_boost_cost",
+                    ),
+                ) => Shape::One,
+                // 140636690 checks subunits, then categories, before CModifier.
+                (Technology, Some(key))
+                    if registry.units.contains(key) || registry.categories.contains(key) =>
+                {
+                    Shape::Object(Unit(units::Node::Stats))
+                }
+                (Technology, _) => modifiers::shape(
+                    modifiers::Node::Modifier,
+                    field,
+                    modifier_registry,
+                    &mut undecided,
+                )
+                .map(Modifier),
+                (Path, Some(b"leads_to_tech" | b"research_cost_coeff" | b"ignore_for_layout")) => {
+                    Shape::One
+                } // 140AC3B00
+                (Folder, Some(b"name")) => Shape::One, // 140AC39C0
+                // 1402C7A50: the lexer's tokens, the value slot unchanged.
+                (Folder, Some(b"position")) if field.opens() => Shape::RawList,
+                (Folder | Path, _) => Shape::Skip,
+                (Scalars | Building, _) => Shape::One, // 1413B04D0 and inline loops
+                (Mtth, _) => native::mean_time_to_happen(field),
+                (Modifier(node), _) => {
+                    modifiers::shape(node, field, modifier_registry, &mut undecided).map(Modifier)
+                }
+                (Unit(node), _) => registry
+                    .shape(node, field, &mut undecided, &mut refused)
+                    .map(Unit),
+            }
+        },
+    );
+    (read, undecided, refused)
 }
 
 /// A technology that enables equipment: its id and its `parent`, the alternate

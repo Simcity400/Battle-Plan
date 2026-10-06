@@ -16,6 +16,9 @@ use std::{
     io,
 };
 
+mod token_set;
+pub use token_set::order as specialization_order;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Project {
     pub specialization: Option<String>,
@@ -32,6 +35,8 @@ pub struct Catalog {
     /// skipped (1401698B0). The public raw-name set remains for its existing
     /// consumers; effect display names use this token-identity projection.
     specialization_tokens: BTreeMap<Token, String>,
+    /// 140AABAD0 copies the manager's registration array, not token order.
+    specialization_order: Vec<String>,
     pub warnings: Vec<String>,
     /// An unreadable stream may override prior tokens; none are assumed valid.
     pub unsettled: Option<String>,
@@ -182,6 +187,11 @@ fn string(value: &Value) -> io::Result<String> {
 }
 
 impl Catalog {
+    pub fn specializations_in_order(&self) -> Result<&[String], String> {
+        if let Some(why) = &self.unsettled { return Err(why.clone()); }
+        Ok(&self.specialization_order)
+    }
+
     /// Native token match (14022F320), with the first registered spelling
     /// used by get_token_string (1424A7300) in specialization names
     /// (140AABD40). An unsettled stream cannot prove a lookup's answer.
@@ -229,6 +239,9 @@ impl Catalog {
                     if specialization {
                         let identity = Token::c_str(token.as_bytes());
                         registered.insert(identity.clone());
+                        if !result.specialization_tokens.contains_key(&identity) {
+                            result.specialization_order.push(token.clone());
+                        }
                         result
                             .specialization_tokens
                             .entry(identity)

@@ -138,42 +138,28 @@ impl Renderer<'_, '_, '_> {
         Ok(false)
     }
 
-    // Plain FormatDescription 14054E050 differs from the core's scoped
-    // default. Until the core accepts plain/mask/separator/show-zero options,
-    // refuse that call rather than reproducing its formatting rules here.
-    // A wholly empty block needs no FormatLine or custom-tooltip call.
-    pub(in crate::effect_description) fn char_trait_plain_modifiers(
-        &self,
-        source: &Modifiers,
-    ) -> Result<(), String> {
-        if let Some(why) = source.unheld.cause() {
-            return Err(why.to_owned());
-        }
-        if source == &Modifiers::default() {
-            return Ok(());
-        }
-        Err("native plain modifier description requires core plain/mask/separator/show-zero parameters (14054E050/14054F6D0)".into())
-    }
-
-    // FormatScopedModifierDescription 14054E520 expands the description.
-    // Consume the shared formatter unchanged for its default caller options.
-    pub(in crate::effect_description) fn char_scoped_modifiers(
+    // 140AD9089 keeps R9 unchanged; 140AD929B/140AD9346 pass it to raw
+    // FormatDescription. CAddTraitEffect sets fixed5 scale 100000 at 1402EB5F8.
+    fn char_trait_modifiers(
         &self,
         source: &Modifiers,
         prefix: &str,
-        scopes: Scopes,
-        include: u32,
+        separator: &str,
     ) -> Result<String, String> {
-        if include != u32::MAX {
-            return Err("scoped modifier description requires core category-mask parameter (14054E520)".into());
+        // A wholly empty block reaches neither FormatLine nor a tooltip.
+        if source == &Modifiers::default() {
+            return Ok(String::new());
         }
-        self.modifier_list(source, prefix, scopes)
-    }
-
-    fn char_trait_modifiers(&self, source: &Modifiers) -> Result<String, String> {
-        self.char_trait_plain_modifiers(source)?;
-        // Use modifier_list again when the core's native plain entry point lands.
-        Ok(String::new())
+        self.modifier_description_with(
+            source,
+            prefix,
+            ModifierListOptions {
+                category_mask: u32::MAX,
+                separator,
+                scale: 100_000,
+                ..Default::default()
+            },
+        )
     }
 
     // 1407118A0 -> 140711C80: authored equipment name, yellow controls,
@@ -230,14 +216,55 @@ impl Renderer<'_, '_, '_> {
         trait_: &installed_content::leader_traits::LeaderTrait,
         prefix: &str,
         scopes: Scopes,
-        targeted: bool,
     ) -> Result<String, String> {
-        let mut text = self.char_trait_modifiers(&trait_.modifiers)?;
-        if targeted && !trait_.targeted.is_empty() {
-            // 140712850 passes an empty scope, 24-bit mask and the caller's
-            // separator to plain FormatDescription. Core parameters pending.
-            return Err("native targeted trait modifiers require core category-mask/plain/separator/show-zero parameters (140712850/14054E050)".into());
+        let mut text = self.char_trait_modifiers(&trait_.modifiers, "", prefix)?;
+        newline(&mut text);
+        let empty = Scopes::empty();
+        let mut targets = String::new();
+        for target in &trait_.targeted {
+            // The shared reader currently merges absent/dynamic operands into
+            // None. 1406039B0 retains the latter for 140712850 to evaluate.
+            let tag = target.tag.as_deref().ok_or_else(|| format!(
+                "country trait {} targeted-country operand is not retained by the shared catalogue (1406039B0/140712850)", trait_.token,
+            ))?;
+            let country = self.evaluator()?.scoped_country(tag.as_bytes(), empty)?
+                .filter(|country| *country > 0);
+            let context = if let Some(country) = country {
+                // 1406E63A0: capitalise the stored definite country name.
+                let name = installed_content::localisation::crt_case_text(
+                    &self.country_name(country, true)?,
+                    true,
+                    true,
+                );
+                self.char_native_text(
+                    b"EFFECT_CONTEXT_COUNTRY",
+                    &[
+                        ("TAG", Argument::Text(self.tag(country)?)),
+                        ("COUNTRY", Argument::Text(&name)),
+                    ],
+                    empty,
+                    false,
+                )?
+            } else {
+                String::new()
+            };
+            // 140712BE0: raw, 24-bit default mask, caller separator.
+            let body = self.modifier_description_with(
+                &target.modifiers,
+                &context,
+                ModifierListOptions {
+                    separator: prefix,
+                    ..Default::default()
+                },
+            )?;
+            if !body.is_empty() {
+                if !targets.is_empty() {
+                    targets.push_str(prefix);
+                }
+                targets.push_str(&body);
+            }
         }
+        text.push_str(&targets);
         newline(&mut text);
         let equipment_prefix = prefix.replace('\n', "");
         let mut equipment =
@@ -274,7 +301,7 @@ impl Renderer<'_, '_, '_> {
         let Some(trait_) = traits.get(name).map_err(|why| why.to_string())? else {
             return Ok(None);
         };
-        self.char_country_trait_body(trait_, prefix, scopes, true)
+        self.char_country_trait_body(trait_, prefix, scopes)
             .map(Some)
     }
 
@@ -302,8 +329,8 @@ impl Renderer<'_, '_, '_> {
         Ok(text)
     }
 
-    // 140AD9060 (indent 2, scale 1); custom_effect_tooltip is intentionally
-    // outside this helper: only its tooltip-item callers invoke 140AD8CF0.
+    // 140AD9060: indent 2, fixed5 scale 100000. Only the tooltip-item
+    // callers invoke custom_effect_tooltip through 140AD8CF0.
     fn char_unit_trait_body(
         &self,
         definition: &TraitEffects,
@@ -325,7 +352,7 @@ impl Renderer<'_, '_, '_> {
             return Ok(text);
         }
         for (index, block) in definition.blocks.iter().enumerate() {
-            text.push_str(&self.char_trait_modifiers(block)?);
+            text.push_str(&self.char_trait_modifiers(block, "", "\n")?);
             if index < 3 {
                 newline(&mut text);
             }
@@ -371,22 +398,23 @@ impl Renderer<'_, '_, '_> {
                     entries.insert(index, entry);
                 }
             }
+            // 140AD9060 appends 140AD36C0's separate buffer without a LF.
+            let mut sub_units = String::new();
             for (index, entry) in entries {
-                let block = self.char_trait_modifiers(&entry.block)?;
+                // 140AD5F70 prefixes each numeric row, never custom tooltips.
+                let block = self.char_trait_modifiers(&entry.block, "    ", "\n")?;
                 let lines = self.char_adjuster_lines(&entry.adjuster, scopes)?;
-                newline(&mut text);
+                newline(&mut sub_units);
                 let name = database
                     .name(index)
                     .ok_or("sub-unit database index has no name")??;
-                text.push_str("\u{11}H");
-                text.push_str(&self.char_current_country_key(name.as_bytes(), scopes)?);
-                text.push_str("\u{11}!\n");
-                text.push_str(&lines);
-                if !block.is_empty() {
-                    text.push_str("    ");
-                    text.push_str(&block);
-                }
+                sub_units.push_str("\u{11}H");
+                sub_units.push_str(&self.char_current_country_key(name.as_bytes(), scopes)?);
+                sub_units.push_str("\u{11}!\n");
+                sub_units.push_str(&lines);
+                sub_units.push_str(&block);
             }
+            text.push_str(&sub_units);
         }
         let [
             attack,
@@ -519,10 +547,10 @@ impl Renderer<'_, '_, '_> {
                 Some(unit) => &unit.blocks[0],
                 None => &country.unwrap().modifiers,
             };
-            body = self.char_trait_modifiers(source)?;
+            body = self.char_trait_modifiers(source, "", "\n  -")?;
         } else {
             if let Some(country) = country {
-                body = self.char_trait_modifiers(&country.modifiers)?;
+                body = self.char_trait_modifiers(&country.modifiers, "", "\n  -")?;
             }
         }
         if let Some(country) = country
@@ -599,7 +627,7 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         };
         let name = self.char_current_country_key(definition.name.as_bytes(), scopes)?;
-        let body = self.char_trait_modifiers(&definition.blocks[0])?;
+        let body = self.char_trait_modifiers(&definition.blocks[0], "", "\n      - ")?;
         let body = if body.is_empty() {
             body
         } else {
@@ -773,7 +801,7 @@ impl Renderer<'_, '_, '_> {
                 }
             }
         }
-        text.push_str(&self.char_trait_modifiers(&delta)?);
+        text.push_str(&self.char_trait_modifiers(&delta, "", "\n")?);
         text.push('\n');
         Ok(text)
     }
@@ -818,15 +846,12 @@ impl Renderer<'_, '_, '_> {
         }
         let graph = self.graph.borrow();
         let scope = &graph.scopes[scopes.cursor.ok_or("random trait scope has no cursor")?];
-        let index =
-            crate::scripted_text::random::scoped_draw(scope.random_seed, scope.random_counter)
-                as usize
-                % candidates.len();
+        let index = scope.random_draw()? as usize % candidates.len();
         let Some(definition) = database.traits.get(candidates[index]) else {
             return Ok(String::new());
         };
         let title = self.char_current_country_key(definition.name.as_bytes(), scopes)?;
-        let body = self.char_trait_modifiers(&definition.blocks[0])?;
+        let body = self.char_trait_modifiers(&definition.blocks[0], "", "\n      - ")?;
         let body = if body.is_empty() {
             body
         } else {

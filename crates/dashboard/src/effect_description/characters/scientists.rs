@@ -39,7 +39,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     // LocalizeProjectSpecializationName 140AABD40 -> 14146B5D0 -> 14146B1D0:
     // TAG_token when that localisation exists, otherwise the token. No scope
     // expansion occurs in this name or the XP/level wrapper.
-    fn char_specialization_name(
+    pub(in crate::effect_description) fn char_specialization_name(
         &self,
         operand: &[u8],
         country: u32,
@@ -206,7 +206,16 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             scopes,
             false,
         )?;
-        let modifiers = self.char_scoped_modifiers(&trait_.modifiers, "", scopes, u32::MAX)?;
+        // 140493BF5 passes all category bits and the caller scope to 14054E520.
+        let modifiers = self.modifier_list_with(
+            &trait_.modifiers,
+            "",
+            scopes,
+            ModifierListOptions {
+                category_mask: u32::MAX,
+                ..Default::default()
+            },
+        )?;
         text.push_str(&indent_nonempty_lines(&modifiers, 2));
         Ok(text)
     }

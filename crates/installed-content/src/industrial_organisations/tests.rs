@@ -1,6 +1,18 @@
 use super::*;
 
 #[test]
+fn display_projection_keeps_native_name_initial_trait_and_include_overrides() {
+    let mut database = Database::default();
+    database.read_file(b"Base={name=BASE_NAME initial_trait={name=BASE_TRAIT}} Child={include=Base initial_trait={}} Local={include=Base name=LOCAL_NAME initial_trait={name=LOCAL_TRAIT}} Deleted={include=Base delete_included_values={name initial_trait}} TraitDeleted={include=Base initial_trait={delete_included_values={name}}}", &KeyNames::default()).unwrap();
+    assert_eq!(database.template(b"BASE").unwrap().token, b"Base");
+    assert_eq!(database.display_fields(b"Child").unwrap(), (b"BASE_NAME".to_vec(), Some(b"BASE_TRAIT".to_vec())));
+    assert_eq!(database.display_fields(b"Local").unwrap(), (b"LOCAL_NAME".to_vec(), Some(b"LOCAL_TRAIT".to_vec())));
+    assert_eq!(database.display_fields(b"Deleted").unwrap(), (Vec::new(), None));
+    assert_eq!(database.display_fields(b"TraitDeleted").unwrap(), (b"BASE_NAME".to_vec(), Some(Vec::new())));
+    assert!(database.notes.is_empty(), "{:?}", database.notes);
+}
+
+#[test]
 fn visibility_projection_keeps_first_definition_and_include_delete_tokens() {
     let mut db = Database::default();
     let names = KeyNames::default();
