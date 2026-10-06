@@ -375,11 +375,10 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             .ok_or("scope graph is missing")?
             .borrow_mut();
         let mut copied: EventScope = *graph.scopes.get(source).ok_or("source scope is missing")?;
-        let carried = |link| match link {
+        copied.from = match copied.from {
             Link::Itself => Link::Scope(source),
             other => other,
         };
-        copied.from = carried(copied.from);
         // copy_members@1405296C0 carries links; only following one reads it.
         copied.root = match graph.scopes[caller].root {
             Link::Itself => Link::Scope(caller),

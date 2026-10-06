@@ -28,6 +28,9 @@ pub struct Description {
     pub refusals: BTreeMap<String, usize>,
 }
 
+/// Resolves an event id to its parsed event, or why it cannot be.
+pub type EventLookup<'a> = dyn Fn(&[u8]) -> Result<Arc<installed_content::events::Event>, String> + 'a;
+
 /// Content already cached by the caller. Referenced events remain lazy.
 #[derive(Default, Clone, Copy)]
 pub struct Content<'a> {
@@ -35,7 +38,7 @@ pub struct Content<'a> {
     pub decisions: Option<&'a installed_content::decisions::Database>,
     pub ideas: Option<&'a installed_content::ideas::IdeaContent>,
     pub name_lists: Option<&'a installed_content::names::NameLists>,
-    pub events: Option<&'a dyn Fn(&[u8]) -> Result<Arc<installed_content::events::Event>, String>>,
+    pub events: Option<&'a EventLookup<'a>>,
     pub key_names: Option<&'a installed_content::key_names::KeyNames>,
     pub gaps: Option<&'a BTreeMap<&'static str, String>>,
 }
@@ -103,10 +106,7 @@ impl CachedContent {
         })
     }
 
-    pub fn view<'a>(
-        &'a self,
-        events: Option<&'a dyn Fn(&[u8]) -> Result<Arc<installed_content::events::Event>, String>>,
-    ) -> Content<'a> {
+    pub fn view<'a>(&'a self, events: Option<&'a EventLookup<'a>>) -> Content<'a> {
         Content {
             doctrines: self.doctrines.as_ref(),
             decisions: self.decisions.as_ref(),
@@ -390,8 +390,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         // Context vf14 is needed here for its parent's first-child header clear.
         // The builder returns context descriptions before its own-line prefix.
         // CIfEffect vf14 is ReturnTrue@1401802A0 (1427BE590 + 0x70).
-        !self.is_context(item)
-            && !(item.keyword_is("country_event")
+        !(self.is_context(item)
+            || item.keyword_is("country_event")
                 && field(children(item), "desc")
                     .and_then(|item| item.value.read_string())
                     .is_some_and(|desc| !desc.is_empty()))
