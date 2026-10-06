@@ -389,22 +389,31 @@ scorer form in the audited corpus.
 
 Hidden effects build and discard text while retaining failures.
 
-The D2 diplomacy family adds its 44 assigned classes alongside declare-war,
-annex and add-to-faction. Its 33 own-text ports preserve native autonomy arithmetic,
+The D2 diplomacy family adds its assigned classes alongside declare-war,
+annex and add-to-faction. Its own-text ports preserve native autonomy arithmetic,
 subject/exile and faction gates, relation-factory labels, war targets, border-war
-headings, expansion and LF behavior. Eleven classes retain named, counted output
-refusals; six still describe their native empty branches. Release/set autonomy
+headings, expansion and LF behavior. Deferred classes retain named, counted output
+refusals while describing their native empty branches. Release/set autonomy
 resolve the exact declared state and native free-state sentinel from the cached
-autonomy database. Deferred paths need faction definitions, the shared faction
-expansion environment, selected-party or purchase-contract description helpers,
-or the unrecorded owned wargoal roster used by the native duplicate check.
+autonomy database. Influence text uses the shared faction expansion environment;
+civil-war text shares the selected-ideology party-name accessor with politics.
+Purchase contracts share marked country names with scripted text and equipment
+names/rosters with units. Market archetype selection and viewer model candidates
+use one variant comparator in `products::equipment`; distinct variants of one
+archetype still refuse the pool's unrecorded version-byte comparison. The reached
+`faction_leader` variable uses recorded membership and shared country-tag encoding.
+Deferred paths need faction definitions or the unrecorded owned wargoal roster
+used by the native duplicate check.
 Combat-context border data, referenced operative exile and unsupported auxiliary
 target forms retain precise refusals. Faction template tokens never substitute
 for their bound name expression.
 
-The D2 units family dispatches its 32 assigned classes alongside the existing
-template-deletion port. Twenty-six have complete own-description ports, three
-retain form refusals, and three unit-reference classes refuse all forms.
+The D2 units family dispatches its assigned classes alongside the existing
+template-deletion port. Template changes, unit destruction and organization use
+the shared UNIT carrier. Null units retain native empty text; organization uses
+the raw scoped value without expansion or LF. Template lookup shares the trigger
+evaluator's exact display-name comparison and uses the division's logical owner.
+Descriptions needing a unit name retain the shared cached-name recording refusal.
 Experience and manpower, template locks/caps/recruiting, unit and ship creation,
 navy and unit transfers, equipment fractions, raid damage, design bonuses and
 equipment-stat bonuses preserve their native operands, key
@@ -414,8 +423,8 @@ the shared evaluator, cached state content and recorded province/access inputs.
 Production, stockpile, equipment variants, ship destruction, equipment transfers
 and subsidies use the cached complete equipment database and native type/module
 lookups. Conditional variant version checks, nonempty unit bonuses needing
-counter preferences, seller-trigger descriptions, and unit-reference paths
-outside the current scope graph retain named, counted refusals. No content
+counter preferences, seller-trigger descriptions, and unrecorded unit names or
+non-army unit identities retain named, counted refusals. No content
 database is reread by a description leaf.
 
 The D2 empty family dispatches all assigned native classes to empty own text
@@ -432,6 +441,12 @@ navigation/controller and resource rights use native operands, names, keys,
 expansion and LF rules. Invalid targets retain each native empty or error branch;
 zero state operands remain zero. `occupied` reads `StateResistance.country`,
 including inactive rows. Descriptions require complete recorded rosters.
+State-category validity uses the cached content-stack database; the description
+localises the authored operand spelling and preserves its native plain text.
+Resistance-target text shares marked country names, signed percent formatting
+and rounded duration text without expansion. Native construction names both
+countries even when one is zero; those forms retain the reserved-country naming
+refusal. Repeated operands retain a named reader-flags refusal.
 
 All scalar-state rows, including claim and transfer, use core `state_target`;
 literal zero stays zero (`1403A1950` -> `140533BE0` -> `14052FA10`). In state
@@ -463,8 +478,8 @@ Province VP, rename and reset effects share the distinct effect display accessor
 (`140E69320`); ordinary scripted `GetName` retains `140E67930` behavior. Effect
 display returns a nonempty raw override even when its localisation is empty,
 then tries VP text and the state name. Country adjectives reuse country naming.
-Of the 43 states classes, 42 have an output or native empty branch; state category
-is the sole all-form refusal, with no reader for database `1413AFAC0`.
+State-category descriptions also retain native validity and empty branches,
+using the cached content database `1413AFAC0`.
 
 Named, counted form refusals remain for zero colored-percent formatting,
 marked country names, tag-selected building targets, provincial removal's

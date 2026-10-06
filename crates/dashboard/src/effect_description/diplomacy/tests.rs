@@ -5,6 +5,563 @@ use EventObject::{Country as C, State as S};
 use replay::{frame::TableView, rows::*};
 
 #[test]
+fn purchase_contract_uses_seller_roster_and_native_quantity_pool() {
+    let mut fixture = Fixture::new();
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/test.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+        ),
+        (
+            "localisation/test_l_english.yml",
+            concat!(
+                "\u{feff}l_english:\n AAA:0 \"Alpha\"\n BBB:0 \"Beta\"\n CCC:0 \"Gamma\"\n",
+                " AAA_DEF:0 \"alpha\"\n BBB_DEF:0 \"beta\"\n CCC_DEF:0 \"gamma\"\n",
+                " AAA_syn_a_short:0 \"ViewA\"\n syn_a_short:0 \"GenericA\"\n",
+                " AAA_syn_b_short:0 \"ViewB\"\n AAA_syn_other_short:0 \"MakerB\"\n",
+                " INTERNATIONAL_MARKET_EQUIPMENT_AMOUNT:0 \"$AMOUNT$ $EQUIPMENT$ ($TYPE$)\"\n",
+                " EFFECT_MARKET_CREATE_PURCHASE_CONTRACT:0 \"$SELLER$->$BUYER$/$CIVS$/$EQUIPMENT$ [This.GetTag]/[Root.GetTag]\"\n",
+            ),
+        ),
+    ]);
+    fixture.catalogue = catalogue;
+    fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .set_synthetic_environment(Default::default());
+    let equipment = installed_content::equipment::fixture::load(&[(
+        "common/units/equipment/synthetic.txt",
+        "equipments={syn_a={is_archetype=yes type=infantry} syn_one={archetype=syn_a} syn_two={parent=syn_one archetype=syn_a} syn_b={is_archetype=yes type=artillery} syn_other={archetype=syn_b}}",
+    )])
+    .0;
+    *fixture.frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(
+            [
+                (10, "syn_a"),
+                (11, "syn_one"),
+                (12, "syn_two"),
+                (20, "syn_b"),
+                (21, "syn_other"),
+            ]
+            .into_iter()
+            .map(|(token, literal)| LexicalTokenRow {
+                token,
+                literal: literal.as_bytes().to_vec(),
+            })
+            .collect(),
+        ));
+    let handles = [10_u64, 20, 30, 40].map(|id| (id << 32) | 1);
+    *fixture.frame.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(TableRows::VariantDefinitions(vec![
+            VariantDefinitionRow {
+                id: handles[0],
+                equipment_token: 11,
+                creator_link: 100,
+                display_name: b"Older".to_vec(),
+                ..Default::default()
+            },
+            VariantDefinitionRow {
+                id: handles[1],
+                equipment_token: 11,
+                creator_link: 200,
+                display_name: b"New [From.GetTag]".to_vec(),
+                append_variant_name: 1,
+                variant_name: b"ignored".to_vec(),
+                ..Default::default()
+            },
+            VariantDefinitionRow {
+                id: handles[2],
+                equipment_token: 12,
+                creator_link: 200,
+                display_name: b"Deep".to_vec(),
+                ..Default::default()
+            },
+            VariantDefinitionRow {
+                id: handles[3],
+                equipment_token: 21,
+                creator_link: 100,
+                ..Default::default()
+            },
+        ]));
+    *fixture.frame.tables[TableId::AvailableEquipmentVariants.index()] =
+        TableView::Complete(TableRows::AvailableEquipmentVariants(
+            handles
+                .iter()
+                .enumerate()
+                .map(|(ordinal, &variant)| AvailableEquipmentVariantRow {
+                    country: 200,
+                    ordinal: ordinal as u32,
+                    variant,
+                    ..Default::default()
+                })
+                .chain([AvailableEquipmentVariantRow {
+                    country: 100,
+                    variant: handles[0],
+                    ..Default::default()
+                }])
+                .collect(),
+        ));
+    *fixture.frame.tables[TableId::ScriptVariables.index()] =
+        TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
+            scope_kind: 1,
+            scope_id: 100,
+            entries: vec![
+                ScriptVariableEntry {
+                    name: b"syn_type".to_vec(),
+                    value_raw: 1_100_000,
+                },
+                ScriptVariableEntry {
+                    name: b"syn_amount".to_vec(),
+                    value_raw: 249_999,
+                },
+            ],
+        }]));
+    for (fields, expected, refusal) in [
+        ("civilian_factories=-1.25", "-2/", None),
+        ("civilian_factories=2147483648.75", "-2147483648/", None),
+        (
+            "civilian_factories=-92233720368547.75808",
+            "-702313053/",
+            None,
+        ),
+        (
+            "civilian_factories=1 civilian_factories=var:syn_amount",
+            "",
+            Some("repeated purchase operand civilian_factories"),
+        ),
+        (
+            "equipment={type=syn_one amount=2.99}",
+            "0/2 New CCC (ViewA)",
+            None,
+        ),
+        ("equipment={type=syn_a amount=5}", "0/5 Deep (ViewA)", None),
+        (
+            "equipment={type=syn_a producer=AAA amount=5}",
+            "0/5 Older (ViewA)",
+            None,
+        ),
+        (
+            "equipment={type=syn_one producer=AAA variant_name=Older amount=1}",
+            "0/1 Older (ViewA)",
+            None,
+        ),
+        (
+            "equipment={type=syn_other amount=1}",
+            "0/1 MakerB (ViewB)",
+            None,
+        ),
+        (
+            "equipment={type=syn_b amount=2} equipment={type=syn_a amount=3}",
+            "0/2 MakerB (ViewB), 3 Deep (ViewA)",
+            None,
+        ),
+        (
+            "equipment={type=syn_one amount=0.4} equipment={type=syn_one amount=0.6}",
+            "0/1 New CCC (ViewA)",
+            None,
+        ),
+        (
+            "equipment={type=syn_one amount=92233720368547}",
+            "0/922337202 New CCC (ViewA)",
+            None,
+        ),
+        (
+            "equipment={type=syn_one amount=1.4} equipment={type=syn_one amount=-0.5}",
+            "0/",
+            None,
+        ),
+        ("equipment={type=unknown amount=random}", "0/", None),
+        (
+            "equipment={type=syn_one producer=0 amount=random}",
+            "0/",
+            None,
+        ),
+        (
+            "equipment={type=syn_one variant_name=unknown amount=random}",
+            "0/",
+            None,
+        ),
+        (
+            "equipment={type=var:syn_type amount=var:syn_amount}",
+            "0/2 New CCC (ViewA)",
+            None,
+        ),
+        (
+            "equipment={type=syn_one amount=2} equipment={type=syn_two amount=3}",
+            "",
+            Some("version u8 +0x41C"),
+        ),
+        (
+            "equipment={type=syn_one producer=AAA producer=0 amount=1}",
+            "",
+            Some("repeated purchase operand producer"),
+        ),
+    ] {
+        let mut scopes = EventScopes::new(vec![
+            EventScope {
+                root: crate::scripted_text::Link::Scope(1),
+                from: crate::scripted_text::Link::Scope(2),
+                ..EventScope::of(C(1))
+            },
+            EventScope::of(C(2)),
+            EventScope::of(C(3)),
+        ]);
+        let body = format!("create_purchase_contract={{seller=ROOT buyer=THIS {fields}}}");
+        let out = fixture.render(
+            &body,
+            &mut scopes,
+            Content {
+                equipment: Some(&equipment),
+                ..Default::default()
+            },
+        );
+        if let Some(why) = refusal {
+            assert!(out.text.is_empty(), "{fields}: {}", out.text);
+            assert!(
+                out.refusals.keys().any(|key| key.contains(why)),
+                "{fields}: {:?}",
+                out.refusals,
+            );
+        } else {
+            assert_eq!(
+                out.text,
+                format!("\u{12}BBB Beta->\u{12}AAA Alpha/{expected} AAA/BBB\n"),
+                "{fields}: {:?}",
+                out.refusals,
+            );
+            assert!(out.refusals.is_empty(), "{fields}: {:?}", out.refusals);
+        }
+    }
+    *fixture.frame.tables[TableId::FactionMembers.index()] =
+        TableView::Complete(TableRows::FactionMembers(vec![
+            FactionMemberRow {
+                country: 100,
+                faction: 5,
+                ordinal: 1,
+            },
+            FactionMemberRow {
+                country: 200,
+                faction: 5,
+                ordinal: 0,
+            },
+        ]));
+    let mut scopes = EventScopes::new(vec![EventScope::of(C(1))]);
+    let out = fixture.render(
+        "create_purchase_contract={seller=faction_leader buyer=ROOT civilian_factories=3 equipment={type=syn_a amount=2000} equipment={type=syn_b amount=200}}",
+        &mut scopes,
+        Content {
+            equipment: Some(&equipment),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        out.text,
+        "\u{12}BBB Beta->\u{12}AAA Alpha/3/2000 Deep (ViewA), 200 MakerB (ViewB) AAA/AAA\n",
+        "{:?}",
+        out.refusals,
+    );
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    *fixture.frame.tables[TableId::AvailableEquipmentVariants.index()] = TableView::Unavailable {
+        reason: "synthetic gap".into(),
+    };
+    let mut scopes = EventScopes::new(vec![EventScope::of(C(1))]);
+    let out = fixture.render(
+        "create_purchase_contract={seller=BBB buyer=AAA equipment={type=syn_one amount=1}}",
+        &mut scopes,
+        Content {
+            equipment: Some(&equipment),
+            ..Default::default()
+        },
+    );
+    assert!(
+        out.refusals
+            .keys()
+            .any(|why| why.contains("AvailableEquipmentVariants")),
+        "{:?}",
+        out.refusals,
+    );
+}
+
+#[test]
+fn civil_war_heading_and_selected_party_follow_separate_native_operands() {
+    let mut fixture = Fixture::new();
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/test.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+        ),
+        (
+            "common/ideologies/test.txt",
+            "ideologies={syn_old={} syn_new={}}",
+        ),
+        (
+            "localisation/test_l_english.yml",
+            concat!(
+                "\u{feff}l_english:\n",
+                " syn_old:0 \"Old [This.GetTag]\"\n syn_new:0 \"New [This.GetTag]\"\n",
+                " SYN_SHORT:0 \"Short [From.GetTag]\"\n SYN_LONG:0 \"Long\"\n",
+                " AAA_syn_new_party:0 \"Generated [Root.GetTag]\"\n",
+                " EFFECT_START_CIVIL_WAR:0 \"War $IDEOLOGY$ [From.GetTag]\"\n",
+                " EFFECT_SET_POLITICS:0 \"Politics [This.GetTag]\"\n",
+                " EFFECT_SET_POLITICS_RULING_PARTY:0 \"Party $PARTY$\"\n",
+                " EFFECT_SET_POLITICS_NO_ELECTIONS:0 \"No elections\"\n",
+            ),
+        ),
+    ]);
+    fixture.catalogue = catalogue;
+    let scripted = fixture.catalogue.scripted_content().unwrap();
+    scripted.set_synthetic_environment(Default::default());
+    let mut names = installed_content::key_names::KeyNames::default();
+    names
+        .counts
+        .ideologies
+        .extend([b"syn_old".to_vec(), b"syn_new".to_vec()]);
+    *fixture.frame.tables[TableId::PoliticalParties.index()] =
+        TableView::Complete(TableRows::PoliticalParties(vec![
+            PoliticalPartyRow {
+                country: 200,
+                id: 20,
+                token: b"syn_old".to_vec(),
+                name: b"Foreign".to_vec(),
+                ..Default::default()
+            },
+            PoliticalPartyRow {
+                country: 100,
+                tag: 100,
+                id: 20,
+                token: b"syn_old".to_vec(),
+                name: b"SYN_SHORT".to_vec(),
+                long_name: b"SYN_LONG".to_vec(),
+                ..Default::default()
+            },
+            PoliticalPartyRow {
+                country: 100,
+                tag: 100,
+                id: 30,
+                token: b"syn_new".to_vec(),
+                name_default: 1,
+                ..Default::default()
+            },
+        ]));
+    if let TableView::Complete(TableRows::Politics(rows)) =
+        &mut *fixture.frame.tables[TableId::Politics.index()]
+    {
+        rows.iter_mut()
+            .find(|row| row.country == 100)
+            .unwrap()
+            .ruling_party = Some(20);
+    }
+    *fixture.frame.tables[TableId::ScriptVariables.index()] =
+        TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
+            scope_kind: 1,
+            scope_id: 100,
+            entries: vec![ScriptVariableEntry {
+                name: b"syn_group".to_vec(),
+                value_raw: 3_000_000,
+            }],
+        }]));
+    for (body, country, expected, refusal) in [
+        (
+            "start_civil_war={ideology=syn_new size=0.5}",
+            1,
+            "War New AAA BBB\nPolitics [This.GetTag]\nParty Short [From.GetTag]\nNo elections\n",
+            None,
+        ),
+        (
+            "start_civil_war={ideology=syn_new ruling_party=0}",
+            1,
+            "War New AAA BBB\nPolitics [This.GetTag]\nParty Short [From.GetTag]\nNo elections\n",
+            None,
+        ),
+        (
+            "start_civil_war={ideology=syn_new ruling_party=syn_new}",
+            1,
+            "War New AAA BBB\nPolitics [This.GetTag]\nParty Generated [Root.GetTag]\nNo elections\n",
+            None,
+        ),
+        (
+            "start_civil_war={ideology=syn_new ruling_party=20}",
+            1,
+            "War New AAA BBB\nPolitics [This.GetTag]\nParty Short [From.GetTag]\nNo elections\n",
+            None,
+        ),
+        (
+            "start_civil_war={ideology=var:syn_group ruling_party=syn_old}",
+            1,
+            "War New AAA BBB\nPolitics [This.GetTag]\nParty Short [From.GetTag]\nNo elections\n",
+            None,
+        ),
+        (
+            "start_civil_war={ideology=syn_old ideology=syn_new ruling_party=syn_new}",
+            1,
+            "War New AAA BBB\nPolitics [This.GetTag]\nParty Generated [Root.GetTag]\nNo elections\n",
+            None,
+        ),
+        (
+            "start_civil_war={ideology=syn_new ruling_party=syn_old size=0.9 keep_unit_leaders=yes}",
+            3,
+            "",
+            Some("FindPartyByIdeology"),
+        ),
+        (
+            "start_civil_war={ideology=unresolved}",
+            1,
+            "",
+            Some("null-object identity"),
+        ),
+    ] {
+        let mut scopes = EventScopes::new(vec![
+            EventScope {
+                from: crate::scripted_text::Link::Scope(1),
+                ..EventScope::of(C(country))
+            },
+            EventScope::of(C(2)),
+        ]);
+        let out = fixture.render(
+            body,
+            &mut scopes,
+            Content {
+                key_names: Some(&names),
+                ..Default::default()
+            },
+        );
+        assert_eq!(out.text, expected, "{body}: {:?}", out.refusals);
+        match refusal {
+            None => assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals),
+            Some(why) => assert!(
+                out.refusals.keys().any(|key| key.contains(why)),
+                "{body}: {:?}",
+                out.refusals
+            ),
+        }
+    }
+}
+
+#[test]
+fn faction_influence_environment_keeps_links_and_scales_to_5000_countries() {
+    for count in [3, 5_000] {
+        let mut fixture = Fixture::new();
+        let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+            (
+                "common/defines/test.lua",
+                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            ),
+            (
+                "common/scripted_localisation/test.txt",
+                "defined_text={name=SYN_LINK text={localization_key=SYN_LINK_TEXT}}",
+            ),
+            (
+                "localisation/test_l_english.yml",
+                concat!(
+                    "\u{feff}l_english:\n AAA:0 \"Alpha\"\n ZZZ:0 \"Last\"\n",
+                    " FACTION_INFLUENCE_RATIO:0 \"$VAL|%0$\"\n FACTION_INFLUENCE_VALUE:0 \"$VAL|2$\"\n",
+                    " SYN_FACTION:0 \"Union\"\n",
+                    " SYN_LINK_TEXT:0 \"[This.GetTag]/[Root.GetTag]/[From.GetTag]/[Prev.GetTag]\"\n",
+                    " ADD_FACTION_INFLUENCE_EFFECT:0 \"$COUNTRY$/$FACTION$/$VAL$ [Faction.GetName]/[Faction.Leader.GetTag] [This.GetTag]/[Root.GetTag]/[From.GetTag] [GetYear] [Faction.Leader.SYN_LINK]\"\n",
+                    " ADD_FACTION_INFLUENCE_EFFECT_NO_FACTION:0 \"$COUNTRY$/$VAL$ [Faction.GetName] [This.GetTag]/[Root.GetTag]/[From.GetTag]\"\n",
+                ),
+            ),
+        ]);
+        fixture.catalogue = catalogue;
+        fixture
+            .catalogue
+            .scripted_content()
+            .unwrap()
+            .set_synthetic_environment(Default::default());
+        let countries = synthetic_countries(count);
+        *fixture.frame.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(
+                countries
+                    .iter()
+                    .map(|row| CountryLinkRow {
+                        id: row.id,
+                        canonical_slot: row.canonical_slot,
+                    })
+                    .collect(),
+            ));
+        *fixture.frame.tables[TableId::Countries.index()] =
+            TableView::Complete(TableRows::Countries(countries));
+        *fixture.frame.tables[TableId::Factions.index()] =
+            TableView::Complete(TableRows::Factions(vec![FactionRow {
+                id: 9,
+                name: b"SYN_FACTION".to_vec(),
+                ..Default::default()
+            }]));
+        *fixture.frame.tables[TableId::FactionMembers.index()] =
+            TableView::Complete(TableRows::FactionMembers(vec![FactionMemberRow {
+                country: count * 100,
+                faction: 9,
+                ordinal: 0,
+            }]));
+        *fixture.frame.tables[TableId::ScriptVariables.index()] =
+            TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
+                scope_kind: 1,
+                scope_id: count * 100,
+                entries: vec![ScriptVariableEntry {
+                    name: b"syn_amount".to_vec(),
+                    value_raw: -12_500,
+                }],
+            }]));
+        for (body, country, expected) in [
+            (
+                "add_faction_influence_ratio=var:syn_amount",
+                count,
+                "Last/Union/-12% Union/ZZZ ZZZ/AAB/AAA  ZZZ/ZZZ/ZZZ/ZZZ",
+            ),
+            (
+                "add_faction_influence_score=-1.25",
+                count,
+                "Last/Union/-1.25 Union/ZZZ ZZZ/AAB/AAA  ZZZ/ZZZ/ZZZ/ZZZ",
+            ),
+            (
+                "add_faction_influence_score=THIS",
+                count,
+                "Last/Union/0.00 Union/ZZZ ZZZ/AAB/AAA  ZZZ/ZZZ/ZZZ/ZZZ",
+            ),
+            (
+                "add_faction_influence_ratio=0",
+                1,
+                "Alpha/0% NULL AAA/AAB/AAA",
+            ),
+        ] {
+            let mut scopes = EventScopes::new(vec![
+                EventScope {
+                    root: crate::scripted_text::Link::Scope(1),
+                    from: crate::scripted_text::Link::Scope(2),
+                    ..EventScope::of(C(country))
+                },
+                EventScope::of(C(2)),
+                EventScope::of(C(1)),
+            ]);
+            let out = fixture.render(body, &mut scopes, Content::default());
+            assert_eq!(out.text, expected, "{count}/{body}: {:?}", out.refusals);
+            assert!(
+                out.refusals.is_empty(),
+                "{count}/{body}: {:?}",
+                out.refusals
+            );
+        }
+        *fixture.frame.tables[TableId::FactionMembers.index()] = TableView::Unavailable {
+            reason: "synthetic gap".into(),
+        };
+        let mut scopes = EventScopes::new(vec![EventScope::of(C(count))]);
+        let out = fixture.render(
+            "add_faction_influence_score=1",
+            &mut scopes,
+            Content::default(),
+        );
+        assert!(
+            out.refusals
+                .keys()
+                .any(|why| why.contains("FactionMembers")),
+            "{:?}",
+            out.refusals
+        );
+    }
+}
+
+#[test]
 fn diplomacy_native_output_branches() {
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
@@ -38,11 +595,15 @@ fn diplomacy_native_output_branches() {
                 " EFFECT_REMOVE_FROM_FACTION_NAME:0 \"Remove $COUNTRY$/$FACTION$\"\n",
                 " EFFECT_SET_FACTION_NAME:0 \"Rename $OLDNAME$/$NEWNAME$\"\n",
                 " EFFECT_SET_FACTION_SPYMASTER:0 \"Spy $NAME$\"\n",
+                " EFFECT_MARKET_CREATE_PURCHASE_CONTRACT:0 \"Purchase $SELLER$/$BUYER$/$CIVS$/$EQUIPMENT$\"\n",
                 " SHORT_TERM:0 \"Short\"\n MEDIUM_TERM:0 \"Medium\"\n LONG_TERM:0 \"Long\"\n",
                 " FACTION_ADD_EXTRA_GOAL_SLOT:0 \"Slots $FACTION$/$CATEGORY$/$VAL$\"\n",
                 " FACTION_ADD_EXTRA_GOAL_SLOT_NO_FACTION:0 \"SlotsOutside $CATEGORY$/$VAL$\"\n",
                 " ADD_FACTION_INITIATIVE_EFFECT:0 \"Initiative $FACTION$/$AMOUNT|2$\"\n",
                 " ADD_FACTION_INITIATIVE_EFFECT_NO_FACTION:0 \"InitiativeOutside $AMOUNT|2$\"\n",
+                " FACTION_INFLUENCE_RATIO:0 \"$VAL|%0$\"\n FACTION_INFLUENCE_VALUE:0 \"$VAL|2$\"\n",
+                " ADD_FACTION_INFLUENCE_EFFECT:0 \"Influence $COUNTRY$/$FACTION$/$VAL$\"\n",
+                " ADD_FACTION_INFLUENCE_EFFECT_NO_FACTION:0 \"Outside $COUNTRY$/$VAL$\"\n",
                 " FACTION_ACCESS_TAB_MILITARY:0 \"Military\"\n",
                 " FACTION_ACCESS_TAB_UNLOCK:0 \"Unlock $NAME$\"\n FACTION_ACCESS_TAB_LOCK:0 \"Lock $NAME$\"\n",
                 " EFFECT_ADD_CIVIL_WAR_TARGET:0 \"Civil $COUNTRY$\"\n",
@@ -976,14 +1537,14 @@ fn diplomacy_native_output_branches() {
             C(1),
             2,
             "",
-            Some("1403A0010"),
+            Some("effect key names"),
         ),
         (
             "create_purchase_contract={seller=AAA buyer=BBB civilian_factories=2}",
             C(1),
             2,
-            "",
-            Some("140BA59E0"),
+            "Purchase \u{12}AAA Alpha/\u{12}BBB Beta/2/\n",
+            None,
         ),
         (
             "set_country_flag=synthetic_empty give_guarantee=BBB",
@@ -1189,29 +1750,29 @@ fn diplomacy_native_output_branches() {
             "add_faction_influence_ratio=0.1",
             C(1),
             2,
-            "",
-            Some("1410CF4A0"),
+            "Influence Alpha/Union/10%",
+            None,
         ),
         (
             "add_faction_influence_ratio=0.1",
             C(3),
             2,
-            "",
-            Some("1410CF4A0"),
+            "Outside Gamma/10%",
+            None,
         ),
         (
             "add_faction_influence_score=1",
             C(1),
             2,
-            "",
-            Some("1410CF4A0"),
+            "Influence Alpha/Union/1.00",
+            None,
         ),
         (
             "add_faction_influence_score=1",
             C(3),
             2,
-            "",
-            Some("1410CF4A0"),
+            "Outside Gamma/1.00",
+            None,
         ),
     ] {
         *fixture.frame.tables[TableId::SimulationFeatures.index()] =

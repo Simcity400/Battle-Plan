@@ -3,11 +3,18 @@
 //! Stable domain entry points (core changes go through lead I):
 //! - `Renderer::{line, localised, expanded}` localise keys/arguments and expand in
 //!   the caller's scope/session (1410CF560); `line` appends LF.
+//! - `Renderer::expanded_with_faction_environment` selects the copied scope's
+//!   kind-0 environment and optional faction (+0xC8, 1410CF4A0).
 //! - `Renderer::{country_target, state_target}` resolve native effect selectors
 //!   (141384830/1405336C0/1405302E0 and 1403A1950/140533BE0/14052FA10),
 //!   sharing `evaluator` for scoped variables. State zero stays zero.
 //! - `Renderer::{current_country, country_name, tag, state_name}` resolve names;
 //!   `state_name` uses GetStateName (1409CC380).
+//! - `Renderer::selected_party_name` shares selected-ideology party lookup
+//!   and `ScriptedText::party_name` (140B980C0/14118F860).
+//! - `ScriptedText::country_marked_name` shares `GetNameWithFlag` (140BA59E0).
+//! - `Renderer::equipment_list_description` resolves seller-scoped entries and
+//!   formats the quantity pool (140306B70/1413A8A20), reusing equipment names.
 //! - `Scope` / `EventObject` carry `Project { owner, id }`, `Raid(u64)` and
 //!   `Unit(u64)`; `Evaluator::{enter_scope, with_this, event_scopes}` keeps their
 //!   graph links (14146BB30/1405296C0). `sp:` and `mio:` use that selector path.
@@ -15,12 +22,16 @@
 //!   recorded identities. `Renderer::{project_name(owner, id), raid_name(reference),
 //!   unit_name(reference), organisation_name(reference)}` returns native names
 //!   or a named missing-input error (140FCDDF0/140FD6260/140C72F00/140DA44C0).
+//! - `World::has_template(country, name)` shares the exact recorded template
+//!   display-name comparison and content fallback (1406C29B0/140B91170).
 //! - `Content::{buildings, resources, max_railway_level}` supplies cached declared
 //!   building labels (1414A4470), resource frames (140BBD150), and NSupply's
 //!   MAX_RAILWAY_LEVEL (14037A240), read once per stack by `CachedContent`.
 //! - `Content::{equipment, autonomy_states}` supplies the complete equipment
 //!   database (1409EB8B0/14139B350) and declared autonomy states (140669480),
 //!   each read once per stack by `CachedContent`, with reader notes retained.
+//! - `Content::state_categories` supplies declared category identities
+//!   (1413AFB60/1413AF3B0/1413AFAC0), cached once with reader notes retained.
 //! - `ScriptedText::{province_display_name, country_adjective}` shares effect
 //!   province naming (140E69320) and country adjective naming (140BA5560).
 //! - `Renderer::evaluator` is the shared trigger/variable/saved-target evaluator;
@@ -221,6 +232,7 @@ pub struct Content<'a> {
     pub max_railway_level: Option<i32>,
     pub equipment: Option<&'a installed_content::equipment::Database>,
     pub autonomy_states: Option<&'a installed_content::autonomy::AutonomyStates>,
+    pub state_categories: Option<&'a installed_content::state_categories::Database>,
     pub gaps: Option<&'a BTreeMap<&'static str, String>>,
 }
 
@@ -250,6 +262,7 @@ pub struct CachedContent {
     raids: std::sync::OnceLock<Result<installed_content::raids::Catalog, String>>,
     equipment: Option<installed_content::equipment::Database>,
     autonomy_states: Option<installed_content::autonomy::AutonomyStates>,
+    state_categories: Option<installed_content::state_categories::Database>,
     gaps: BTreeMap<&'static str, String>,
     pub notes: Vec<String>,
 }
@@ -293,6 +306,11 @@ impl CachedContent {
             "autonomy states",
             &mut gaps,
         );
+        let state_categories = keep(
+            installed_content::state_categories::read(layers),
+            "state categories",
+            &mut gaps,
+        );
         let mut notes = doctrines
             .as_ref()
             .map(|db| db.notes.clone())
@@ -309,6 +327,9 @@ impl CachedContent {
         );
         if let Some(database) = &equipment {
             notes.extend(database.misreads.iter().cloned());
+        }
+        if let Some(database) = &state_categories {
+            notes.extend(database.notes.iter().cloned());
         }
         let autonomy_states = autonomy_states.map(|(states, warnings)| {
             notes.extend(warnings.into_iter().map(|(_, message)| message));
@@ -417,6 +438,7 @@ impl CachedContent {
             raids: std::sync::OnceLock::new(),
             equipment,
             autonomy_states,
+            state_categories,
             gaps,
             notes,
         })
@@ -442,6 +464,7 @@ impl CachedContent {
             max_railway_level: self.max_railway_level,
             equipment: self.equipment.as_ref(),
             autonomy_states: self.autonomy_states.as_ref(),
+            state_categories: self.state_categories.as_ref(),
             gaps: Some(&self.gaps),
             events,
         }
@@ -672,6 +695,26 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             Scope::Country(country) => Ok(country),
             _ => Err("current scope has no country (1405336C0)".into()),
         }
+    }
+
+    pub(super) fn selected_party_name(
+        &self,
+        country: u32,
+        ideology: &[u8],
+    ) -> Result<String, String> {
+        let party = self
+            .context
+            .text
+            .frame()
+            .complete::<tables::PoliticalParties>()
+            .map_err(|why| why.to_string())?
+            .iter()
+            .find(|row| {
+                self.context.text.recorded().slot(row.country) == Some(country)
+                    && row.token.eq_ignore_ascii_case(ideology)
+            })
+            .ok_or("PoliticalParties lacks FindPartyByIdeology result (140B980C0)")?;
+        self.context.text.party_name(party, self.tag(country)?, false)
     }
 
     pub(super) fn country_target(
@@ -1034,6 +1077,16 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     }
 
     pub(super) fn expanded(&self, text: &str, scopes: Scopes) -> Result<String, String> {
+        self.expanded_with_faction_environment(text, scopes, None)
+    }
+
+    /// None: event text; Some: kind-0 environment, including a null faction.
+    pub(super) fn expanded_with_faction_environment(
+        &self,
+        text: &str,
+        scopes: Scopes,
+        faction: Option<Option<u64>>,
+    ) -> Result<String, String> {
         let session = self
             .evaluator
             .get()
@@ -1046,6 +1099,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             scopes.cursor.unwrap_or(0),
             session,
             self.context.expansion,
+            faction,
         );
         if let Some(session) = &session
             && let Some(Ok(evaluator)) = self.evaluator.get()

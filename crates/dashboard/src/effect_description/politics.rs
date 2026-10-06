@@ -10,6 +10,9 @@ pub(super) use content::PoliticsContent;
 #[cfg(test)]
 mod tests;
 
+pub(super) const NULL_IDEOLOGY: &str =
+    "ideology database null-object identity (+0x78, 1402EE8E0) is unrecorded";
+
 impl Renderer<'_, '_, '_> {
     // ResolveIdeologySpecifier 1402EE8E0: cached named group, numeric database
     // ID, then decoded country's ruling group (14138B640). IDs/tokens are
@@ -19,9 +22,7 @@ impl Renderer<'_, '_, '_> {
         operand: Option<&[u8]>,
         scopes: Scopes,
     ) -> Result<Vec<u8>, String> {
-        let operand = operand.ok_or(
-            "ideology database null-object identity (+0x78, 1402EE8E0) is unrecorded",
-        )?;
+        let operand = operand.ok_or(NULL_IDEOLOGY)?;
         let names = self
             .context
             .content
@@ -61,9 +62,7 @@ impl Renderer<'_, '_, '_> {
             .evaluator()?
             .scoped_country(constant.as_bytes(), scopes)?
         else {
-            return Err(
-                "ideology database null-object identity (+0x78, 1402EE8E0) is unrecorded".into(),
-            );
+            return Err(NULL_IDEOLOGY.into());
         };
         let politics = frame
             .complete::<tables::Politics>()

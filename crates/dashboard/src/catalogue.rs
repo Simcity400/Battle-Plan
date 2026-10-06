@@ -952,13 +952,12 @@ pub(crate) mod tests {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         let _ = std::fs::remove_dir_all(&root);
+        let _folder = Folder(root.clone());
         let file = root.join("localisation/test_l_english.yml");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, format!("\u{feff}{yml}")).unwrap();
         let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-        let localisation = installed_content::localisation::read(&layers, "english").unwrap();
-        std::fs::remove_dir_all(&root).unwrap();
-        localisation
+        installed_content::localisation::read(&layers, "english").unwrap()
     }
 
     /// A faction catalogue through the production reader, without a second parser.
@@ -989,6 +988,7 @@ pub(crate) mod tests {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         let _ = std::fs::remove_dir_all(&root);
+        let folder = Folder(root.clone());
         // A content folder must exist even when it holds no files.
         std::fs::create_dir_all(&root).unwrap();
         for (path, text) in files {
@@ -997,7 +997,7 @@ pub(crate) mod tests {
             std::fs::write(&file, text).unwrap();
         }
         let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-        (layers_catalogue(layers), Folder(root))
+        (layers_catalogue(layers), folder)
     }
 
     /// The same catalogue seam for fixtures with several content layers.

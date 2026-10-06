@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     effect_description::tests::Fixture, scripted_text::EventScope, triggers::ContentFacts,
 };
-use EventObject::{Country as C, State as S};
+use EventObject::{Country as C, State as S, Unit as U};
 use replay::{frame::TableView, rows::*};
 use std::collections::BTreeSet;
 
@@ -67,6 +67,15 @@ fn fixture() -> Fixture {
                 (
                     "EFFECT_CREATE_UNIT_LOCATION_WITH_COUNT",
                     "UnitsAt $OWNER$/$COUNT|0$/$STATE$",
+                ),
+                (
+                    "CHANGE_DIV_TEMPLATE_EFFECT",
+                    "Template $TEMPLATE$/$DIV$ [Root.GetName]",
+                ),
+                ("EFFECT_UNIT_DESTROY_UNIT", "Destroy $NAME$ [Root.GetName]"),
+                (
+                    "EFFECT_SET_UNIT_ORGANIZATION",
+                    "SetOrg $VAL|2$ [This.GetName]",
                 ),
                 ("EFFECT_RAID_DAMAGE_PLANE", "Plane $VAL|2$"),
                 ("EFFECT_RAID_DAMAGE_PLANE_RATIO", "PlaneRatio $VAL|2$"),
@@ -149,13 +158,13 @@ fn render(
     let mut facts = ContentFacts::content_only(&dlcs, &triggers, &aliases);
     facts.state_provinces = &provinces;
     facts.impassable = &blocked;
-    let text = ScriptedText::new(
-        &fixture.frame,
-        &fixture.catalogue.localisation,
-        fixture.catalogue.scripted_content().unwrap(),
-        1,
-    );
-    text.set_synthetic_world(World::read(&fixture.frame, facts));
+    let scripted = fixture.catalogue.scripted_content().unwrap();
+    let text = ScriptedText::new(&fixture.frame, &fixture.catalogue.localisation, scripted, 1);
+    text.set_synthetic_world(World::read(&fixture.frame, facts).with_template_names(
+        &scripted.template_names,
+        &scripted.layers.layers,
+        &scripted.recorded_language,
+    ));
     let context = Context::new(
         &text,
         &fixture.catalogue.localisation,
@@ -168,6 +177,277 @@ fn render(
         &context,
         &mut EventScopes::new(vec![EventScope::of(object)]),
     )
+}
+
+const UNIT: u64 = (7_u64 << 32) | 0x1269;
+
+fn unit_fixture() -> Fixture {
+    let mut fixture = fixture();
+    *fixture.frame.tables[TableId::Divisions.index()] =
+        TableView::Complete(TableRows::Divisions(vec![DivisionRow {
+            id: UNIT,
+            roster_owner: 100,
+            logical_owner: 200,
+            expeditionary_owner: 300,
+            organisation: 9_000_000,
+            ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::DivisionTemplates.index()] =
+        TableView::Complete(TableRows::DivisionTemplates(vec![
+            DivisionTemplateRow {
+                template: 10,
+                owner: 100,
+                name: b"Roster only".to_vec(),
+                name_key: Recorded::NotRecorded,
+                ..Default::default()
+            },
+            DivisionTemplateRow {
+                template: 20,
+                owner: 200,
+                name: b"Raw [This.GetName]".to_vec(),
+                name_key: Recorded::NotRecorded,
+                ..Default::default()
+            },
+            DivisionTemplateRow {
+                template: 30,
+                owner: 200,
+                name_key: Recorded::Value(b"DEF".to_vec()),
+                ..Default::default()
+            },
+        ]));
+    *fixture.frame.tables[TableId::DivisionTemplateIcons.index()] =
+        TableView::Complete(TableRows::DivisionTemplateIcons(vec![
+            DivisionTemplateIconRow {
+                template: 30,
+                country: 100,
+                ..Default::default()
+            },
+        ]));
+    if let TableView::Complete(TableRows::ScriptVariables(rows)) =
+        &mut *fixture.frame.tables[TableId::ScriptVariables.index()]
+    {
+        rows.push(ScriptVariablesRow {
+            scope_kind: 0,
+            scope_id: 0,
+            entries: vec![ScriptVariableEntry {
+                name: b"syn_amount".to_vec(),
+                value_raw: 25_000,
+            }],
+        });
+    }
+    fixture
+}
+
+#[test]
+fn unit_carrier_native_empty_and_organization_table() {
+    let fixture = unit_fixture();
+    for object in [
+        C(1),
+        S(1),
+        U(0),
+        EventObject::UnitLeader(UNIT),
+        EventObject::Project { owner: 100, id: 7 },
+        EventObject::Raid(UNIT),
+    ] {
+        for body in [
+            "change_division_template={division_template=missing}",
+            "destroy_unit=no",
+            "set_unit_organization=var:unrecorded^random",
+        ] {
+            let out = render(&fixture, body, object, Content::default(), &[]);
+            assert!(out.text.is_empty(), "{body}/{object:?}: {}", out.text);
+            assert!(
+                out.refusals.is_empty(),
+                "{body}/{object:?}: {:?}",
+                out.refusals
+            );
+        }
+    }
+    for (body, expected) in [
+        ("set_unit_organization=0", "SetOrg 0.00 [This.GetName]"),
+        ("set_unit_organization=0.25", "SetOrg 0.25 [This.GetName]"),
+        ("set_unit_organization=-0.5", "SetOrg -0.50 [This.GetName]"),
+        (
+            "set_unit_organization=2.49999",
+            "SetOrg 2.49 [This.GetName]",
+        ),
+        (
+            "set_unit_organization=syn_amount",
+            "SetOrg 0.25 [This.GetName]",
+        ),
+        (
+            "set_unit_organization=AAA.syn_amount",
+            "SetOrg 2.49 [This.GetName]",
+        ),
+        ("set_unit_organization=THIS", "SetOrg 0.00 [This.GetName]"),
+        (
+            "set_unit_organization=event_target:absent",
+            "SetOrg 0.00 [This.GetName]",
+        ),
+        ("change_division_template={division_template=missing}", ""),
+        (
+            "change_division_template={division_template=\"Roster only\"}",
+            "",
+        ),
+        (
+            "change_division_template={division_template=\"raw [This.GetName]\"}",
+            "",
+        ),
+        ("change_division_template={division_template=DEF}", ""),
+    ] {
+        let out = render(&fixture, body, U(UNIT), Content::default(), &[]);
+        assert_eq!(out.text, expected, "{body}: {:?}", out.refusals);
+        assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals);
+    }
+}
+
+#[test]
+fn unit_carrier_shared_name_and_recording_gap_table() {
+    let mut fixture = unit_fixture();
+    for (body, class) in [
+        (
+            "change_division_template={division_template=\"Raw [This.GetName]\"}",
+            "CArmyChangeTemplateEffect",
+        ),
+        (
+            "change_division_template={division_template=missing division_template=alpha}",
+            "CArmyChangeTemplateEffect",
+        ),
+        ("destroy_unit=yes", "CDestroyUnitEffect"),
+        ("destroy_unit=THIS", "CDestroyUnitEffect"),
+        ("destroy_unit=var:unrecorded^random", "CDestroyUnitEffect"),
+    ] {
+        let out = render(
+            &fixture,
+            &format!("{body} {body}"),
+            U(UNIT),
+            Content::default(),
+            &[],
+        );
+        assert!(out.text.is_empty(), "{body}: {}", out.text);
+        let expected = format!(
+            "synthetic effect {class}: key {}: UNIT {UNIT:#x} name: CArmy+0x340 -> CNameGroupMember+0x60 cached MSVC string is not recorded (140C72F00; writer 1409B4C40)",
+            if class == "CDestroyUnitEffect" {
+                "destroy_unit"
+            } else {
+                "change_division_template"
+            },
+        );
+        assert_eq!(out.refusals, BTreeMap::from([(expected, 2)]), "{body}");
+    }
+    // A missing fallback key is distinct from an absent template; explicit names still work.
+    if let TableView::Complete(TableRows::DivisionTemplates(rows)) =
+        &mut *fixture.frame.tables[TableId::DivisionTemplates.index()]
+    {
+        rows[2].name_key = Recorded::NotRecorded;
+    }
+    let out = render(
+        &fixture,
+        "change_division_template={division_template=missing}",
+        U(UNIT),
+        Content::default(),
+        &[],
+    );
+    assert!(out.text.is_empty());
+    assert_eq!(out.refusals.values().sum::<usize>(), 1);
+    assert!(
+        out.refusals
+            .keys()
+            .all(|why| why.contains("DivisionTemplates.name_key not recorded")),
+        "{:?}",
+        out.refusals
+    );
+    for (owner, reason) in [
+        (0, "reserved CCountry[0] division-template roster"),
+        (
+            999,
+            "CountryLinks lacks change-division-template logical owner 999",
+        ),
+    ] {
+        if let TableView::Complete(TableRows::Divisions(rows)) =
+            &mut *fixture.frame.tables[TableId::Divisions.index()]
+        {
+            rows[0].logical_owner = owner;
+        }
+        let out = render(
+            &fixture,
+            "change_division_template={division_template=missing}",
+            U(UNIT),
+            Content::default(),
+            &[],
+        );
+        assert!(out.text.is_empty());
+        assert_eq!(out.refusals.values().sum::<usize>(), 1);
+        assert!(
+            out.refusals.keys().all(|why| why.contains(reason)),
+            "{:?}",
+            out.refusals
+        );
+    }
+    for (body, class) in [
+        (
+            "change_division_template={division_template=missing}",
+            "CArmyChangeTemplateEffect",
+        ),
+        ("destroy_unit=yes", "CDestroyUnitEffect"),
+        (
+            "set_unit_organization=var:unrecorded^random",
+            "CSetUnitOrganization",
+        ),
+    ] {
+        let missing = UNIT + (1_u64 << 32);
+        let out = render(&fixture, body, U(missing), Content::default(), &[]);
+        assert!(out.text.is_empty());
+        assert_eq!(out.refusals.values().sum::<usize>(), 1);
+        assert!(
+            out.refusals.keys().all(|why| why.contains(class)
+                && why.contains(&format!("Divisions lacks UNIT {missing:#x}"))),
+            "{body}: {:?}",
+            out.refusals
+        );
+    }
+    *fixture.frame.tables[TableId::Divisions.index()] = TableView::Unavailable {
+        reason: "synthetic unit gap".into(),
+    };
+    for body in [
+        "change_division_template={division_template=missing}",
+        "destroy_unit=yes",
+        "set_unit_organization=1",
+    ] {
+        let out = render(&fixture, body, U(UNIT), Content::default(), &[]);
+        assert!(out.text.is_empty());
+        assert_eq!(out.refusals.values().sum::<usize>(), 1);
+        assert!(
+            out.refusals
+                .keys()
+                .all(|why| why.contains("synthetic unit gap")),
+            "{body}: {:?}",
+            out.refusals
+        );
+    }
+}
+
+#[test]
+fn unit_carrier_graph_links_keep_operand_scope() {
+    let fixture = unit_fixture();
+    let mut scopes = EventScopes::new(vec![
+        EventScope {
+            from: Link::Scope(1),
+            ..EventScope::of(C(1))
+        },
+        EventScope {
+            root: Link::Scope(0),
+            ..EventScope::of(U(UNIT))
+        },
+    ]);
+    let out = fixture.render(
+        "FROM={set_unit_organization=ROOT.syn_amount}",
+        &mut scopes,
+        Content::default(),
+    );
+    assert_eq!(out.text, "SetOrg 2.49 [This.GetName]");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    assert_eq!(scopes.scopes[1].this, U(UNIT));
 }
 
 #[test]
@@ -624,17 +904,6 @@ fn native_units_admission_and_named_refusals() {
             "send_equipment={type=missing target=BBB}",
             "CSendEquipmentEffect",
             "equipment content unavailable",
-        ),
-        (
-            "change_division_template=Raw",
-            "CArmyChangeTemplateEffect",
-            "UNIT_REFERENCE",
-        ),
-        ("destroy_unit=yes", "CDestroyUnitEffect", "UNIT_REFERENCE"),
-        (
-            "set_unit_organization=1",
-            "CSetUnitOrganization",
-            "UNIT_REFERENCE",
         ),
         (
             "add_unit_bonus={syn_unit={}}",
@@ -1400,7 +1669,7 @@ fn native_units_equipment_named_refusals() {
     assert!(
         out.refusals
             .keys()
-            .all(|why| why.contains("recorded CEquipmentVariant.version u8 +0x41C is not ported")),
+            .all(|why| why.contains("version u8 +0x41C")),
         "{:?}",
         out.refusals,
     );

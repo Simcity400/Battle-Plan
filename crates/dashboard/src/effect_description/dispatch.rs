@@ -404,8 +404,8 @@ impl Renderer<'_, '_, '_> {
             0x142763E20 /* CAddCivilWarTarget */ => self.diplomacy_country(item, scopes, b"EFFECT_ADD_CIVIL_WAR_TARGET", false), // 1403719F0
             0x1427B35C0 /* CAddFactionGoalEffect */ => self.faction_goal_content(scopes), // 1404AA450
             0x1427B3BF8 /* CAddFactionGoalSlotEffect */ => self.faction_goal_slot(item, scopes), // 1404AA830
-            0x1427B3B10 /* CAddFactionInfluenceRatioEffect */ => Err("native faction influence localisation needs a shared faction expansion environment (1404AAEC0/1404AB530 -> 1410CF4A0; SScriptEnvironment faction +0xC8), which Renderer does not expose; amount and faction membership are recorded, so no new recording field is needed".into()), // 1404AAEC0
-            0x1427B39E0 /* CAddFactionInfluenceScoreEffect */ => Err("native faction influence localisation needs a shared faction expansion environment (1404AAEC0/1404AB530 -> 1410CF4A0; SScriptEnvironment faction +0xC8), which Renderer does not expose; amount and faction membership are recorded, so no new recording field is needed".into()), // 1404AB530
+            0x1427B3B10 /* CAddFactionInfluenceRatioEffect */ => self.faction_influence(item, scopes, true), // 1404AAEC0
+            0x1427B39E0 /* CAddFactionInfluenceScoreEffect */ => self.faction_influence(item, scopes, false), // 1404AB530
             0x1427B3798 /* CAddFactionInitiativeEffect */ => self.faction_initiative(item, scopes), // 1404ABBA0
             0x14275C508 /* CAddToWarEffect */ => self.add_to_war(item, scopes), // 140379070
             0x142761648 /* CBecomeExiledGovernmentEffect */ => self.diplomacy_become_exiled(item, scopes), // 140379CD0
@@ -440,8 +440,8 @@ impl Renderer<'_, '_, '_> {
             0x1427B2E08 /* CSetFactionRuleEffect */ => self.faction_rule_content(scopes), // 1404AFEB0
             0x1427B27D8 /* CSetFactionSpyMasterEffect */ => self.set_faction_spymaster(scopes), // 1404B0390
             0x142758EB0 /* CSetWarSupportEffect */ => self.numeric_value(item, scopes, b"EFFECT_SET_WAR_SUPPORT"), // 140394630
-            0x142756CA8 /* CStartCivilWarEffect */ => Err("native civil-war own text appends politics helper 1403A0010 using selected ideology's party name (14118F860); shared selected-party name accessor and helper are unavailable; no new recording input is required".into()), // 140395FE0
-            0x142733A70 /* NInternationalMarket::CCreatePurchaseContractEffect */ => Err("native purchase-contract own text needs shared CountryTag_FormatMarkedName 140BA59E0 and seller-scoped equipment list description 140306B70/1413A8A20; these description accessors are unavailable".into()), // 1403061D0
+            0x142756CA8 /* CStartCivilWarEffect */ => self.start_civil_war(item, scopes), // 140395FE0
+            0x142733A70 /* NInternationalMarket::CCreatePurchaseContractEffect */ => self.purchase_contract(item, scopes), // 1403061D0
             0x142733EC8 /* NInternationalMarket::CGiveMarketAccessEffect */ => self.diplomacy_country(item, scopes, b"EFFECT_MARKET_GIVE_MARKET_ACCESS", true), // 140306890
 
             // states — D2
@@ -482,7 +482,7 @@ impl Renderer<'_, '_, '_> {
             0x1427687C0 /* CSetOrAddVictoryPointsEffect<> */ => self.province_victory_points(item, scopes, true), // 14036EBA0
             0x1427534F8 /* CSetProvinceControllerEffect */ => self.province_state_description(item, scopes, false), // 140392F90
             0x1427394E0 /* CSetResistanceEffect */ => self.occupation_percent(item, scopes, b"EFFECT_SET_RESISTANCE", None), // 140318350
-            0x142739098 /* CSetStateCategoryEffect */ => self.set_state_category(item), // 1403184E0
+            0x142739098 /* CSetStateCategoryEffect */ => self.set_state_category(item, scopes), // 1403184E0
             0x142753400 /* CSetStateControllerEffect */ => self.state_change(item, scopes, b"EFFECT_SET_STATE_CONTROLLER"), // 140393560
             0x14273A410 /* CSetStateControllerToEffect */ => self.state_country_to(item, scopes, b"EFFECT_SET_STATE_CONTROLLER_TO"), // 140318680
             0x14273A028 /* CSetStateNameEffect */ => self.state_name_effect(item, scopes, false), // 1403188E0
@@ -504,7 +504,7 @@ impl Renderer<'_, '_, '_> {
             0x142759EB0 /* CAddNavyExperienceEffect */ => self.numeric_value(item, scopes, b"EFFECT_ADD_NAVY_EXPERIENCE"), // 140374F30
             0x1427655B0 /* CAddUnitBonusEffect */ => self.units_unit_bonus(item), // 1403794A0
             0x142752CF8 /* CAddUnitsToDivisionTemplateEffect */ => self.units_add_to_template(item, scopes), // 1403794F0
-            0x1427977B8 /* CArmyChangeTemplateEffect */ => Err("CEventScope UNIT_REFERENCE (+0x70/+0x74) is not represented by the event graph (140529260); generic live-division naming operands are not recorded (140C72F00/1409B5640)".into()), // 14045DB70
+            0x1427977B8 /* CArmyChangeTemplateEffect */ => self.units_change_template(item, scopes), // 14045DB70
             0x142760DA8 /* CClearTemplateDivisionCapEffect */ => self.units_template(item, scopes, units::TemplateDescription::ClearCap), // 14037B560
             0x1427ABD10 /* CCreateEquipmentVariantEffect */ => self.units_create_variant(item, scopes), // 14049BEA0
             0x142763928 /* CCreateShipEffect */ => self.units_create_ship(item, scopes), // 14037D200
@@ -512,7 +512,7 @@ impl Renderer<'_, '_, '_> {
             0x1427AEBA0 /* CDamageRaidUnitEffect@?A0x8a0aef5d@NRaids */ => self.units_raid_damage(item, scopes), // 1404A31F0
             0x142763088 /* CDeleteUnitsEffect */ => self.units_template(item, scopes, units::TemplateDescription::Delete), // 14037EEF0
             0x14275D3D8 /* CDestroyShipsEffect */ => self.units_destroy_ships(item, scopes), // 14037F150
-            0x1427973F0 /* CDestroyUnitEffect */ => Err("CEventScope UNIT_REFERENCE (+0x70/+0x74) is not represented by the event graph (1405294C0); generic live-unit naming operands are not recorded (140C72F00/1409B5640)".into()), // 14045DF90
+            0x1427973F0 /* CDestroyUnitEffect */ => self.units_destroy_unit(scopes), // 14045DF90
             0x142760B88 /* CLockAllTemplateEffect */ => self.units_lock_all(item, scopes), // 140384680
             0x142759330 /* CManpowerAddEffect */ => self.units_manpower(item, scopes), // 140384C00
             0x1427AED68 /* CRaidAddUnitExperienceEffect@?A0x8a0aef5d@NRaids */ => self.numeric_value(item, scopes, b"EFFECT_RAID_GIVE_UNIT_EXPERIENCE"), // 1404A3D00
@@ -523,7 +523,7 @@ impl Renderer<'_, '_, '_> {
             0x14275BC28 /* CSetNavalOobEffect */ => self.politics_oob(item, scopes, b"EFFECT_SET_OOB"), // 140391580
             0x142760CA8 /* CSetTemplateDivisionCapEffect */ => self.units_template(item, scopes, units::TemplateDescription::Cap), // 140393B40
             0x142760EA0 /* CSetTemplateDivisionForceRecruitingEffect */ => self.units_template(item, scopes, units::TemplateDescription::Recruit), // 140393DE0
-            0x142797D00 /* CSetUnitOrganization */ => Err("CEventScope UNIT_REFERENCE (+0x70/+0x74) is not represented by the event graph (140529260); Divisions already records the handle".into()), // 14045E6D0
+            0x142797D00 /* CSetUnitOrganization */ => self.units_set_organization(item, scopes), // 14045E6D0
             0x14275D260 /* CTransferNavyEffect */ => self.units_transfer(item, scopes, true), // 1403983B0
             0x142756ED8 /* CTransferUnitsFractionEffect */ => self.units_transfer(item, scopes, false), // 140398970
             0x1427BB750 /* NDoctrines::CUnlockSubUnitEffect */ => self.units_unlock(item, scopes), // 14051E3C0

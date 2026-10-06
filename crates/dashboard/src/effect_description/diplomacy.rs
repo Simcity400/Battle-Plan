@@ -2,6 +2,144 @@ use super::*;
 use replay::rows::tables;
 
 impl Renderer<'_, '_, '_> {
+    pub(super) fn purchase_contract(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
+        // 1403061D0: seller/buyer are scoped operands; factory count floors to
+        // int32 text. Equipment uses the seller, but naming uses game-state country.
+        let fields = children(item);
+        // ReadEffect 140307C20 reuses these CScopedVariables. Their reader
+        // 140539440/140539B50 retains prior flags; final-field parsing cannot.
+        for (fields, names) in std::iter::once((fields, ["seller", "buyer", "civilian_factories"]))
+            .chain(
+                fields
+                    .iter()
+                    .filter(|entry| entry.keyword_is("equipment"))
+                    .map(|entry| (children(entry), ["amount", "producer", "variant_name"])),
+            )
+        {
+            for name in names {
+                if fields
+                    .iter()
+                    .filter(|field| field.keyword_is(name))
+                    .nth(1)
+                    .is_some()
+                {
+                    return Err(format!(
+                        "repeated purchase operand {name} needs retained CScopedVariable reader flags (140539440/140539B50)",
+                    ));
+                }
+            }
+        }
+        let country = |name| -> Result<u32, String> {
+            field(fields, name)
+                .map(|item| {
+                    self.evaluator()?
+                        .scoped_country(scalar_operand(item)?, scopes)
+                })
+                .transpose()
+                .map(|country| country.flatten().unwrap_or(0))
+        };
+        let seller_country = country("seller")?;
+        let seller = self.context.text.country_marked_name(seller_country)?; // 140BA59E0.
+        let buyer = self.context.text.country_marked_name(country("buyer")?)?;
+        let factories = field(fields, "civilian_factories")
+            .map(|item| self.scoped_value(scalar_operand(item)?, scopes))
+            .transpose()?
+            .unwrap_or(0);
+        let factories = if factories % 100_000 == 0 {
+            factories
+        } else {
+            (factories / 100_000)
+                .wrapping_add(factories >> 63)
+                .wrapping_mul(100_000)
+        };
+        let factories = ((factories / 100_000) as i32).to_string();
+        let equipment = self.equipment_list_description(
+            fields,
+            seller_country,
+            scopes,
+            ", ",
+            b"INTERNATIONAL_MARKET_EQUIPMENT_AMOUNT", // 142733BE0.
+        )?;
+        self.line(
+            b"EFFECT_MARKET_CREATE_PURCHASE_CONTRACT",
+            &[
+                ("SELLER", Argument::Text(&seller)),
+                ("BUYER", Argument::Text(&buyer)),
+                ("CIVS", Argument::Text(&factories)), // 142733C14.
+                ("EQUIPMENT", Argument::Text(&equipment)),
+            ],
+            scopes,
+            true,
+        )
+    }
+
+    pub(super) fn start_civil_war(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
+        // 140395FE0: ideology +0x3C0 is only the heading. Politics uses
+        // ruling_party +0x70, falling back to the current ruling group.
+        let fields = children(item);
+        let ideology = self.politics_ideology(
+            field(fields, "ideology").map(scalar_operand).transpose()?,
+            scopes,
+        )?;
+        let ideology = self.localised(&ideology, &[], scopes, false)?;
+        let mut text = self.line(
+            b"EFFECT_START_CIVIL_WAR",
+            &[("IDEOLOGY", Argument::Text(&ideology))],
+            scopes,
+            true,
+        )?;
+        let country = match scopes.this {
+            Scope::Country(country) => country,
+            _ => 0,
+        };
+        let ruling = field(fields, "ruling_party")
+            .map(|operand| self.politics_ideology(Some(scalar_operand(operand)?), scopes))
+            .transpose();
+        let ruling = match ruling {
+            Ok(Some(ruling)) => ruling,
+            Err(why) if why != super::politics::NULL_IDEOLOGY => return Err(why),
+            // 140395FE0 tests the result's valid byte +0x10, not operand presence.
+            Ok(None) | Err(_) => {
+                let frame = self.context.text.frame();
+                let id = frame
+                    .complete::<tables::Politics>()
+                    .map_err(|why| why.to_string())?
+                    .iter()
+                    .find(|row| self.context.text.recorded().slot(row.country) == Some(country))
+                    .and_then(|row| row.ruling_party)
+                    .ok_or("Politics lacks civil-war fallback ruling ideology (140395FE0)")?;
+                let token = frame
+                    .complete::<tables::PoliticalParties>()
+                    .map_err(|why| why.to_string())?
+                    .iter()
+                    .find(|row| {
+                        self.context.text.recorded().slot(row.country) == Some(country)
+                            && row.id == id
+                    })
+                    .ok_or(
+                        "PoliticalParties lacks civil-war fallback ruling ideology (140395FE0)",
+                    )?;
+                self.politics_ideology(Some(&token.token), scopes)?
+            }
+        };
+        // 1403A0010 receives elections=0, frequency=-1, empty long_name.
+        // Unlike the heading, this appended helper text is not expanded.
+        text.push_str(&self.line(b"EFFECT_SET_POLITICS", &[], scopes, false)?);
+        let party = if country > 0 {
+            self.selected_party_name(country, &ruling)?
+        } else {
+            self.localised(&ruling, &[], scopes, false)?
+        };
+        text.push_str(&self.line(
+            b"EFFECT_SET_POLITICS_RULING_PARTY",
+            &[("PARTY", Argument::Text(&party))],
+            scopes,
+            false,
+        )?);
+        text.push_str(&self.line(b"EFFECT_SET_POLITICS_NO_ELECTIONS", &[], scopes, false)?);
+        Ok(text)
+    }
+
     pub(super) fn war_or_annex(
         &self,
         item: &Item,
@@ -21,29 +159,60 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    fn faction_name(&self, faction: u64) -> Result<String, String> {
-        let row = self
-            .context
-            .world()?
-            .frame()
-            .complete::<tables::Factions>()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .find(|row| row.id == faction)
-            .ok_or_else(|| format!("Factions lacks {faction}"))?;
-        let name = crate::scripted_text::stored_text(
-            self.context.localisation,
-            self.context.text.recorded_language(),
-            &row.name,
-            "faction name (140D77360)",
+    pub(super) fn faction_influence(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+        ratio: bool,
+    ) -> Result<String, String> {
+        // 1404AAEC0/1404AB530: faction lookup, scoped amount, plain country
+        // name (140BA5960), then expansion in the copied scope + faction.
+        let country = self.current_country(scopes)?;
+        let faction = if country > 0 {
+            self.context.world()?.faction(country)?
+        } else {
+            None
+        };
+        let value = if scope_selector(item).is_some() {
+            0 // Generic selector reader retains the default amount.
+        } else {
+            self.scoped_value(scalar_operand(item)?, scopes)?
+        };
+        let amount = self.localised(
+            if ratio {
+                b"FACTION_INFLUENCE_RATIO"
+            } else {
+                b"FACTION_INFLUENCE_VALUE"
+            },
+            &[("VAL", Argument::Fixed5(value))],
+            scopes,
+            false,
         )?;
-        if !name.is_empty() {
-            return Ok(name);
-        }
-        match row.template_token {
-            None => Ok(String::new()),
-            Some(_) => self.context.text.faction_name_by_id(faction),
-        }
+        let country = self.country_name(country, false)?;
+        let text = if let Some(faction) = faction {
+            let name = self.context.text.faction_name_by_id(faction)?;
+            self.localised(
+                b"ADD_FACTION_INFLUENCE_EFFECT",
+                &[
+                    ("VAL", Argument::Text(&amount)),
+                    ("FACTION", Argument::Text(&name)),
+                    ("COUNTRY", Argument::Text(&country)),
+                ],
+                scopes,
+                false,
+            )?
+        } else {
+            self.localised(
+                b"ADD_FACTION_INFLUENCE_EFFECT_NO_FACTION",
+                &[
+                    ("VAL", Argument::Text(&amount)),
+                    ("COUNTRY", Argument::Text(&country)),
+                ],
+                scopes,
+                false,
+            )?
+        };
+        self.expanded_with_faction_environment(&text, scopes, Some(faction)) // No LF.
     }
 
     // 1404AC450: target first, then the stored ordered subject roster.
@@ -95,7 +264,7 @@ impl Renderer<'_, '_, '_> {
         }
         let countries: Vec<_> = std::iter::once(target).chain(subjects).collect();
         if let Some(faction) = target_faction.filter(|faction| Some(*faction) != source_faction) {
-            let faction = self.faction_name(faction)?;
+            let faction = self.context.text.faction_name_by_id(faction)?;
             for &country in &countries {
                 let country = self.country_name(country, false)?;
                 body.push_str(&self.line(
@@ -112,7 +281,7 @@ impl Renderer<'_, '_, '_> {
         let join = match source_faction {
             None => Some(None),
             Some(faction) if world.recorded().faction_leader(source)? == Some(source) => {
-                Some(Some(self.faction_name(faction)?))
+                Some(Some(self.context.text.faction_name_by_id(faction)?))
             }
             Some(_) => None,
         };
@@ -236,7 +405,9 @@ impl Renderer<'_, '_, '_> {
         let mut names = Vec::new();
         for name in ["enemy", "targeted_alliance"] {
             let Some(operand) = self.country_target_field(item, name)? else {
-                return Err(format!("{name} is country zero, whose naming inputs are unrecorded (140379070/140BA5960)"));
+                return Err(format!(
+                    "{name} is country zero, whose naming inputs are unrecorded (140379070/140BA5960)"
+                ));
             };
             let value = installed_content::parser::c_string(scalar_operand(operand)?);
             if scope_selector(operand).is_some_and(|selector| {
@@ -245,7 +416,10 @@ impl Renderer<'_, '_, '_> {
                     Selected::Keyword(Selector::Root | Selector::From | Selector::Prev)
                 )
             }) {
-                return Err(format!("{name} form {} is a country specifier, not a native ROOT/FROM/PREV selector (1403AD690); its CCountryTag reader is unavailable", String::from_utf8_lossy(value)));
+                return Err(format!(
+                    "{name} form {} is a country specifier, not a native ROOT/FROM/PREV selector (1403AD690); its CCountryTag reader is unavailable",
+                    String::from_utf8_lossy(value)
+                ));
             }
             let country = if value.contains(&b'.') || scope_selector(operand).is_some() {
                 // 1403AD690 lowercases dotted links; 14036C350 follows each
@@ -254,7 +428,12 @@ impl Renderer<'_, '_, '_> {
                 for link in value.split(|byte| *byte == b'.') {
                     terminal = match Keyword::named(link) {
                         Some(link @ (Keyword::Root | Keyword::From | Keyword::Prev)) => link,
-                        _ => return Err(format!("{name} has invalid scope-link component {} (1403AD690); native reader reports this token", String::from_utf8_lossy(link))),
+                        _ => {
+                            return Err(format!(
+                                "{name} has invalid scope-link component {} (1403AD690); native reader reports this token",
+                                String::from_utf8_lossy(link)
+                            ));
+                        }
                     };
                 }
                 let text = std::str::from_utf8(value)
@@ -276,12 +455,16 @@ impl Renderer<'_, '_, '_> {
                 let text = std::str::from_utf8(value)
                     .map_err(|_| format!("{name} country specifier is not UTF-8 (140BA53F0)"))?;
                 if !installed_content::scope::Names::is_country(self.context.text.recorded(), text) {
-                    return Err(format!("{name} country specifier {text} is not defined by the content stack (1403AD690/140BA53F0); native country-zero naming cannot be described"));
+                    return Err(format!(
+                        "{name} country specifier {text} is not defined by the content stack (1403AD690/140BA53F0); native country-zero naming cannot be described"
+                    ));
                 }
                 self.country_target(operand, scopes)?
             };
             let Some(country) = country else {
-                return Err(format!("{name} is country zero, whose naming inputs are unrecorded (140379070/140BA5960)"));
+                return Err(format!(
+                    "{name} is country zero, whose naming inputs are unrecorded (140379070/140BA5960)"
+                ));
             };
             names.push(self.country_name(country, false)?);
         }
@@ -329,7 +512,8 @@ impl Renderer<'_, '_, '_> {
             if let Some(operand) = field(children(item), name) {
                 result[index] = self
                     .evaluator()?
-                    .scoped_state_id(scalar_operand(operand)?, scopes)? as u32;
+                    .scoped_state_id(scalar_operand(operand)?, scopes)?
+                    as u32;
             }
         }
         Ok(result)
@@ -510,9 +694,10 @@ impl Renderer<'_, '_, '_> {
                 .frame()
                 .complete::<tables::Autonomy>()
                 .map_err(|why| why.to_string())?;
-            let Some(status) = statuses.iter().find(|row| {
-                self.context.text.recorded().slot(row.subject) == Some(current)
-            }) else {
+            let Some(status) = statuses
+                .iter()
+                .find(|row| self.context.text.recorded().slot(row.subject) == Some(current))
+            else {
                 return Ok(String::new());
             };
             let value = match value {
@@ -561,11 +746,8 @@ impl Renderer<'_, '_, '_> {
         let Some(target) = self.country_target(item, scopes)? else {
             return Ok(String::new());
         };
-        let name = installed_content::localisation::crt_case_text(
-            &self.country_name(target, true)?,
-            true,
-            true,
-        );
+        let name =
+            installed_content::localisation::crt_case_text(&self.country_name(target, true)?, true, true);
         self.localised(
             b"EFFECT_END_EXILE",
             &[("COUNTRY", Argument::Text(&name))],
@@ -801,7 +983,7 @@ impl Renderer<'_, '_, '_> {
         if world.recorded().faction_leader(source)? != Some(source) {
             return Ok(String::new());
         }
-        let faction = self.faction_name(faction)?;
+        let faction = self.context.text.faction_name_by_id(faction)?;
         self.line(
             b"EFFECT_DISMANTLE_FACTION",
             &[("NAME", Argument::Text(&faction))],
@@ -815,7 +997,7 @@ impl Renderer<'_, '_, '_> {
         let Some((source, faction)) = self.current_faction(scopes)? else {
             return Ok(String::new());
         };
-        let faction = self.faction_name(faction)?;
+        let faction = self.context.text.faction_name_by_id(faction)?;
         let country = self.country_name(source, true)?;
         self.line(
             b"EFFECT_REMOVE_FROM_FACTION_NAME",
@@ -846,7 +1028,7 @@ impl Renderer<'_, '_, '_> {
         let country = self.country_name(target, false)?;
         match faction {
             Some(faction) => {
-                let faction = self.faction_name(faction)?;
+                let faction = self.context.text.faction_name_by_id(faction)?;
                 self.line(
                     b"EFFECT_REMOVE_FROM_FACTION_NAME",
                     &[
@@ -880,7 +1062,7 @@ impl Renderer<'_, '_, '_> {
                 .ok_or("set_faction_name requires the native scalar string")?
         };
         let new = self.localised(name, &[], scopes, true)?;
-        let old = self.faction_name(faction)?;
+        let old = self.context.text.faction_name_by_id(faction)?;
         self.line(
             b"EFFECT_SET_FACTION_NAME",
             &[
@@ -897,7 +1079,7 @@ impl Renderer<'_, '_, '_> {
         let Some((_, faction)) = self.current_faction(scopes)? else {
             return Ok(String::new());
         };
-        let name = self.faction_name(faction)?;
+        let name = self.context.text.faction_name_by_id(faction)?;
         self.line(
             b"EFFECT_SET_FACTION_SPYMASTER",
             &[("NAME", Argument::Text(&name))],
@@ -927,7 +1109,7 @@ impl Renderer<'_, '_, '_> {
         let faction = self.current_faction(scopes)?;
         match faction {
             Some((_, faction)) => {
-                let faction = self.faction_name(faction)?;
+                let faction = self.context.text.faction_name_by_id(faction)?;
                 self.line(
                     b"FACTION_ADD_EXTRA_GOAL_SLOT",
                     &[
@@ -962,7 +1144,7 @@ impl Renderer<'_, '_, '_> {
         let faction = self.current_faction(scopes)?;
         match faction {
             Some((_, faction)) => {
-                let faction = self.faction_name(faction)?;
+                let faction = self.context.text.faction_name_by_id(faction)?;
                 self.localised(
                     b"ADD_FACTION_INITIATIVE_EFFECT",
                     &[

@@ -55,6 +55,10 @@ fn nesting_refusal(name: &str) -> String {
 /// A context object of CContextLocalizationText.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Object {
+    /// Kind 0, SScriptEnvironment: copied event scope and faction +0xC8.
+    FactionEnvironment(Option<u64>),
+    /// Kind 17, selected by 141A83750 -> 1410D0D70.
+    Faction(Option<u64>),
     /// Kind 1: the root event scope, whose country is the view's.
     Event,
     /// Kind 3: a country by canonical slot.
@@ -595,8 +599,14 @@ impl<'a> ScriptedText<'a> {
         at: usize,
         evaluator: &crate::triggers::Evaluator,
     ) -> Result<String, String> {
-        let (result, session) =
-            self.expand_in_description(text, scopes, at, Some(evaluator.variable_session()), None);
+        let (result, session) = self.expand_in_description(
+            text,
+            scopes,
+            at,
+            Some(evaluator.variable_session()),
+            None,
+            None,
+        );
         if let Some(session) = session.as_ref() {
             evaluator.restore_variable_session(session);
         }
@@ -610,6 +620,7 @@ impl<'a> ScriptedText<'a> {
         at: usize,
         session: Option<crate::triggers::VariableSession>,
         parent: Option<&ExpansionScopes>,
+        faction_environment: Option<Option<u64>>,
     ) -> (
         Result<String, String>,
         Option<crate::triggers::VariableSession>,
@@ -630,7 +641,8 @@ impl<'a> ScriptedText<'a> {
         };
         let appended = expanded.append_description(scopes);
         expanded.session.replace(session);
-        let result = self.process(text, 0, expanded, at + appended.offset, Object::Event);
+        let object = faction_environment.map_or(Object::Event, Object::FactionEnvironment);
+        let result = self.process(text, 0, expanded, at + appended.offset, object);
         let session = expanded.session.borrow().clone();
         (result, session)
     }
@@ -661,6 +673,16 @@ impl<'a> ScriptedText<'a> {
         } else {
             self.names.name(country)
         }
+    }
+
+    /// CountryTag_FormatMarkedName (140BA59E0 -> 1406E63A0 -> 1424B6FE0).
+    pub(crate) fn country_marked_name(&self, country: u32) -> Result<String, String> {
+        let tag = self
+            .scopes
+            .tag(country)
+            .ok_or_else(|| format!("Countries lacks marked-name tag for country {country} (140BA59E0)"))?;
+        let name = crt_case_text(&self.names.name_with(country, "_DEF")?, true, true);
+        Ok(format!("\u{12}{tag} {name}"))
     }
 
     /// ccountry_tag::adjective (140BA5560), built at CCountry+0x30 by 140709950.
@@ -819,12 +841,13 @@ impl<'a> ScriptedText<'a> {
         let (property, promotions) = segments.split_last().unwrap_or((&"", &[]));
         let mut object = context;
         let mut active = start;
+        let mut event_active = !matches!(context, Object::FactionEnvironment(_));
         for segment in promotions {
             object = self
-                .promote(object, segment, scopes, &mut active)
+                .promote(object, segment, scopes, &mut active, &mut event_active)
                 .map_err(|reason| format!("[{inner}]: {reason}"))?;
         }
-        self.property(object, property, scopes, active)
+        self.property(object, property, scopes, active, event_active)
             .map_err(|reason| format!("[{inner}]: {reason}"))
     }
 
@@ -836,6 +859,7 @@ impl<'a> ScriptedText<'a> {
         segment: &str,
         scopes: &ExpansionScopes,
         active: &mut usize,
+        event_active: &mut bool,
     ) -> Result<Object, String> {
         // Kind-0 environment selectors retain both carried fields (1410CF710).
         if object == Object::Event
@@ -850,6 +874,28 @@ impl<'a> ScriptedText<'a> {
         }
         // 1. The current kind's table.
         match object {
+            Object::FactionEnvironment(faction) => {
+                if named(segment, "Faction") {
+                    return Ok(Object::Faction(faction)); // 141A83750, selector 1004.
+                }
+                if ["Building", "Province", "Combat"].iter().any(|name| named(segment, name)) {
+                    return Err(format!("{segment}: null faction-environment promotion (141A83750) is not ported"));
+                }
+            }
+            Object::Faction(faction) => {
+                if named(segment, "Leader") {
+                    let Some(faction) = faction else {
+                        return Ok(object);
+                    };
+                    let members = self.frame.complete::<tables::FactionMembers>()
+                        .map_err(|why| why.to_string())?;
+                    let leader = members.iter().find(|row| row.faction == faction && row.ordinal == 0)
+                        .ok_or_else(|| format!("faction {faction} has no first member"))?;
+                    let country = self.scopes.slot(leader.country)
+                        .ok_or("faction leader country link is unresolved")?;
+                    return Ok(Object::Country(country)); // 141A81FD0.
+                }
+            }
             Object::Country(slot) => {
                 if named(segment, "Capital") || named(segment, "OriginalCapital") {
                     return self.capital(slot, named(segment, "OriginalCapital"));
@@ -930,8 +976,12 @@ impl<'a> ScriptedText<'a> {
             ("Prev", current.prev),
         ] {
             if named(segment, name) {
+                if !*event_active && !matches!(object, Object::FactionEnvironment(_)) {
+                    return Err(format!("{segment}: null active event pointer in faction environment (1410CF710) is not ported"));
+                }
                 let chosen = scopes.linked(*active, link, name)?;
                 *active = chosen;
+                *event_active = true;
                 return self.event_object(scopes.scope(chosen).this, name);
             }
         }
@@ -972,7 +1022,9 @@ impl<'a> ScriptedText<'a> {
                 "{segment}: whether it is a country tag (140BA53F0) is unknown: Countries {gap}"
             ));
         }
-        if let Some(id) = self.character_named(object, segment, scopes.scope(*active).this)? {
+        if (*event_active || matches!(object, Object::Country(_)))
+            && let Some(id) = self.character_named(object, segment, scopes.scope(*active).this)?
+        {
             return Ok(Object::Character(id));
         }
         let digits = segment.strip_prefix(['-', '+']).unwrap_or(segment);
@@ -1057,8 +1109,18 @@ impl<'a> ScriptedText<'a> {
         name: &str,
         scopes: &ExpansionScopes,
         active: usize,
+        event_active: bool,
     ) -> Result<String, String> {
         let property = match object {
+            // Kinds 0/17 have no scripted-entry fallback (1410CD900).
+            Object::FactionEnvironment(_) => return Ok(String::new()),
+            Object::Faction(faction) => {
+                return if named(name, "GetName") {
+                    faction.map_or_else(|| Ok("NULL".into()), |id| self.faction_name_by_id(id))
+                } else {
+                    Ok(String::new())
+                };
+            }
             Object::Event => self.date_property(name)?,
             Object::Country(slot) => self.country_property(slot, name, scopes)?,
             Object::State(state) => {
@@ -1101,7 +1163,7 @@ impl<'a> ScriptedText<'a> {
         let Some(text) = property else {
             // A miss: a scripted localisation of that name (1410CE090), else
             // empty text.
-            return self.entry(object, name, scopes, active);
+            return self.entry(object, name, scopes, active, event_active);
         };
         Ok(text)
     }
@@ -1164,7 +1226,7 @@ impl<'a> ScriptedText<'a> {
         } else if is("GetFlag") {
             format!("\u{12}{tag}")
         } else if is("GetNameWithFlag") {
-            format!("\u{12}{tag} {}", upper_first(names("_DEF")?))
+            self.country_marked_name(slot)?
         } else if let Some(&(entry, suffix, cap)) = OLD_NAMES.iter().find(|(entry, ..)| is(entry)) {
             let text = self.old_name(slot, entry, suffix)?;
             if cap { upper_first(text) } else { text }

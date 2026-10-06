@@ -75,6 +75,7 @@ pub mod scripted_localisation;
 pub mod scripted_triggers;
 pub mod settings;
 pub mod special_projects;
+pub mod state_categories;
 pub mod states;
 pub mod static_modifiers;
 pub mod tag_aliases;

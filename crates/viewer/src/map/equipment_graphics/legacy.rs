@@ -138,46 +138,24 @@ pub fn append_candidates_with_priority(
 
 /// 140BC2F10, including archetype registration order for the combined roster.
 pub(crate) fn compare(owner: Country<'_>, left: &Variant<'_>, right: &Variant<'_>) -> Ordering {
-    let upgrades = |variant: &Variant<'_>| {
-        if variant.equipment.has_enabled_module_slots {
+    let order = |variant: &Variant<'_>| dashboard::products::equipment::VariantOrder {
+        archetype_ordinal: variant.equipment.archetype_ordinal,
+        parent_depth: variant.equipment.parent_depth,
+        upgrade_sum: if variant.equipment.has_enabled_module_slots {
             0
         } else {
             variant.upgrade_sum
-        }
+        },
+        creator_reference: variant.creator_reference,
+        creator_slot: variant.creator_slot,
+        id: variant.id,
     };
-    let same_country =
-        |a: i32, a_slot: i32, b: i32, b_slot: i32| a == b || (a != 0 && b != 0 && a_slot == b_slot);
-    let preferred = |variant: &Variant<'_>| {
-        same_country(
-            variant.creator_reference,
-            variant.creator_slot,
-            owner.reference,
-            owner.canonical_slot,
-        )
-    };
-    left.equipment
-        .archetype_ordinal
-        .cmp(&right.equipment.archetype_ordinal)
-        .then_with(|| {
-            right
-                .equipment
-                .parent_depth
-                .cmp(&left.equipment.parent_depth)
-        })
-        .then_with(|| upgrades(right).cmp(&upgrades(left)))
-        .then_with(|| preferred(right).cmp(&preferred(left)))
-        .then_with(|| {
-            if same_country(
-                left.creator_reference,
-                left.creator_slot,
-                right.creator_reference,
-                right.creator_slot,
-            ) {
-                right.id.cmp(&left.id)
-            } else {
-                left.creator_slot.cmp(&right.creator_slot)
-            }
-        })
+    dashboard::products::equipment::compare_variants(
+        owner.reference,
+        owner.canonical_slot,
+        order(left),
+        order(right),
+    )
 }
 
 /// Ship-type sub-units rank by the parent-chain priority, others by

@@ -148,12 +148,29 @@ impl Renderer<'_, '_, '_> {
     pub(in crate::effect_description) fn set_state_category(
         &self,
         item: &Item,
+        scopes: Scopes,
     ) -> Result<String, String> {
-        let category = item.value.c_str().map_err(|why| why.to_string())?;
-        // vf6@14030A5F0 rejects undeclared categories before own@1403184E0.
-        Err(format!(
-            "state category {category}: no installed-content category reader (1413AFAC0 database, definition validity +0x10; native reader 14030A5F0)"
-        ))
+        let category = installed_content::parser::c_string(scalar_operand(item)?);
+        let database = self
+            .context
+            .content
+            .state_categories
+            .ok_or_else(|| self.content_gap("state categories"))?;
+        // vf6@14030A5F0 rejects the database null object (+0x10 == 0).
+        if database.find(category)?.is_none() {
+            return Err(format!(
+                "invalid state category {} (14030A5F0)",
+                String::from_utf8_lossy(category)
+            ));
+        }
+        // Own@1403184E0 localises the operand's spelling; no expansion, then LF.
+        let category = self.localised(category, &[], scopes, false)?;
+        self.line(
+            b"EFFECT_SET_STATE_CATEGORY",
+            &[("CATEGORY", Argument::Text(&category))],
+            scopes,
+            false,
+        )
     }
 
     pub(in crate::effect_description) fn start_resistance(
@@ -196,11 +213,23 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
     ) -> Result<String, String> {
         // 14030B010 defaults amount=-1; scalar vf25@14031B120 writes amount.
+        let fields = children(item);
+        // ReadEffect@14031B3B0 reuses operands whose reader retains prior flags.
+        for name in ["amount", "days", "occupied", "occupier"] {
+            if fields
+                .iter()
+                .filter(|field| field.keyword_is(name))
+                .nth(1)
+                .is_some()
+            {
+                return Err(format!(
+                    "repeated resistance-target operand {name} needs retained CScopedVariable reader flags (140539440/140539B50)",
+                ));
+            }
+        }
         let amount = match item.value.scalar() {
             Some(amount) => Some(amount),
-            None => field(children(item), "amount")
-                .map(scalar_operand)
-                .transpose()?,
+            None => field(fields, "amount").map(scalar_operand).transpose()?,
         };
         let amount = match amount {
             Some(amount) => self.scoped_value(amount, scopes)?,
@@ -209,7 +238,62 @@ impl Renderer<'_, '_, '_> {
         if amount == 0 {
             return Ok(String::new());
         }
+        // Own@1403144B0 evaluates days and both countries only after nonzero amount.
+        let days = field(fields, "days")
+            .map(|item| self.scoped_value(scalar_operand(item)?, scopes))
+            .transpose()?
+            .unwrap_or(0);
+        let days = crate::triggers::fixed_round(days) as i32; // 1424D8760.
+        let country = |name| -> Result<u32, String> {
+            field(fields, name)
+                .map(|item| {
+                    self.evaluator()?
+                        .scoped_country(scalar_operand(item)?, scopes)
+                })
+                .transpose()
+                .map(|country| country.flatten().unwrap_or(0))
+        };
+        let occupied = country("occupied")?;
+        let occupier = country("occupier")?;
+        let key: &[u8] = match ((occupied as i32) > 0, (occupier as i32) > 0) {
+            (false, false) => b"EFFECT_ADD_RESISTANCE_TARGET",
+            (true, false) => b"EFFECT_ADD_RESISTANCE_TARGET_WITH_FROM",
+            (false, true) => b"EFFECT_ADD_RESISTANCE_TARGET_WITH_TARGET",
+            (true, true) => b"EFFECT_ADD_RESISTANCE_TARGET_WITH_FROM_AND_TARGET",
+        };
+        // 142257CE0 uses wrapping fixed5 multiplication even at scale 1;
+        // positive is bad, precision 1, '%' suffix (142928DD4), no ratio scaling.
+        let amount = amount.wrapping_mul(100_000) / 100_000;
+        let value = if amount == 0 {
+            "\u{11}Y+0.0%\u{11}!".to_owned() // Zero also gets '+' (142719C4C).
+        } else {
+            self.occupation_value(amount, false, scopes)?
+        };
         // Own@1403144B0 constructs both marked-country arguments in every branch.
-        Err("nonzero amount needs the shared CountryTag_FormatMarkedName@140BA59E0 helper (0x12 + tag + space + capitalized definite name), including country-zero arguments".into())
+        let occupied = self.context.text.country_marked_name(occupied)?; // 140BA59E0.
+        let occupier = self.context.text.country_marked_name(occupier)?;
+        let mut text = self.localised(
+            key,
+            &[
+                ("VALUE", Argument::Text(&value)),
+                ("OCCUPIER", Argument::Text(&occupier)),
+                ("OCCUPIED", Argument::Text(&occupied)),
+                ("NUM_DAYS", Argument::Int32(days)), // 1403091F0.
+            ],
+            scopes,
+            false,
+        )?;
+        if days > 0 {
+            text.push_str(" ("); // 14270C624.
+            text.push_str(&self.localised(
+                b"DURATION_DAYS",
+                &[("NUM", Argument::Int32(days))], // 142727638.
+                scopes,
+                false,
+            )?);
+            text.push(')');
+        }
+        text.push('\n'); // No expansion.
+        Ok(text)
     }
 }

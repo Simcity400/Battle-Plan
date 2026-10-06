@@ -50,6 +50,91 @@ pub(super) enum TemplateDescription {
 }
 
 impl Renderer<'_, '_, '_> {
+    pub(super) fn units_change_template(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let Scope::Unit(reference) = scopes.this else {
+            return Ok(String::new());
+        };
+        if reference == 0 {
+            return Ok(String::new());
+        }
+        // 14045DB70 -> ResolveArmy 140529260: Divisions witnesses CArmy.
+        let world = self.context.world()?;
+        let owner = world.unit(reference)?.logical_owner; // CUnit+0x1E0, not roster +0x1D8.
+        let country = if owner == 0 {
+            0 // 140BA56A0 maps only raw zero directly to reserved country zero.
+        } else {
+            world.slot(owner).ok_or_else(|| {
+                format!(
+                    "CountryLinks lacks change-division-template logical owner {owner} (14045DB70)"
+                )
+            })?
+        };
+        if country == 0 {
+            return Err("reserved CCountry[0] division-template roster is not recorded (14045DB70/1406C29B0)".into());
+        }
+        let template = string_field(children(item), "division_template")?; // ReadStringInto 1403B1020.
+        if !world.has_template(country, template.as_bytes())? {
+            return Ok(String::new()); // 1406C29B0: absent template precedes the unit-name read.
+        }
+        let name = self.unit_name(reference)?;
+        // The exact comparison already established GetDisplayName@140B91170's bytes.
+        self.localised(
+            b"CHANGE_DIV_TEMPLATE_EFFECT",
+            &[
+                ("TEMPLATE", Argument::Text(template)),
+                ("DIV", Argument::Text(&name)),
+            ],
+            scopes,
+            false,
+        ) // 14045DB70: plain localisation, no LF.
+    }
+
+    pub(super) fn units_destroy_unit(&self, scopes: Scopes) -> Result<String, String> {
+        let Scope::Unit(reference) = scopes.this else {
+            return Ok(String::new());
+        };
+        if reference == 0 {
+            return Ok(String::new());
+        }
+        // 14045DF90 -> ResolveUnit 1405294C0; the effect operand is unused.
+        let name = self.unit_name(reference)?;
+        self.line(
+            b"EFFECT_UNIT_DESTROY_UNIT",
+            &[("NAME", Argument::Text(&name))],
+            scopes,
+            true,
+        ) // 14045DF90: caller-scope expansion (1410CF560), then LF.
+    }
+
+    pub(super) fn units_set_organization(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let Scope::Unit(reference) = scopes.this else {
+            return Ok(String::new());
+        };
+        if reference == 0 {
+            return Ok(String::new());
+        }
+        self.context.world()?.unit(reference)?; // ResolveArmy 140529260, before operand evaluation.
+        let value = if scope_selector(item).is_some() {
+            0 // 14137DCD0 takes selectors before assigning the default-zero operand.
+        } else {
+            self.scoped_value(scalar_operand(item)?, scopes)?
+        };
+        self.localised(
+            b"EFFECT_SET_UNIT_ORGANIZATION",
+            &[("VAL", Argument::Fixed5(value))],
+            scopes,
+            false,
+        ) // 14045E6D0: raw type-9 value, no clamp, expansion or LF.
+    }
+
     fn units_equipment(&self) -> Result<&installed_content::equipment::Database, String> {
         self.context
             .content
@@ -261,7 +346,10 @@ impl Renderer<'_, '_, '_> {
         ) // 14049CAA0 ignores old_prioritised; aliases share one operand.
     }
 
-    fn units_variant_name(&self, variant: &VariantDefinitionRow) -> Result<String, String> {
+    fn units_variant_raw(
+        &self,
+        variant: &VariantDefinitionRow,
+    ) -> Result<crate::products::equipment::RawVariant, String> {
         let frame = self.context.text.frame();
         let empty = crate::products::equipment::Tags::new(&[], &[], None);
         let raw = if variant.display_name.is_empty() {
@@ -297,8 +385,12 @@ impl Renderer<'_, '_, '_> {
         } else {
             crate::products::equipment::raw_variant(variant, frame.hour, &empty, &[])
         };
+        Ok(raw)
+    }
+
+    fn units_variant_name(&self, variant: &VariantDefinitionRow) -> Result<String, String> {
         crate::products::equipment::variant_names(
-            &raw,
+            &self.units_variant_raw(variant)?,
             Some(&EquipmentTexts(self.context.localisation)),
         )
         .0
@@ -432,16 +524,285 @@ impl Renderer<'_, '_, '_> {
         country: u32,
         scopes: Scopes,
     ) -> Result<String, String> {
+        self.units_short_name_for_tag(name, self.tag(country)?, scopes)
+    }
+
+    fn units_short_name_for_tag(
+        &self,
+        name: &[u8],
+        tag: &str,
+        scopes: Scopes,
+    ) -> Result<String, String> {
         let name = parser::text(name).map_err(|why| why.to_string())?;
         let short = format!("{name}_short");
-        let country_short = format!("{}_{short}", self.tag(country)?);
+        let country_short = format!("{tag}_{short}");
         if self.context.localisation.get(&country_short).is_some() {
             self.localised(country_short.as_bytes(), &[], scopes, false)
         } else if self.context.localisation.get(&short).is_some() {
             self.localised(short.as_bytes(), &[], scopes, false)
         } else {
-            self.units_country_equipment_name(name.as_bytes(), self.tag(country)?, scopes)
+            self.units_country_equipment_name(name.as_bytes(), tag, scopes)
         } // LocalizeShortNameForCountry 140BBAA50.
+    }
+
+    fn units_enabled_module_slots(&self, index: usize) -> Result<bool, String> {
+        let database = self.units_equipment()?;
+        let kind = &database.equipment[index];
+        if kind.module_slots.is_empty() {
+            return Ok(false);
+        }
+        let dlc = self
+            .context
+            .text
+            .frame()
+            .complete::<tables::SimulationFeatures>()
+            .map_err(|why| why.to_string())?
+            .first()
+            .ok_or("SimulationFeatures lacks the DLC mask (140C88540)")?
+            .dlc_mask;
+        let mask = if dlc & (1 << 4) != 0 { 0x80004001C0 } else { 0 }
+            | if dlc & (1 << 7) != 0 { 4 } else { 0 }
+            | if dlc & (1 << 8) != 0 { 0x1D0026FC00 } else { 0 };
+        Ok(database.category(kind) & mask != 0) // 140C88540 / 140F72890.
+    }
+
+    fn units_variant_order(
+        &self,
+        variant: &VariantDefinitionRow,
+        index: usize,
+    ) -> Result<crate::products::equipment::VariantOrder, String> {
+        let database = self.units_equipment()?;
+        let kind = &database.equipment[index];
+        let archetype = kind
+            .archetype
+            .ok_or("equipment variant has a null archetype (140BC2F10)")?;
+        let frame = self.context.text.frame();
+        let upgrade_sum = if self.units_enabled_module_slots(index)? {
+            0
+        } else {
+            frame
+                .complete::<tables::VariantUpgrades>()
+                .map_err(|why| why.to_string())?
+                .iter()
+                .filter(|row| row.variant == variant.id)
+                .fold(0_i32, |sum, row| sum.wrapping_add(i32::from(row.level)))
+        }; // RebuildDerivedStats 140BD0D50 -> 140BD14BD.
+        let creator = variant.creator_link as i32;
+        let creator_slot = if creator > 0 {
+            self.context
+                .world()?
+                .slot(variant.creator_link)
+                .ok_or("CountryLinks lacks variant creator (140BC2F10)")? as i32
+        } else {
+            creator
+        };
+        Ok(crate::products::equipment::VariantOrder {
+            archetype_ordinal: archetype,
+            parent_depth: kind.depth,
+            upgrade_sum,
+            creator_reference: creator,
+            creator_slot,
+            id: (variant.id >> 32) as u32,
+        })
+    }
+
+    pub(super) fn equipment_list_description(
+        &self,
+        entries: &[Item],
+        seller: u32,
+        scopes: Scopes,
+        separator: &str,
+        key: &[u8],
+    ) -> Result<String, String> {
+        // 140306B70 / 140304C20: only resolved variants evaluate their amounts.
+        let mut pool: Vec<(usize, &VariantDefinitionRow, i64)> = Vec::new();
+        for entry in entries.iter().filter(|entry| entry.keyword_is("equipment")) {
+            let fields = children(entry);
+            let index = self.units_equipment_type(fields, &["type"], scopes)?;
+            let producer = field(fields, "producer")
+                .map(|item| {
+                    self.evaluator()?
+                        .scoped_country(scalar_operand(item)?, scopes)
+                })
+                .transpose()?;
+            let Some(index) = index else { continue };
+            if producer == Some(None) {
+                continue; // Invalid explicit producer.
+            }
+            let country = producer.flatten().unwrap_or(seller);
+            let database = self.units_equipment()?;
+            let kind = &database.equipment[index];
+            let world = self.context.world()?;
+            let mut candidates = Vec::new();
+            let raw_name = field(fields, "variant_name")
+                .map(scalar_operand)
+                .transpose()?
+                .unwrap_or_default();
+            let raw_name = parser::c_string(raw_name);
+            let named = !raw_name.is_empty(); // Parsed flag +0x1F0 (140539B50).
+            if !kind.is_archetype
+                && [
+                    b"token:".as_slice(),
+                    b"mtth:",
+                    b"mio:",
+                    b"sp:",
+                    b"constant:",
+                ]
+                .iter()
+                .any(|prefix| raw_name.starts_with(prefix))
+            {
+                return Err(format!(
+                    "variant_name {} uses an unported special-prefix stored +0xB0 text (140539B50/140304C20)",
+                    String::from_utf8_lossy(raw_name),
+                ));
+            }
+            // +0xB0 retains the spelling after these two prefixes, before
+            // variable-name case folding; it is not evaluated (140539B50).
+            let name = raw_name
+                .strip_prefix(b"var:")
+                .or_else(|| raw_name.strip_prefix(b"temp_var:"))
+                .unwrap_or(raw_name);
+            let name = if kind.is_archetype {
+                "" // 140304C20 ignores the variant-name operand for archetypes.
+            } else {
+                parser::text(name).map_err(|why| why.to_string())?
+            };
+            let mut roster = self.units_available_variants(country)?;
+            if !kind.is_archetype && !named {
+                roster.reverse();
+            }
+            for variant in roster {
+                let variant = variant.ok_or(
+                    "AvailableEquipmentVariants references an absent VariantDefinitions row",
+                )?;
+                let token = world
+                    .token(variant.equipment_token)?
+                    .ok_or("LexicalTokens lacks the available variant equipment token")?;
+                let at = database.get(token).ok_or(
+                    "available variant equipment is absent from recorded content (140304C20)",
+                )?;
+                if kind.is_archetype {
+                    if database.equipment[at].archetype == Some(index) {
+                        candidates.push((variant, at));
+                    }
+                } else if at == index {
+                    if named {
+                        let creator = producer.flatten().unwrap_or(0);
+                        let creator_raw = if creator == 0 {
+                            0
+                        } else {
+                            world
+                                .raw_country(creator)
+                                .ok_or("Countries lacks variant producer (140E53410)")?
+                        };
+                        if (variant.origin_link as i32) > 0
+                            || (variant.creator_link != creator_raw
+                                && (variant.creator_link == 0
+                                    || creator == 0
+                                    || world.slot(variant.creator_link) != Some(creator)))
+                        {
+                            continue;
+                        }
+                        let mut base = (*variant).clone();
+                        base.append_variant_name = 0;
+                        if self.units_variant_name(&base)? != name {
+                            continue;
+                        }
+                        candidates.push((variant, at));
+                        break; // 140E53410: first exact creator/display-name match.
+                    }
+                    candidates.push((variant, at));
+                    break; // 140E53740, flag=1: first match in reverse roster.
+                }
+            }
+            let selected = if kind.is_archetype && candidates.len() > 1 {
+                let owner = world
+                    .raw_country(country)
+                    .ok_or("Countries lacks archetype roster owner (140E53870)")?
+                    as i32;
+                let mut ranked = candidates
+                    .iter()
+                    .map(|&(variant, at)| {
+                        self.units_variant_order(variant, at)
+                            .map(|order| (variant, at, order))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                ranked.sort_by(|left, right| {
+                    crate::products::equipment::compare_variants(
+                        owner,
+                        country as i32,
+                        left.2,
+                        right.2,
+                    )
+                }); // StableSortForCountry 140E46F30, lifted viewer comparator 140BC2F10.
+                ranked.first().map(|&(variant, at, _)| (variant, at))
+            } else {
+                candidates.first().copied()
+            };
+            let Some((variant, at)) = selected else {
+                continue;
+            };
+            let amount = field(fields, "amount")
+                .map(|item| self.scoped_value(scalar_operand(item)?, scopes))
+                .transpose()?
+                .unwrap_or(0);
+            let archetype = database.equipment[at]
+                .archetype
+                .ok_or("equipment pool has a null archetype (140FF7A30)")?;
+            if let Some((_, prior, quantity)) =
+                pool.iter_mut().find(|(kind, _, _)| *kind == archetype)
+            {
+                if prior.id != variant.id {
+                    return Err("equipment pool comparison needs unrecorded CEquipmentVariant.version u8 +0x41C for distinct variants of one archetype (140FF9650 -> 140BC2A00/140BC2AC0)".into());
+                }
+                *quantity = quantity
+                    .wrapping_add(amount)
+                    .clamp(-0x53e2d620fb40, 0x53e2d620fb40);
+            } else {
+                // New archetypes append their first item (140FF7A30/140FF7BE0).
+                pool.push((
+                    archetype,
+                    variant,
+                    amount.clamp(-0x53e2d620fb40, 0x53e2d620fb40),
+                ));
+            }
+        }
+        let mut lines = Vec::new();
+        for (archetype, variant, quantity) in pool {
+            let amount = quantity.div_euclid(100_000) as i32;
+            if amount <= 0 {
+                continue; // 1413A8A20: floor, int32, positive only.
+            }
+            let database = self.units_equipment()?;
+            let kind = self.units_short_equipment_name(
+                &database.equipment[archetype].name,
+                self.context.perspective,
+                scopes,
+            )?; // LocalizeShortNameWithGameStateCountry 140BBA950.
+            let raw = self.units_variant_raw(variant)?;
+            let name = if raw.display_name.is_empty() {
+                self.units_short_name_for_tag(
+                    raw.token.as_bytes(),
+                    raw.name_tag
+                        .as_deref()
+                        .ok_or("variant naming tag is unavailable")?,
+                    scopes,
+                )?
+            } else {
+                raw.display_name
+            }; // GetShortDisplayName 140BCB250, without suffix.
+            lines.push(self.localised(
+                key,
+                &[
+                    ("EQUIPMENT", Argument::Text(&name)),
+                    ("TYPE", Argument::Text(&kind)), // 142734318.
+                    ("AMOUNT", Argument::Int32(amount)),
+                ],
+                scopes,
+                false,
+            )?);
+        }
+        Ok(lines.join(separator))
     }
 
     fn units_equipment_role(
@@ -546,23 +907,7 @@ impl Renderer<'_, '_, '_> {
             }
             true
         };
-        let modular = if kind.module_slots.is_empty() {
-            false
-        } else {
-            let dlc = self
-                .context
-                .text
-                .frame()
-                .complete::<tables::SimulationFeatures>()
-                .map_err(|why| why.to_string())?
-                .first()
-                .ok_or("SimulationFeatures lacks the DLC mask (140F72890)")?
-                .dlc_mask;
-            let mask = if dlc & (1 << 4) != 0 { 0x80004001C0 } else { 0 }
-                | if dlc & (1 << 7) != 0 { 4 } else { 0 }
-                | if dlc & (1 << 8) != 0 { 0x1D0026FC00 } else { 0 };
-            database.category(kind) & mask != 0
-        }; // 140C88540 / 140F72890.
+        let modular = self.units_enabled_module_slots(index)?;
         let type_name = self.units_short_equipment_name(
             if modular { &family.name } else { &kind.name },
             country,

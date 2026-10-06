@@ -416,9 +416,12 @@ impl<'a> ScriptedText<'a> {
         name: &str,
         scopes: &ExpansionScopes,
         active: usize,
+        event_active: bool,
     ) -> Result<String, String> {
         if scopes.needs_large_stack() {
-            return self.on_large_stack(scopes, |scopes| self.entry(object, name, scopes, active));
+            return self.on_large_stack(scopes, |scopes| {
+                self.entry(object, name, scopes, active, event_active)
+            });
         }
         if !self.content.names.unknown.is_empty() {
             return Err(format!(
@@ -430,7 +433,7 @@ impl<'a> ScriptedText<'a> {
             return Ok(String::new());
         };
         let previous_len = scopes.scopes.borrow().len();
-        let at = bound_scope(object, scopes, active);
+        let at = bound_scope(object, scopes, active, event_active);
         let bare = object != Object::Event;
         let repeated = scopes
             .active
@@ -709,22 +712,30 @@ pub(crate) fn state_name_from(
 /// (+0x20), and the active scope as PREV (+0x28); a country or state is set
 /// with clearing (14052DD00, 14052ECE0 with 1 -> 14052F3F0), so that scope
 /// carries no character.
-fn bound_scope(object: Object, scopes: &ExpansionScopes, active: usize) -> usize {
+fn bound_scope(object: Object, scopes: &ExpansionScopes, active: usize, event_active: bool) -> usize {
     let this = match object {
         Object::Event => return active,
         Object::Country(slot) => EventObject::Country(slot),
         Object::State(id) => EventObject::State(id.unwrap_or(crate::triggers::NULL_STATE)),
         Object::Character(id) => EventObject::Character(id),
-        Object::Province(_) | Object::Terrain(_) => {
+        Object::Province(_) | Object::Terrain(_) | Object::FactionEnvironment(_) | Object::Faction(_) => {
             unreachable!("1410CD900 does not bind these text kinds")
         }
     };
-    let current = scopes.scope(active);
+    // 1410CD900 leaves the fresh 1410CDDF0 scope's links alone when +0x378
+    // is null, including a country promoted from the faction environment.
+    let current = if event_active {
+        scopes.scope(active)
+    } else {
+        EventScope::of(this)
+    };
     let carried = |link| match link {
-        Link::Itself => Link::Scope(active),
+        Link::Itself if event_active => Link::Scope(active),
         other => other,
     };
-    let distance = if this != current.this {
+    let distance = if !event_active {
+        None
+    } else if this != current.this {
         Some(1)
     } else {
         scopes.prev_distance.borrow()[active].map(|distance| distance + 1)
@@ -735,7 +746,11 @@ fn bound_scope(object: Object, scopes: &ExpansionScopes, active: usize) -> usize
         this,
         root: carried(current.root),
         from: carried(current.from),
-        prev: Link::Scope(active),
+        prev: if event_active {
+            Link::Scope(active)
+        } else {
+            Link::Itself
+        },
         random_seed: super::random::scope_seed(424242),
         random_counter: super::random::scope_counter(424242),
         random_seed_refusal: None, // 1410CDDF0 constructs a known fresh seed.
@@ -808,7 +823,7 @@ fn entry_invocations_keep_the_original_bounds_of_unresolved_links() {
         bare: false,
         variables: scopes.variables.get(),
     };
-    bound_scope(Object::Country(1), &scopes, 0);
+    bound_scope(Object::Country(1), &scopes, 0, true);
     assert!(!entry.matches("X", &scopes, 0, false));
 }
 

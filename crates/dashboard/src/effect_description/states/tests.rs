@@ -5,6 +5,96 @@ use EventObject::{Country as C, State as S};
 use replay::{frame::TableView, rows::*};
 
 #[test]
+fn state_category_description_uses_cached_validity_and_operand_spelling() {
+    let mut fixture = Fixture::new();
+    let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/test.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+        ),
+        (
+            "common/state_category/test.txt",
+            "state_categories={Syn_Category={local_building_slots=7} missing_loc={} Syn_Category={local_building_slots=9}}",
+        ),
+        (
+            "localisation/test_l_english.yml",
+            concat!(
+                "\u{feff}l_english:\n",
+                " Syn_Category:0 \"Declared [This.GetName]\"\n",
+                " SYN_CATEGORY:0 \"Operand\"\n",
+                " EFFECT_SET_STATE_CATEGORY:0 \"Category $CATEGORY$ [This.GetName]\"\n",
+            ),
+        ),
+    ]);
+    fixture.catalogue = catalogue;
+    let scripted = fixture.catalogue.scripted_content().unwrap();
+    scripted.set_synthetic_environment(Default::default());
+    let cached = scripted.effects().unwrap();
+    std::fs::write(
+        folder.0.join("common/state_category/test.txt"),
+        "state_categories={replacement={}}",
+    )
+    .unwrap();
+    assert!(std::ptr::eq(cached, scripted.effects().unwrap()));
+    for (body, object, expected, refusal) in [
+        (
+            "set_state_category=Syn_Category",
+            S(1),
+            "Category Declared [This.GetName] [This.GetName]\n",
+            None,
+        ),
+        (
+            "set_state_category=SYN_CATEGORY",
+            S(1),
+            "Category Operand [This.GetName]\n",
+            None,
+        ),
+        (
+            "set_state_category=syn_category",
+            C(1),
+            "Category syn_category [This.GetName]\n",
+            None,
+        ),
+        (
+            "set_state_category=missing_loc",
+            S(999),
+            "Category missing_loc [This.GetName]\n",
+            None,
+        ),
+        (
+            "set_state_category=undefined",
+            S(1),
+            "",
+            Some("invalid state category undefined"),
+        ),
+        (
+            "set_state_category=replacement",
+            S(1),
+            "",
+            Some("invalid state category replacement"),
+        ),
+        (
+            "set_state_category={}",
+            S(1),
+            "",
+            Some("requires a scalar operand"),
+        ),
+    ] {
+        let mut scopes = EventScopes::new(vec![EventScope::of(object)]);
+        let out = fixture.render(body, &mut scopes, cached.view(None));
+        assert_eq!(out.text, expected, "{body}: {:?}", out.refusals);
+        match refusal {
+            Some(why) => assert!(
+                out.refusals.keys().any(|key| key.contains(why)),
+                "{body}: {:?}",
+                out.refusals
+            ),
+            None => assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals),
+        }
+    }
+}
+
+#[test]
 fn state_content_descriptions_use_cached_native_names() {
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
@@ -616,6 +706,11 @@ fn native_states_branches() {
                 ("EFFECT_INIT_RESISTANCE", "Init"),
                 ("EFFECT_INIT_RESISTANCE_BY_COUNTRY", "Init $COUNTRY$"),
                 ("EFFECT_SUPPLY_UNITS", "Supply $NUM|2$"),
+                (
+                    "EFFECT_ADD_RESISTANCE_TARGET_WITH_FROM_AND_TARGET",
+                    "Target $VALUE$/$OCCUPIER$/$OCCUPIED$/$NUM_DAYS$ [This.GetName]",
+                ),
+                ("DURATION_DAYS", "$NUM$ days [This.GetName]"),
                 ("EFFECT_GO_TO_PROVINCE", "Go $STATE$"),
                 ("EFFECT_SET_PROVINCE_CONTROLLER", "Control $STATE$"),
                 ("EFFECT_GIVE_RESOURCE_RIGHTS", "Rights $RECEIVER$/$STATE$"),
@@ -962,36 +1057,82 @@ fn native_states_branches() {
             "set_state_category=SYN_CATEGORY",
             S(1),
             "",
-            Some("no installed-content category reader"),
+            Some("state categories content unavailable"),
         ),
         ("supply_units=3.25", S(1), "Supply 3.25", None),
         ("supply_units=ROOT", S(1), "Supply 0.00", None),
         ("add_resistance_target=0", S(1), "", None),
         (
-            "add_resistance_target={amount=0 days=unrecorded occupied=unrecorded}",
+            "add_resistance_target={amount=0 days=random occupied=unrecorded}",
             S(1),
             "",
             None,
         ),
-        ("add_resistance_target={}", S(1), "", Some("140BA59E0")),
-        ("add_resistance_target=5", S(1), "", Some("140BA59E0")),
+        (
+            "add_resistance_target={}",
+            S(1),
+            "",
+            Some("marked-name tag for country 0"),
+        ),
+        (
+            "add_resistance_target=5",
+            S(1),
+            "",
+            Some("marked-name tag for country 0"),
+        ),
         (
             "add_resistance_target={amount=1 occupied=AAA}",
             S(1),
             "",
-            Some("140BA59E0"),
+            Some("marked-name tag for country 0"),
         ),
         (
             "add_resistance_target={amount=1 occupier=BBB}",
             S(1),
             "",
-            Some("140BA59E0"),
+            Some("marked-name tag for country 0"),
         ),
         (
             "add_resistance_target={amount=1 occupied=AAA occupier=BBB}",
             S(1),
+            "Target \u{11}R+1.0%\u{11}!/\u{12}BBB Beta/\u{12}AAA Alpha/0 [This.GetName]\n",
+            None,
+        ),
+        (
+            "add_resistance_target={occupied=AAA occupier=BBB days=2.5}",
+            S(1),
+            "Target \u{11}G-1.0%\u{11}!/\u{12}BBB Beta/\u{12}AAA Alpha/3 [This.GetName] (3 days [This.GetName])\n",
+            None,
+        ),
+        (
+            "add_resistance_target={amount=-1.25 occupied=BBB occupier=AAA days=-2.5}",
+            C(1),
+            "Target \u{11}G-1.2%\u{11}!/\u{12}AAA Alpha/\u{12}BBB Beta/-3 [This.GetName]\n",
+            None,
+        ),
+        (
+            "add_resistance_target={amount=var:syn occupied=event_target:syn_country occupier=controller days=var:syn}",
+            S(1),
+            "Target \u{11}R+2.4%\u{11}!/\u{12}AAA Alpha/\u{12}BBB Beta/2 [This.GetName] (2 days [This.GetName])\n",
+            None,
+        ),
+        (
+            "add_resistance_target={amount=-92233720368547.75808 occupied=AAA occupier=BBB}",
+            S(1),
+            "Target \u{11}Y+0.0%\u{11}!/\u{12}BBB Beta/\u{12}AAA Alpha/0 [This.GetName]\n",
+            None,
+        ),
+        (
+            "add_resistance_target={amount=1 amount=0 occupied=AAA occupier=BBB}",
+            S(1),
             "",
-            Some("140BA59E0"),
+            Some("repeated resistance-target operand amount"),
+        ),
+        (
+            "add_resistance_target={amount=1 days=random occupied=AAA occupier=BBB}",
+            S(1),
+            "",
+            Some("random draws from the store's random state"),
         ),
         (
             "add_resistance_target={amount=0 add_political_power=1}",

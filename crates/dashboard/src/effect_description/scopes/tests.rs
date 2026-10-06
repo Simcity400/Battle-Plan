@@ -189,6 +189,23 @@ fn random_iterator_advances_singletons_and_subset_uses_swap_removal() {
 }
 
 #[test]
+fn random_country_labels_share_native_marked_definite_names() {
+    let fixture = Fixture::new();
+    for (tag, name) in [("AAA", "Alpha"), ("BBB", "Beta")] {
+        let out = fixture.render(
+            &format!("random_country={{limit={{tag={tag}}} army_experience=2}}"),
+            &mut fresh(),
+            Content::default(),
+        );
+        assert_eq!(
+            out.text,
+            format!("(\u{11}Y\u{12}{tag} {name}\u{11}!): XP2\n")
+        );
+        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    }
+}
+
+#[test]
 fn unrecorded_subjects_refuse_the_subject_roster() {
     let mut fixture = Fixture::new();
     let TableView::Complete(TableRows::CountryAppearance(rows)) =
@@ -577,6 +594,8 @@ fn operand_gaps_and_zero_reach_are_named_once_by_native_class() {
             country: 100,
             id: 2,
             token: b"ideology".to_vec(),
+            name: b"TIP".to_vec(),
+            long_name: b"VARIABLE_TIP".to_vec(),
             ..Default::default()
         }]));
     *fixture.frame.tables[TableId::PartyLeaders.index()] =
@@ -600,13 +619,35 @@ fn operand_gaps_and_zero_reach_are_named_once_by_native_class() {
             .any(|why| why.contains("CCountryLeader current ideology pointer +0x140"))
     );
     assert_eq!(graph.scopes[0].random_seed, 1);
-    let out = fixture.render(
-        "set_politics={ruling_party=ideology long_name=TIP}",
-        &mut fresh(),
-        Content::default(),
-    );
-    assert_eq!(out.text, "Politics\nideology=tip\nParty tip\n");
-    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    let mut names = installed_content::key_names::KeyNames::default();
+    names.counts.ideologies.insert(b"ideology".to_vec());
+    if let TableView::Complete(TableRows::Politics(rows)) =
+        &mut *fixture.frame.tables[TableId::Politics.index()]
+    {
+        rows.iter_mut().find(|row| row.country == 100).unwrap().ruling_party = Some(2);
+    }
+    for (body, country, expected) in [
+        ("ruling_party=ideology long_name=TIP", 1, "Politics\nideology=tip\nParty tip\n"),
+        ("ruling_party=2 long_name=TIP", 1, "Politics\nideology=tip\nParty tip\n"),
+        ("ruling_party=ROOT long_name=TIP", 1, "Politics\nideology=tip\nParty tip\n"),
+        ("ruling_party=ideology", 1, "Politics\nParty tip\n"),
+        // 1403A0010 bypasses FindPartyByIdeology entirely with a long-name override.
+        ("ruling_party=ideology long_name=TIP", 2, "Politics\nideology=tip\nParty tip\n"),
+    ] {
+        let mut scopes = crate::scripted_text::EventScopes::new(vec![
+            crate::scripted_text::EventScope::of(crate::scripted_text::EventObject::Country(country)),
+        ]);
+        let out = fixture.render(
+            &format!("set_politics={{{body}}}"),
+            &mut scopes,
+            Content {
+                key_names: Some(&names),
+                ..Default::default()
+            },
+        );
+        assert_eq!(out.text, expected, "{body}: {:?}", out.refusals);
+        assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals);
+    }
 }
 
 #[test]

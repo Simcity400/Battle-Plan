@@ -954,9 +954,9 @@ impl Renderer<'_, '_, '_> {
         let text = match scope {
             Scope::Country(0) => String::new(),
             Scope::Country(country) => {
-                let name = self.country_name(country, false)?;
-                let tag = self.tag(country)?;
                 if list {
+                    let name = self.country_name(country, false)?;
+                    let tag = self.tag(country)?;
                     return self.localised(
                         b"EFFECT_LIST_COUNTRY",
                         &[
@@ -967,7 +967,7 @@ impl Renderer<'_, '_, '_> {
                         false,
                     );
                 }
-                format!("{name} \u{12}{tag}") // FormatMarkedName@140BA59E0.
+                self.context.text.country_marked_name(country)? // 140BA59E0.
             }
             Scope::State(0) => String::new(),
             Scope::State(id) => self.state_name(id)?,
@@ -1436,42 +1436,7 @@ impl Renderer<'_, '_, '_> {
         let mut text = self.line(b"EFFECT_SET_POLITICS", &[], scopes, false)?; // 14036C090 -> 1403A0010.
         if let Some(ideology) = field(items, "ruling_party").and_then(|item| item.value.scalar()) {
             let country = self.current_country(scopes)?;
-            let world = self.context.world()?;
-            let parties = world
-                .frame()
-                .complete::<tables::PoliticalParties>()
-                .map_err(|why| why.to_string())?;
-            // ResolveIdeologySpecifier@1402EE8E0: cached token, numeric
-            // database id, then decoded country's ruling ideology.
-            let definition = if let Some(party) = parties
-                .iter()
-                .find(|row| row.token.eq_ignore_ascii_case(ideology))
-            {
-                party.id
-            } else {
-                let value = self.scoped_value(ideology, scopes)?;
-                if let Some(party) = parties
-                    .iter()
-                    .find(|row| row.id == (value / 100_000) as u32)
-                {
-                    party.id
-                } else if let Some(Scope::Country(target)) =
-                    self.evaluator()?.scoped_scope(ideology, scopes)?
-                {
-                    parties
-                        .iter()
-                        .find(|row| world.slot(row.country) == Some(target) && row.is_ruling != 0)
-                        .ok_or("PoliticalParties lacks scoped ruling ideology (14138B640)")?
-                        .id
-                } else {
-                    return Err("ruling_party names no content ideology (1402EE8E0)".into());
-                }
-            };
-            let party = parties
-                .iter()
-                .find(|row| world.slot(row.country) == Some(country) && row.id == definition)
-                .ok_or("PoliticalParties lacks FindPartyByIdeology result (140B980C0)")?;
-            let ideology = party.token.as_slice();
+            let ideology = self.politics_ideology(Some(ideology), scopes)?; // 1402EE8E0.
             let name = match field(items, "long_name")
                 .and_then(|item| item.value.read_string())
                 .filter(|key| !key.is_empty())
@@ -1483,7 +1448,7 @@ impl Renderer<'_, '_, '_> {
                         &[
                             (
                                 "IDEOLOGY",
-                                Argument::Text(&String::from_utf8_lossy(ideology)),
+                                Argument::Text(&String::from_utf8_lossy(&ideology)),
                             ),
                             ("NAME", Argument::Text(&name)),
                         ],
@@ -1492,10 +1457,7 @@ impl Renderer<'_, '_, '_> {
                     )?);
                     name
                 }
-                None => self
-                    .context
-                    .text
-                    .party_name(party, self.tag(country)?, false)?, // GetLocalizedName@14118F860, not GetLongName.
+                None => self.selected_party_name(country, &ideology)?, // 14118F860, not GetLongName.
             };
             text.push_str(&self.line(
                 b"EFFECT_SET_POLITICS_RULING_PARTY",

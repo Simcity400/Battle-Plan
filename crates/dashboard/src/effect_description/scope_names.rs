@@ -35,7 +35,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     /// CArmy slot 13@140C72F00 returns (+0x340)->+0x60, a stale display cache.
-    #[allow(dead_code, reason = "shared carrier name entry point for unit effect ports")]
     pub(super) fn unit_name(&self, reference: u64) -> Result<String, String> {
         self.context.world()?.unit(reference)?;
         Err(format!("UNIT {reference:#x} name: CArmy+0x340 -> CNameGroupMember+0x60 cached MSVC string is not recorded (140C72F00; writer 1409B4C40)"))
