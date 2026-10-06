@@ -577,6 +577,7 @@ impl Catalogue {
                     .map(str::to_owned),
             );
         }
+        lines.extend(self.content.layers.faction_template_diagnostics());
         self.content.layers.read_warnings().append_to(&mut lines);
         lines
     }
@@ -960,6 +961,13 @@ pub(crate) mod tests {
         localisation
     }
 
+    /// A faction catalogue through the production reader, without a second parser.
+    pub(crate) fn loaded_templates(text: &str) -> Arc<installed_content::faction_templates::Catalog> {
+        let (catalogue, _folder) =
+            folder_catalogue(&[("common/factions/templates/test.txt", text)]);
+        catalogue.content.layers.faction_templates().unwrap()
+    }
+
     /// A content folder written for a test, removed when dropped.
     pub(crate) struct Folder(pub std::path::PathBuf);
 
@@ -1013,6 +1021,53 @@ pub(crate) mod tests {
             findings: None,
             scripted: OnceLock::new(),
             state_content: Arc::new(OnceLock::new()),
+        }
+    }
+
+    #[test]
+    fn faction_templates_share_one_cache_and_report_each_warning_once() {
+        let (catalogue, _folder) = folder_catalogue(&[
+            (
+                "common/factions/templates/test.txt",
+                "bad={name=token:unported visible=yes}",
+            ),
+            (
+                "common/defines/test.lua",
+                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            ),
+        ]);
+        assert!(catalogue.refusal_lines().is_empty());
+        let templates = catalogue.content.layers.faction_templates().unwrap();
+        let scripted = catalogue.scripted_content().unwrap();
+        let mut frame = crate::test_fixtures::source(1, 100, Some(1));
+        *frame.tables[replay::rows::TableId::Factions.index()] =
+            replay::frame::TableView::Complete(replay::rows::TableRows::Factions(vec![
+                replay::rows::FactionRow {
+                    id: 5,
+                    template_token: Some(17),
+                    ..Default::default()
+                },
+            ]));
+        *frame.tables[replay::rows::TableId::LexicalTokens.index()] =
+            replay::frame::TableView::Complete(replay::rows::TableRows::LexicalTokens(vec![
+                replay::rows::LexicalTokenRow {
+                    token: 17,
+                    literal: b"bad".to_vec(),
+                },
+            ]));
+        let at =
+            crate::scripted_text::ScriptedText::new(&frame, &catalogue.localisation, scripted, 0);
+        assert!(
+            at.faction_name_by_id(5)
+                .unwrap_err()
+                .contains("token unported")
+        );
+        let shared = scripted.layers.layers.faction_templates().unwrap();
+        assert!(Arc::ptr_eq(&templates, &shared));
+        assert!(!templates.warnings.is_empty());
+        let lines = catalogue.refusal_lines();
+        for warning in &templates.warnings {
+            assert_eq!(lines.iter().filter(|line| *line == warning).count(), 1);
         }
     }
 

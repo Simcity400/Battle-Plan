@@ -10,10 +10,10 @@
 //! country the links cannot resolve is unobserved for that history too, since
 //! the list is incomplete, though the runs of the countries it names go on.
 //! A war counts only while its
-//! recorded relation is ongoing. Faction names are the recorded
-//! engine names, localised when they are a localisation key; a faction formed
-//! from a template has no literal name (its template is not recorded), so its
-//! name is null.
+//! recorded relation is ongoing. Faction names use the literal bytes when
+//! nonempty, else the recorded hour's template token through the content
+//! stack and its bound localisation. Name runs end across gaps independently
+//! of roster completeness; an unresolved name keeps its reason.
 //!
 //! A faction's leader is its member at order zero. The engine keeps the leader
 //! first in the faction's member vector (`engine::cfaction::MEMBERS`,
@@ -26,11 +26,11 @@
 
 use super::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product};
 use crate::{
-    Source, catalogue, content,
+    Source, catalogue, content, faction_names,
     metadata::{LinkTags, branch_bounds, validate_campaign},
     transport::json_len,
 };
-use installed_content::localisation::Localisation;
+use installed_content::{faction_templates::Catalog, localisation::Localisation};
 use replay::{container::Replay, frame::FrameDecoder, rows::tables};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -63,6 +63,16 @@ pub struct MembershipRun {
     pub last_hour: i32,
 }
 
+/// A faction's display name at consecutive recorded hours.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FactionNameRun {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub name: Option<String>,
+    pub reason: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct FactionGroup {
@@ -70,9 +80,12 @@ pub struct FactionGroup {
     pub id: String,
     /// The faction's name as the game showed it; null when it cannot be resolved.
     pub name: Option<String>,
-    /// The name as recorded (the engine's literal: a localisation key or a player's
-    /// text), before localisation; empty when the faction has none. Stable across
-    /// languages and content, so settings can key a faction by it.
+    /// Why the latest recorded name cannot be resolved.
+    pub name_reason: Option<String>,
+    /// Display names dated by the Factions row that supplied their operands.
+    pub names: Vec<FactionNameRun>,
+    /// The latest engine literal, copied unchanged; empty when there is none.
+    /// Stable across languages and content, so settings can key a faction by it.
     pub recorded_name: String,
     pub first_hour: i32,
     pub last_hour: i32,
@@ -172,6 +185,7 @@ impl Product for CountryGroups {
         vec![
             CountryGroupParams::decl(),
             MembershipRun::decl(),
+            FactionNameRun::decl(),
             FactionGroup::decl(),
             WarPairRun::decl(),
             WarStart::decl(),
@@ -219,39 +233,67 @@ impl Product for CountryGroups {
             }
         };
         let mut warnings = Vec::new();
-        let localisation = match context.content.as_ref() {
-            Some(content) => match content::localisation(source, content) {
-                Ok(localisation) => Some(localisation),
-                Err(error) => {
-                    warnings.push(format!("Faction names show as recorded: {error}"));
-                    None
+        let needs_templates = scan
+            .factions
+            .values()
+            .any(|faction| faction.names.iter().any(|name| name.literal.is_empty()));
+        let language = &source.replay_ref().identity.language;
+        let recorded_language = language.strip_prefix("l_").unwrap_or(language);
+        // Stored literals need only the selected language, not game assets.
+        let viewer_language = context
+            .content
+            .as_ref()
+            .and_then(|options| content::language(&options.options).ok())
+            .unwrap_or_else(|| recorded_language.to_owned());
+        let naming = context
+            .content
+            .as_ref()
+            .filter(|_| needs_templates)
+            .map(|options| {
+                content::check_replay(
+                    source.replay_ref(),
+                    options.allow_unverified,
+                    &mut warnings,
+                )?;
+                let layers = source.content(&options.options)?;
+                let localisation = content::localisation_with_key(
+                    source,
+                    options,
+                    (
+                        content::content_key(Some(options)).expect("content options given"),
+                        options.options.cache_dir.clone(),
+                        viewer_language.clone(),
+                    ),
+                )?;
+                Ok::<_, io::Error>((layers.layers.faction_templates(), localisation))
+            });
+        let mut stored_language = Localisation::default();
+        stored_language.language = viewer_language;
+        let (templates, localisation) = match &naming {
+            Some(Ok((templates, localisation))) => {
+                if let Ok(templates) = templates {
+                    warnings.extend(templates.warnings.iter().cloned());
                 }
-            },
-            None => {
-                warnings.push(
-                    "Faction names show as recorded until the game folders are chosen.".into(),
-                );
-                None
+                (
+                    templates.as_deref().map_err(Clone::clone),
+                    localisation.as_ref(),
+                )
             }
+            Some(Err(error)) => (
+                Err(format!("Faction naming content is unavailable: {error}")),
+                &stored_language,
+            ),
+            None => (
+                Err(
+                    "Faction naming content is unavailable until the game folders are chosen"
+                        .into(),
+                ),
+                &stored_language,
+            ),
         };
         let mut refused = catalogue::Refusals::default();
-        let factions = scan
-            .factions
-            .iter()
-            .map(|(id, faction)| FactionGroup {
-                id: id.to_string(),
-                name: faction_name(&faction.name, localisation.as_deref())
-                    .inspect_err(|reason| refused.note(reason.clone(), format!("faction {id}")))
-                    .ok()
-                    .flatten(),
-                recorded_name: faction.name.clone(),
-                first_hour: faction.first_hour,
-                last_hour: faction.last_hour,
-                members: faction.members.clone(),
-                leaders: faction.leaders.clone(),
-                incomplete: faction.incomplete.clone(),
-            })
-            .collect();
+        let factions =
+            scan.faction_groups(templates, localisation, recorded_language, &mut refused);
         warnings.extend(refused.lines("faction names are"));
         warnings.extend(scan.warnings.iter().cloned());
         let reply = CountryGroupReply {
@@ -274,29 +316,20 @@ impl Product for CountryGroups {
     }
 }
 
-/// The engine stores either a localisation key or the literal name a player
-/// typed. Both go through the game's localiser, which localises a key and
-/// copies anything the content does not define as its own bytes (142230940);
-/// without content the recorded name is shown as recorded. `Err` names why the
-/// name cannot be shown.
-pub fn faction_name(
-    recorded: &str,
-    localisation: Option<&Localisation>,
-) -> Result<Option<String>, String> {
-    if recorded.is_empty() {
-        return Ok(None);
-    }
-    match localisation {
-        // CFaction::display_name (140D77360) reaches its text boxes plain.
-        Some(localisation) => {
-            catalogue::localised(localisation, recorded, catalogue::View::Plain).map(Some)
-        }
-        None => Ok(Some(recorded.to_owned())),
-    }
+#[derive(Clone, Debug)]
+struct NameOperands {
+    first_hour: i32,
+    last_hour: i32,
+    literal: Vec<u8>,
+    template_token: Option<u32>,
+    lexical_read: i32,
+    tokens: Arc<faction_names::LexicalNames>,
+    template: Result<String, String>,
 }
 
 struct ScannedFaction {
     name: String,
+    names: Vec<NameOperands>,
     first_hour: i32,
     last_hour: i32,
     members: Vec<MembershipRun>,
@@ -314,6 +347,69 @@ pub struct Scan {
     identity_changes: Vec<IdentityChange>,
     unobserved: UnobservedHours,
     warnings: Vec<String>,
+}
+
+impl Scan {
+    fn faction_groups(
+        &self,
+        templates: Result<&Catalog, String>,
+        localisation: &Localisation,
+        recorded_language: &str,
+        refused: &mut catalogue::Refusals,
+    ) -> Vec<FactionGroup> {
+        self.factions
+            .iter()
+            .map(|(id, faction)| {
+                let mut names: Vec<FactionNameRun> = Vec::new();
+                for operands in &faction.names {
+                    let resolved = faction_names::name(
+                        &operands.literal,
+                        operands.template.as_deref().map_err(Clone::clone),
+                        templates.as_ref().copied().map_err(Clone::clone),
+                        localisation,
+                        recorded_language,
+                        |name| operands.tokens.token_of(name),
+                    )
+                    .and_then(|text| catalogue::plain_text(&text));
+                    let (name, reason) = match resolved {
+                        Ok(name) if !name.is_empty() => (Some(name), None),
+                        Ok(_) => (None, Some("Faction name has no plain display text".into())),
+                        Err(reason) => (None, Some(reason)),
+                    };
+                    if let Some(reason) = &reason {
+                        refused.note(reason, format!("faction {id}"));
+                    }
+                    if let Some(previous) = names.last_mut()
+                        && previous.last_hour.checked_add(1) == Some(operands.first_hour)
+                        && previous.name == name
+                        && previous.reason == reason
+                    {
+                        previous.last_hour = operands.last_hour;
+                    } else {
+                        names.push(FactionNameRun {
+                            first_hour: operands.first_hour,
+                            last_hour: operands.last_hour,
+                            name,
+                            reason,
+                        });
+                    }
+                }
+                let latest = names.last().expect("a scanned faction has a name read");
+                FactionGroup {
+                    id: id.to_string(),
+                    name: latest.name.clone(),
+                    name_reason: latest.reason.clone(),
+                    names,
+                    recorded_name: faction.name.clone(),
+                    first_hour: faction.first_hour,
+                    last_hour: faction.last_hour,
+                    members: faction.members.clone(),
+                    leaders: faction.leaders.clone(),
+                    incomplete: faction.incomplete.clone(),
+                }
+            })
+            .collect()
+    }
 }
 
 /// A run of consecutive hours.
@@ -412,6 +508,7 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
         TableId::CountryLinks,
         TableId::HumanControllers,
         TableId::Factions,
+        TableId::LexicalTokens,
         TableId::FactionMembers,
         TableId::WarRelations,
         TableId::Capitulation,
@@ -425,6 +522,9 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
     let mut humans = Vec::new();
     let mut human_open = BTreeMap::new();
     let mut factions: BTreeMap<u64, ScannedFaction> = BTreeMap::new();
+    let mut names: BTreeMap<u64, Vec<NameOperands>> = BTreeMap::new();
+    let mut lexical: Option<Arc<faction_names::LexicalNames>> = None;
+    let mut lexical_read = 0;
     let mut member_open: BTreeMap<(u64, String), usize> = BTreeMap::new();
     let mut leader_open: BTreeMap<(u64, String), usize> = BTreeMap::new();
     let mut wars: Vec<WarPairRun> = Vec::new();
@@ -492,6 +592,39 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                 continuous_since = None;
             }
             previous_hour = Some(hour);
+            let current = &decoded.tables[TableId::LexicalTokens.index()];
+            if lexical
+                .as_ref()
+                .is_none_or(|previous| !previous.matches(current))
+            {
+                lexical = Some(Arc::new(faction_names::LexicalNames::new(current.clone())));
+                lexical_read = hour;
+            }
+            if let Ok(rows) = decoded.complete::<tables::Factions>() {
+                for row in rows {
+                    let history = names.entry(row.id).or_default();
+                    if let Some(previous) = history.last_mut()
+                        && previous.last_hour.checked_add(1) == Some(hour)
+                        && previous.literal == row.name
+                        && previous.template_token == row.template_token
+                        && (row.template_token.is_none() || previous.lexical_read == lexical_read)
+                    {
+                        previous.last_hour = hour;
+                    } else {
+                        history.push(NameOperands {
+                            first_hour: hour,
+                            last_hour: hour,
+                            literal: row.name.clone(),
+                            template_token: row.template_token,
+                            lexical_read,
+                            tokens: Arc::clone(
+                                lexical.as_ref().expect("the hour has a lexical table view"),
+                            ),
+                            template: faction_names::template_spelling(decoded, row.template_token),
+                        });
+                    }
+                }
+            }
             let Ok(rebuilt) = tags.update(decoded) else {
                 incomplete += 1;
                 mark_all(&mut unobserved, hour, hour);
@@ -574,9 +707,10 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
             ) {
                 (Ok(rows), Ok(members)) => {
                     for row in rows {
-                        let name = String::from_utf8_lossy(&row.name);
+                        let name = std::str::from_utf8(&row.name).unwrap_or_default();
                         let faction = factions.entry(row.id).or_insert_with(|| ScannedFaction {
-                            name: name.clone().into_owned(),
+                            name: name.to_owned(),
+                            names: Vec::new(),
                             first_hour: hour,
                             last_hour: hour,
                             members: Vec::new(),
@@ -584,9 +718,8 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                             incomplete: Vec::new(),
                         });
                         faction.last_hour = hour;
-                        // A renamed faction keeps its id; the latest name is shown.
                         if faction.name != name {
-                            faction.name = name.into_owned();
+                            faction.name = name.to_owned();
                         }
                     }
                     let mut ordered: Vec<_> = members.iter().collect();
@@ -784,6 +917,11 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
         warnings.push(format!(
             "{unattributed} war starts or capitulations were first seen after an unrecorded hour or a change of country; which countries they were is not known, so they are left out."
         ));
+    }
+    for (id, faction) in &mut factions {
+        faction.names = names
+            .remove(id)
+            .expect("a roster-known faction has a name read");
     }
     Ok(Scan {
         humans,

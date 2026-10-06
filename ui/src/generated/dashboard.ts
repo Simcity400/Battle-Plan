@@ -234,6 +234,7 @@ color: [number, number, number] | null, };
 export type CountryStyleReply = { branchId: string, hour: number, styles: Array<CountryStyle>, warnings: Array<string>, };
 export type CountryGroupParams = { branchId: string, };
 export type MembershipRun = { tag: string, firstHour: number, lastHour: number, };
+export type FactionNameRun = { firstHour: number, lastHour: number, name: string | null, reason: string | null, };
 export type FactionGroup = {
 /**
  * The recorded faction id, as a decimal string.
@@ -244,9 +245,16 @@ id: string,
  */
 name: string | null,
 /**
- * The name as recorded (the engine's literal: a localisation key or a player's
- * text), before localisation; empty when the faction has none. Stable across
- * languages and content, so settings can key a faction by it.
+ * Why the latest recorded name cannot be resolved.
+ */
+nameReason: string | null,
+/**
+ * Display names dated by the Factions row that supplied their operands.
+ */
+names: Array<FactionNameRun>,
+/**
+ * The latest engine literal, copied unchanged; empty when there is none.
+ * Stable across languages and content, so settings can key a faction by it.
  */
 recordedName: string, firstHour: number, lastHour: number, members: Array<MembershipRun>,
 /**

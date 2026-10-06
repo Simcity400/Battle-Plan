@@ -2,6 +2,8 @@ import type { BandStep, TimelineLane, TimelineSpan } from '../../charts/timeline
 import { bridgeGaps, coverCounts, describeRun, runState, stretchesOf, withoutHours } from '../../charts/timeline/runState.ts';
 import type { HourRange, RunWords } from '../../charts/timeline/runState';
 import { Lineage, joinTagChanges } from '../../dashboard/identity.ts';
+import type { FactionName } from '../../dashboard/factionNames';
+import { UNNAMED_FACTION } from '../../dashboard/factionNames.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { CountryGroupReply, FactionGroup, HourSpan, MembershipRun } from '../../generated/dashboard';
 
@@ -29,8 +31,10 @@ export interface MemberView {
 
 export interface FactionView {
   id: string;
-  /** The user's display name, else the recorded name; null when neither exists. */
+  /** Latest summary, used only when no hour is requested. */
   name: string | null;
+  /** Dated name lookups, sharing the prepared history and campaign override. */
+  nameAt: (hour: number) => FactionName;
   color: string;
   /** Recorded hours the faction existed (its first to last hour, less unrecorded ones). */
   existence: HourRange[];
@@ -63,7 +67,7 @@ function merged(spans: readonly HourRange[]): HourSpan[] {
 /** Each faction of the reply, ready to draw: its name (`name`), colour (`colour`),
  * existence, members, leaders and member counts. A member whose tag changed (the
  * reply's `identityChanges`) is one member, not one leaving and another joining. */
-export function factionViews(reply: CountryGroupReply, name: (faction: FactionGroup) => string | null, colour: (id: string) => string): FactionView[] {
+export function factionViews(reply: CountryGroupReply, name: (faction: FactionGroup, hour?: number) => FactionName, colour: (id: string) => string): FactionView[] {
   const lineage = new Lineage(reply.identityChanges);
   const allUnobserved = merged(reply.unobserved.factions);
   return reply.factions.map(faction => {
@@ -74,7 +78,8 @@ export function factionViews(reply: CountryGroupReply, name: (faction: FactionGr
     }));
     const existence = withoutHours([{ firstHour: faction.firstHour, lastHour: faction.lastHour }], allUnobserved);
     return {
-      id: faction.id, name: name(faction), color: colour(faction.id),
+      id: faction.id, name: name(faction).name, color: colour(faction.id),
+      nameAt: hour => name(faction, hour),
       existence, lifetime: bridgeGaps(existence, allUnobserved).map(({ firstHour, lastHour }) => ({ firstHour, lastHour })),
       members, lineage, leaders: [...faction.leaders].sort((a, b) => a.firstHour - b.firstHour),
       counts: withoutHours(coverCounts(faction.members), unknown), unknown,
@@ -138,10 +143,10 @@ export interface LaneOptions {
   countryIds?: ReadonlySet<string> | null;
 }
 
-export const UNNAMED = 'Unnamed faction';
+export const UNNAMED = UNNAMED_FACTION;
 
 /** A faction's name as shown: the display name or the recorded one, else said to have none. */
-export const factionLabel = (view: FactionView) => view.name ?? UNNAMED;
+export const factionLabel = (view: FactionView, hour?: number) => (hour == null ? view.name : view.nameAt(hour).name) ?? UNNAMED;
 
 /** Words for a membership's state (`describeRun`). */
 function memberWords(day: (hour: number) => string): RunWords {
@@ -185,24 +190,28 @@ export function factionLanes(views: readonly FactionView[], hour: number, option
   // Each faction's members at the hour, counted once rather than in every comparison.
   const counts = new Map(shown.map(view => [view, membersAt(view, hour) ?? -1]));
   const count = (view: FactionView) => counts.get(view)!;
-  shown.sort(options.order === 'name' ? (a, b) => factionLabel(a).localeCompare(factionLabel(b)) || compareIds(a.id, b.id)
+  // Only name sorting needs a lookup map; other orders resolve in the heading.
+  const names = options.order === 'name' ? new Map(shown.map(view => [view, factionLabel(view, hour)])) : null;
+  shown.sort(options.order === 'name' ? (a, b) => names!.get(a)!.localeCompare(names!.get(b)!) || compareIds(a.id, b.id)
     : options.order === 'members' ? (a, b) => count(b) - count(a) || firstHour(a.existence) - firstHour(b.existence) || compareIds(a.id, b.id)
       : (a, b) => firstHour(a.existence) - firstHour(b.existence) || compareIds(a.id, b.id));
   for (const view of shown) {
+    const name = names?.get(view) ?? factionLabel(view, hour);
     const exists = runState(view.lifetime, hour, unobserved).kind === 'held';
     const leader = leaderAt(view.leaders, hour);
-    const members = membersAt(view, hour);
+    const recordedCount = count(view);
+    const members = recordedCount < 0 ? null : recordedCount;
     const state = exists
       ? [leader ? `Led by ${text.country(leader).name}` : 'Leader not recorded', members == null ? 'members not recorded' : `${members} ${members === 1 ? 'member' : 'members'}`].join(' · ')
       : describeRun(view.lifetime, hour, factionWords(text.day), unobserved, branchFirstHour) ?? '';
     const headingId = laneId(view.id, null);
     info.set(headingId, { faction: view, member: null });
     lanes.push({
-      id: headingId, heading: true, label: state, identity: { label: factionLabel(view) }, icons: false, names: false,
+      id: headingId, heading: true, label: state, identity: { label: name }, icons: false, names: false,
       muted: !exists,
       spans: stretchesOf(view.counts).map(stretch => ({
         id: `${stretch.firstHour}`, firstHour: stretch.firstHour, lastHour: stretch.lastHour,
-        label: factionLabel(view), color: view.color, band: stretch.steps,
+        label: name, color: view.color, band: stretch.steps,
       })),
     });
     const memberUnobserved = view.unknown;

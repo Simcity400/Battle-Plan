@@ -10,6 +10,7 @@ pub mod content_check;
 pub mod cryptology;
 mod dto;
 pub mod effect_description;
+mod faction_names;
 pub mod map_settings;
 pub mod metadata;
 pub mod modifier_text;

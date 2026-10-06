@@ -483,6 +483,7 @@ pub struct ScriptedText<'a> {
     content: &'a ScriptedContent,
     scopes: RecordedScopes,
     names: CountryNames<'a>,
+    lexical_names: crate::faction_names::LexicalNames,
     frame: &'a DecodedFrame,
     root: u32,
     world: std::sync::OnceLock<Result<crate::triggers::World<'a>, String>>,
@@ -546,6 +547,9 @@ impl<'a> ScriptedText<'a> {
             content,
             scopes,
             names: CountryNames::read(frame, localisation),
+            lexical_names: crate::faction_names::LexicalNames::new(
+                frame.tables[replay::rows::TableId::LexicalTokens.index()].clone(),
+            ),
             frame,
             root,
             world: std::sync::OnceLock::new(),
@@ -1606,20 +1610,34 @@ impl<'a> ScriptedText<'a> {
         let Some(member) = self.faction_member(slot)? else {
             return self.localise(NO_FACTION);
         };
+        self.faction_name_by_id(member.faction)
+    }
+
+    /// Effect descriptions name the same faction without a country lookup.
+    pub(crate) fn faction_name_by_id(&self, id: u64) -> Result<String, String> {
         let (factions, gap) = rows::<tables::Factions>(self.frame);
         let faction = factions
             .iter()
-            .find(|row| row.id == member.faction)
-            .ok_or_else(|| format!("faction {} has no Factions row: {gap}", member.faction))?;
-        if faction.name.is_empty() {
-            return Err(format!(
-                "faction {} has no custom name, and its template name is not recorded",
-                member.faction
-            ));
-        }
-        self.localisation
-            .localise(&faction.name)
-            .map_err(|refusal| refusal.to_string())
+            .find(|row| row.id == id)
+            .ok_or_else(|| format!("faction {id} has no Factions row: {gap}"))?;
+        // Literal names do not need content, nor a recorded template dictionary.
+        let (spelling, templates) = if faction.name.is_empty() {
+            (
+                crate::faction_names::template_spelling(self.frame, faction.template_token),
+                self.content.layers.layers.faction_templates(),
+            )
+        } else {
+            let unused = "Faction templates were not needed";
+            (Err(unused.to_owned()), Err(unused.to_owned()))
+        };
+        crate::faction_names::name(
+            &faction.name,
+            spelling.as_deref().map_err(Clone::clone),
+            templates.as_deref().map_err(Clone::clone),
+            self.localisation,
+            &self.content.recorded_language,
+            |name| self.lexical_names.token_of(name),
+        )
     }
 }
 

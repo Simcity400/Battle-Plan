@@ -42,7 +42,7 @@ impl Renderer<'_, '_, '_> {
         }
         match row.template_token {
             None => Ok(String::new()),
-            Some(token) => Err(format!("faction template {token} needs its bound NAME expression (+0xD0, 140D77360 / 1404A7A00); faction-template content reader is unavailable")),
+            Some(_) => self.context.text.faction_name_by_id(faction),
         }
     }
 

@@ -4,7 +4,7 @@ import { validateCountryGroupReply } from './groupsReply.ts';
 
 const good = {
   branchId: '1', warnings: [], humans: [{ tag: 'GER', firstHour: 0, lastHour: 9 }],
-  factions: [{ id: '3', name: null, recordedName: '', firstHour: 0, lastHour: 9, members: [{ tag: 'GER', firstHour: 0, lastHour: 9 }], leaders: [], incomplete: [] }],
+  factions: [{ id: '3', name: null, recordedName: '', firstHour: 0, lastHour: 9, nameReason: 'Faction template not recorded', names: [{ firstHour: 0, lastHour: 9, name: null, reason: 'Faction template not recorded' }], members: [{ tag: 'GER', firstHour: 0, lastHour: 9 }], leaders: [], incomplete: [] }],
   wars: [{ first: 'GER', second: 'POL', firstHour: 5, lastHour: 9 }],
   warStarts: [{ hour: 5, attacking: 'GER', defending: 'POL' }], capitulations: [{ hour: 8, tag: 'POL' }], identityChanges: [{ hour: 7, from: 'AAA', to: 'BBB' }],
   unobserved: { humans: [], factions: [{ firstHour: 2, lastHour: 3 }], wars: [] },
@@ -25,4 +25,19 @@ test('a reply missing a list, or with a malformed entry, is refused', () => {
   // A faction's leaders are its own list, of runs.
   assert.throws(() => validateCountryGroupReply({ ...good, factions: [{ ...good.factions[0], leaders: undefined }] }), /malformed/);
   assert.throws(() => validateCountryGroupReply({ ...good, factions: [{ ...good.factions[0], leaders: [{ tag: 'GER', firstHour: 5 }] }] }), /malformed/);
+});
+
+test('dated faction names must be ordered, disjoint and say why a name is unavailable', () => {
+  const faction = { ...good.factions[0], nameReason: 'Template missing', names: [
+    { firstHour: 0, lastHour: 3, name: 'Opening pact', reason: null },
+    { firstHour: 5, lastHour: 9, name: null, reason: 'Template missing' },
+  ] };
+  const check = (patch: Record<string, unknown>) => validateCountryGroupReply({ ...good, factions: [{ ...faction, ...patch }] });
+  assert.equal(check({}).factions[0].names.length, 2);
+  assert.throws(() => check({ names: undefined }), /malformed/);
+  assert.throws(() => check({ names: [...faction.names].reverse() }), /malformed/);
+  assert.throws(() => check({ names: [faction.names[0], { ...faction.names[1], firstHour: 3 }] }), /malformed/);
+  assert.throws(() => check({ names: [{ ...faction.names[1], reason: null }] }), /malformed/);
+  assert.throws(() => check({ names: [{ ...faction.names[0], reason: 'Template missing' }] }), /malformed/);
+  assert.throws(() => check({ nameReason: undefined }), /malformed/);
 });

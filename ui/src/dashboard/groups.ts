@@ -1,5 +1,6 @@
 import type { CountryGroupReply, HourSpan, MembershipRun } from '../generated/dashboard';
 import { clipToSpans } from '../charts/series.ts';
+import { factionNameLabel } from './factionNames.ts';
 import { compareTags } from './tagOrder.ts';
 import type { Run } from '../charts/series';
 import type { CountryGroup, CountrySelection, GroupMembership } from './model';
@@ -75,10 +76,14 @@ export function topCountries(values: ReadonlyMap<string, number | null>, count: 
 }
 
 /** A group's name for headers and pickers. Faction names are the game's own. */
-export function groupLabel(group: CountryGroup, reply: CountryGroupReply | undefined, countryName: (tag: string) => string): string {
+export function groupLabel(group: CountryGroup, reply: CountryGroupReply | undefined, countryName: (tag: string) => string, hour?: number,
+  overrides?: Readonly<Record<string, { name?: string }>>): string {
   switch (group.type) {
     case 'humans': return 'Human players';
-    case 'faction': return reply?.factions.find(faction => faction.id === group.id)?.name ?? 'Unnamed faction';
+    case 'faction': {
+      const faction = reply?.factions.find(faction => faction.id === group.id);
+      return faction ? factionNameLabel(faction, hour, overrides?.[faction.id]?.name) : 'Unnamed faction';
+    }
     case 'war': return `At war with ${countryName(group.tag)}`;
     case 'top': return `Top ${group.count}`;
   }

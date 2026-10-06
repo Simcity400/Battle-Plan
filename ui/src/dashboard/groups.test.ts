@@ -12,9 +12,9 @@ import '../widgets/definitions.ts';
 const REPLY: CountryGroupReply = {
   branchId: '1', warnings: [], warStarts: [], capitulations: [], identityChanges: [], unobserved: { humans: [], factions: [{ firstHour: 190, lastHour: 200 }], wars: [] },
   humans: [{ tag: 'GER', firstHour: 100, lastHour: 200 }, { tag: 'ENG', firstHour: 150, lastHour: 200 }],
-  factions: [{ id: '5', name: 'Axis', recordedName: 'Axis', firstHour: 100, lastHour: 200, members: [
+  factions: [{ id: '5', name: 'Axis', recordedName: 'Axis', firstHour: 100, lastHour: 200, nameReason: null, names: [{ firstHour: 100, lastHour: 200, name: 'Axis', reason: null }], members: [
     { tag: 'GER', firstHour: 100, lastHour: 200 }, { tag: 'ITA', firstHour: 120, lastHour: 170 }, { tag: 'HUN', firstHour: 180, lastHour: 200 }], leaders: [], incomplete: [] },
-  { id: '6', name: null, recordedName: '', firstHour: 190, lastHour: 200, members: [], leaders: [], incomplete: [] }],
+  { id: '6', name: null, recordedName: '', firstHour: 190, lastHour: 200, nameReason: 'Faction template not recorded', names: [{ firstHour: 190, lastHour: 200, name: null, reason: 'Faction template not recorded' }], members: [], leaders: [], incomplete: [] }],
   wars: [{ first: 'FRA', second: 'GER', firstHour: 130, lastHour: 200 }, { first: 'GER', second: 'POL', firstHour: 110, lastHour: 140 }],
 };
 
@@ -171,6 +171,20 @@ test('a whole-world widget narrowed to a group honours its membership setting', 
   assert.match(axis('hour', 195).reason!, /not recorded at this moment/);
   // Before any member joined, the group is empty at that moment.
   assert.match(axis('hour', 90).reason!, /no members at this moment/);
+});
+
+test('group headers use the name at the shown hour, with campaign overrides first', () => {
+  const faction = { ...REPLY.factions[0], name: 'Later pact', names: [
+    { firstHour: 100, lastHour: 149, name: 'Opening pact', reason: null },
+    { firstHour: 160, lastHour: 200, name: 'Later pact', reason: null },
+  ] };
+  const reply = { ...REPLY, factions: [faction] };
+  const group = { type: 'faction', id: faction.id } as const;
+  assert.equal(groupLabel(group, reply, tag => tag, 120), 'Opening pact');
+  assert.equal(groupLabel(group, reply, tag => tag, 155), 'Unnamed faction');
+  assert.equal(groupLabel(group, reply, tag => tag, 170), 'Later pact');
+  assert.equal(groupLabel(group, reply, tag => tag), 'Later pact');
+  assert.equal(groupLabel(group, reply, tag => tag, 155, { [faction.id]: { name: 'My pact' } }), 'My pact');
 });
 
 test('server top-N country predicate matches the dated client country rule without a chosen country cap', () => {

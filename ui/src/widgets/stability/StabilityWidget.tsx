@@ -22,6 +22,8 @@ import { fitTooltip } from '../../charts/tooltip';
 import type { TooltipRow } from '../../charts/tooltip';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
+import { useCampaignSettings } from '../../dashboard/campaignSettings';
+import { factionNameAt } from '../../dashboard/factionNames';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { clipRuns, isMember, resolveCountries } from '../../dashboard/groups';
@@ -32,7 +34,7 @@ import { useProduct } from '../../dashboard/products';
 import { readHourAt, validateStabilityReply } from '../../dashboard/stabilityReply';
 import { formatDateTime } from '../../dashboard/calendar';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import type { CountryStabilityReply, CountryStyle, CountryStyleReply } from '../../generated/dashboard';
+import type { CountryGroupReply, CountryStabilityReply, CountryStyle, CountryStyleReply } from '../../generated/dashboard';
 import { parseColor, toHex } from '../../shell/appearance/color';
 import { STABILITY_BREAKDOWNS, STABILITY_OPTIONS } from './definition';
 import { stabilityMarkers } from './markers';
@@ -70,6 +72,7 @@ const MEASURES: readonly { key: Measure; label: string; dash?: readonly number[]
 export default function StabilityWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const tokens = useChartTokens();
+  const campaignSettings = useCampaignSettings();
   const viewport = useViewportHeight();
   const options = resolveOptions(STABILITY_OPTIONS, widget.options);
   const shown = MEASURES.filter(measure => options[measure.key] !== false);
@@ -182,12 +185,13 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
   const markerFocus = useProduct<FocusReply>(runtime.client, kinds.has('focus') ? markerRequest('national-focus') : null, active, validateFocusReply);
   // The idea history of the marker country itself (a group may resolve to another country).
   const markerIdeas = useProduct<IdeaHistoryReply>(runtime.client, kinds.has('government') ? markerRequest('idea-history') : null, active, validateIdeaHistoryReply);
+  const factionOverrides = campaignSettings.campaigns[track?.source.metadata.campaignKey ?? '']?.factions;
   const markerSources = useMemo(() => !track || !markerTag ? null : {
     tag: markerTag, extent, branch: [track.branch.firstHour, track.branch.lastHour] as const,
     member: (hour: number) => isMember(resolved.membership?.get(markerTag), hour),
-    groups: markerGroups.data, ideas: markerIdeas.data && markerIdeas.data.tag === markerTag ? markerIdeas.data : undefined,
+    groups: markerGroups.data, factionName: (faction: CountryGroupReply['factions'][number], hour: number) => factionNameAt(faction, hour, factionOverrides?.[faction.id]?.name), ideas: markerIdeas.data && markerIdeas.data.tag === markerTag ? markerIdeas.data : undefined,
     parties: markerParties.data, focus: markerFocus.data,
-  }, [track, markerTag, extent[0], extent[1], resolved.membership, markerGroups.data, markerIdeas.data, markerParties.data, markerFocus.data]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [track, factionOverrides, markerTag, extent[0], extent[1], resolved.membership, markerGroups.data, markerIdeas.data, markerParties.data, markerFocus.data]); // eslint-disable-line react-hooks/exhaustive-deps
   // Other countries are named as the game showed them at each event's hour; until
   // (or where) that is not known, by their name in the recording's metadata.
   const namesWanted = useMemo(() => {

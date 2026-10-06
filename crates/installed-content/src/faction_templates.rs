@@ -2,6 +2,7 @@
 //! CFaction::display_name (140D77360) uses the nullable template +0x568
 //! only when its own +0x18 name is empty, then evaluates +0xD0's bound
 //! localization (1404A7A00). The template token is not a name fallback.
+//! Loader, token and binding evidence: [engine::cfaction_template](../../engine/src/cfaction_template.rs).
 
 use crate::{
     ResolvedLayers, combat_tactics,
@@ -20,7 +21,7 @@ use crate::{
 };
 use std::{collections::BTreeMap, io};
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Catalog {
     definitions: BTreeMap<Token, BoundLocalization>,
     coverage: Coverage,
@@ -212,7 +213,7 @@ fn apply(catalogue: &mut Catalog, items: &[Item]) {
 pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
     let names = layers.key_names()?;
     let mut result = Catalog::default();
-    // Executable directory literal 142707C90, CBuildingDatabase::load
+    // Executable directory literal 142707C90, shared database-load routine
     // 14018B610. Template definitions merge in native file/layer order.
     for path in script_files::paths(layers, "common/factions/templates/", Some(".txt")) {
         result.coverage.next_file();
@@ -233,6 +234,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mod_layers_tests::Stack;
 
     fn catalog(bytes: &[u8]) -> Catalog {
         let file = parse(bytes, &KeyNames::default());
@@ -361,5 +363,98 @@ mod tests {
             FormattedLocalization::Key(b"G".to_vec())
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn faction_templates_resolve_mod_files_merge_names_and_localisation() {
+        let stack = Stack::new("faction_templates");
+        let (base, addon) = (stack.base(), stack.addon());
+        stack.write(
+            &base,
+            "common/factions/templates/a.txt",
+            "pact={name=shared_name} removed_by_file={name=old}\n",
+        );
+        stack.write(
+            &addon,
+            "common/factions/templates/a.txt",
+            "pact={name=shared_name}\n",
+        );
+        stack.write(
+            &base,
+            "common/factions/templates/b.txt",
+            "merged={name=kept_name}\n",
+        );
+        stack.write(
+            &addon,
+            "common/factions/templates/z.txt",
+            "MERGED={icon=GFX_mod}\n",
+        );
+        stack.write(
+            &addon,
+            "common/factions/templates/sub/ignored.txt",
+            "nested={name=ignored}\n",
+        );
+        stack.write(
+            &addon,
+            "common/factions/templates/ignored.TXT",
+            "uppercase={name=ignored}\n",
+        );
+        stack.write(
+            &base,
+            "localisation/english/names_l_english.yml",
+            "\u{feff}l_english:\n shared_name:0 \"Base pact\"\n",
+        );
+        stack.write(
+            &addon,
+            "localisation/english/names_l_english.yml",
+            "\u{feff}l_english:\n shared_name:0 \"Mod pact\"\n",
+        );
+        let layers = stack.layers(&[]);
+        let templates = read(&layers).unwrap();
+        let localisation = crate::localisation::read(&layers, "english").unwrap();
+        let FormattedLocalization::Key(key) = &templates.get("PACT").unwrap().unwrap().nodes[0].key
+        else {
+            panic!("expected the template's localisation key");
+        };
+        assert_eq!(localisation.localise(key).unwrap(), "Mod pact");
+        assert_eq!(
+            templates.get("merged").unwrap().unwrap().nodes[0].key,
+            FormattedLocalization::Key(b"kept_name".to_vec())
+        );
+        for absent in ["removed_by_file", "nested", "uppercase"] {
+            assert!(templates.get(absent).unwrap().is_none());
+        }
+        assert!(templates.warnings.is_empty(), "{:?}", templates.warnings);
+    }
+
+    #[test]
+    fn faction_templates_refuse_unknown_suffixes_until_an_explicit_name_replaces_them() {
+        let stack = Stack::new("faction_template_coverage");
+        let base = stack.base();
+        stack.write(
+            &base,
+            "common/factions/templates/a.txt",
+            "kept={name=OLD} hidden={name=OLD}",
+        );
+        stack.write(
+            &base,
+            "common/factions/templates/b.txt",
+            "uncertain={visible={synthetic_prefix:scope={always=yes}} name=WRONG}",
+        );
+        stack.write(
+            &base,
+            "common/factions/templates/c.txt",
+            "kept={name=KNOWN} hidden={icon=art}",
+        );
+        let db = read(&stack.layers(&[])).unwrap();
+        assert_eq!(
+            db.get("kept").unwrap().unwrap().nodes[0].key,
+            FormattedLocalization::Key(b"KNOWN".to_vec())
+        );
+        for token in ["hidden", "uncertain", "absent"] {
+            let why = db.get(token).unwrap_err();
+            assert!(why.contains("b.txt"), "{why}");
+            assert!(why.contains("synthetic_prefix"), "{why}");
+        }
     }
 }

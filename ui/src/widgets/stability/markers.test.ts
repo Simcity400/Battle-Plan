@@ -11,8 +11,8 @@ const base = { tag: 'GER', extent: [0, 1000] as const, branch: [0, 1000] as cons
 const groups: CountryGroupReply = {
   branchId: '1', humans: [], warnings: [],
   factions: [
-    { id: '1', name: 'Axis', recordedName: 'Axis', firstHour: 100, lastHour: 1000, members: [{ tag: 'GER', firstHour: 100, lastHour: 1000 }, { tag: 'ITA', firstHour: 150, lastHour: 1000 }], leaders: [], incomplete: [] },
-    { id: '2', name: 'Pact', recordedName: 'Pact', firstHour: 0, lastHour: 1000, members: [{ tag: 'GER', firstHour: 300, lastHour: 399 }], leaders: [], incomplete: [] },
+    { id: '1', name: 'Axis', recordedName: 'Axis', firstHour: 100, lastHour: 1000, nameReason: null, names: [{ firstHour: 100, lastHour: 1000, name: 'Axis', reason: null }], members: [{ tag: 'GER', firstHour: 100, lastHour: 1000 }, { tag: 'ITA', firstHour: 150, lastHour: 1000 }], leaders: [], incomplete: [] },
+    { id: '2', name: 'Pact', recordedName: 'Pact', firstHour: 0, lastHour: 1000, nameReason: null, names: [{ firstHour: 0, lastHour: 1000, name: 'Pact', reason: null }], members: [{ tag: 'GER', firstHour: 300, lastHour: 399 }], leaders: [], incomplete: [] },
   ],
   wars: [{ first: 'FRA', second: 'GER', firstHour: 200, lastHour: 500 }, { first: 'GER', second: 'POL', firstHour: 180, lastHour: 1000 }],
   warStarts: [{ hour: 180, attacking: 'GER', defending: 'POL' }, { hour: 200, attacking: 'FRA', defending: 'GER' }],
@@ -61,7 +61,7 @@ test('laws and advisors taken on while recorded are government changes; focuses 
 });
 
 test('a continuing advisor, a shared founding and a repeated focus are read honestly', () => {
-  const shared: CountryGroupReply = { ...groups, factions: [{ id: '3', name: 'Pact', recordedName: 'Pact', firstHour: 100, lastHour: 1000,
+  const shared: CountryGroupReply = { ...groups, factions: [{ id: '3', name: 'Pact', recordedName: 'Pact', firstHour: 100, lastHour: 1000, nameReason: null, names: [{ firstHour: 100, lastHour: 1000, name: 'Pact', reason: null }],
     members: [{ tag: 'GER', firstHour: 100, lastHour: 1000 }, { tag: 'ITA', firstHour: 100, lastHour: 1000 }], leaders: [], incomplete: [] }], warStarts: [], capitulations: [], wars: [] };
   assert.deepEqual(stabilityMarkers({ ...base, groups: shared }, ALL).map(badge => badge.label), ['Joined Pact']);
   // A sole first member of an incomplete first roster (another member not resolved) only joined.
@@ -73,14 +73,14 @@ test('a continuing advisor, a shared founding and a repeated focus are read hone
   assert.deepEqual(stabilityMarkers({ ...base, groups: partialOwn }, ALL).map(badge => badge.label), ['Joined Pact']);
   // A country whose id changes tag while in the faction neither leaves nor joins it.
   const renamed: CountryGroupReply = { ...shared, identityChanges: [{ hour: 500, from: 'AAA', to: 'GER' }],
-    factions: [{ id: '3', name: 'Pact', recordedName: 'Pact', firstHour: 100, lastHour: 1000, members: [{ tag: 'AAA', firstHour: 100, lastHour: 499 }, { tag: 'GER', firstHour: 500, lastHour: 1000 }], leaders: [], incomplete: [] }] };
+    factions: [{ id: '3', name: 'Pact', recordedName: 'Pact', firstHour: 100, lastHour: 1000, nameReason: null, names: [{ firstHour: 100, lastHour: 1000, name: 'Pact', reason: null }], members: [{ tag: 'AAA', firstHour: 100, lastHour: 499 }, { tag: 'GER', firstHour: 500, lastHour: 1000 }], leaders: [], incomplete: [] }] };
   assert.deepEqual(stabilityMarkers({ ...base, groups: renamed }, ALL), []);
   // AAA founded it (its sole first member) and never left: the change of tag is no leave.
   assert.deepEqual(stabilityMarkers({ ...base, tag: 'AAA', groups: renamed }, ALL).map(badge => badge.label), ['Founded Pact']);
   // A tag change in the same hour as a real move between factions hides neither.
   const switched: CountryGroupReply = { ...shared, identityChanges: [{ hour: 500, from: 'AAA', to: 'GER' }], factions: [
-    { id: '3', name: 'First Pact', recordedName: 'First Pact', firstHour: 100, lastHour: 1000, members: [{ tag: 'AAA', firstHour: 100, lastHour: 499 }, { tag: 'ITA', firstHour: 100, lastHour: 1000 }], leaders: [], incomplete: [] },
-    { id: '4', name: 'Second Pact', recordedName: 'Second Pact', firstHour: 100, lastHour: 1000, members: [{ tag: 'GER', firstHour: 500, lastHour: 1000 }, { tag: 'HUN', firstHour: 100, lastHour: 1000 }], leaders: [], incomplete: [] }] };
+    { id: '3', name: 'First Pact', recordedName: 'First Pact', firstHour: 100, lastHour: 1000, nameReason: null, names: [{ firstHour: 100, lastHour: 1000, name: 'First Pact', reason: null }], members: [{ tag: 'AAA', firstHour: 100, lastHour: 499 }, { tag: 'ITA', firstHour: 100, lastHour: 1000 }], leaders: [], incomplete: [] },
+    { id: '4', name: 'Second Pact', recordedName: 'Second Pact', firstHour: 100, lastHour: 1000, nameReason: null, names: [{ firstHour: 100, lastHour: 1000, name: 'Second Pact', reason: null }], members: [{ tag: 'GER', firstHour: 500, lastHour: 1000 }, { tag: 'HUN', firstHour: 100, lastHour: 1000 }], leaders: [], incomplete: [] }] };
   assert.deepEqual(stabilityMarkers({ ...base, groups: switched }, ALL).map(badge => badge.label), ['Joined Second Pact']);
   assert.deepEqual(stabilityMarkers({ ...base, tag: 'AAA', groups: switched }, ALL).map(badge => badge.label), ['Joined First Pact', 'Left First Pact']);
   const ideas = {
@@ -163,4 +163,21 @@ test('an enemy that changes tag the hour it capitulates still counts', () => {
     capitulations: [{ hour: 200, tag: 'BBB' }], identityChanges: [{ hour: 200, from: 'AAA', to: 'BBB' }], unobserved: { humans: [], factions: [], wars: [] } };
   assert.deepEqual(stabilityMarkers({ ...base, groups: renamed }, ALL).map(badge => badge.label), ['BBB capitulated']);
   assert.deepEqual(stabilityMarkers({ ...base, groups: { ...renamed, identityChanges: [] } }, ALL), []);
+});
+
+test('faction events use dated names and display overrides without backfilling gaps', () => {
+  const faction = { ...groups.factions[1], firstHour: 100, lastHour: 499, name: 'Later pact', names: [
+    { firstHour: 100, lastHour: 299, name: 'Opening pact', reason: null },
+    { firstHour: 300, lastHour: 499, name: 'Later pact', reason: null },
+  ], members: [{ tag: 'GER', firstHour: 150, lastHour: 299 }], leaders: [], incomplete: [] };
+  const data = { ...groups, factions: [faction], unobserved: { humans: [], factions: [], wars: [] } };
+  const events = (data: CountryGroupReply) => stabilityMarkers({ ...base, groups: data }, new Set<MarkerKind>(['factions']));
+  assert.deepEqual(events(data).map(badge => badge.label), ['Joined Opening pact', 'Left Later pact']);
+  const gap = { ...data, factions: [{ ...faction, names: [faction.names[0], { ...faction.names[1], firstHour: 301 }] }] };
+  assert.deepEqual(events(gap).map(badge => badge.label), ['Joined Opening pact', 'Left Unnamed faction (Not recorded)']);
+  // A dissolved faction has no read at the leaving hour; identify it from its final membership read.
+  const dissolved = { ...data, factions: [{ ...faction, lastHour: 299, names: [faction.names[0]] }] };
+  assert.deepEqual(events(dissolved).map(badge => badge.label), ['Joined Opening pact', 'Left Opening pact']);
+  const custom = stabilityMarkers({ ...base, groups: gap, factionName: () => ({ name: 'My pact', reason: null }) }, new Set<MarkerKind>(['factions']));
+  assert.deepEqual(custom.map(badge => badge.label), ['Joined My pact', 'Left My pact']);
 });

@@ -5,6 +5,10 @@ import { Segmented } from '../../components/Segmented';
 import type { CountryGroupReply } from '../../generated/dashboard';
 import { defaultCountryTag, selectedTags } from '../countrySelection';
 import { DEFAULT_TOP } from '../groups';
+import { useCampaignSettings } from '../campaignSettings';
+import { factionNameAt, UNNAMED_FACTION } from '../factionNames';
+import { resolveWindow } from '../model';
+import { usePlaybackHour } from '../playback';
 import { useCountryGroups } from '../useCountryGroups';
 import type { BoundTrack, CountryGroup, CountrySelection, GroupMembership, WidgetSpec } from '../model';
 import type { WidgetMeta, WidgetRuntime } from '../definitions';
@@ -32,7 +36,7 @@ export function CountriesSection({ widget, reference, runtime, limits, onChange 
         : value === 'all' ? { kind: 'all' } : { kind: 'selected' }); }} />
     {mode === 'all' ? <p className="field-hint">Every country the recording names.</p>
       : widget.countries.kind === 'group'
-        ? <GroupFields selection={widget.countries} reference={reference} runtime={runtime} limits={limits} onChange={onChange} />
+        ? <GroupFields widget={widget} selection={widget.countries} reference={reference} runtime={runtime} limits={limits} onChange={onChange} />
         : <CountryChips widget={widget} reference={reference} runtime={runtime} max={limits.max} onChange={onChange} />}
   </>;
 }
@@ -69,15 +73,19 @@ const MEMBERSHIP: readonly { value: GroupMembership; label: string; tooltip: str
   { value: 'ever', label: 'Anyone ever', tooltip: 'Every country that was ever a member' },
 ];
 
-function GroupFields({ selection, reference, runtime, limits, onChange }: {
-  selection: Extract<CountrySelection, { kind: 'group' }>; reference: BoundTrack | undefined; runtime: WidgetRuntime; limits: Limits;
+function GroupFields({ widget, selection, reference, runtime, limits, onChange }: {
+  widget: WidgetSpec; selection: Extract<CountrySelection, { kind: 'group' }>; reference: BoundTrack | undefined; runtime: WidgetRuntime; limits: Limits;
   onChange: (countries: CountrySelection) => void;
 }) {
+  usePlaybackHour(runtime.clock, widget.time.mode === 'follow');
+  const settings = useCampaignSettings();
+  const hour = reference ? resolveWindow(widget, reference, runtime.tracks, runtime.clock.getHour())?.lastHour ?? Number.NaN : undefined;
+  const overrides = settings.campaigns[reference?.source.metadata.campaignKey ?? '']?.factions;
   const groups = useCountryGroups(runtime, reference);
   const source = reference?.source;
   const set = (patch: Partial<Extract<CountrySelection, { kind: 'group' }>>) => onChange({ ...selection, ...patch });
   const group = selection.group;
-  const kinds = groupKinds(groups.data, limits);
+  const kinds = groupKinds(groups.data, limits, hour, overrides);
   // A saved faction this branch did not record (or that is still loading) stays
   // visible as the selection instead of the list silently showing another group.
   if (group.type === 'faction' && !kinds.some(kind => kind.value === `faction:${group.id}`)) {
@@ -86,13 +94,13 @@ function GroupFields({ selection, reference, runtime, limits, onChange }: {
   const value = group.type === 'faction' ? `faction:${group.id}` : group.type;
   return <>
     <label className="setting-row"><span>Group</span>
-      <select value={value} onChange={event => {
+      <select value={value} data-tooltip={kinds.find(kind => kind.value === value)?.reason} onChange={event => {
         const choice = event.currentTarget.value;
         const next: CountryGroup = choice.startsWith('faction:') ? { type: 'faction', id: choice.slice(8) }
           : choice === 'war' ? { type: 'war', tag: defaultCountryTag(reference) ?? '' }
             : choice === 'top' ? { type: 'top', count: Math.min(DEFAULT_TOP, limits.max) } : { type: 'humans' };
         if (next.type !== 'war' || next.tag) set({ group: next });
-      }}>{kinds.map(kind => <option key={kind.value} value={kind.value}>{kind.label}</option>)}</select></label>
+      }}>{kinds.map(kind => <option key={kind.value} value={kind.value} title={kind.reason}>{kind.label}</option>)}</select></label>
     {groups.error && <p className="field-hint" role="alert">Groups unavailable: {groups.error}</p>}
     {group.type === 'war' && <CountryPicker key={source?.id ?? 'unbound'} field source={source} client={runtime.client}
       countries={source?.metadata.countries ?? []} playerCountryId={source?.metadata.playerCountryId ?? null} selectedTag={group.tag}
@@ -109,10 +117,14 @@ function GroupFields({ selection, reference, runtime, limits, onChange }: {
 
 /** The groups a widget can offer: human players, each recorded faction, at war
  * with a country, and top N when the widget ranks countries. */
-export function groupKinds(reply: CountryGroupReply | undefined, limits: Limits): { value: string; label: string }[] {
+export function groupKinds(reply: CountryGroupReply | undefined, limits: Limits, hour?: number,
+  overrides?: Readonly<Record<string, { name?: string }>>): { value: string; label: string; reason?: string }[] {
   return [
     { value: 'humans', label: 'Human players' },
-    ...(reply?.factions ?? []).map(faction => ({ value: `faction:${faction.id}`, label: faction.name ?? 'Unnamed faction' })),
+    ...(reply?.factions ?? []).map(faction => {
+      const named = factionNameAt(faction, hour, overrides?.[faction.id]?.name);
+      return { value: `faction:${faction.id}`, label: named.name ?? UNNAMED_FACTION, reason: named.reason ?? undefined };
+    }),
     { value: 'war', label: 'At war with a country' },
     ...(limits.ranked ? [{ value: 'top', label: 'Top countries' }] : []),
   ];

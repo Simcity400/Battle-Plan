@@ -7,12 +7,12 @@ use crate::ResolvedLayers;
 use std::path::{Path, PathBuf};
 
 /// A base game folder and a mod folder under a fresh temporary root.
-struct Stack {
+pub(super) struct Stack {
     root: PathBuf,
 }
 
 impl Stack {
-    fn new(name: &str) -> Self {
+    pub(super) fn new(name: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
             "hoi4_mod_layers_{name}_{}_{:?}",
             std::process::id(),
@@ -22,21 +22,21 @@ impl Stack {
         Self { root }
     }
 
-    fn base(&self) -> PathBuf {
+    pub(super) fn base(&self) -> PathBuf {
         self.root.join("base")
     }
 
-    fn addon(&self) -> PathBuf {
+    pub(super) fn addon(&self) -> PathBuf {
         self.root.join("mod")
     }
 
-    fn write(&self, layer: &Path, path: &str, text: &str) {
+    pub(super) fn write(&self, layer: &Path, path: &str, text: &str) {
         let path = layer.join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
     }
 
-    fn layers(&self, replace_paths: &[&str]) -> ResolvedLayers {
+    pub(super) fn layers(&self, replace_paths: &[&str]) -> ResolvedLayers {
         let (base, addon) = (self.base(), self.addon());
         std::fs::create_dir_all(&base).unwrap();
         std::fs::create_dir_all(&addon).unwrap();

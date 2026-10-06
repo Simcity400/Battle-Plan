@@ -169,3 +169,14 @@ fn the_catalogue_names_countries_when_content_is_known_and_shows_tags_otherwise(
             .any(|w| w.contains("until the game folders"))
     );
 }
+
+impl crate::Source {
+    pub(crate) fn set_test_content(
+        &self,
+        options: installed_content::ResolveOptions,
+        content: Arc<installed_content::content::ResolvedContent>,
+    ) {
+        let reads = content.layers.report_uncovered_reads();
+        *self.content.lock().unwrap() = Some((options, content, reads));
+    }
+}

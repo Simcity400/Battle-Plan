@@ -326,8 +326,8 @@ fn country_groups_drop_ended_wars_and_keep_each_history_s_gaps_its_own() {
 }
 
 #[test]
-fn country_groups_leave_out_unknown_countries_and_localise_faction_keys() {
-    use crate::products::country_groups::{faction_name, scan_branch};
+fn country_groups_leave_out_unknown_countries() {
+    use crate::products::country_groups::scan_branch;
     let replay = Replay::from_records(
         CAMPAIGN.into(),
         &[records(
@@ -354,34 +354,281 @@ fn country_groups_leave_out_unknown_countries_and_localise_faction_keys() {
             .iter()
             .any(|w| w.starts_with("2 recorded country references"))
     );
-    assert_eq!(faction_name("", None), Ok(None));
-    assert_eq!(faction_name("My Pact", None), Ok(Some("My Pact".into())));
+}
+
+fn template_frame(hour: i32, literal: &str, template: Option<(u32, &str)>) -> DecodedFrame {
+    let mut frame = group_frame(hour, &[], &[(5, literal, &[9001])], &[]);
+    if let TableView::Complete(TableRows::Factions(rows)) =
+        &mut *frame.tables[TableId::Factions.index()]
+    {
+        rows[0].template_token = template.map(|(token, _)| token);
+    }
+    *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(
+        template
+            .map(|(token, literal)| replay::rows::LexicalTokenRow {
+                token,
+                literal: literal.as_bytes().to_vec(),
+            })
+            .into_iter()
+            .collect(),
+    ));
+    frame
+}
+
+fn named_factions(
+    frames: Vec<DecodedFrame>,
+    templates: &installed_content::faction_templates::Catalog,
+    localisation: &installed_content::localisation::Localisation,
+) -> Vec<super::FactionGroup> {
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let scan = super::scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
+    scan.faction_groups(
+        Ok(templates),
+        localisation,
+        "english",
+        &mut crate::catalogue::Refusals::default(),
+    )
+}
+
+#[test]
+fn country_groups_faction_names_resolve_templates_and_literal_wins() {
+    let templates = crate::catalogue::tests::loaded_templates("demo = { name = DEMO_NAME }");
+    let localisation = crate::catalogue::tests::loaded(
+        "l_english:\n DEMO_NAME:0 \"Demo Pact\"\n Literal:0 \"Do not translate\"\n",
+    );
+    let factions = named_factions(
+        vec![
+            template_frame(100, "", Some((17, "demo"))),
+            template_frame(101, "Literal", None),
+        ],
+        &templates,
+        &localisation,
+    );
+    assert_eq!(factions[0].names[0].name.as_deref(), Some("Demo Pact"));
+    assert_eq!(factions[0].names[1].name.as_deref(), Some("Literal"));
+    assert_eq!(factions[0].name.as_deref(), Some("Literal"));
+    assert_eq!(factions[0].name_reason, None);
+    assert!(factions[0].names.iter().all(|run| run.reason.is_none()));
+}
+
+#[test]
+fn country_groups_faction_names_keep_plain_localisation_controls() {
+    let templates = crate::catalogue::tests::loaded_templates(
+        "scoped = { name = SCOPED_NAME } price = { name = PRICE_NAME }",
+    );
     let localisation = crate::catalogue::tests::loaded(concat!(
         "l_english:\n",
-        " AXIS_NAME:0 \"Achse\"\n",
         " SCOPED_NAME:0 \"[ROOT.GetAdjective] Pact\"\n",
         " PRICE_NAME:0 \"Pakt $$ ]\"\n",
     ));
-    assert_eq!(
-        faction_name("AXIS_NAME", Some(&localisation)),
-        Ok(Some("Achse".into()))
+    let factions = named_factions(
+        vec![
+            template_frame(100, "", Some((17, "scoped"))),
+            template_frame(101, "", Some((18, "price"))),
+            template_frame(102, "Pacte d'Acier", None),
+        ],
+        &templates,
+        &localisation,
     );
-    // Faction names reach their text boxes plain (140D77360): brackets are
-    // glyphs.
-    assert_eq!(
-        faction_name("SCOPED_NAME", Some(&localisation)),
-        Ok(Some("[ROOT.GetAdjective] Pact".into()))
+    let names = &factions[0].names;
+    assert_eq!(names[0].name.as_deref(), Some("[ROOT.GetAdjective] Pact"));
+    assert_eq!(names[1].name.as_deref(), Some("Pakt $ ]"));
+    assert_eq!(names[2].name.as_deref(), Some("Pacte d'Acier"));
+    assert!(names.iter().all(|run| run.reason.is_none()));
+}
+
+#[test]
+fn country_groups_faction_names_display_undefined_localisation_keys_as_their_text() {
+    let templates = crate::catalogue::tests::loaded_templates("demo = { name = UNDEFINED_NAME }");
+    let localisation = crate::catalogue::tests::loaded("l_english:\n OTHER:0 \"Other\"\n");
+    let factions = named_factions(
+        vec![template_frame(100, "", Some((17, "demo")))],
+        &templates,
+        &localisation,
     );
-    // The game's localiser: `$$` is one `$` and a lone `]` a glyph.
-    assert_eq!(
-        faction_name("PRICE_NAME", Some(&localisation)),
-        Ok(Some("Pakt $ ]".into()))
+    assert_eq!(factions[0].name.as_deref(), Some("UNDEFINED_NAME"));
+    assert_eq!(factions[0].name_reason, None);
+    assert_eq!(factions[0].names[0].reason, None);
+}
+
+#[test]
+fn country_groups_faction_names_keep_missing_content_and_dictionary_reasons() {
+    let templates = crate::catalogue::tests::loaded_templates("demo = { name = DEMO_NAME }");
+    let localisation = crate::catalogue::tests::loaded("l_english:\n DEMO_NAME:0 \"Demo Pact\"\n");
+    let mut missing_dictionary = template_frame(101, "", Some((17, "demo")));
+    *missing_dictionary.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
+        reason: "not captured".into(),
+    };
+    let factions = named_factions(
+        vec![
+            template_frame(100, "", Some((18, "missing"))),
+            missing_dictionary,
+            template_frame(102, "", None),
+        ],
+        &templates,
+        &localisation,
     );
-    // A typed name is copied as its bytes.
-    assert_eq!(
-        faction_name("Pacte d'Acier", Some(&localisation)),
-        Ok(Some("Pacte d'Acier".into()))
+    let names = &factions[0].names;
+    assert_eq!(names.len(), 3);
+    assert!(
+        names[0]
+            .reason
+            .as_ref()
+            .unwrap()
+            .contains("not in the recorded content")
     );
+    assert!(names[1].reason.as_ref().unwrap().contains("LexicalTokens"));
+    assert!(
+        names[2]
+            .reason
+            .as_ref()
+            .unwrap()
+            .contains("template is not recorded")
+    );
+    assert!(names.iter().all(|run| run.name.is_none()));
+}
+
+#[test]
+fn country_groups_faction_names_follow_hour_operands_and_break_at_gaps() {
+    let templates = crate::catalogue::tests::loaded_templates(
+        "first = { name = FIRST_NAME } second = { name = SECOND_NAME }",
+    );
+    let localisation = crate::catalogue::tests::loaded(
+        "l_english:\n FIRST_NAME:0 \"First Pact\"\n SECOND_NAME:0 \"Second Pact\"\n",
+    );
+    let mut missing_members = template_frame(101, "", Some((22, "second")));
+    *missing_members.tables[TableId::FactionMembers.index()] = TableView::Unavailable {
+        reason: "missing roster".into(),
+    };
+    let mut missing_links = template_frame(104, "", Some((22, "second")));
+    *missing_links.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
+        reason: "missing links".into(),
+    };
+    let factions = named_factions(
+        vec![
+            template_frame(100, "", Some((21, "first"))),
+            missing_members,
+            template_frame(102, "", Some((22, "second"))),
+            missing_links,
+        ],
+        &templates,
+        &localisation,
+    );
+    assert_eq!((factions[0].first_hour, factions[0].last_hour), (100, 102));
+    let names = &factions[0].names;
+    assert_eq!(names.len(), 3);
+    assert_eq!((names[0].first_hour, names[0].last_hour), (100, 100));
+    assert_eq!((names[1].first_hour, names[1].last_hour), (101, 102));
+    assert_eq!((names[2].first_hour, names[2].last_hour), (104, 104));
+    assert_eq!(names[0].name.as_deref(), Some("First Pact"));
+    assert_eq!(names[1].name.as_deref(), Some("Second Pact"));
+    assert_eq!(names[2].name.as_deref(), Some("Second Pact"));
+}
+
+#[test]
+fn country_groups_faction_names_refuse_invalid_literal_bytes() {
+    let templates = crate::catalogue::tests::loaded_templates("demo = { name = DEMO_NAME }");
+    let localisation = crate::catalogue::tests::loaded("l_english:\n DEMO_NAME:0 \"Demo Pact\"\n");
+    let mut frame = template_frame(100, "", Some((17, "demo")));
+    if let TableView::Complete(TableRows::Factions(rows)) =
+        &mut *frame.tables[TableId::Factions.index()]
+    {
+        rows[0].name = vec![0xff];
+    }
+    let factions = named_factions(vec![frame], &templates, &localisation);
+    assert_eq!(factions[0].name, None);
+    assert_eq!(
+        factions[0].name_reason.as_deref(),
+        Some("faction name (140D77360) is not UTF-8")
+    );
+}
+
+#[test]
+fn country_groups_faction_names_use_mod_localisation_override() {
+    let (_, vanilla) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/factions/templates/00_demo.txt",
+            "demo = { name = DEMO_NAME }",
+        ),
+        (
+            "localisation/demo_l_english.yml",
+            "\u{feff}l_english:\n DEMO_NAME:0 \"Original Pact\"\n",
+        ),
+    ]);
+    let (_, modded) = crate::catalogue::tests::folder_catalogue(&[(
+        "localisation/demo_l_english.yml",
+        "\u{feff}l_english:\n DEMO_NAME:0 \"Modded Pact\"\n",
+    )]);
+    let layers =
+        installed_content::ResolvedLayers::from_folders(&[(&vanilla.0, &[][..]), (&modded.0, &[][..])])
+            .unwrap();
+    let catalogue = crate::catalogue::tests::layers_catalogue(layers);
+    let factions = named_factions(
+        vec![template_frame(100, "", Some((17, "demo")))],
+        &catalogue.content.layers.faction_templates().unwrap(),
+        &catalogue.localisation,
+    );
+    assert_eq!(factions[0].name.as_deref(), Some("Modded Pact"));
+    assert_eq!(factions[0].name_reason, None);
+}
+
+#[test]
+fn country_groups_faction_names_keep_empty_bound_and_plain_text_reasons() {
+    let templates =
+        crate::catalogue::tests::loaded_templates("unbound = { } icon = { name = ICON_NAME }");
+    let localisation =
+        crate::catalogue::tests::loaded("l_english:\n ICON_NAME:0 \"\u{a3}missing_icon\"\n");
+    let factions = named_factions(
+        vec![
+            template_frame(100, "", Some((17, "unbound"))),
+            template_frame(101, "", Some((18, "icon"))),
+        ],
+        &templates,
+        &localisation,
+    );
+    assert!(
+        factions[0].names[0]
+            .reason
+            .as_ref()
+            .unwrap()
+            .contains("has no bound name")
+    );
+    assert_eq!(
+        factions[0].names[1].reason.as_deref(),
+        Some("Faction name has no plain display text")
+    );
+    assert!(factions[0].names.iter().all(|run| run.name.is_none()));
+}
+
+#[test]
+fn country_groups_faction_names_keep_content_unavailable_reason_without_hiding_literals() {
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![
+                template_frame(100, "", Some((17, "demo"))),
+                template_frame(101, "My Pact", None),
+            ],
+        )],
+    )
+    .unwrap();
+    let scan = super::scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
+    let mut localisation = installed_content::localisation::Localisation::default();
+    localisation.language = "english".into();
+    let factions = scan.faction_groups(
+        Err("Faction naming content is unavailable".into()),
+        &localisation,
+        "english",
+        &mut crate::catalogue::Refusals::default(),
+    );
+    assert_eq!(factions[0].names[0].name, None);
+    assert_eq!(
+        factions[0].names[0].reason.as_deref(),
+        Some("Faction naming content is unavailable")
+    );
+    assert_eq!(factions[0].names[1].name.as_deref(), Some("My Pact"));
+    assert_eq!(factions[0].names[1].reason, None);
 }
 
 #[test]
@@ -560,6 +807,266 @@ fn country_groups_follow_each_faction_s_leader_at_order_zero() {
 }
 
 #[test]
+fn country_groups_faction_names_keep_all_changes_or_refuse_the_complete_reply() {
+    use super::{CountryGroupParams, CountryGroups, NameOperands, Scan};
+    use crate::products::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product};
+    use std::sync::Arc;
+
+    let tail = "x".repeat(1024);
+    for count in [5_000, MAX_PRODUCT_REPLY_BYTES / tail.len() + 1] {
+        let replay = Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(
+                1,
+                vec![group_frame(100, &[], &[(1, "Literal", &[])], &[])],
+            )],
+        )
+        .unwrap();
+        let cancelled = AtomicBool::new(false);
+        let mut scan = super::scan_branch(&replay, 1, &cancelled).unwrap();
+        let faction = scan.factions.get_mut(&1).unwrap();
+        // Exercise the reply's new name history without growing capped membership histories.
+        let tokens = Arc::clone(&faction.names[0].tokens);
+        faction.names = (0..count)
+            .map(|hour| NameOperands {
+                first_hour: hour as i32,
+                last_hour: hour as i32,
+                literal: format!("{hour}:{tail}").into_bytes(),
+                template_token: None,
+                lexical_read: 0,
+                tokens: Arc::clone(&tokens),
+                template: Err("Faction template not recorded".into()),
+            })
+            .collect();
+        let source = crate::Source::from_replay(
+            crate::SourceKey {
+                source_id: "faction-name-budget".into(),
+                revision: "1".into(),
+            },
+            Default::default(),
+            Arc::new(replay),
+            &cancelled,
+        )
+        .unwrap();
+        source
+            .state::<Vec<(u64, Arc<Scan>)>>()
+            .lock()
+            .unwrap()
+            .push((1, Arc::new(scan)));
+        let result = CountryGroups::load(
+            &source,
+            &CountryGroupParams {
+                branch_id: "1".into(),
+            },
+            &LoadContext { content: None },
+            &cancelled,
+        );
+        if count == 5_000 {
+            let reply = result.unwrap();
+            let names = &reply.factions[0].names;
+            assert_eq!(names.len(), count);
+            let last = format!("{}:{tail}", count - 1);
+            assert_eq!(names.last().unwrap().name.as_deref(), Some(last.as_str()));
+        } else {
+            let error = result.unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "The complete country group reply is too large; nothing was omitted"
+            );
+        }
+    }
+}
+
+#[test]
+fn country_groups_faction_literals_refuse_a_different_viewer_language() {
+    let templates = installed_content::faction_templates::Catalog::default();
+    let mut localisation = installed_content::localisation::Localisation::default();
+    localisation.language = "french".into();
+    let factions = named_factions(
+        vec![template_frame(100, "My Pact", None)],
+        &templates,
+        &localisation,
+    );
+    assert_eq!(factions[0].name, None);
+    assert_eq!(
+        factions[0].name_reason.as_deref(),
+        Some(
+            "faction name (140D77360) is text the game stored in english without its key, and the viewer's language is french"
+        )
+    );
+}
+
+#[test]
+fn country_groups_faction_names_restart_when_the_same_tokens_dictionary_recovers() {
+    let templates = crate::catalogue::tests::loaded_templates("demo = { name = DEMO_NAME }");
+    let localisation = crate::catalogue::tests::loaded("l_english:\n DEMO_NAME:0 \"Demo Pact\"\n");
+    let mut missing = template_frame(101, "", Some((17, "demo")));
+    *missing.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
+        reason: "missing".into(),
+    };
+    let factions = named_factions(
+        vec![
+            template_frame(100, "", Some((17, "demo"))),
+            missing,
+            template_frame(102, "", Some((17, "demo"))),
+        ],
+        &templates,
+        &localisation,
+    );
+    let names = &factions[0].names;
+    assert_eq!(names.len(), 3);
+    assert_eq!(names[0].name.as_deref(), Some("Demo Pact"));
+    assert!(names[1].reason.as_ref().unwrap().contains("LexicalTokens"));
+    assert_eq!(names[2].name.as_deref(), Some("Demo Pact"));
+}
+
+#[test]
+fn country_groups_faction_names_do_not_start_lifetime_on_an_unread_roster() {
+    let mut first = template_frame(100, "First name", None);
+    *first.tables[TableId::FactionMembers.index()] = TableView::Unavailable {
+        reason: "missing".into(),
+    };
+    let templates = installed_content::faction_templates::Catalog::default();
+    let mut localisation = installed_content::localisation::Localisation::default();
+    localisation.language = "english".into();
+    let factions = named_factions(
+        vec![first, template_frame(101, "Later name", None)],
+        &templates,
+        &localisation,
+    );
+    assert_eq!((factions[0].first_hour, factions[0].last_hour), (101, 101));
+    assert_eq!(factions[0].names[0].first_hour, 100);
+    assert_eq!(factions[0].names[0].name.as_deref(), Some("First name"));
+}
+
+fn faction_source(frame: DecodedFrame) -> crate::Source {
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
+    crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: "faction-content".into(),
+            revision: "1".into(),
+        },
+        Default::default(),
+        std::sync::Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap()
+}
+
+#[test]
+fn country_groups_literal_names_do_not_resolve_content_but_check_viewer_language() {
+    use crate::products::{ContentOptions, LoadContext, Product};
+    let (_, folder) = crate::catalogue::tests::folder_catalogue(&[]);
+    std::fs::write(folder.0.join("settings.txt"), "language=\"l_french\"").unwrap();
+    let context = LoadContext {
+        content: Some(ContentOptions {
+            options: installed_content::ResolveOptions {
+                game_dir: folder.0.join("unavailable-game"),
+                user_dir: folder.0.clone(),
+                cache_dir: folder.0.join("cache"),
+            },
+            allow_unverified: false,
+        }),
+    };
+    let source = faction_source(template_frame(100, "My Pact", None));
+    let reply = super::CountryGroups::load(
+        &source,
+        &super::CountryGroupParams {
+            branch_id: "1".into(),
+        },
+        &context,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(reply.factions[0].name, None);
+    assert_eq!(
+        reply.factions[0].name_reason.as_deref(),
+        Some(
+            "faction name (140D77360) is text the game stored in english without its key, and the viewer's language is french"
+        )
+    );
+    std::fs::write(folder.0.join("settings.txt"), "language=\"l_english\"").unwrap();
+    let reply = super::CountryGroups::load(
+        &source,
+        &super::CountryGroupParams {
+            branch_id: "1".into(),
+        },
+        &context,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(reply.factions[0].name.as_deref(), Some("My Pact"));
+    assert!(reply.warnings.is_empty(), "{:?}", reply.warnings);
+}
+
+#[test]
+fn country_groups_template_names_ignore_gfx_failures_and_unrelated_warnings() {
+    use crate::products::{ContentOptions, LoadContext, Product};
+    use std::sync::Arc;
+    let (_, folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/factions/templates/test.txt",
+            "demo={name=DEMO_NAME} bad={visible=yes}",
+        ),
+        (
+            "localisation/test_l_english.yml",
+            "\u{feff}l_english:\n DEMO_NAME:0 \"Demo Pact\"\n",
+        ),
+        (
+            "localisation/missing_bom_l_english.yml",
+            "l_english:\n WRONG:0 \"Wrong\"\n",
+        ),
+        ("interface/test.gfx", "spriteTypes={}"),
+        ("settings.txt", "language=\"l_english\""),
+    ]);
+    let layers = installed_content::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+    let content = Arc::new(installed_content::content::ResolvedContent {
+        layers,
+        stats: Default::default(),
+    });
+    let template_warnings = content.layers.faction_templates().unwrap().warnings.clone();
+    assert!(!template_warnings.is_empty());
+    assert!(
+        !installed_content::localisation::read(&content.layers, "english")
+            .unwrap()
+            .logged
+            .is_empty()
+    );
+    // A verified interface file changed: the full catalogue must fail to read it.
+    std::fs::write(folder.0.join("interface/test.gfx"), "changed").unwrap();
+    assert!(installed_content::gfx::read(&content.layers).is_err());
+    let options = ContentOptions {
+        options: installed_content::ResolveOptions {
+            game_dir: folder.0.clone(),
+            user_dir: folder.0.clone(),
+            cache_dir: folder.0.join("cache"),
+        },
+        allow_unverified: true,
+    };
+    let source = faction_source(template_frame(100, "", Some((17, "demo"))));
+    source.set_test_content(options.options.clone(), content);
+    let reply = super::CountryGroups::load(
+        &source,
+        &super::CountryGroupParams {
+            branch_id: "1".into(),
+        },
+        &LoadContext {
+            content: Some(options),
+        },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(reply.factions[0].name.as_deref(), Some("Demo Pact"));
+    let actual: Vec<_> = reply
+        .warnings
+        .iter()
+        .filter(|line| !line.starts_with("UNVERIFIED CONTENT"))
+        .cloned()
+        .collect();
+    assert_eq!(actual, template_warnings);
+}
+
+#[test]
 fn country_groups_link_tags_keep_balances_and_follow_identity_changes() {
     use crate::products::country_groups::{
         HourSpan, IdentityChange, MembershipRun, WarPairRun, WarStart, scan_branch,
@@ -697,4 +1204,41 @@ fn country_groups_link_tags_keep_balances_and_follow_identity_changes() {
                 .any(|warning| warning.contains("which countries they were is not known"))
         );
     }
+}
+
+#[test]
+fn country_groups_faction_names_bound_tokens_follow_each_dictionary_read() {
+    let templates = crate::catalogue::tests::loaded_templates(
+        "demo={name={localization_key=NAME ID=token:17}}",
+    );
+    let localisation = crate::catalogue::tests::loaded("l_english:\n NAME:0 \"Pact $ID$\"\n");
+    let frames = [(100, Some(31)), (101, Some(47)), (102, None)]
+        .into_iter()
+        .map(|(hour, token)| {
+            let mut frame = template_frame(hour, "", Some((17, "demo")));
+            if let TableView::Complete(TableRows::LexicalTokens(rows)) =
+                &mut *frame.tables[TableId::LexicalTokens.index()]
+                && let Some(token) = token
+            {
+                rows.push(replay::rows::LexicalTokenRow {
+                    token,
+                    literal: b"17".to_vec(),
+                });
+            }
+            frame
+        })
+        .collect();
+    let factions = named_factions(frames, &templates, &localisation);
+    let names = &factions[0].names;
+    assert_eq!(names.len(), 3);
+    assert_eq!(names[0].name.as_deref(), Some("Pact 31"));
+    assert_eq!(names[1].name.as_deref(), Some("Pact 47"));
+    assert_eq!(names[2].name, None);
+    assert!(
+        names[2]
+            .reason
+            .as_ref()
+            .unwrap()
+            .contains("token 17 is absent from LexicalTokens")
+    );
 }

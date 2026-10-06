@@ -1,5 +1,7 @@
 import type { EventBadge } from '../../charts/badges';
-import type { Artwork, CountryGroupReply, FocusReply, HourSpan, IdeaHistoryReply, PartyHistoryReply } from '../../generated/dashboard';
+import type { Artwork, CountryGroupReply, FactionGroup, FocusReply, HourSpan, IdeaHistoryReply, PartyHistoryReply } from '../../generated/dashboard';
+import { factionNameAt, UNNAMED_FACTION } from '../../dashboard/factionNames.ts';
+import type { FactionName } from '../../dashboard/factionNames';
 import { partyBadges } from '../ruling-party/partyData.ts';
 
 /** The event markers along the top of Stability & War support, as signed off
@@ -23,6 +25,8 @@ export interface MarkerSources {
   /** Whether the country is in the widget's group at an hour; its events outside it are left out. */
   member?: (hour: number) => boolean;
   groups?: CountryGroupReply;
+  /** Campaign display names can replace the game's dated faction name. */
+  factionName?: (faction: FactionGroup, hour: number) => FactionName;
   ideas?: IdeaHistoryReply;
   parties?: PartyHistoryReply;
   focus?: FocusReply;
@@ -73,11 +77,14 @@ export function stabilityMarkers(sources: MarkerSources, kinds: ReadonlySet<Mark
     // the other tag's run in the same faction meeting it there, is the same
     // country under another tag: not a join or a leave.
     for (const faction of groups.factions) {
+      const nameAt = (hour: number) => {
+        const named = sources.factionName?.(faction, hour) ?? factionNameAt(faction, hour);
+        return `${named.name ?? UNNAMED_FACTION}${named.reason ? ` (${named.reason})` : ''}`;
+      };
       const endsAt = new Set(faction.members.map(member => `${member.lastHour + 1}#${member.tag}`));
       const startsAt = new Set(faction.members.map(member => `${member.firstHour}#${member.tag}`));
       const renamedTo = new Set(groups.identityChanges.filter(change => endsAt.has(`${change.hour}#${change.from}`)).map(change => `${change.hour}#${change.to}`));
       const renamedFrom = new Set(groups.identityChanges.filter(change => startsAt.has(`${change.hour}#${change.to}`)).map(change => `${change.hour}#${change.from}`));
-      const name = faction.name ?? 'a faction';
       // Only a faction's sole first member founded it: the recording has no
       // founder, so several members seen at once all merely joined, and a first
       // roster that was not complete names no founder.
@@ -88,9 +95,16 @@ export function stabilityMarkers(sources: MarkerSources, kinds: ReadonlySet<Mark
       for (const run of faction.members.filter(member => member.tag === tag)) {
         const seenJoining = run.firstHour > branch[0] && !inSpans(unknown, run.firstHour - 1) && !renamedTo.has(`${run.firstHour}#${tag}`);
         const founded = run.firstHour === faction.firstHour && sole;
-        if (seenJoining) push('factions', run.firstHour, founded ? `Founded ${name}` : `Joined ${name}`);
+        if (seenJoining) push('factions', run.firstHour, () => {
+          const name = nameAt(run.firstHour);
+          return founded ? `Founded ${name}` : `Joined ${name}`;
+        });
         const seenLeaving = run.lastHour < branch[1] && !inSpans(unknown, run.lastHour + 1) && !renamedFrom.has(`${run.lastHour + 1}#${tag}`);
-        if (seenLeaving) push('factions', run.lastHour + 1, `Left ${name}`);
+        if (seenLeaving) push('factions', run.lastHour + 1, () => {
+          // If it dissolved with the departure, its last membership read names what was left.
+          const hour = run.lastHour + 1 > faction.lastHour ? run.lastHour : run.lastHour + 1;
+          return `Left ${nameAt(hour)}`;
+        });
       }
     }
   }

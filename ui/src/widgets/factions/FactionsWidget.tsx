@@ -13,6 +13,7 @@ import { useViewportHeight } from '../../charts/useChartTokens';
 import type { ColourScope } from '../../dashboard/campaignSettings';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
+import { UNNAMED_FACTION } from '../../dashboard/factionNames';
 import { useFactionColours } from '../../dashboard/FactionColours';
 import { worldFilter } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
@@ -47,9 +48,8 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   const at = Math.floor(playhead ?? extent[1]);
   const data = groups.data;
   const { colours, names } = factionColours;
-  // Display names chosen in campaign settings, else the recorded ones.
-  const namesKey = data ? JSON.stringify(data.factions.map(names)) : '';
-  const views = useMemo(() => data ? factionViews(data, names, id => colours.get(id) ?? '') : [], [data, namesKey, colours]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Keep member preparation independent of the playhead; names resolve locally by hour.
+  const views = useMemo(() => data ? factionViews(data, names, id => colours.get(id) ?? '') : [], [data, names, colours]);
   const dashboardTag = track ? defaultCountryTag(track) : null;
   const lastHour = track?.branch.lastHour ?? 0;
   const filter = useMemo(() => worldFilter(widget.countries, dashboardTag ? [dashboardTag] : [], data, at, lastHour, views[0]?.lineage), [widget.countries, dashboardTag, data, at, lastHour, views]);
@@ -90,21 +90,25 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   if (!lanes.length) return <WidgetState kind="empty" message={filter.tags ? 'None of the chosen countries has been in a faction yet.' : 'No factions yet.'} />;
 
   // An unnamed faction is told apart by its leader at the moment shown.
-  const legendLabel = (view: typeof views[number]) => {
-    const leader = view.name == null ? leaderAt(view.leaders, at) : null;
-    return leader ? `${factionLabel(view)} (${country(leader).name})` : factionLabel(view);
-  };
-  const legend = views.filter(view => lanes.some(lane => info.get(lane.id)?.faction === view && !lane.depth)).map(view => ({
-    id: view.id, label: legendLabel(view), color: view.color,
-    // For every campaign by default, or this one only (the widget's setting).
-    onColor: (hex: string) => { factionColours.setColour(view.id, hex, options.colourScope as ColourScope); },
-  }));
+  const shownFactions = new Set(lanes.filter(lane => !lane.depth).map(lane => info.get(lane.id)!.faction.id));
+  const legend = views.filter(view => shownFactions.has(view.id)).map(view => {
+    const named = view.nameAt(at);
+    const name = named.name ?? UNNAMED_FACTION;
+    const leader = named.name == null ? leaderAt(view.leaders, at) : null;
+    return {
+      id: view.id, label: leader ? `${name} (${country(leader).name})` : name, color: view.color, tooltip: named.reason ?? undefined,
+      // For every campaign by default, or this one only (the widget's setting).
+      onColor: (hex: string) => { factionColours.setColour(view.id, hex, options.colourScope as ColourScope); },
+    };
+  });
   const day = (hour: number) => dayLabel(hour);
   const tooltip = (laneId: string, hour: number, full: boolean): TooltipContent | null => {
     const about = info.get(laneId);
     if (!about) return null;
     const view = about.faction;
     const roster = view.unknown;
+    const factionName = view.nameAt(hour);
+    const nameRows: TooltipRow[] = factionName.reason ? [{ label: 'Name', value: factionName.reason, tone: 'muted' }] : [];
     const named = hover.labelAt(hour);
     if (!about.member) {
       const leader = leaderAt(view.leaders, hour);
@@ -127,7 +131,7 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
         .sort((a, b) => (a === leader ? -1 : b === leader ? 1 : named(a).name.localeCompare(named(b).name)));
       const memberRows: TooltipRow[] = members.map((tag, index) => ({ label: `${tag === leader ? `${LEADER_GLYPH} ` : ''}${named(tag).name}`, icon: named(tag).flag,
         indent: true, short: true, divider: index === 0 }));
-      const content: TooltipContent = { title: factionLabel(view), subtitle: `Faction · ${day(hour)}`, rows: [...rows, ...memberRows], note: NOTE };
+      const content: TooltipContent = { title: factionName.name ?? UNNAMED_FACTION, subtitle: `Faction · ${day(hour)}`, rows: [...nameRows, ...rows, ...memberRows], note: NOTE };
       return full ? content : fitTooltip([content], viewport, { more: hidden => `${hidden} more ${hidden === 1 ? 'member' : 'members'}` });
     }
     const member = about.member;
@@ -142,7 +146,8 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
     if (!stretch) return null;
     const state = runState([stretch], at, roster);
     const rows: TooltipRow[] = [
-      { label: 'Faction', value: factionLabel(view), swatch: view.color },
+      { label: 'Faction', value: factionName.name ?? UNNAMED_FACTION, swatch: view.color },
+      ...nameRows,
       { label: 'Role', value: run ? (led ? `${LEADER_GLYPH} Leader` : 'Member') : unknownThen ? 'Not recorded' : 'Not a member', tone: run ? undefined : 'muted' },
       { label: 'Joined', value: startUnseen(stretch.firstHour, branchFirstHour, roster) ? `before ${day(stretch.firstHour)}` : day(stretch.firstHour) },
       { label: 'Left', value: state.kind === 'ended' ? (state.lastSeen == null ? day(state.at) : `by ${day(state.at)}`)
@@ -153,7 +158,7 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   // What the timeline shows at the moment shown, for keyboard and screen-reader users.
   const description = `${dayLabel(at)}: ${lanes.filter(lane => !lane.depth).map(lane => {
     const about = info.get(lane.id)!;
-    return `${factionLabel(about.faction)}, ${lane.label}`;
+    return `${factionLabel(about.faction, at)}, ${lane.label}`;
   }).join('. ')}.`;
   return <div className="factions-widget">
     {/* Shown for one faction too: its swatch is where its colour is changed. */}

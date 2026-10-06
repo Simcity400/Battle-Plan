@@ -22,13 +22,14 @@ export interface CampaignSettings {
 export type ColourScope = 'all' | 'campaign';
 
 /** A faction's identity across campaigns, for colours set for every campaign: its
- * name exactly as recorded (a localisation key or a player's text, never its
- * translation, so it holds across languages and content), else the tag of the leader
+ * literal name exactly as recorded (unchanged by translation, so it holds
+ * across languages and content). An invalid UTF-8 literal is refused and has an
+ * empty recorded name, so its identity also falls back to the tag of the leader
  * it had when first recorded. Null when neither is known: such a faction's colour can
  * only be set for its campaign.
  *
- * Until factions' templates are recorded this key has limits: two factions recorded
- * under one name share a colour; and a faction formed from a template has no recorded
+ * This colour key has limits: two factions recorded
+ * under one literal name share a colour; and a faction formed from a template has no recorded
  * name, so it is known by its first leader's tag, which is not stable across
  * campaigns (the same template led first by another country is not matched, and
  * another faction first led by that tag is). */

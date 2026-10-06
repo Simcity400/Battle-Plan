@@ -4,7 +4,7 @@ import type { CountryGroupReply } from '../generated/dashboard';
 import { worldRequestTags } from './groups.ts';
 
 const groups: CountryGroupReply = { branchId: '1', warnings: [], warStarts: [], capitulations: [], identityChanges: [], humans: [], wars: [], unobserved: { humans: [], factions: [], wars: [] },
-  factions: [{ id: 'synthetic-faction', name: 'Synthetic group', recordedName: 'Synthetic group', firstHour: 10, lastHour: 20, leaders: [], incomplete: [], members: [{ tag: 'EARLY', firstHour: 10, lastHour: 15 }, { tag: 'LATE', firstHour: 16, lastHour: 20 }] }] };
+  factions: [{ id: 'synthetic-faction', name: 'Synthetic group', recordedName: 'Synthetic group', firstHour: 10, lastHour: 20, nameReason: null, names: [{ firstHour: 10, lastHour: 20, name: 'Synthetic group', reason: null }], leaders: [], incomplete: [], members: [{ tag: 'EARLY', firstHour: 10, lastHour: 15 }, { tag: 'LATE', firstHour: 16, lastHour: 20 }] }] };
 
 test('whole-branch group requests reuse recorded membership union while pending groups request nothing', () => {
   const choice = { kind: 'group', group: { type: 'faction', id: 'synthetic-faction' }, membership: 'hour', aggregate: false } as const;

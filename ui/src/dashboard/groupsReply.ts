@@ -1,9 +1,11 @@
 import type { CountryGroupReply } from '../generated/dashboard';
-import { isSpan } from '../charts/series.ts';
+import { isOrderedSpans, isSpan } from '../charts/series.ts';
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value != null;
 const isHour = (value: unknown) => Number.isInteger(value);
 const isRun = (value: unknown) => isSpan(value) && typeof (value as Record<string, unknown>).tag === 'string';
+const isName = (value: unknown) => isObject(value) && ((typeof value.name === 'string' && value.reason === null)
+  || (value.name === null && typeof value.reason === 'string'));
 const listOf = (value: unknown, check: (item: unknown) => boolean) => Array.isArray(value) && value.every(check);
 
 /** Checks a `country-groups` reply's shape: every membership, war, war start and
@@ -16,7 +18,8 @@ export function validateCountryGroupReply(data: unknown): CountryGroupReply {
     && listOf(reply.warnings, warning => typeof warning === 'string')
     && listOf(reply.humans, isRun)
     && listOf(reply.factions, faction => isSpan(faction) && isObject(faction) && typeof faction.id === 'string'
-      && (faction.name === null || typeof faction.name === 'string') && typeof faction.recordedName === 'string' && listOf(faction.members, isRun) && listOf(faction.leaders, isRun) && listOf(faction.incomplete, isSpan))
+      && isName({ name: faction.name, reason: faction.nameReason }) && isOrderedSpans(faction.names) && faction.names.every(isName)
+      && typeof faction.recordedName === 'string' && listOf(faction.members, isRun) && listOf(faction.leaders, isRun) && listOf(faction.incomplete, isSpan))
     && listOf(reply.wars, war => isSpan(war) && isObject(war) && typeof war.first === 'string' && typeof war.second === 'string')
     && listOf(reply.warStarts, start => isObject(start) && isHour(start.hour) && typeof start.attacking === 'string' && typeof start.defending === 'string')
     && listOf(reply.capitulations, event => isObject(event) && isHour(event.hour) && typeof event.tag === 'string')

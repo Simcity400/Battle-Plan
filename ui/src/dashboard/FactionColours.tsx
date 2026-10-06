@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { loadProduct } from './products';
 import { FactRequests, HourStore, nameKey, readFacts } from './countryFacts';
 import { factionFounders, founderReads, leaderColours } from './factionLeaders';
@@ -15,6 +15,7 @@ import type { ColourScope } from './campaignSettings';
 import { Segmented } from '../components/Segmented';
 import type { CountryGroupReply, CountryStyle, FactionGroup } from '../generated/dashboard';
 import { MAX_FACTIONS } from './campaignSettings';
+import { factionNameAt, latestFactionSummaries } from './factionNames';
 import './factionColours.css';
 
 /** How long the founders' map colours may take to read before a faction still unread
@@ -43,11 +44,7 @@ function useCampaignFactions(client: DashboardClient, source: DashboardSource | 
       { ...ids, product: 'country-groups', params: { branchId: branch.id } }, controller.signal, validateCountryGroupReply)))
       .then(async replies => {
         if (controller.signal.aborted) return;
-        const byId = new Map<string, FactionGroup>();
-        for (const faction of replies.flatMap(reply => reply.factions)) {
-          const known = byId.get(faction.id);
-          byId.set(faction.id, known ? { ...known, name: known.name ?? faction.name, recordedName: known.recordedName || faction.recordedName } : faction);
-        }
+        const factions = latestFactionSummaries(replies);
         const warnings = [...new Set(replies.flatMap(reply => reply.warnings))];
         const founders = factionFounders(replies);
         // Read through the shared bounded store (#146's FactRequests): at most two reads at
@@ -79,7 +76,7 @@ function useCampaignFactions(client: DashboardClient, source: DashboardSource | 
         const leaderColoursRead = leaderColours(founders, founder => byBranch.get(founder.branchId)?.get(nameKey(founder.hour, founder.tag)));
         const missing = [...leaderColoursRead.values()].filter(colour => !colour).length;
         if (missing) warnings.push(`The leader's map colour of ${missing} ${missing === 1 ? 'faction' : 'factions'} was not recorded or could not be read in time; ${missing === 1 ? 'it takes' : 'they take'} a palette colour until the campaign is opened again.`);
-        setState({ key, factions: [...byId.values()], leaderColours: leaderColoursRead, founders: new Map([...founders].map(([id, founder]) => [id, founder.tag])), warnings });
+        setState({ key, factions, leaderColours: leaderColoursRead, founders: new Map([...founders].map(([id, founder]) => [id, founder.tag])), warnings });
       }).catch(error => { if (!controller.signal.aborted) setState({ key, warnings: [], error: error instanceof Error ? error.message : String(error) }); });
     return () => controller.abort();
   }, [client, source, key]);
@@ -100,7 +97,7 @@ export function useFactionColours(client: DashboardClient, source: DashboardSour
   const [surface, setSurface] = useState(() => readTokens().surface);
   useEffect(() => subscribeTokens(tokens => setSurface(tokens.surface)), []);
   const campaignKey = source?.metadata.campaignKey ?? '';
-  const own = settings.campaigns[campaignKey]?.factions ?? {};
+  const own = useMemo(() => settings.campaigns[campaignKey]?.factions ?? {}, [settings, campaignKey]);
   const factions = useMemo(() => campaign.factions ?? [], [campaign.factions]);
   const leaders = campaign.leaderColours;
   const founders = campaign.founders;
@@ -108,7 +105,7 @@ export function useFactionColours(client: DashboardClient, source: DashboardSour
   const colours = useMemo(() => factionColours(factions.map(faction => ({ id: faction.id, leaderColor: leaders?.get(faction.id) ?? null })),
     Object.fromEntries(factions.map(faction => [faction.id, chosenColour(settings, campaignKey, faction.id, identities.get(faction.id) ?? null)])), surface),
   [factions, leaders, settings, campaignKey, identities, surface]);
-  const names = (faction: FactionGroup) => own[faction.id]?.name ?? faction.name;
+  const names = useCallback((faction: FactionGroup, hour?: number) => factionNameAt(faction, hour, own[faction.id]?.name), [own]);
   const identity = (id: string) => identities.get(id) ?? null;
   /** The tag of the leader a faction had when first recorded, if known. */
   const founder = (id: string) => founders?.get(id) ?? null;
@@ -162,14 +159,15 @@ function FactionColoursEditor({ client, source }: { client: DashboardClient; sou
     <Segmented label="Colour changes apply to" value={scope} options={SCOPES} onChange={setScope} />
     <ul className="faction-colours-list">{factions.map(faction => {
       const style = chosen[faction.id];
+      const named = factionNameAt(faction, undefined, style?.name);
       const shared = identity(faction.id) != null ? settings.shared[identity(faction.id)!] : undefined;
       const set = scope === 'campaign' ? style?.colour : shared?.colour;
-      return <li key={faction.id}>
+      return <li key={faction.id} data-tooltip={named.reason ?? undefined}>
         <label className="faction-swatch" data-tooltip="Change colour" style={{ background: colours.get(faction.id) }}>
-          <input type="color" value={colours.get(faction.id) ?? '#888888'} aria-label={`Colour for ${style?.name ?? faction.name ?? unnamed(faction.id)}`}
+          <input type="color" value={colours.get(faction.id) ?? '#888888'} aria-label={`Colour for ${named.name ?? unnamed(faction.id)}`}
             onChange={event => setMessage(setColour(faction.id, event.currentTarget.value, scope))} /></label>
         {/* Keyed on the stored name, so a reset replaces any old text. */}
-        <input key={style?.name ?? ''} className="faction-name" defaultValue={style?.name ?? ''} placeholder={faction.name ?? unnamed(faction.id)} maxLength={160} aria-label="Display name"
+        <input key={style?.name ?? ''} className="faction-name" defaultValue={style?.name ?? ''} placeholder={named.name ?? unnamed(faction.id)} maxLength={160} aria-label="Display name"
           onBlur={event => {
             const name = event.currentTarget.value.trim();
             if (name !== (style?.name ?? '')) save(setFactionStyle(settings, campaign, faction.id, name ? { name } : { name: undefined }));

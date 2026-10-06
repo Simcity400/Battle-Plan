@@ -1628,3 +1628,69 @@ fn wtt_shaped_immediate_and_option_keep_marker_links_and_recorded_flag_condition
     let result = fixture.render(option, &mut graph, content);
     assert_eq!(result.text, "Annex Alpha/Beta\n"); // describing the setter did not execute it.
 }
+
+#[test]
+fn faction_names_in_effect_descriptions_use_bound_template_names_and_literals() {
+    let mut fixture = Fixture::new();
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/test.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+        ),
+        (
+            "common/factions/templates/test.txt",
+            "demo={name=DEMO_NAME}",
+        ),
+        (
+            "localisation/test_l_english.yml",
+            concat!(
+                "\u{feff}l_english:\n BBB:0 \"Beta\"\n",
+                " EFFECT_ADD_TO_FACTION_NAME:0 \"Join $COUNTRY$/$FACTION$\"\n",
+                " demo:0 \"Wrong token name\"\n DEMO_NAME:0 \"Template pact\"\n",
+                " Literal:0 \"Wrong literal translation\"\n",
+            ),
+        ),
+    ]);
+    catalogue
+        .scripted_content()
+        .unwrap()
+        .set_synthetic_environment(Default::default());
+    fixture.catalogue = catalogue;
+    *fixture.frame.tables[TableId::Factions.index()] =
+        TableView::Complete(TableRows::Factions(vec![FactionRow {
+            id: 5,
+            template_token: Some(17),
+            ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::FactionMembers.index()] =
+        TableView::Complete(TableRows::FactionMembers(vec![FactionMemberRow {
+            country: 100,
+            faction: 5,
+            ordinal: 0,
+        }]));
+    *fixture.frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 17,
+            literal: b"demo".to_vec(),
+        }]));
+    let out = fixture.render("add_to_faction=BBB", &mut fresh(), Content::default());
+    assert_eq!(out.text, "Join Beta/Template pact\n");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    if let TableView::Complete(TableRows::Factions(rows)) =
+        &mut *fixture.frame.tables[TableId::Factions.index()]
+    {
+        rows[0].name = b"Literal".to_vec();
+        rows[0].template_token = None;
+    }
+    *fixture.frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
+        reason: "not captured".into(),
+    };
+    let out = fixture.render("add_to_faction=BBB", &mut fresh(), Content::default());
+    assert_eq!(out.text, "Join Beta/Literal\n");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    Arc::make_mut(&mut fixture.catalogue.localisation).language = "french".into();
+    let out = fixture.render("add_to_faction=BBB", &mut fresh(), Content::default());
+    assert!(out.refusals.keys().any(|line| line.contains(
+        "faction name (140D77360) is text the game stored in english without its key, and the viewer's language is french"
+    )), "{:?}", out.refusals);
+}

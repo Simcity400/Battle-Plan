@@ -40,6 +40,29 @@ Readable older recordings keep unchanged field prefixes. Products count a named 
 | `bin/dashboard-bridge.rs` | Development-only stdio adapter for browser UI work. |
 | `bin/export-types.rs` | Generates the TypeScript contract. |
 
+Faction names share [faction_names.rs](src/faction_names.rs) with scripted
+text and effect descriptions: `CFaction::display_name@140D77360` copies a
+nonempty literal unchanged in the recording language (another viewer language
+refuses it through `stored_text`), else resolves the recorded hour's template
+token through `LexicalTokens` and the recorded content stack's bound localisation.
+Naming, scripted text and diplomacy effect descriptions resolve through
+`faction_names.rs` and the content stack's lazy native `Catalog` cache
+(`ResolvedLayers::faction_templates`); character effect descriptions keep their
+own reader call and scope-aware evaluator. Bound names evaluate their authored arguments through the core
+localiser; token arguments use that hour's lexical dictionary, and unsupported
+formatter callbacks retain their named refusal. Country
+groups reads only localisation and templates when a recorded name needs them;
+interface assets and their diagnostics do not affect its reply. It exports
+ordered name runs
+independently of roster completeness; gaps and unread Factions hours break
+them. Its latest `name` and `nameReason` are summaries, while hover and playback
+use `names`. Missing templates, dictionary entries, content, empty bindings
+and unsupported forms leave a null name with a counted, named reason for the
+UI's "Unnamed faction" fallback. A literal never becomes a localisation key. Name runs
+keep every recorded change; a complete reply past `MAX_PRODUCT_REPLY_BYTES` is
+refused with the transport-budget reason. Evicting a cached branch only causes
+a full rescan.
+
 Border-event descriptions share the evaluator's caller-owned `EventScopes` graph and active variable session. Scope switches preserve ROOT, FROM and PREV links and both native seed words. Description-only targets are stored by scope identity: saving follows ROOT, lookup follows FROM, and outer completion clears only terminal-FROM tooltip targets and global tooltip targets. `has_event_target` reads saved targets only. Scripted-localisation conditions and variable operands use the same graph and session. `num_owned_states` reads `CountryCounterInputs`; `has_template` compares native display-name bytes, resolving the recorded fallback key through the recording language and template country. Template names retain their recorded daily freshness. `any_owned_state` derives nonempty owned membership from `States` and `Provinces`; order-sensitive predicates refuse the unrecorded native roster order.
 
 ## Products
