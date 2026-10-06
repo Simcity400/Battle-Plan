@@ -98,6 +98,16 @@ fn reader(token: u32) -> Option<KeyReader> {
         .map(|index| KEY_READERS[index].1)
 }
 
+/// Whether the token's static key reader handles this bare key before fallback.
+pub fn is_own_field(token: u32, key: &[u8]) -> bool {
+    match reader(token) {
+        Some(KeyReader::Keys(keys, _)) => keys
+            .iter()
+            .any(|(name, _)| name.as_bytes().eq_ignore_ascii_case(key)),
+        _ => false,
+    }
+}
+
 /// The inline loop at 14051BBB0 reads on after any value; ReadScript
 /// (140534280) instead requires the value slot to hold `{`.
 pub(crate) fn requires_block(token: u32) -> bool {

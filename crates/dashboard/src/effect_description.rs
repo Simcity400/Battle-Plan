@@ -3,8 +3,16 @@
 //! Stable domain entry points (core changes go through lead I):
 //! - `Renderer::{line, localised, expanded}` localise keys/arguments and expand in
 //!   the caller's scope/session (1410CF560); `line` appends LF.
-//! - `Renderer::{country_target, state_target, current_country, country_name, tag}`
-//!   resolve scoped operands and names; `state_name` uses GetStateName (1409CC380).
+//! - `Renderer::{country_target, state_target}` resolve native effect selectors
+//!   (141384830/1405336C0/1405302E0 and 1403A1950/140533BE0/14052FA10),
+//!   sharing `evaluator` for scoped variables. State zero stays zero.
+//! - `Renderer::{current_country, country_name, tag, state_name}` resolve names;
+//!   `state_name` uses GetStateName (1409CC380).
+//! - `Content::{buildings, resources, max_railway_level}` supplies cached declared
+//!   building labels (1414A4470), resource frames (140BBD150), and NSupply's
+//!   MAX_RAILWAY_LEVEL (14037A240), read once per stack by `CachedContent`.
+//! - `ScriptedText::{province_display_name, country_adjective}` shares effect
+//!   province naming (140E69320) and country adjective naming (140BA5560).
 //! - `Renderer::evaluator` is the shared trigger/variable/saved-target evaluator;
 //!   `scoped_value` evaluates fixed5 operands (1405382B0).
 //! - `Renderer::modifier_list`, `crate::modifier_text::value_text`, localisation
@@ -22,15 +30,17 @@ use std::{
     sync::Arc,
 };
 
-use crate::triggers::{NULL_STATE, Scope};
+use crate::triggers::{NULL_STATE, Scope, Selected, Selector, scope_selector};
 use crate::{
-    scripted_text::{EventScopes, ExpansionScopes, ScriptedText},
+    scripted_text::{EventObject, EventScopes, ExpansionScopes, Link, ScriptedText},
     triggers::{Evaluator, Scopes, World},
 };
 use installed_content::{
     localisation::{Argument, Localisation},
     parser::Item,
+    scope::{Keyword, Scope as Parsed},
 };
+use replay::rows::{GlobalSavedEventTargetRow, StateRow, tables};
 
 mod characters {}
 mod diplomacy;
@@ -67,6 +77,9 @@ pub struct Content<'a> {
     pub name_lists: Option<&'a installed_content::names::NameLists>,
     pub events: Option<&'a EventLookup<'a>>,
     pub key_names: Option<&'a installed_content::key_names::KeyNames>,
+    pub buildings: Option<&'a installed_content::buildings::Buildings>,
+    pub resources: Option<&'a [installed_content::resources::Resource]>,
+    pub max_railway_level: Option<i32>,
     pub gaps: Option<&'a BTreeMap<&'static str, String>>,
 }
 
@@ -78,6 +91,9 @@ pub struct CachedContent {
     ideas: Option<installed_content::ideas::IdeaContent>,
     name_lists: Option<installed_content::names::NameLists>,
     key_names: Option<installed_content::key_names::KeyNames>,
+    buildings: Option<installed_content::buildings::Buildings>,
+    resources: Option<Vec<installed_content::resources::Resource>>,
+    max_railway_level: Option<i32>,
     gaps: BTreeMap<&'static str, String>,
     pub notes: Vec<String>,
 }
@@ -97,12 +113,21 @@ impl CachedContent {
         let mut gaps = BTreeMap::new();
         let doctrines = keep(installed_content::doctrines::read(layers), "doctrines", &mut gaps);
         let decisions = keep(installed_content::decisions::read(layers), "decisions", &mut gaps);
-        let read_ideas = || {
-            let officers = installed_content::defines::read(layers)?
-                .strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")?;
-            installed_content::ideas::read(layers, &officers)
+        let defines = installed_content::defines::read(layers);
+        let read_ideas = || match &defines {
+            Ok(defines) => {
+                let officers =
+                    defines.strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")?;
+                installed_content::ideas::read(layers, &officers)
+            }
+            Err(why) => Err(std::io::Error::new(why.kind(), why.to_string())),
         };
         let ideas = keep(read_ideas(), "ideas", &mut gaps);
+        let maximum = match &defines {
+            Ok(defines) => defines.int32("NSupply", "MAX_RAILWAY_LEVEL"),
+            Err(why) => Err(std::io::Error::new(why.kind(), why.to_string())),
+        };
+        let max_railway_level = keep(maximum, "MAX_RAILWAY_LEVEL", &mut gaps);
         let mut notes = doctrines
             .as_ref()
             .map(|db| db.notes.clone())
@@ -123,6 +148,32 @@ impl CachedContent {
             "effect key names",
             &mut gaps,
         );
+        let buildings = keep(installed_content::buildings::read(layers), "buildings", &mut gaps);
+        let resources = keep(installed_content::resources::read(layers), "resources", &mut gaps).and_then(
+            |(resources, warnings)| {
+                let refused = warnings.iter().any(|(kind, _)| {
+                    matches!(
+                        kind,
+                        installed_content::DiagnosticKind::ParseFailure
+                            | installed_content::DiagnosticKind::Unsettled
+                            | installed_content::DiagnosticKind::Unsupported
+                            | installed_content::DiagnosticKind::Refused
+                    )
+                });
+                if refused {
+                    gaps.insert(
+                        "resources",
+                        warnings
+                            .iter()
+                            .map(|(_, why)| why.as_str())
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    );
+                }
+                notes.extend(warnings.into_iter().map(|(_, why)| why));
+                (!refused).then_some(resources)
+            },
+        );
         let politics = politics::PoliticsContent::read(layers);
         notes.extend(politics.notes.iter().cloned());
         Ok(Self {
@@ -132,6 +183,9 @@ impl CachedContent {
             ideas,
             name_lists,
             key_names,
+            buildings,
+            resources,
+            max_railway_level,
             gaps,
             notes,
         })
@@ -144,6 +198,9 @@ impl CachedContent {
             ideas: self.ideas.as_ref(),
             name_lists: self.name_lists.as_ref(),
             key_names: self.key_names.as_ref(),
+            buildings: self.buildings.as_ref(),
+            resources: self.resources.as_deref(),
+            max_railway_level: self.max_railway_level,
             gaps: Some(&self.gaps),
             events,
         }
@@ -306,6 +363,30 @@ fn key(item: &Item) -> String {
     String::from_utf8_lossy(item.key.as_deref().unwrap_or_default()).into_owned()
 }
 
+fn selector_scope(selector: Selector) -> Option<Parsed> {
+    Some(Parsed::Keyword(match selector {
+        Selector::This => Keyword::This,
+        Selector::Root => Keyword::Root,
+        Selector::Prev => Keyword::Prev,
+        Selector::From => Keyword::From,
+        _ => return None,
+    }))
+}
+
+enum EffectSavedTarget<'a> {
+    Graph(EventObject),
+    Recorded(&'a GlobalSavedEventTargetRow),
+}
+
+fn scalar_operand(item: &Item) -> Result<&[u8], String> {
+    item.value.scalar().ok_or_else(|| {
+        format!(
+            "{} requires a scalar operand (ReadValue 141385570 / CScopedVariable reader 140539440)",
+            key(item)
+        )
+    })
+}
+
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     pub(super) fn tag(&self, country: u32) -> Result<&str, String> {
         self.context
@@ -331,32 +412,269 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<Option<u32>, String> {
-        let operand = item
-            .value
-            .scalar()
-            .or_else(|| field(children(item), "target").and_then(|field| field.value.scalar()));
-        match operand {
-            Some(value) => self.evaluator()?.scoped_country(value, scopes),
-            None => Ok(match scopes.this {
-                Scope::Country(country) => Some(country),
+        // vf25@141384830 evaluates parsed operands through 140536ED0;
+        // otherwise vf15@1405336C0 / 1405302E0 resolves the selector.
+        // Block target fields belong only to the class's own native reader.
+        let item = if item.value.scalar().is_some() {
+            item
+        } else {
+            let token = item
+                .keyword()
+                .and_then(|key| installed_content::effect_keys::registered(&key.folded()));
+            // Declare-war's custom vf4 handles target outside KEY_READERS (1403B1FE0).
+            if !token.is_some_and(|token| {
+                installed_content::effect_keys::is_own_field(token, b"target")
+                    || installed_content::effect_keys::class(token)
+                        .is_some_and(|(_, reader)| reader == 0x1403B1FE0)
+            }) {
+                scalar_operand(item)?;
+            }
+            let targets = children(item)
+                .iter()
+                .filter(|item| item.keyword_is("target"));
+            if targets.clone().nth(1).is_some()
+                && targets.clone().any(|item| scope_selector(item).is_some())
+            {
+                return Err("repeated target fields with selectors retain CEffect +0x24 flags (140530BB0); this auxiliary native field-reader replay is not ported".into());
+            }
+            let Some(target) = field(children(item), "target") else {
+                return Ok(None); // Constructor's zero country/selector.
+            };
+            target
+        };
+        let country = match scope_selector(item) {
+            Some(Selected::Keyword(Selector::StateOwner)) => {
+                self.state_country_selector(Keyword::Owner, scopes)?
+            }
+            Some(Selected::Keyword(Selector::StateController)) => {
+                self.state_country_selector(Keyword::Controller, scopes)?
+            }
+            Some(Selected::Keyword(Selector::StateOccupier)) => {
+                let state = match scopes.this {
+                    Scope::State(state) => state,
+                    Scope::Country(_) => return Ok(None),
+                    _ => return Err("occupied selector needs native CEventScope.state_id +0xA8 (1405336C0); this projected scope does not expose that field".into()),
+                };
+                if self.valid_state(state)?.is_none() {
+                    return Ok(None);
+                }
+                // CState+268 / CResistance+50 is recorded unchanged, even inactive.
+                let rows = self
+                    .context
+                    .text
+                    .frame()
+                    .complete::<tables::StateResistance>()
+                    .map_err(|why| why.to_string())?;
+                let raw = rows.iter().find(|row| row.state == state)
+                    .ok_or_else(|| format!("StateResistance lacks country for state {state} (CResistance+0x50; 1405336C0)"))?.country;
+                if raw == 0 {
+                    None
+                } else {
+                    Some(self.context.text.recorded().slot(raw).ok_or_else(|| {
+                        format!("CountryLinks lacks occupied country {raw} (140BA6240)")
+                    })?)
+                }
+            }
+            Some(Selected::Keyword(selector)) => {
+                if let Some(target) = selector_scope(selector) {
+                    match self.evaluator()?.enter(&target, scopes)? {
+                        Some(Scope::Country(country)) => Some(country),
+                        Some(Scope::State(id)) if id != NULL_STATE => {
+                            // 14052B6A0 returns the selected state's owner tag (+0xC8).
+                            let state = self.valid_state(id)?.ok_or_else(|| {
+                                format!("invalid nonzero state {id}: native GetCountryTagOrStateOwner@14052B6A0 dereferences the missing state's owner (+0xC8)")
+                            })?;
+                            if state.owner == 0 {
+                                None
+                            } else {
+                                Some(self.context.text.recorded().slot(state.owner).ok_or_else(|| {
+                                    format!("CountryLinks lacks state {id} owner {} (14052B6A0, state+0xC8)", state.owner)
+                                })?)
+                            }
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None // ResolveCountryScope does not test capital/random.
+                }
+            }
+            Some(Selected::EventTarget(name)) => match self.effect_saved_target(name, scopes)? {
+                Some(EffectSavedTarget::Graph(EventObject::Country(country))) => Some(country),
+                Some(EffectSavedTarget::Recorded(row)) => self
+                    .context
+                    .text
+                    .recorded()
+                    .saved_country(row.country, installed_content::parser::c_string(name))?,
+                _ => None,
+            },
+            None => self
+                .evaluator()?
+                .scoped_country(scalar_operand(item)?, scopes)?,
+        };
+        Ok(country.filter(|country| *country > 0))
+    }
+
+    fn state_country_selector(
+        &self,
+        keyword: Keyword,
+        scopes: Scopes,
+    ) -> Result<Option<u32>, String> {
+        match scopes.this {
+            // 1405336C0 falls back to zero when no current state exists.
+            Scope::Country(_) | Scope::State(NULL_STATE) => Ok(None),
+            Scope::State(_) => Ok(match self.evaluator()?.enter(&Parsed::Keyword(keyword), scopes)? {
+                Some(Scope::Country(country)) => Some(country),
                 _ => None,
             }),
+            _ => Err("state owner/controller selector needs native CEventScope.state_id +0xA8 (1405336C0); this projected scope does not expose that field".into()),
+        }
+    }
+
+    fn effect_saved_target(
+        &self,
+        name: &[u8],
+        scopes: Scopes,
+    ) -> Result<Option<EffectSavedTarget<'_>>, String> {
+        let name = installed_content::parser::c_string(name);
+        if let Some(mut at) = scopes.cursor {
+            let graph = self.graph.borrow();
+            // 14052B3B0/14052B410 use terminal FROM storage (14052AED0).
+            let mut steps = 0;
+            loop {
+                if steps == graph.scopes.len() {
+                    return Err(
+                        "effect saved-target FROM storage cycle has no native terminal (14052AED0)"
+                            .into(),
+                    );
+                }
+                steps += 1;
+                let scope = graph
+                    .scopes
+                    .get(at)
+                    .ok_or("effect target scope is not given")?;
+                let next = match scope.from {
+                    Link::Itself => at,
+                    Link::Scope(to) if to < graph.scopes.len() => to,
+                    _ => {
+                        return Err(
+                            "effect saved-target FROM storage link is not known (14052AED0)".into(),
+                        );
+                    }
+                };
+                if next == at {
+                    break;
+                }
+                at = next;
+            }
+            let lookup = |rows: &[(Vec<u8>, EventObject)]| {
+                rows.iter()
+                    .find(|(key, _)| key == name)
+                    .map(|(_, object)| *object)
+            };
+            // 1405302E0/14052FA10: Find first, then vf9@14052BE50; an invalid first
+            // duplicate tries the next store, never another duplicate.
+            for target in [
+                graph.tooltip_targets.get(&at).and_then(|rows| lookup(rows)),
+                graph.saved_targets.get(&at).and_then(|rows| lookup(rows)),
+                lookup(&graph.global_tooltip_targets),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if name.is_empty() {
+                    continue;
+                }
+                match target {
+                    EventObject::Country(0)
+                    | EventObject::State(0)
+                    | EventObject::UnitLeader(0) => continue,
+                    // 14052DE40 clears both members before storing a state;
+                    // its nonzero state is live, while country +0x0C stays zero.
+                    EventObject::Country(_) | EventObject::State(_) => {
+                        return Ok(Some(EffectSavedTarget::Graph(target)));
+                    }
+                    EventObject::Character(_)
+                    | EventObject::UnitLeader(_)
+                    | EventObject::Province(_) => {
+                        return Err(format!(
+                            "saved effect target {}: projected {target:?} lacks CSavedEventTarget vf9 liveness for the state +0x08 / country +0x0C probe (14052FA10/1405302E0/14052BE50); core target projection plumbing pending",
+                            String::from_utf8_lossy(name)
+                        ));
+                    }
+                }
+            }
+        }
+        // Read only the requested member: +0x08 state and +0x0C country are
+        // independent, unlike a context projection (14052FA10/1405302E0).
+        let recorded = self.context.text.recorded();
+        match recorded.saved_target(name)? {
+            Some(row) if crate::scope::valid_saved_target(row) => {
+                Ok(Some(EffectSavedTarget::Recorded(row)))
+            }
+            _ => Ok(None),
         }
     }
 
     pub(super) fn state_target(&self, item: &Item, scopes: Scopes) -> Result<u32, String> {
-        let state = match item.value.scalar() {
-            Some(value) => self.evaluator()?.scoped_state_id(value, scopes)? as u32,
-            None => 0,
+        // vf6@14137DCD0 parses selectors before assigning the scoped value;
+        // vf25@1403A1950 falls back to vf16@140533BE0 with state zero.
+        let target = match scope_selector(item) {
+            Some(Selected::Keyword(selector)) => {
+                if let Some(target) = selector_scope(selector) {
+                    target
+                } else if item.value_keyword().as_deref() == Some("capital") {
+                    match scopes.this {
+                        Scope::State(id) if id != NULL_STATE => {
+                            let state = self.valid_state(id)?.ok_or_else(|| {
+                                "capital selector has an invalid state; native 140533D1E dereferences the missing state owner".to_string()
+                            })?;
+                            if state.owner == 0 {
+                                return Err("capital selector needs reserved CCountry[0].capital_state at +0x1018 (140533BE0/1406E02D0); no recording writer captures it".into());
+                            }
+                            Parsed::Chain {
+                                head: Keyword::Owner,
+                                then: Box::new(Parsed::Keyword(Keyword::CapitalScope)),
+                            }
+                        }
+                        // 140533D3C calls the capital getter, then falls through
+                        // to 14052FA10 with zero; only the state branch returns it.
+                        Scope::Country(_) | Scope::State(NULL_STATE) => return Ok(0),
+                        _ => return Err("capital selector needs the native event scope's state/country fields (140533BE0); the projected scope does not expose them".into()),
+                    }
+                } else {
+                    return Ok(0); // 14052FA10 does not test these selector bits.
+                }
+            }
+            Some(Selected::EventTarget(name)) => {
+                return Ok(match self.effect_saved_target(name, scopes)? {
+                    Some(EffectSavedTarget::Graph(EventObject::State(state))) => state,
+                    Some(EffectSavedTarget::Recorded(row)) => row.state as u32,
+                    _ => 0,
+                });
+            }
+            None => {
+                let operand = scalar_operand(item)?;
+                return self
+                    .evaluator()?
+                    .scoped_state_id(operand, scopes)
+                    .map(|id| id as u32);
+            }
         };
-        if state == 0 {
-            Ok(match scopes.this {
-                Scope::State(state) => state,
-                _ => NULL_STATE,
-            })
-        } else {
-            Ok(state)
-        }
+        Ok(match self.evaluator()?.enter(&target, scopes)? {
+            Some(Scope::State(id)) => id,
+            _ => 0,
+        })
+    }
+
+    fn valid_state(&self, id: u32) -> Result<Option<&StateRow>, String> {
+        Ok(self
+            .context
+            .text
+            .frame()
+            .complete::<tables::States>()
+            .map_err(|why| why.to_string())?
+            .iter()
+            .find(|row| (id as i32) > 0 && row.id == id))
     }
 
     pub(super) fn line(

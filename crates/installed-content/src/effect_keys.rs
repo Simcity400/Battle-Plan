@@ -23,6 +23,7 @@ use crate::{
 
 mod classes;
 pub(crate) mod key_readers;
+pub use key_readers::is_own_field;
 #[cfg(test)]
 mod tests;
 pub(crate) mod value_readers;

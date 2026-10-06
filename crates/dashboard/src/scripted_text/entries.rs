@@ -380,18 +380,54 @@ impl<'a> ScriptedText<'a> {
 
     /// GetDisplayName (140E67930), as province GetName calls it (141A83DD0).
     pub(super) fn province_name(&self, id: u32) -> Result<String, String> {
-        let (names, gap) = rows::<tables::ProvinceNames>(self.frame);
-        if let Some(row) = names.iter().find(|row| row.province == id) {
-            let text = self
-                .localisation
-                .localise(&row.name)
-                .map_err(|e| e.to_string())?;
+        if let Some(raw) = self.province_name_override(id)? {
+            let text = self.localisation.localise(raw).map_err(|e| e.to_string())?;
             if !text.is_empty() {
                 return Ok(text);
             }
-        } else if !complete::<tables::ProvinceNames>(self.frame) {
-            return Err(format!("GetName of province {id}: ProvinceNames {gap}"));
         }
+        self.province_victory_point_name(id)
+    }
+
+    /// Effect/map display (140E69320), distinct from province GetName.
+    pub(crate) fn province_display_name(&self, id: u32) -> Result<String, String> {
+        if let Some(raw) = self
+            .province_name_override(id)?
+            .filter(|raw| !raw.is_empty())
+        {
+            // Native tests raw length, then returns even an empty localisation.
+            return self.localisation.localise(raw).map_err(|e| e.to_string());
+        }
+        let text = self.province_victory_point_name(id)?;
+        if !text.is_empty() {
+            return Ok(text);
+        }
+        let (provinces, gap) = rows::<tables::Provinces>(self.frame);
+        let province = provinces
+            .iter()
+            .find(|row| row.id == id)
+            .ok_or_else(|| format!("province {id}: Provinces {gap}"))?;
+        if province.state != 0 {
+            self.state_name(province.state)
+        } else {
+            Err(format!(
+                "province {id} effect display fallback needs unrecorded CProvince+0xC8 strategic-region pointer/nullness and CStrategicRegion+0x38/+0x48 instance name (140E69320/140E0EB10; writers 140E0F2B0,141B50C80,141B4F0B0)"
+            ))
+        }
+    }
+
+    fn province_name_override(&self, id: u32) -> Result<Option<&[u8]>, String> {
+        let (names, gap) = rows::<tables::ProvinceNames>(self.frame);
+        if let Some(row) = names.iter().find(|row| row.province == id) {
+            Ok(Some(&row.name))
+        } else if complete::<tables::ProvinceNames>(self.frame) {
+            Ok(None)
+        } else {
+            Err(format!("GetName of province {id}: ProvinceNames {gap}"))
+        }
+    }
+
+    fn province_victory_point_name(&self, id: u32) -> Result<String, String> {
         let (provinces, gap) = rows::<tables::Provinces>(self.frame);
         let province = provinces
             .iter()

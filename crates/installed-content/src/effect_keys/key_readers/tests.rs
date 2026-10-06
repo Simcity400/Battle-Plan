@@ -170,7 +170,7 @@ fn effect_key_table_is_sorted_and_selects_ported_value_loops() {
         }
         assert!(matches!(
             crate::effect_keys::class(token).unwrap().0,
-            READ_SCRIPT | 0x14051BBB0
+            READ_SCRIPT | 0x14051BBB0 | 0x14031B0A0 // Targeted resistance delegates blocks to ReadScript.
         ));
     }
 }
@@ -220,6 +220,22 @@ fn building_tags_are_raw_values_and_register_no_definitions() {
     assert_eq!(tags.len(), 4);
     assert!(tags.iter().all(|item| item.key.is_none()));
     assert_eq!(tags[0].value.scalar(), Some(b"authored_tag".as_slice()));
+}
+
+#[test]
+fn building_scalar_tags_read_the_current_lexer_value() {
+    for effect in ["damage_building", "remove_building"] {
+        for operator in ["=", ""] {
+            let text = format!("body={{ {effect}={{ level=1 tags {operator} authored_tag }} }}");
+            let result = read(text.as_bytes(), &KeyNames::default());
+            assert!(result.unsettled.is_none(), "{result:?}");
+            assert_eq!(
+                scalar(block(block(&result.items, "body"), effect), "tags"),
+                b"authored_tag",
+                "{text}"
+            );
+        }
+    }
 }
 
 #[test]

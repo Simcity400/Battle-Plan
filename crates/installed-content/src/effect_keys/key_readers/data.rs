@@ -230,6 +230,19 @@ const READER_14031B440: KeyReader = KeyReader::Keys(
     Fallback::Only,
 );
 
+// 14031B3B0: targeted resistance amount/id/days and country operands.
+const READER_14031B3B0: KeyReader = KeyReader::Keys(
+    &[
+        ("id", ValueReader::One),
+        ("tooltip", ValueReader::One),
+        ("amount", ValueReader::One),
+        ("days", ValueReader::One),
+        ("occupied", ValueReader::One),
+        ("occupier", ValueReader::One),
+    ],
+    Fallback::Effect,
+);
+
 // 14031B510; readers_mid/forms.json
 // Fallback: CProvinceEffect::ReadEffect (14031BAE0) -> ReportUnexpectedToken (1424AD100).
 const READER_14031B510: KeyReader = KeyReader::Keys(
@@ -247,6 +260,16 @@ const READER_14031B510: KeyReader = KeyReader::Keys(
 // 14031B760; readers_lower/forms.json
 // Fallback: No further consumption (dynamic name/no-op/log-no-skip).
 const READER_14031B760: KeyReader = KeyReader::Keys(&[], Fallback::One);
+
+// 14031BA90: targeted resistance; unknown keys add effect children.
+const READER_14031BA90: KeyReader = KeyReader::Keys(
+    &[
+        ("clear", ValueReader::One),
+        ("occupied", ValueReader::One),
+        ("occupier", ValueReader::One),
+    ],
+    Fallback::Effect,
+);
 
 // 14031BA50; readers_high/forms.json
 // Fallback: ReportUnexpectedToken (1424AD100).
@@ -270,7 +293,7 @@ const READER_14031BFE0: KeyReader = KeyReader::Keys(
         ("province", ValueReader::One),
         ("state", ValueReader::One),
         ("level", ValueReader::One),
-        ("tags", ValueReader::ValueListIfOpen),
+        ("tags", ValueReader::ValueListIfOpenElseCurrent), // 14031B570 -> 140309DC0.
     ],
     Fallback::Only,
 );
@@ -1718,10 +1741,13 @@ pub(super) const KEY_READERS: &[(u32, KeyReader)] = &[
     (0x4A7F, READER_1403B1120), // create_dynamic_country, 1403B1120
     (0x4A8D, READER_1403AE630), // random_occupied_country, 1403AE630
     (0x4A8E, READER_1403ADCF0), // every_occupied_country, 1403ADCF0
+    (0x4A93, READER_14031B3B0), // add_resistance_target, 14031B3B0
     (0x4A9D, READER_1403B3970), // random_country_with_original_tag, 1403B3970
     (0x4A9E, READER_1403B2620), // every_country_with_original_tag, 1403B2620
     (0x4A9F, READER_1403AED60), // add_decryption, 1403AED60
     (0x4AA1, READER_1403B22D0), // delete_units, 1403B22D0
+    (0x4AA2, READER_14031BA90), // force_enable_resistance, 14031BA90
+    (0x4AA4, READER_14031BA90), // force_disable_resistance, 14031BA90
     (0x4AC3, READER_1403B1A30), // create_ship, 1403B1A30
     (0x4B39, READER_1403AEDB0), // add_intel, 1403AEDB0
     (0x4B5F, READER_1403ADE50), // random_controlled_state, 1403ADE50

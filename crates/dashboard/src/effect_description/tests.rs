@@ -40,6 +40,7 @@ impl Fixture {
                     " EFFECT_CONTEXT_COUNTRY:0 \"@$TAG$$COUNTRY$\"\n EFFECT_CONTEXT_STATE:0 \"$COUNTRY$\"\n",
                     " EFFECT_LIST_OTHERS:0 \"$LIST$ and $NUMBER|0$ others\"\n",
                     " EFFECT_ADD_TO_FACTION:0 \"Join $COUNTRY$\"\n EFFECT_ADD_TO_FACTION_NAME:0 \"Join $COUNTRY$/$FACTION$\"\n",
+                    " EFFECT_RELEASE_NATION:0 \"Release $COUNTRY$\"\n",
                     " EFFECT_REMOVE_FROM_FACTION_NAME:0 \"Leave $COUNTRY$/$FACTION$\"\n EFFECT_REMOVE_FROM_FACTION_END_PUPPET:0 \"Free $PUPPET$/$MASTER$\"\n",
                     " ADD_MASTERY_EFFECT:0 \"Mastery $AMOUNT|0$\"\n TRACK_EFFECT_ONLY_FOLDER:0 \"$TRACK_EFFECT_DESC$ $NAME$\"\n",
                     " EFFECT_TECH_BONUS_USES:0 \"$USES|0$ uses\"\n EFFECT_ADD_DOCTRINE_COST_REDUCTION:0 \"Doctrine $LIST$/$REDUCTION|0$/$USES$\"\n",
@@ -169,6 +170,290 @@ impl Fixture {
 
 fn fresh() -> EventScopes {
     EventScopes::new(vec![EventScope::of(EventObject::Country(1))])
+}
+
+fn country_target_fixture() -> Fixture {
+    let mut fixture = Fixture::new();
+    if let TableView::Complete(TableRows::States(rows)) =
+        &mut *fixture.frame.tables[TableId::States.index()]
+    {
+        rows[1].controller = 200;
+        rows[2].owner = 200;
+    }
+    *fixture.frame.tables[TableId::StateResistance.index()] =
+        TableView::Complete(TableRows::StateResistance(vec![StateResistanceRow {
+            state: 2,
+            country: 300,
+            ..Default::default()
+        }]));
+    fixture
+}
+
+#[test]
+fn native_country_target_selected_states_return_their_owner() {
+    let fixture = country_target_fixture();
+    for (selector, name) in [
+        ("THIS", "Alpha"),
+        ("ROOT", "Beta"),
+        ("PREV", "Beta"),
+        ("FROM", "Beta"),
+    ] {
+        let mut graph = EventScopes::new(vec![
+            EventScope {
+                root: Link::Scope(1),
+                prev: Link::Scope(1),
+                from: Link::Scope(1),
+                ..EventScope::of(EventObject::State(2))
+            },
+            EventScope::of(EventObject::State(3)),
+        ]);
+        let out = fixture.render(
+            &format!("release={selector}"),
+            &mut graph,
+            Content::default(),
+        );
+        assert_eq!(
+            out.text,
+            format!("Release {name}\n"),
+            "{selector}: {:?}",
+            out.refusals
+        );
+        assert!(out.refusals.is_empty(), "{selector}: {:?}", out.refusals);
+    }
+}
+
+#[test]
+fn native_country_target_state_selector_bits_read_recorded_countries() {
+    let fixture = country_target_fixture();
+    for (selector, name) in [
+        ("owner", "Alpha"),
+        ("controller", "Beta"),
+        ("occupied", "Gamma"),
+    ] {
+        let mut graph = EventScopes::new(vec![EventScope::of(EventObject::State(2))]);
+        let out = fixture.render(
+            &format!("release={selector}"),
+            &mut graph,
+            Content::default(),
+        );
+        assert_eq!(
+            out.text,
+            format!("Release {name}\n"),
+            "{selector}: {:?}",
+            out.refusals
+        );
+        assert!(out.refusals.is_empty(), "{selector}: {:?}", out.refusals);
+    }
+    for object in [EventObject::Country(1), EventObject::State(0)] {
+        for selector in ["owner", "controller", "occupied"] {
+            let mut graph = EventScopes::new(vec![EventScope::of(object)]);
+            let out = fixture.render(
+                &format!("release={selector}"),
+                &mut graph,
+                Content::default(),
+            );
+            assert_eq!(out, Description::default(), "{object:?}/{selector}");
+        }
+    }
+}
+
+#[test]
+fn native_country_target_capital_and_random_keep_country_zero() {
+    let mut fixture = country_target_fixture();
+    *fixture.frame.tables[TableId::ScriptVariables.index()] =
+        TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
+            scope_kind: 1,
+            scope_id: 100,
+            entries: vec![ScriptVariableEntry {
+                name: b"capital".to_vec(),
+                value_raw: 200 * 100_000,
+            }],
+        }]));
+    for object in [EventObject::Country(1), EventObject::State(2)] {
+        for selector in ["capital", "random"] {
+            let mut graph = EventScopes::new(vec![EventScope::of(object)]);
+            let out = fixture.render(
+                &format!("release={selector}"),
+                &mut graph,
+                Content::default(),
+            );
+            assert_eq!(out, Description::default(), "{object:?}/{selector}");
+        }
+    }
+}
+
+#[test]
+fn native_country_target_saved_probe_order_reads_separate_country_member() {
+    let mut fixture = country_target_fixture();
+    *fixture.frame.tables[TableId::GlobalSavedEventTargets.index()] =
+        TableView::Complete(TableRows::GlobalSavedEventTargets(vec![
+            GlobalSavedEventTargetRow {
+                name: b"chosen".to_vec(),
+                state: 2,
+                country: 200,
+                ..Default::default()
+            },
+        ]));
+    for (stage, expected) in [
+        (3, "Release Beta\n"),
+        (2, "Release Gamma\n"),
+        (1, "Release Beta\n"),
+        (0, "Release Alpha\n"),
+        (4, ""),
+        (5, "Release Beta\n"),
+    ] {
+        let mut graph = EventScopes::new(vec![
+            EventScope {
+                root: Link::Scope(2),
+                from: Link::Scope(1),
+                ..EventScope::of(EventObject::Country(1))
+            },
+            EventScope::of(EventObject::Country(1)),
+            EventScope::of(EventObject::Country(1)),
+        ]);
+        graph
+            .tooltip_targets
+            .insert(2, vec![(b"chosen".to_vec(), EventObject::Country(3))]);
+        if stage <= 2 {
+            graph
+                .global_tooltip_targets
+                .push((b"chosen".to_vec(), EventObject::Country(3)));
+        }
+        if stage <= 1 || stage == 5 {
+            graph
+                .saved_targets
+                .insert(1, vec![(b"chosen".to_vec(), EventObject::Country(2))]);
+        }
+        if stage == 0 {
+            graph
+                .tooltip_targets
+                .insert(1, vec![(b"chosen".to_vec(), EventObject::Country(1))]);
+        } else if stage == 4 {
+            // A live state has country zero; it shadows every later store.
+            graph
+                .tooltip_targets
+                .insert(1, vec![(b"chosen".to_vec(), EventObject::State(3))]);
+        } else if stage == 5 {
+            // Find returns the first name match, then vf9 decides its validity.
+            graph.tooltip_targets.insert(
+                1,
+                vec![
+                    (b"chosen".to_vec(), EventObject::State(0)),
+                    (b"chosen".to_vec(), EventObject::Country(1)),
+                ],
+            );
+        }
+        let out = fixture.render(
+            "release=event_target:chosen",
+            &mut graph,
+            Content::default(),
+        );
+        assert_eq!(out.text, expected, "stage {stage}: {:?}", out.refusals);
+        assert!(out.refusals.is_empty(), "stage {stage}: {:?}", out.refusals);
+    }
+    *fixture.frame.tables[TableId::GlobalSavedEventTargets.index()] =
+        TableView::Complete(TableRows::GlobalSavedEventTargets(vec![
+            GlobalSavedEventTargetRow {
+                name: b"chosen".to_vec(),
+                ..Default::default()
+            },
+            GlobalSavedEventTargetRow {
+                name: b"chosen".to_vec(),
+                country: 200,
+                ..Default::default()
+            },
+        ]));
+    assert_eq!(
+        fixture.render(
+            "release=event_target:chosen",
+            &mut fresh(),
+            Content::default()
+        ),
+        Description::default()
+    );
+}
+
+#[test]
+fn native_effect_saved_state_reads_member_without_country_or_context_projection() {
+    let mut fixture = Fixture::new();
+    for (state, country, live, expected) in [
+        (2, 9999, 0, "Claim Two\n"),
+        (0, 9999, 0, "Claim \n"),
+        (0, 0, GlobalSavedEventTargetRow::FACTION, "Claim \n"),
+    ] {
+        *fixture.frame.tables[TableId::GlobalSavedEventTargets.index()] =
+            TableView::Complete(TableRows::GlobalSavedEventTargets(vec![
+                GlobalSavedEventTargetRow {
+                    name: b"chosen".to_vec(),
+                    state,
+                    country,
+                    live,
+                    ..Default::default()
+                },
+            ]));
+        let mut graph = EventScopes::new(vec![EventScope::of(EventObject::State(3))]);
+        let out = fixture.render(
+            "add_state_claim=event_target:chosen",
+            &mut graph,
+            Content::default(),
+        );
+        assert_eq!(
+            out.text, expected,
+            "{state}/{country}/{live}: {:?}",
+            out.refusals
+        );
+        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    }
+}
+
+#[test]
+fn native_country_target_refuses_unported_projection_and_repeated_selector_forms() {
+    let fixture = Fixture::new();
+    for (body, object, reason) in [
+        (
+            "release=event_target:chosen",
+            EventObject::Character(0),
+            "vf9 liveness",
+        ),
+        (
+            "release=event_target:chosen",
+            EventObject::Character(7),
+            "vf9 liveness",
+        ),
+        (
+            "release=event_target:chosen",
+            EventObject::UnitLeader(7),
+            "vf9 liveness",
+        ),
+        (
+            "release=event_target:chosen",
+            EventObject::Province(2),
+            "vf9 liveness",
+        ),
+        (
+            "declare_war_on={target=ROOT target=FROM}",
+            EventObject::Country(2),
+            "+0x24 flags",
+        ),
+    ] {
+        let mut graph = fresh();
+        graph
+            .tooltip_targets
+            .insert(0, vec![(b"chosen".to_vec(), object)]);
+        let out = fixture.render(body, &mut graph, Content::default());
+        assert_eq!(out.text, "", "{body}");
+        assert_eq!(
+            out.refusals.values().sum::<usize>(),
+            1,
+            "{body}: {:?}",
+            out.refusals
+        );
+        assert!(
+            out.refusals.keys().next().unwrap().contains(reason),
+            "{body}: {:?}",
+            out.refusals
+        );
+    }
 }
 
 #[test]
@@ -492,7 +777,7 @@ fn numeric_operands_use_recorded_variables_and_state_values_remain_unvalidated()
         fixture
             .render("transfer_state=0", &mut state, Content::default())
             .text,
-        "Transfer Two\n"
+        "Transfer \n"
     );
     assert_eq!(
         fixture

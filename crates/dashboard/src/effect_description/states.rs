@@ -1,29 +1,14 @@
 use super::*;
-use replay::rows::tables;
+
+mod buildings;
+mod names;
+mod occupation;
+mod provinces;
+
+#[cfg(test)]
+mod tests;
 
 impl Renderer<'_, '_, '_> {
-    pub(super) fn state_change(
-        &self,
-        item: &Item,
-        scopes: Scopes,
-        key: &[u8],
-    ) -> Result<String, String> {
-        // 140378010 / 140398680
-        let states = self
-            .context
-            .text
-            .frame()
-            .complete::<tables::States>()
-            .map_err(|why| why.to_string())?;
-        let state = self.state_target(item, scopes)?;
-        let label = if states.iter().any(|row| row.id == state) {
-            self.state_name(state)?
-        } else {
-            String::new()
-        };
-        self.line(key, &[("STATE", Argument::Text(&label))], scopes, true)
-    }
-
     pub(super) fn start_border_war(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let states = self
             .context

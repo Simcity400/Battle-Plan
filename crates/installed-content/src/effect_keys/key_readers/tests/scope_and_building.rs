@@ -15,6 +15,46 @@ fn no_deferred(result: &Read) {
 }
 
 #[test]
+fn targeted_resistance_reads_own_fields_and_effect_children() {
+    for effect in ["force_disable_resistance", "force_enable_resistance"] {
+        let result = read(
+            format!(
+                "body={{ {effect}={{clear=yes occupied=AAA occupier=BBB add_political_power=2}} }}"
+            )
+            .as_bytes(),
+            &KeyNames::default(),
+        );
+        no_deferred(&result);
+        let fields = block(block(&result.items, "body"), effect);
+        assert_eq!(scalar(fields, "clear"), b"yes");
+        assert_eq!(scalar(fields, "occupied"), b"AAA");
+        assert_eq!(scalar(fields, "occupier"), b"BBB");
+        assert_eq!(scalar(fields, "add_political_power"), b"2");
+    }
+}
+
+#[test]
+fn resistance_target_reads_amount_and_country_operands_before_children() {
+    let result = read(
+        b"body={add_resistance_target={id=3 tooltip=SYN_TIP amount=var:syn days=7 occupied=AAA occupier=BBB add_political_power=2}}",
+        &KeyNames::default(),
+    );
+    no_deferred(&result);
+    let fields = block(block(&result.items, "body"), "add_resistance_target");
+    for (name, expected) in [
+        ("id", &b"3"[..]),
+        ("tooltip", &b"SYN_TIP"[..]),
+        ("amount", &b"var:syn"[..]),
+        ("days", &b"7"[..]),
+        ("occupied", &b"AAA"[..]),
+        ("occupier", &b"BBB"[..]),
+        ("add_political_power", &b"2"[..]),
+    ] {
+        assert_eq!(scalar(fields, name), expected, "{name}");
+    }
+}
+
+#[test]
 fn reached_effect_readers_remove_the_named_deferrals() {
     for effect in [
         "for_loop_effect",

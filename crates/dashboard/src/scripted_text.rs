@@ -593,6 +593,11 @@ impl<'a> ScriptedText<'a> {
         }
     }
 
+    /// ccountry_tag::adjective (140BA5560), built at CCountry+0x30 by 140709950.
+    pub(crate) fn country_adjective(&self, country: u32) -> Result<String, String> {
+        self.names.name_with(country, "_ADJ")
+    }
+
     pub(crate) fn recorded_language(&self) -> &str {
         &self.content.recorded_language
     }
@@ -1070,9 +1075,9 @@ impl<'a> ScriptedText<'a> {
         } else if is("GetNameDefCap") {
             upper_first(names("_DEF")?)
         } else if is("GetAdjective") {
-            names("_ADJ")?
+            self.country_adjective(slot)?
         } else if is("GetAdjectiveCap") {
-            upper_first(names("_ADJ")?)
+            upper_first(self.country_adjective(slot)?)
         } else if is("GetTag") {
             tag
         } else if is("GetFlag") {

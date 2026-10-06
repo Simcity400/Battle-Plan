@@ -1,0 +1,217 @@
+use super::*;
+use crate::triggers::scope_selector;
+use installed_content::fixed5::fixed5_percent;
+use replay::rows::ModifierDefinitionRow;
+
+impl Renderer<'_, '_, '_> {
+    fn occupation_operand(&self, item: &Item, scopes: Scopes) -> Result<i64, String> {
+        // Selector flags do not change generic BuildDescription@140532780's scope.
+        // Its numeric own text reads the unchanged literal-zero operand (14014AAC0).
+        if scope_selector(item).is_some() {
+            Ok(0)
+        } else {
+            self.scoped_value(scalar_operand(item)?, scopes)
+        }
+    }
+
+    fn occupation_state(&self, scopes: Scopes) -> Result<Option<u32>, String> {
+        let Scope::State(state) = scopes.this else {
+            return Ok(None);
+        };
+        Ok(self.valid_state(state)?.map(|row| row.id))
+    }
+
+    fn occupation_value(
+        &self,
+        value: i64,
+        positive_good: bool,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        // 142257CE0 inserts '+' for zero too; the shared formatter does not.
+        if value == 0 {
+            return Err("zero value needs FormatColoredFixed5Value@142257CE0's '+' prefix (142719C4C), unavailable in the shared formatter".into());
+        }
+        crate::modifier_text::value_text(
+            &ModifierDefinitionRow {
+                flags: crate::modifier_text::PERCENT
+                    | if positive_good {
+                        crate::modifier_text::POSITIVE_IS_GOOD
+                    } else {
+                        0
+                    },
+                precision: 1,
+                ..Default::default()
+            },
+            value,
+            1,
+            true,
+            false,
+            |key, _| self.localised(key, &[], scopes, false),
+        )
+    }
+
+    pub(in crate::effect_description) fn occupation_percent(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+        key: &[u8],
+        positive_good: Option<bool>,
+    ) -> Result<String, String> {
+        // Own 140313910/140314310/140318020/140318350; no scope expansion.
+        let value = self.occupation_operand(item, scopes)?;
+        let value = match positive_good {
+            Some(good) => self.occupation_value(value, good, scopes)?,
+            None => fixed5_percent(value, 1, false),
+        };
+        self.line(key, &[("VALUE", Argument::Text(&value))], scopes, false)
+    }
+
+    pub(in crate::effect_description) fn demilitarized_zone(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        // 140313D10: invalid current state is empty; constructor 14030AF00.
+        if self.occupation_state(scopes)?.is_none() {
+            return Ok(String::new());
+        }
+        let enabled = scope_selector(item).is_none()
+            && installed_content::parser::read_bool(scalar_operand(item)?).unwrap_or(false);
+        self.line(
+            if enabled {
+                b"EFFECT_DEMILITARIZED_ZONE"
+            } else {
+                b"EFFECT_NOT_DEMILITARIZED_ZONE"
+            },
+            &[],
+            scopes,
+            false,
+        )
+    }
+
+    pub(in crate::effect_description) fn extra_shared_slots(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        // 140314030: rounded zero takes REMOVE; fixed_round@1424D8760.
+        let value = crate::triggers::fixed_round(self.occupation_operand(item, scopes)?) as i32;
+        self.line(
+            if value > 0 {
+                b"EFFECT_ADD_EXTRA_STATE_SHARED_BUILDING_SLOTS"
+            } else {
+                b"EFFECT_REMOVE_EXTRA_STATE_SHARED_BUILDING_SLOTS"
+            },
+            &[(
+                "COUNT",
+                Argument::Int32(if value > 0 {
+                    value
+                } else {
+                    value.wrapping_neg()
+                }),
+            )],
+            scopes,
+            false,
+        )
+    }
+
+    pub(in crate::effect_description) fn cancel_resistance(
+        &self,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        self.localised(b"EFFECT_CANCEL_RESISTANCE", &[], scopes, false) // 140315DE0: no LF.
+    }
+
+    pub(in crate::effect_description) fn force_enable_resistance(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        self.require_no_effect_children(item)?;
+        // 140316590: operands name no countries in the own text; no LF.
+        let Some(state) = self.occupation_state(scopes)? else {
+            return Ok(String::new());
+        };
+        let clear = installed_content::parser::read_bool_field(children(item), "clear", false);
+        let state = self.state_name(state)?;
+        self.localised(
+            if clear {
+                b"EFFECT_FORCE_ADD_RESISTANCE_CLEAR"
+            } else {
+                b"EFFECT_FORCE_ADD_RESISTANCE"
+            },
+            &[("STATE", Argument::Text(&state))],
+            scopes,
+            false,
+        )
+    }
+
+    pub(in crate::effect_description) fn set_state_category(
+        &self,
+        item: &Item,
+    ) -> Result<String, String> {
+        let category = item.value.c_str().map_err(|why| why.to_string())?;
+        // vf6@14030A5F0 rejects undeclared categories before own@1403184E0.
+        Err(format!(
+            "state category {category}: no installed-content category reader (1413AFAC0 database, definition validity +0x10; native reader 14030A5F0)"
+        ))
+    }
+
+    pub(in crate::effect_description) fn start_resistance(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        // 140318E00 -> country operand vf25@141384830; no LF.
+        let target = self.country_target(item, scopes)?;
+        if let Some(target) = target.filter(|target| *target > 0) {
+            let country = self.country_name(target, false)?;
+            self.localised(
+                b"EFFECT_INIT_RESISTANCE_BY_COUNTRY",
+                &[("COUNTRY", Argument::Text(&country))],
+                scopes,
+                false,
+            )
+        } else {
+            self.localised(b"EFFECT_INIT_RESISTANCE", &[], scopes, false)
+        }
+    }
+
+    pub(in crate::effect_description) fn supply_units(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let value = self.occupation_operand(item, scopes)?;
+        self.localised(
+            b"EFFECT_SUPPLY_UNITS",
+            &[("NUM", Argument::Fixed5(value))],
+            scopes,
+            false,
+        ) // 1402EDC70: no LF.
+    }
+
+    pub(in crate::effect_description) fn resistance_target(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        self.require_no_effect_children(item)?;
+        // 14030B010 defaults amount=-1; scalar vf25@14031B120 writes amount.
+        let amount = match item.value.scalar() {
+            Some(amount) => Some(amount),
+            None => field(children(item), "amount")
+                .map(scalar_operand)
+                .transpose()?,
+        };
+        let amount = match amount {
+            Some(amount) => self.scoped_value(amount, scopes)?,
+            None => -100_000,
+        };
+        if amount == 0 {
+            return Ok(String::new());
+        }
+        // Own@1403144B0 constructs both marked-country arguments in every branch.
+        Err("nonzero amount needs the shared CountryTag_FormatMarkedName@140BA59E0 helper (0x12 + tag + space + capitalized definite name), including country-zero arguments".into())
+    }
+}

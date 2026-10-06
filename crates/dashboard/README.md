@@ -166,6 +166,62 @@ continuations are named refusals. State leaves require the complete state roster
 before applying native invalid-state behavior. Default `every_state` lists its targets but describes the body once in
 the first target. Hidden effects build and discard text while retaining failures.
 
+The D2 empty family dispatches all assigned native classes to empty own text
+(`140176EE0` / `1402E9B40`), including the four empty build overrides. Setters
+never execute during description. `create_dynamic_country` and targeted
+`force_disable_resistance` forms with effect children retain named, counted
+refusals until the core supplies the generic child walk (`140532780`) and
+multiple-description probe (`140533D80`); their childless forms describe nothing.
+
+The D2 states family dispatches its 43 assigned classes. State/country changes,
+capital and state naming, resistance/compliance, shared slots, supply, province
+navigation/controller and resource rights use native operands, names, keys,
+expansion and LF rules. Invalid targets retain each native empty or error branch;
+zero state operands remain zero. `occupied` reads `StateResistance.country`,
+including inactive rows. Descriptions require complete recorded rosters.
+
+All scalar-state rows, including claim and transfer, use core `state_target`;
+literal zero stays zero (`1403A1950` -> `140533BE0` -> `14052FA10`). In state
+scope `capital` selects the owner's capital; in country scope it keeps zero.
+Core `country_target` uses native effect selectors: linked states promote their
+recorded `States.owner` (`14052B6A0`, state +0xC8); owner/controller/occupied
+read the current state, while capital/random keep country zero. Saved targets
+probe terminal-FROM local tooltip, local saved, global tooltip, then global saved
+(`1405302E0`), reading country +0x0C independently of state +8. Invalid nonzero
+linked states remain refused. Projected character, leader and province graph
+targets retain named refusals pending core saved-target liveness plumbing.
+State saved targets read +8 directly (`14052FA10`), without resolving an unused
+country or retaining caller scope through a context projection. Repeated block
+targets with selectors retain a named auxiliary-reader refusal: their native
+sticky +0x24 flags (`140530BB0`) are not reconstructed from the final field.
+
+The effect content cache also reads declared building names, resource icon frames
+and `NSupply::MAX_RAILWAY_LEVEL` once per stack; its define read is shared with
+idea content. Reader notes and independent gaps are retained. Construction,
+offsite and random provincial buildings, explicit building damage/repair,
+typed state building removal, building-resource changes, resource additions,
+railway guns and unfiltered explicit railway paths use that content. Resource
+changes distinguish the icon frame from the recorded resource database index.
+One-province railway paths are accepted; unfiltered paths do not inspect interior
+province IDs. Building names keep their declared case and native `_plural` key.
+
+Province VP, rename and reset effects share the distinct effect display accessor
+(`140E69320`); ordinary scripted `GetName` retains `140E67930` behavior. Effect
+display returns a nonempty raw override even when its localisation is empty,
+then tries VP text and the state name. Country adjectives reuse country naming.
+Of the 43 states classes, 42 have an output or native empty branch; state category
+is the sole all-form refusal, with no reader for database `1413AFAC0`.
+
+Named, counted form refusals remain for generic child traversal, zero
+colored-percent formatting, marked country names, tag-selected building targets,
+provincial removal's unexposed land flag, strategic-location templates and
+computed/filtered railway paths (`140E7E560`). Differing building declarations
+and unresolved signed resource frames retain content refusals. State-less
+province display needs the unrecorded strategic-region pointer and instance
+name; country-zero naming/adjective/capital inputs also remain absent. Native
+null dereferences, uninitialised operands and unsupported auxiliary forms are
+refused precisely. No recording format or acquisition changes are made.
+
 Effect conditions and values share the trigger evaluator and its full scope
 graph. Description-only targets save through terminal ROOT and look up through
 terminal FROM. Separate immediate/option calls preserve caller storage but clear

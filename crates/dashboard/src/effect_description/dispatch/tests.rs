@@ -30,7 +30,7 @@ fn native_aliases_share_one_class_dispatch() {
         installed_content::parser::parse(b"set_unit_leader_flag=x set_character_flag=x if={} else_if={}")
             .unwrap()
             .items;
-    // Native aliases share 142729218; the unported domain receives one class.
+    // Native aliases share 142729218 and empty own text (140176EE0).
     assert_eq!(
         renderer.effect_class(&items[0]).map(|class| class.name),
         Some("CSetCharacterFlagEffect")
@@ -43,12 +43,7 @@ fn native_aliases_share_one_class_dispatch() {
         renderer.leaf(&items[0], scopes),
         renderer.leaf(&items[1], scopes)
     );
-    assert!(
-        renderer
-            .leaf(&items[0], scopes)
-            .unwrap_err()
-            .contains("CSetCharacterFlagEffect")
-    );
+    assert_eq!(renderer.leaf(&items[0], scopes), Ok(String::new()));
     // Conditional tails alias CIfEffect and reach the same landed own function.
     assert_eq!(
         renderer.effect_class(&items[2]).map(|class| class.name),
