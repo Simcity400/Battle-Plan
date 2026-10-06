@@ -46,6 +46,8 @@ Drive the game only while holding the game lock, and never stop another agent's 
 
 ## Files and documentation
 
+The game is installed at `<local-path> of Iron IV` (tests that read it are `#[ignore]`d and take its path from `BATTLE_PLAN_GAME_DIR`). Python is `C:\Program Files\Python311\python.exe`, on PATH as `python`.
+
 Use the worktree's `.cargo-target` and shared `C:\sccache_cache`; never delete the shared cache. Put local captures/reports under `captures\`, outside Git. Keep other scratch outside source. Never commit dumps, logs or build output.
 
 Keep the root README as an index, shared rules here, component details beside each crate and field evidence beside code. Preserve approved decisions.
