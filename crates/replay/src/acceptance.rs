@@ -1829,7 +1829,8 @@ fn table_encoded_sizes_match_all_tables_and_update_forms() {
                 let mut previous_key = 0;
                 let changed = (0..count)
                     .map(|_| {
-                        let row = crate::rows::decode_delta(table, previous_key, &mut input).unwrap();
+                        let row =
+                            crate::rows::decode_delta(table, previous_key, &mut input).unwrap();
                         previous_key = row.key;
                         row
                     })
@@ -1844,7 +1845,11 @@ fn table_encoded_sizes_match_all_tables_and_update_forms() {
             }
             check(
                 &delta,
-                if delete { "delta with deletion" } else { "delta" },
+                if delete {
+                    "delta with deletion"
+                } else {
+                    "delta"
+                },
                 tick,
             );
         }

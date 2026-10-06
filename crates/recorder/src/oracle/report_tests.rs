@@ -317,17 +317,15 @@ fn compatibility_field_limitations_aggregate_counts_without_duplicate_subjects()
                 "WeatherProvinces.temperature",
                 row.id.to_string(),
             );
-            report.recorded(
-                &row.raw_mud,
-                "WeatherProvinces.raw_mud",
-                row.id.to_string(),
-            );
+            report.recorded(&row.raw_mud, "WeatherProvinces.raw_mud", row.id.to_string());
         }
         assert_eq!(report.limitations.len(), 2);
         for (field, count) in [("temperature", 13_412), ("raw_mud", 13_413)] {
             assert_eq!(
                 report.limitations[&format!("WeatherProvinces.{field} not recorded")],
-                [format!("WeatherProvinces.{field}: {count} rows not recorded")]
+                [format!(
+                    "WeatherProvinces.{field}: {count} rows not recorded"
+                )]
             );
         }
     }

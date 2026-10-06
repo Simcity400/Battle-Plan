@@ -139,16 +139,13 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     history[TableId::UnitLeaders.index()] = table(TableId::UnitLeaders, 93, "9fb09a565f");
     history[TableId::SimulationFeatures.index()] =
         table(TableId::SimulationFeatures, 93, "9fb09a565f");
-    history[TableId::WeatherProvinces.index()] =
-        table(TableId::WeatherProvinces, 93, "9fb09a565f");
+    history[TableId::WeatherProvinces.index()] = table(TableId::WeatherProvinces, 93, "9fb09a565f");
     history[TableId::StateFlags.index()] = table(TableId::StateFlags, 93, "9fb09a565f");
-    history[TableId::DivisionStatus.index()] =
-        table(TableId::DivisionStatus, 93, "9fb09a565f");
+    history[TableId::DivisionStatus.index()] = table(TableId::DivisionStatus, 93, "9fb09a565f");
     // WING_NAME extended the meaning of the existing packed entry family.
     history[TableId::RaidTooltipOperands.index()] =
         table(TableId::RaidTooltipOperands, 94, "ccf740b81d");
-    history[TableId::DivisionMovement.index()] =
-        table(TableId::DivisionMovement, 96, "3cb8d1c09b");
+    history[TableId::DivisionMovement.index()] = table(TableId::DivisionMovement, 96, "3cb8d1c09b");
     history[TableId::CountryAppearance.index()] =
         table(TableId::CountryAppearance, 97, "d313f6a6e3");
     history[TableId::DivisionTemplates.index()] =
