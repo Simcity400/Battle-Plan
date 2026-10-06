@@ -715,6 +715,7 @@ fn land_battles_content_diagnostics_preserve_dated_battle_warnings() {
     };
     let mut places = super::super::place_names::PlaceNamesReply {
         places: Vec::new(),
+        states: Vec::new(),
         warnings: Vec::new(),
     };
     let replies: [&mut dyn ReplyWarnings; 4] =

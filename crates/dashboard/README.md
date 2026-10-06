@@ -238,7 +238,9 @@ eligible total is known. Shared recording windows and dated warnings also live
 in `battles.rs`. Only the shared reply budget refuses oversized
 responses, never truncating. Generic wire values live in
 [`battles.rs`](src/products/battles.rs); [`place_names.rs`](src/products/place_names.rs)
-resolves drawn province/hour names, including state-less sea regions. Places,
+resolves drawn province/hour names, including state-less sea regions, and
+state-only names at each requested state/hour. States-only requests need no
+province tables or scripted-localisation inputs. Places,
 Occupied states and Raids share `scripted_text::state_display_name` and its
 cached state-content read. Callers own state-name failure reporting, preserving
 Occupied states / Raids diagnostics without also registering a catalogue refusal;

@@ -1,4 +1,4 @@
-//! Names for drawn province/hour pairs, at each row's read hour.
+//! Names for province/hour and state/hour pairs, at each row's read hour.
 //!
 //! NCombatLogView::CCombatItem::UpdateDisplay@1416E07C0 reads the recorded
 //! province id (+0x440) and uses 140E69320: a nonempty raw CProvince+0x40
@@ -52,18 +52,28 @@ const NAME_TABLES: [TableId; 7] = [
     TableId::ProvinceNames,
     TableId::States,
 ];
+const STATE_TABLES: [TableId; 2] = [TableId::Campaign, TableId::States];
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PlaceNamesParams {
     pub branch_id: String,
     pub places: Vec<PlaceNameRequest>,
+    #[serde(default)]
+    pub states: Vec<StateNameRequest>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PlaceNameRequest {
     pub province_id: u32,
+    pub hour: i32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StateNameRequest {
+    pub state_id: u32,
     pub hour: i32,
 }
 
@@ -77,10 +87,21 @@ pub struct PlaceName {
     pub missing: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaceStateName {
+    pub state_id: u32,
+    pub hour: i32,
+    /// Native state display name; null when no name resolves.
+    pub name: Option<String>,
+    pub missing: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaceNamesReply {
     pub places: Vec<PlaceName>,
+    pub states: Vec<PlaceStateName>,
     pub warnings: Vec<String>,
 }
 
@@ -241,16 +262,82 @@ fn named_place(request: &PlaceNameRequest, name: (Option<String>, Option<String>
     }
 }
 
-fn read_places(
+fn state_name_at(
+    frame: &DecodedFrame,
+    state_id: u32,
+    cat: &Catalogue,
+    names: Result<&StateNames, &str>,
+) -> (Option<String>, Option<String>) {
+    let name = recorded_rows::<tables::States>(frame)
+        .map_err(|error| error.to_string())
+        .and_then(|rows| {
+            rows.iter()
+                .find(|state| state.id == state_id)
+                .ok_or_else(|| format!("Not in this recording: state {state_id} at this hour"))
+        })
+        .and_then(|state| {
+            scripted_text::state_display_name(
+                state,
+                cat,
+                names,
+                scripted_text::StateNameUsage::Place,
+            )
+        })
+        .and_then(|name| {
+            if name.is_empty() {
+                Err(format!("state {state_id}: native display name is empty"))
+            } else {
+                Ok(name)
+            }
+        });
+    match name {
+        Ok(name) => (Some(name), None),
+        Err(reason) => (None, Some(reason)),
+    }
+}
+
+fn named_state(
+    request: &StateNameRequest,
+    name: (Option<String>, Option<String>),
+) -> PlaceStateName {
+    let (name, missing) = name;
+    PlaceStateName {
+        state_id: request.state_id,
+        hour: request.hour,
+        name,
+        missing,
+    }
+}
+
+enum RequestedName {
+    Place(usize),
+    State(usize),
+}
+
+impl RequestedName {
+    fn missing<'a>(
+        &self,
+        places: &'a mut [PlaceName],
+        states: &'a mut [PlaceStateName],
+    ) -> &'a mut Option<String> {
+        match self {
+            Self::Place(at) => &mut places[*at].missing,
+            Self::State(at) => &mut states[*at].missing,
+        }
+    }
+}
+
+fn read_names(
     replay: &Replay,
     branch: u64,
-    requests: &[PlaceNameRequest],
+    params: &PlaceNamesParams,
     cat: &Catalogue,
     names: Result<&StateNames, &str>,
     regions: Result<&BTreeMap<u32, Result<String, String>>, &str>,
     cancelled: &AtomicBool,
-) -> io::Result<Vec<PlaceName>> {
-    let mut places: Vec<_> = requests
+) -> io::Result<(Vec<PlaceName>, Vec<PlaceStateName>)> {
+    let mut places: Vec<_> = params
+        .places
         .iter()
         .map(|request| {
             named_place(
@@ -262,35 +349,63 @@ fn read_places(
             )
         })
         .collect();
-    let mut blocks = BTreeMap::<usize, BTreeMap<i32, Vec<usize>>>::new();
-    for (at, request) in requests.iter().enumerate() {
+    let mut states: Vec<_> = params
+        .states
+        .iter()
+        .map(|request| {
+            named_state(
+                request,
+                (
+                    None,
+                    Some("Not in this recording: the row hour was not recorded".into()),
+                ),
+            )
+        })
+        .collect();
+    let mut blocks = BTreeMap::<usize, BTreeMap<i32, Vec<RequestedName>>>::new();
+    for (hour, request) in params
+        .places
+        .iter()
+        .enumerate()
+        .map(|(at, request)| (request.hour, RequestedName::Place(at)))
+        .chain(
+            params
+                .states
+                .iter()
+                .enumerate()
+                .map(|(at, request)| (request.hour, RequestedName::State(at))),
+        )
+    {
         if let Some(block) = replay.index.iter().position(|block| {
-            block.branch == branch
-                && block.first_hour <= request.hour
-                && request.hour <= block.last_hour
+            block.branch == branch && block.first_hour <= hour && hour <= block.last_hour
         }) {
             blocks
                 .entry(block)
                 .or_default()
-                .entry(request.hour)
+                .entry(hour)
                 .or_default()
-                .push(at);
+                .push(request);
         }
     }
+    let tables: &[TableId] = if params.places.is_empty() {
+        &STATE_TABLES
+    } else {
+        &NAME_TABLES
+    };
     for (block, mut hours) in blocks {
         check_cancel(cancelled)?;
-        let frames = match replay.read_block_selected(&replay.index[block], &NAME_TABLES) {
+        let frames = match replay.read_block_selected(&replay.index[block], tables) {
             Ok(frames) => frames,
             Err(error) => {
-                for at in hours.values().flatten() {
-                    places[*at].missing = Some(format!(
+                for request in hours.values().flatten() {
+                    *request.missing(&mut places, &mut states) = Some(format!(
                         "Not in this recording: unreadable names block: {error}"
                     ));
                 }
                 continue;
             }
         };
-        let mut decoder = FrameDecoder::for_tables(&NAME_TABLES);
+        let mut decoder = FrameDecoder::for_tables(tables);
         for frame in frames {
             if hours.is_empty() {
                 break;
@@ -299,8 +414,8 @@ fn read_places(
             let decoded = match decoder.advance(&frame) {
                 Ok(decoded) => decoded,
                 Err(error) => {
-                    for at in hours.values().flatten() {
-                        places[*at].missing = Some(format!(
+                    for request in hours.values().flatten() {
+                        *request.missing(&mut places, &mut states) = Some(format!(
                             "Not in this recording: invalid names baseline: {error}"
                         ));
                     }
@@ -309,29 +424,46 @@ fn read_places(
             };
             validate_campaign(decoded, replay)?;
             if let Some(requested) = hours.remove(&frame.hour) {
-                let text = ScriptedText::new(
-                    decoded,
-                    &cat.localisation,
-                    cat.scripted_content().map_err(crate::invalid)?,
-                    0,
-                );
-                for at in requested {
-                    places[at] = named_place(
-                        &requests[at],
-                        name_at(
-                            decoded,
-                            &text,
-                            requests[at].province_id,
-                            cat,
-                            names,
-                            regions,
-                        ),
-                    );
+                let text = if requested
+                    .iter()
+                    .any(|request| matches!(request, RequestedName::Place(_)))
+                {
+                    Some(ScriptedText::new(
+                        decoded,
+                        &cat.localisation,
+                        cat.scripted_content().map_err(crate::invalid)?,
+                        0,
+                    ))
+                } else {
+                    None
+                };
+                for request in requested {
+                    match request {
+                        RequestedName::Place(at) => {
+                            places[at] = named_place(
+                                &params.places[at],
+                                name_at(
+                                    decoded,
+                                    text.as_ref().unwrap(),
+                                    params.places[at].province_id,
+                                    cat,
+                                    names,
+                                    regions,
+                                ),
+                            );
+                        }
+                        RequestedName::State(at) => {
+                            states[at] = named_state(
+                                &params.states[at],
+                                state_name_at(decoded, params.states[at].state_id, cat, names),
+                            );
+                        }
+                    }
                 }
             }
         }
     }
-    Ok(places)
+    Ok((places, states))
 }
 
 impl Product for PlaceNames {
@@ -344,7 +476,9 @@ impl Product for PlaceNames {
         vec![
             PlaceNamesParams::decl(),
             PlaceNameRequest::decl(),
+            StateNameRequest::decl(),
             PlaceName::decl(),
+            PlaceStateName::decl(),
             PlaceNamesReply::decl(),
         ]
     }
@@ -380,11 +514,18 @@ impl Product for PlaceNames {
                 catalogue::catalogue(source, options).map_err(|error| error.to_string())
             });
         let mut warnings = Vec::new();
-        let places = match cat {
+        let (places, states) = match cat {
             Ok(cat) => {
                 warnings.extend(cat.verification.iter().chain(&cat.warnings).cloned());
                 let names = cat.cached_states().map(|states| &states.names);
-                let regions = region_names(source, &cat);
+                let regions = if params.places.is_empty() {
+                    Ok(Arc::new(RegionNames {
+                        provinces: BTreeMap::new(),
+                        warnings: Vec::new(),
+                    }))
+                } else {
+                    region_names(source, &cat)
+                };
                 match &names {
                     Ok(_) => {}
                     Err(reason) => warnings.push(reason.clone()),
@@ -393,10 +534,10 @@ impl Product for PlaceNames {
                     Ok(regions) => warnings.extend(regions.warnings.iter().cloned()),
                     Err(reason) => warnings.push(reason.clone()),
                 }
-                let places = read_places(
+                let resolved = read_names(
                     replay,
                     branch,
-                    &params.places,
+                    params,
                     &cat,
                     names.as_ref().copied().map_err(String::as_str),
                     regions
@@ -406,15 +547,22 @@ impl Product for PlaceNames {
                     cancelled,
                 )?;
                 warnings.extend(cat.refusal_lines());
-                places
+                resolved
             }
             Err(reason) => {
                 warnings.push(reason.clone());
-                params
-                    .places
-                    .iter()
-                    .map(|request| named_place(request, (None, Some(reason.clone()))))
-                    .collect()
+                (
+                    params
+                        .places
+                        .iter()
+                        .map(|request| named_place(request, (None, Some(reason.clone()))))
+                        .collect(),
+                    params
+                        .states
+                        .iter()
+                        .map(|request| named_state(request, (None, Some(reason.clone()))))
+                        .collect(),
+                )
             }
         };
         let mut refused = Refusals::default();
@@ -426,10 +574,22 @@ impl Product for PlaceNames {
                 );
             }
         }
+        for state in &states {
+            if let Some(reason) = &state.missing {
+                refused.note(
+                    reason,
+                    format!("state {} at {}", state.state_id, state.hour),
+                );
+            }
+        }
         warnings.extend(refused.lines("place names"));
         warnings.sort();
         warnings.dedup();
-        let reply = PlaceNamesReply { places, warnings };
+        let reply = PlaceNamesReply {
+            places,
+            states,
+            warnings,
+        };
         json_len(&reply, MAX_PRODUCT_REPLY_BYTES)
             .ok_or_else(|| crate::invalid("The Place names reply exceeds its size budget"))?;
         Ok(reply)

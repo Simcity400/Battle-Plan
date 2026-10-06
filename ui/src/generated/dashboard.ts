@@ -213,14 +213,20 @@ windows: Array<BattleWindow>, available: boolean, unavailable: string | null, co
 export type LandBattleCountryFilter = { tags: Array<string> | null, membership: Array<MembershipRun> | null, unobserved: Array<HourSpan>, };
 export type LandBattlesRankingParams = { branchId: string, firstHour: number, lastHour: number, topN: number, measure: string, countries: LandBattleCountryFilter, };
 export type LandBattlesRankingReply = { rows: Array<LandBattleHistory>, censusHour: number | null, effectiveMeasure: string, warnings: Array<BattleWarning>, contentWarnings: Array<string>, };
-export type PlaceNamesParams = { branchId: string, places: Array<PlaceNameRequest>, };
+export type PlaceNamesParams = { branchId: string, places: Array<PlaceNameRequest>, states: Array<StateNameRequest>, };
 export type PlaceNameRequest = { provinceId: number, hour: number, };
+export type StateNameRequest = { stateId: number, hour: number, };
 export type PlaceName = { provinceId: number, hour: number,
 /**
  * Native province display name; null when no name resolves.
  */
 name: string | null, missing: string | null, };
-export type PlaceNamesReply = { places: Array<PlaceName>, warnings: Array<string>, };
+export type PlaceStateName = { stateId: number, hour: number,
+/**
+ * Native state display name; null when no name resolves.
+ */
+name: string | null, missing: string | null, };
+export type PlaceNamesReply = { places: Array<PlaceName>, states: Array<PlaceStateName>, warnings: Array<string>, };
 export type CountryStyleParams = { branchId: string, hour: number, tags: Array<string>, };
 export type CountryStyle = { tag: string,
 /**

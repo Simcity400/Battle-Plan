@@ -92,7 +92,7 @@ export default function LandBattlesWidget({ widget, runtime, active, onDiagnosti
   const country = useCallback((tag: string, at: number) => labelAt(at)(tag), [labelAt]);
   const places = useMemo(() => landBattlePlaceRequests(drawn), [drawn]);
   const placeRequest = track && places.length ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'place-names', params: { branchId: track.branch.id, places } } : null;
+    product: 'place-names', params: { branchId: track.branch.id, places, states: [] } } : null;
   const placeData = useProduct<PlaceNamesReply>(runtime.client, placeRequest, active, validatePlaceNamesReply);
   const named = useMemo(() => namedLandBattles(shown, placeData.data), [shown, placeData.data]);
   const onVisibleRows = useCallback((drawn: readonly LandBattleRow[]) => {

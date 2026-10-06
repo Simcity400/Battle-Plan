@@ -140,10 +140,27 @@ test('window and casualty searches work without ES2023 array methods', () => {
 test('only drawn province/hour pairs ask for names and names never backfill earlier reads', () => {
   const visible = [read()[0], { ...read()[0], id: 'earlier', place: { name: null, hour: 19 } }];
   assert.deepEqual(landBattlePlaceRequests([...visible, visible[0]]), [{ provinceId: 17, hour: 10 }, { provinceId: 17, hour: 19 }]);
-  const places = validatePlaceNamesReply({ places: [{ provinceId: 17, hour: 10, name: 'Mod town, Mod state', missing: null }], warnings: [] });
+  const places = validatePlaceNamesReply({ places: [{ provinceId: 17, hour: 10, name: 'Mod town, Mod state', missing: null }], states: [], warnings: [] });
   assert.equal(namedLandBattles(visible, places)[0].place.name, 'Mod town, Mod state');
   assert.equal(namedLandBattles(visible, places)[1].place.name, null);
   assert.throws(() => validatePlaceNamesReply({ ...places, places: [places.places[0], places.places[0]] }), /malformed/);
+});
+
+test('place names require state/hour replies, retain renames and accept every requested state', () => {
+  const states = [{ stateId: 17, hour: 10, name: 'First state name', missing: null },
+    { stateId: 17, hour: 19, name: 'Renamed state', missing: null },
+    { stateId: 18, hour: 10, name: null, missing: 'Not in this recording: state 18 at this hour' }];
+  const data = { places: [{ provinceId: 17, hour: 10, name: 'Town', missing: null }], states, warnings: [] };
+  assert.deepEqual(validatePlaceNamesReply(data), data);
+  const many = { places: [], states: Array.from({ length: 5000 }, (_, stateId) => ({ ...states[0], stateId })), warnings: [] };
+  assert.deepEqual(validatePlaceNamesReply(many), many);
+  for (const invalid of [undefined, null, {}, [states[0], states[0]],
+    [{ ...states[0], stateId: -1 }], [{ ...states[0], stateId: 4294967296 }], [{ ...states[0], stateId: 1.5 }],
+    [{ ...states[0], hour: 2147483648 }], [{ ...states[0], hour: 1.5 }],
+    [{ ...states[0], name: '' }], [{ ...states[0], name: 1 }], [{ ...states[0], missing: undefined }],
+    [{ ...states[2], missing: null }], [{ ...states[2], missing: '' }]]) {
+    assert.throws(() => validatePlaceNamesReply({ ...data, states: invalid }), /malformed/);
+  }
 });
 
 test('definition follows the cap ruling and offers casualty default plus uncapped user top N', () => {
