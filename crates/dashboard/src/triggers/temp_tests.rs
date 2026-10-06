@@ -327,6 +327,12 @@ fn temp_variables_keep_pending_writers_expressions_and_residuals_named() {
                 "{reasons:?}"
             );
             assert!(
+                reasons
+                    .iter()
+                    .all(|why| !why.contains("unrecorded CVariables+8")),
+                "{reasons:?}"
+            );
+            assert!(
                 evaluator
                     .scoped_value(b"t", scopes)
                     .unwrap_err()

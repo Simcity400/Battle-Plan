@@ -177,6 +177,14 @@ impl Captured {
         self.globals.grow(&mut globals);
         self.locals.grow(&mut capacity.locals);
     }
+
+    pub(crate) fn naming_demand(&self) -> usize {
+        match self.icon_rows.outcome {
+            Outcome::Rows { len } => len,
+            Outcome::Truncated { len, unread_rows } => len.saturating_add(unread_rows as usize),
+            Outcome::Unavailable { .. } => 0,
+        }
+    }
     pub fn capture(
         &mut self,
         memory: &impl Memory,

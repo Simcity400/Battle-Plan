@@ -71,8 +71,31 @@ impl FormatVersion {
     }
 
     pub fn field_gaps(self, table: TableId) -> impl Iterator<Item = String> {
-        table.last_change().appended.iter().filter(move |field| self.0 < field.introduced).map(move |field| {
-            format!("{table:?}.{} not recorded (introduced at format {}; this recording is format {}); other fields decode", field.name, field.introduced, self.0)
+        table
+            .last_change()
+            .appended
+            .iter()
+            .filter(move |field| self.0 < field.introduced)
+            .map(move |field| {
+                format!(
+                    "{table:?}.{} not recorded (introduced at format {}; this recording is format {}); other fields decode",
+                    field.name, field.introduced, self.0
+                )
+            })
+    }
+
+    pub fn nested_field_gaps(self) -> impl Iterator<Item = String> {
+        RecordKind::ALL.into_iter().flat_map(move |kind| {
+            kind.last_change()
+                .appended
+                .iter()
+                .filter(move |field| self.0 < field.introduced)
+                .map(move |field| {
+                    format!(
+                        "{} not recorded (introduced at format {}; this recording is format {}); other fields decode",
+                        field.name, field.introduced, self.0
+                    )
+                })
         })
     }
 

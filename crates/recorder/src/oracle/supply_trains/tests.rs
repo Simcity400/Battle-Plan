@@ -1,6 +1,6 @@
 use super::*;
 use replay::rows::{
-    CountryCounterInputRow, FloatingHarborDeploymentRow, SupplyNodeRow, TrainInventoryRow,
+    CountryCounterInputRow, FloatingHarborDeploymentRow, Recorded, SupplyNodeRow, TrainInventoryRow,
 };
 
 #[test]
@@ -282,5 +282,100 @@ fn owned_state_counts_make_saved_supply_membership_exact() {
             .limitations
             .keys()
             .any(|reason| reason.contains("uncaptured"))
+    );
+}
+
+#[test]
+fn supply_vehicle_limits_name_each_unsaved_scalar_at_five_thousand_countries() {
+    let (mut frame, mut save, _, _) = super::super::tests::fixture();
+    let source = frame.complete::<tables::Countries>().unwrap()[0].clone();
+    let saved = save.countries.values().next().unwrap().clone();
+    let countries: Vec<_> = (1..=5000)
+        .map(|id| {
+            let mut country = source.clone();
+            country.id = id;
+            country.canonical_slot = id;
+            country.tag = format!("C{id}").into_bytes();
+            country
+        })
+        .collect();
+    save.countries = countries
+        .iter()
+        .map(|country| (country.tag.clone(), saved.clone()))
+        .collect();
+    save.economy.supply = Some(Default::default());
+    owned_states(&mut frame, &countries, 0);
+    *frame.tables[TableId::Countries.index()] =
+        TableView::Complete(TableRows::Countries(countries.clone()));
+    *frame.tables[TableId::TrainInventory.index()] =
+        TableView::Complete(TableRows::TrainInventory(
+            countries
+                .iter()
+                .map(|country| TrainInventoryRow {
+                    country: country.id,
+                    allocated_trucks: Recorded::Value((country.id % 2 == 0).then_some(0)),
+                    required_trucks_raw: Recorded::Value((country.id % 2 == 0).then_some(i64::MAX)),
+                    required_trains: Recorded::Value((country.id % 2 == 0).then_some(i32::MIN)),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    let mut report = Report::default();
+    trains(&frame, &save, &mut report).unwrap();
+    assert!(report.differences.is_empty());
+    assert_eq!(report.compared_tables["TrainInventory"], 5000);
+    for field in ["allocated_trucks", "required_trucks_raw", "required_trains"] {
+        let subject =
+            format!("TrainInventory.{field}: 2500 rows captured; 2500 native captures unavailable");
+        assert!(
+            report
+                .limitations
+                .values()
+                .any(|subjects| subjects.contains(&subject)),
+            "{field} limitation absent"
+        );
+        let reason = format!("TrainInventory.{field} native capture is unavailable");
+        assert_eq!(report.limitations[&reason].len(), 2500);
+        assert!(
+            !report
+                .limitations
+                .contains_key(&format!("TrainInventory.{field} not recorded"))
+        );
+    }
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("without first clearing"))
+    );
+    let TableView::Complete(TableRows::TrainInventory(rows)) =
+        &mut *frame.tables[TableId::TrainInventory.index()]
+    else {
+        unreachable!()
+    };
+    for row in rows {
+        row.allocated_trucks = Recorded::NotRecorded;
+        row.required_trucks_raw = Recorded::NotRecorded;
+        row.required_trains = Recorded::NotRecorded;
+    }
+    let mut historical = Report::default();
+    trains(&frame, &save, &mut historical).unwrap();
+    assert!(historical.differences.is_empty());
+    assert_eq!(historical.compared_tables["TrainInventory"], 5000);
+    for field in ["allocated_trucks", "required_trucks_raw", "required_trains"] {
+        let reason = format!("TrainInventory.{field} not recorded");
+        assert_eq!(historical.limitations[&reason].len(), 5000);
+    }
+    assert!(
+        !historical
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("native capture is unavailable"))
+    );
+    assert!(
+        !historical
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("without first clearing"))
     );
 }

@@ -39,6 +39,55 @@ fn legacy_rows(table: TableId, hour: Hour) -> TableRows {
             ..Default::default()
         }]),
         TableId::LandCombatDetails => TableRows::LandCombatDetails(vec![Default::default()]),
+        TableId::NavalCombatDetails => {
+            TableRows::NavalCombatDetails(vec![rows::NavalCombatDetailsRow {
+                custom_sea: Some(Vec::new()),
+                ..Default::default()
+            }])
+        }
+        TableId::NavalCombatResultDetails => {
+            TableRows::NavalCombatResultDetails(vec![Default::default()])
+        }
+        TableId::AdvisorRoles => TableRows::AdvisorRoles(vec![rows::AdvisorRoleRow {
+            character: 1,
+            country: 1,
+            ..Default::default()
+        }]),
+        TableId::CharacterOperatives => {
+            TableRows::CharacterOperatives(vec![rows::CharacterOperativeRow {
+                character: 1,
+                reference: 1,
+                ..Default::default()
+            }])
+        }
+        TableId::OperativeMemberships => {
+            TableRows::OperativeMemberships(vec![rows::OperativeMembershipRow {
+                id: 1,
+                roster_country: 1,
+                ..Default::default()
+            }])
+        }
+        TableId::CountryCounterInputs => {
+            TableRows::CountryCounterInputs(vec![rows::CountryCounterInputRow {
+                country: 1,
+                ..Default::default()
+            }])
+        }
+        TableId::VariantDefinitions => {
+            TableRows::VariantDefinitions(vec![rows::VariantDefinitionRow {
+                id: 1,
+                ..Default::default()
+            }])
+        }
+        TableId::ScriptVariables => TableRows::ScriptVariables(vec![rows::ScriptVariablesRow {
+            scope_kind: 1,
+            scope_id: 1,
+            ..Default::default()
+        }]),
+        TableId::TrainInventory => TableRows::TrainInventory(vec![rows::TrainInventoryRow {
+            country: 1,
+            ..Default::default()
+        }]),
         TableId::UnitLeaders => TableRows::UnitLeaders(vec![Default::default()]),
         TableId::WeatherProvinces => TableRows::WeatherProvinces(vec![Default::default()]),
         TableId::StateFlags => TableRows::StateFlags(vec![Default::default()]),
@@ -126,7 +175,15 @@ fn compatibility_format94_policy3_reads_appended_tables_with_absent_fields() {
         frame.complete::<rows::tables::Clock>().unwrap()[0].hour,
         1000
     );
-    assert_eq!(replay.compatibility_gaps().len(), 4);
+    let expected_gaps = TableId::ALL
+        .into_iter()
+        .map(|table| {
+            usize::from(replay.format.table_refusal(table).is_some())
+                + replay.format.field_gaps(table).count()
+        })
+        .sum::<usize>()
+        + replay.format.nested_field_gaps().count();
+    assert_eq!(replay.compatibility_gaps().len(), expected_gaps);
     for table in TableId::ALL {
         match replay.format.table_refusal(table) {
             Some(reason) => assert_eq!(
@@ -170,7 +227,7 @@ fn compatibility_format94_policy3_reads_appended_tables_with_absent_fields() {
             .err()
             .unwrap()
             .to_string()
-            .contains("Replay append requires format 97")
+            .contains(&format!("Replay append requires format {FORMAT_VERSION}"))
     );
 }
 
@@ -206,10 +263,17 @@ fn compatibility_format91_framing_survives_snapshot_delta_truncation_and_unchang
             _ => unreachable!(),
         }
         let mut payload = legacy_frame(format, hour, false);
-        let prefix = 37 + 8 * TABLE_COUNT;
+        let prefix = 37
+            + 8 * TableId::ALL
+                .into_iter()
+                .filter(|table| table.last_change().present(format.version()))
+                .count();
         let mut input = Decoder::new(&payload[prefix..]);
         let mut range = 0..0;
-        for id in TableId::ALL {
+        for id in TableId::ALL
+            .into_iter()
+            .filter(|table| table.last_change().present(format.version()))
+        {
             let start = payload.len() - input.remaining();
             assert_eq!(input.u8().unwrap(), 0);
             id.skip_snapshot(format.fields(id), &mut input).unwrap();
@@ -273,8 +337,14 @@ fn compatibility_historical_delta_insertion_keeps_the_appended_field_absent() {
         ..Default::default()
     };
     let mut delta = row.delta(None).unwrap().unwrap();
-    // The only appended value is the length-framed optional border cache.
-    delta.values.truncate(delta.values.len() - 5);
+    let mut input = Decoder::new(&delta.values);
+    for kind in &table.schema()[..format.fields(table)] {
+        kind.decode_change(&mut input).unwrap();
+    }
+    delta
+        .values
+        .truncate(delta.values.len() - input.remaining());
+    delta.format = format.version();
     delta.mask = (1 << format.fields(table)) - 1;
     delta.recorded_fields = format.fields(table);
     let inserted = delta.apply::<rows::DivisionStatusRow>(None).unwrap();
@@ -338,7 +408,7 @@ fn compatibility_layout_change_still_withholds_the_whole_table() {
 
 #[test]
 fn compatibility_table_lifetimes_keep_the_old_frame_stream_readable() {
-    // Synthetic future catalog: no real table was added or retired after 91.
+    // Synthetic introduction/retirement independent of the actual table lifetimes.
     let mut history = HISTORY;
     let added = TableId::NavalModifierBreakdowns;
     history[added.index()].introduced = 96;

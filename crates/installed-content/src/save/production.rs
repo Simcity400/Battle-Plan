@@ -245,6 +245,9 @@ pub struct Variant {
     pub override_sprite: Option<Vec<u8>>,
     pub modules: Option<Vec<Module>>,
     pub upgrades: Option<Vec<Upgrade>>,
+    /// Serialize 140BD4770 emits token 0xEE only for a nonzero +0x41C,
+    /// zero-extended at 140BD47FE. Omission proves zero, not +0x41D.
+    pub version: Option<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -690,6 +693,9 @@ fn parse_variant(id: u64, definition: &[u8], items: &[Item]) -> io::Result<Varia
         override_sprite: bytes(items, b"override_sprite")?,
         modules,
         upgrades,
+        version: field(items, b"version")?
+            .map(|value| integer(scalar(value)?))
+            .transpose()?,
     })
 }
 

@@ -10,7 +10,8 @@ use engine::{Memory, ccountry_supply_system, supply_node, supply_train_entry, wa
 use replay::{
     frame::TableInput,
     rows::{
-        ByteRun, SparseBytes, SupplyNodeRow, TableId, TrainAllocation, TrainInventoryRow, tables,
+        ByteRun, Recorded, SparseBytes, SupplyNodeRow, TableId, TrainAllocation, TrainInventoryRow,
+        tables,
     },
 };
 
@@ -37,6 +38,23 @@ pub(crate) struct CaptureContext {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct CaptureReport {
     pub ticks: [u64; N],
+}
+
+#[derive(Default)]
+pub(crate) struct VehicleWork {
+    rows: u64,
+    failures: [u64; 3],
+}
+
+impl VehicleWork {
+    pub(crate) fn status(&self) -> impl serde::Serialize + '_ {
+        crate::status::status!({
+            "rows": self.rows,
+            "refused": self.failures.iter().fold(0_u64, |sum, count| sum.saturating_add(*count)),
+            "refusals": crate::status::map(ccountry_supply_system::VEHICLE_READ_FAILURES.into_iter().zip(self.failures)),
+            "scope": "hourly stored supply-vehicle operands; a refused scalar is absent while the inventory row remains available",
+        })
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -143,6 +161,7 @@ pub struct Trains {
     access: Arena<u8>,
     /// `[native start, length]` of each nonzero access run.
     access_runs: Arena<[u32; 2]>,
+    vehicle_failures: [u32; 3],
 }
 impl Trains {
     fn new(c: &Capacities) -> Self {
@@ -151,6 +170,7 @@ impl Trains {
             entries: Arena::new(c.entries),
             access: Arena::new(c.access),
             access_runs: Arena::new(c.access_runs),
+            vehicle_failures: [0; 3],
         }
     }
     pub(crate) fn vacant() -> Self {
@@ -159,6 +179,7 @@ impl Trains {
             entries: Arena::new(0),
             access: Arena::new(0),
             access_runs: Arena::new(0),
+            vehicle_failures: [0; 3],
         }
     }
     fn reset(&mut self) {
@@ -166,6 +187,7 @@ impl Trains {
         self.entries.reset();
         self.access.reset();
         self.access_runs.reset();
+        self.vehicle_failures = [0; 3];
     }
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.countries.allocated_bytes()
@@ -199,6 +221,7 @@ impl Trains {
         self.access.required = trains.required_access;
         self.access_runs.len = trains.runs;
         self.access_runs.required = trains.required_runs;
+        self.vehicle_failures = trains.vehicle_failures;
         qpc().saturating_sub(begin).max(0) as u64
     }
 }
@@ -287,6 +310,19 @@ impl Captured {
     }
     pub(crate) fn restore_trains(&mut self, trains: Trains) {
         self.trains = trains;
+    }
+    pub(crate) fn observe_vehicles(&self, work: &mut VehicleWork) {
+        if self.terminal_failure.is_some() {
+            return;
+        }
+        let len = match self.trains.countries.outcome {
+            Outcome::Rows { len } | Outcome::Truncated { len, .. } => len,
+            Outcome::Unavailable { .. } => return,
+        };
+        work.rows = work.rows.saturating_add(len as u64);
+        for (total, count) in work.failures.iter_mut().zip(self.trains.vehicle_failures) {
+            *total = total.saturating_add(u64::from(count));
+        }
     }
     pub fn outcomes(&self) -> [Outcome; N] {
         if let Some(reason) = self.terminal_failure {
@@ -486,6 +522,18 @@ impl Captured {
             |r, previous| {
                 r.country == previous.country
                     && r.node_count == previous.node_count
+                    && previous
+                        .allocated_trucks
+                        .require("TrainInventory.allocated_trucks")
+                        .is_ok_and(|value| *value == r.allocated_trucks)
+                    && previous
+                        .required_trucks_raw
+                        .require("TrainInventory.required_trucks_raw")
+                        .is_ok_and(|value| *value == r.required_trucks_raw)
+                    && previous
+                        .required_trains
+                        .require("TrainInventory.required_trains")
+                        .is_ok_and(|value| *value == r.required_trains)
                     && r.entries_len == previous.allocations.len()
                     && entries[r.entries_start..r.entries_start + r.entries_len]
                         .iter()
@@ -507,6 +555,9 @@ impl Captured {
                         }),
                 )),
                 controller_access: sparse_access(r),
+                allocated_trucks: Recorded::Value(r.allocated_trucks),
+                required_trucks_raw: Recorded::Value(r.required_trucks_raw),
+                required_trains: Recorded::Value(r.required_trains),
             },
         )
     }
@@ -563,6 +614,9 @@ mod tests {
             runs_len: 1,
             values_start: 0,
             values_len: 2,
+            allocated_trucks: Some(i32::MIN),
+            required_trucks_raw: Some(i64::MAX),
+            required_trains: Some(i32::MAX),
         };
         capture.trains.entries.first.copy_from_slice(&[
             supply_train_entry::Row {
@@ -605,7 +659,7 @@ mod tests {
             frame
         };
         let baseline = frame(1, 100, projection_fixture().table_inputs(None));
-        for change in 0..38 {
+        for change in 0..44 {
             let mut current = projection_fixture();
             match change {
                 0 => {}
@@ -665,6 +719,12 @@ mod tests {
                 33 => current.parts[0].paths.len = 2,
                 34 => current.trains.entries.len = 2,
                 35..=37 => {}
+                38 => current.trains.countries.rows[0].allocated_trucks = Some(0),
+                39 => current.trains.countries.rows[0].required_trucks_raw = Some(i64::MIN),
+                40 => current.trains.countries.rows[0].required_trains = Some(0),
+                41 => current.trains.countries.rows[0].allocated_trucks = None,
+                42 => current.trains.countries.rows[0].required_trucks_raw = None,
+                43 => current.trains.countries.rows[0].required_trains = None,
                 _ => unreachable!(),
             }
             let branch = if change == 35 { 2 } else { 1 };
@@ -703,6 +763,82 @@ mod tests {
                 "change {change}",
             );
         }
+    }
+
+    #[test]
+    fn supply_vehicle_projection_and_named_fault_counts_scale_from_the_live_census() {
+        const COUNTRIES: usize = 5000;
+        let mut capacities = Capacities {
+            nodes: 0,
+            countries: 0,
+            paths: 0,
+            entries: 0,
+            access: 0,
+            access_runs: 0,
+        };
+        capacities.raise_for_countries(COUNTRIES + 1);
+        let mut capture = Captured::with_capacities(&capacities);
+        assert!(capture.trains.countries.rows.len() >= COUNTRIES);
+        for part in &mut capture.parts {
+            part.nodes.outcome = Outcome::Rows { len: 0 };
+        }
+        capture.trains.countries.outcome = Outcome::Rows { len: COUNTRIES };
+        capture.trains.vehicle_failures = [2500; 3];
+        for (index, row) in capture.trains.countries.rows[..COUNTRIES]
+            .iter_mut()
+            .enumerate()
+        {
+            *row = ccountry_supply_system::TrainRow {
+                country: index as u32 + 1,
+                allocated_trucks: (index % 2 == 0).then_some(0),
+                required_trucks_raw: (index % 2 == 0).then_some(i64::MIN),
+                required_trains: (index % 2 == 0).then_some(i32::MAX),
+                ..Default::default()
+            };
+        }
+        let TableView::Complete(replay::rows::TableRows::TrainInventory(rows)) =
+            capture.tables().into_iter().nth(1).unwrap()
+        else {
+            panic!("appended scalar faults must retain the inventory");
+        };
+        assert_eq!(rows.len(), COUNTRIES);
+        for (index, row) in rows.iter().enumerate() {
+            assert_eq!(row.country, index as u32 + 1);
+            assert_eq!(
+                row.allocated_trucks,
+                Recorded::Value((index % 2 == 0).then_some(0))
+            );
+            assert_eq!(
+                row.required_trucks_raw,
+                Recorded::Value((index % 2 == 0).then_some(i64::MIN))
+            );
+            assert_eq!(
+                row.required_trains,
+                Recorded::Value((index % 2 == 0).then_some(i32::MAX))
+            );
+        }
+        let mut work = VehicleWork::default();
+        capture.observe_vehicles(&mut work);
+        let status = serde_json::to_value(work.status()).unwrap();
+        assert_eq!(status["rows"], COUNTRIES);
+        assert_eq!(status["refused"], 7500);
+        for reason in ccountry_supply_system::VEHICLE_READ_FAILURES {
+            assert_eq!(status["refusals"][reason], 2500);
+        }
+        // An unrelated row shortfall retains the admitted prefix's failures.
+        capture.trains.countries.outcome = Outcome::Truncated {
+            len: COUNTRIES,
+            unread_rows: 1,
+        };
+        let mut partial_work = VehicleWork::default();
+        capture.observe_vehicles(&mut partial_work);
+        assert_eq!(serde_json::to_value(partial_work.status()).unwrap(), status);
+        capture.terminal_failure = Some("owned supply acquisition failed");
+        capture.observe_vehicles(&mut work);
+        assert_eq!(serde_json::to_value(work.status()).unwrap(), status);
+        capture.reset();
+        capture.observe_vehicles(&mut work);
+        assert_eq!(serde_json::to_value(work.status()).unwrap(), status);
     }
 
     #[test]

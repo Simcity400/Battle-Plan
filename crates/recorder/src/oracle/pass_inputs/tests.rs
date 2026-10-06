@@ -1,7 +1,7 @@
 use super::*;
 use installed_content::save::counter_inputs;
 use replay::rows::{
-    CountryCounterInputRow, FleetCounterInputRow, FleetRow, TaskForceCounterInputRow,
+    CountryCounterInputRow, FleetCounterInputRow, FleetRow, Recorded, TaskForceCounterInputRow,
     TaskForceMapMotionRow, TaskForceMissionRow, TaskForceRow,
 };
 
@@ -25,6 +25,41 @@ fn base() -> (DecodedFrame, Save) {
     );
     save.counter_inputs.prides.insert(b"GER".to_vec(), None);
     (frame, save)
+}
+
+#[test]
+fn historical_roster_fields_keep_existing_country_counter_comparisons() {
+    let (mut frame, save) = base();
+    set(
+        &mut frame,
+        TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
+            country: 101,
+            owned_state_count: 1,
+            controlled_state_count: 1,
+            owned_states: Recorded::NotRecorded,
+            controlled_states: Recorded::NotRecorded,
+            core_states: Recorded::NotRecorded,
+            army_leaders: Recorded::NotRecorded,
+            navy_leaders: Recorded::NotRecorded,
+            ..Default::default()
+        }]),
+    );
+    let mut report = Report::default();
+    countries(&frame, &save, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.scalar_checks, 5);
+    for name in [
+        "owned_states",
+        "controlled_states",
+        "core_states",
+        "army_leaders",
+        "navy_leaders",
+    ] {
+        assert_eq!(
+            report.limitations[&format!("CountryCounterInputs.{name} not recorded")].len(),
+            1,
+        );
+    }
 }
 
 #[test]

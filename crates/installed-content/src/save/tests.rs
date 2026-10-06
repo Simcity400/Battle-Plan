@@ -862,6 +862,44 @@ fn division_name_block_keeps_every_conditional_key_distinct_from_absence() {
 }
 
 #[test]
+fn division_supply_grace_parser_preserves_zero_signed_precision_and_absence() {
+    let unit = |fields: &str| {
+        division_save(&format!(
+            "division={{id={{id=1 type=51}} logical_country=SOV strength=1 organisation=2 {fields}}}"
+        ))
+    };
+    let saved = unit("max_supply=90071992547.40993 army_current_supply_ratio=-12.34567").unwrap();
+    let presentation = &saved.divisions[&((1_u64 << 32) | 51)].presentation;
+    assert_eq!(
+        presentation.max_supply.as_ref().unwrap().raw,
+        9_007_199_254_740_993
+    );
+    assert_eq!(
+        presentation.army_current_supply_ratio.as_ref().unwrap().raw,
+        -1_234_567
+    );
+    let saved = unit("max_supply=0 army_current_supply_ratio=0").unwrap();
+    let presentation = &saved.divisions[&((1_u64 << 32) | 51)].presentation;
+    assert_eq!(presentation.max_supply.as_ref().unwrap().raw, 0);
+    assert_eq!(
+        presentation.army_current_supply_ratio.as_ref().unwrap().raw,
+        0
+    );
+    let saved = unit("").unwrap();
+    let presentation = &saved.divisions[&((1_u64 << 32) | 51)].presentation;
+    assert!(presentation.max_supply.is_none());
+    assert!(presentation.army_current_supply_ratio.is_none());
+    for fields in [
+        "max_supply=x",
+        "army_current_supply_ratio=0.000001",
+        "max_supply=1 max_supply=1",
+        "army_current_supply_ratio=0 army_current_supply_ratio=0",
+    ] {
+        assert!(unit(fields).is_err(), "{fields}");
+    }
+}
+
+#[test]
 fn division_explicit_invalid_optionals_are_not_treated_as_absent() {
     let prefix = "division={id={id=1 type=51} logical_country=SOV strength=0 organisation=0 ";
     for optional in [

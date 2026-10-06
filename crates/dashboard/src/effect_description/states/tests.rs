@@ -88,6 +88,7 @@ fn state_content_descriptions_use_cached_native_names() {
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
             scope_kind: 1,
             scope_id: 100,
+            seed: replay::rows::Recorded::Value(None),
             entries: vec![
                 ScriptVariableEntry {
                     name: b"syn_amount".to_vec(),
@@ -665,6 +666,7 @@ fn native_states_branches() {
             ScriptVariablesRow {
                 scope_kind: 1,
                 scope_id: 100,
+                seed: replay::rows::Recorded::Value(None),
                 entries: vec![ScriptVariableEntry {
                     name: b"syn".to_vec(),
                     value_raw: 249_999,
@@ -673,6 +675,7 @@ fn native_states_branches() {
             ScriptVariablesRow {
                 scope_kind: 2,
                 scope_id: 1,
+                seed: replay::rows::Recorded::Value(None),
                 entries: vec![ScriptVariableEntry {
                     name: b"syn".to_vec(),
                     value_raw: 249_999,

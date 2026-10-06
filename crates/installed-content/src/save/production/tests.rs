@@ -91,6 +91,29 @@ fn registry_keeps_full_handles_and_distinguishes_absence_from_empty() {
 }
 
 #[test]
+fn variant_version_keeps_raw_byte_and_native_zero_omission() {
+    let variant = |text: &str| {
+        let document = crate::parser::parse(
+            format!("equipments={{synthetic={{id={{id=1 type=70}} {text}}}}}").as_bytes(),
+        )
+        .unwrap();
+        parse(&document.items).map(|pack| pack.variants.unwrap().remove(&0x1_0000_0046).unwrap())
+    };
+    assert_eq!(variant("version=255").unwrap().version, Some(u8::MAX));
+    assert_eq!(variant("version=1").unwrap().version, Some(1));
+    assert_eq!(variant("version=0").unwrap().version, Some(0));
+    assert_eq!(variant("").unwrap().version, None);
+    for text in [
+        "version=-1",
+        "version=256",
+        "version={}",
+        "version=1 version=2",
+    ] {
+        assert!(variant(text).is_err(), "{text}");
+    }
+}
+
+#[test]
 fn division_bank_wrapper_is_distinct_from_other_country_equipment() {
     let doc = crate::parser::parse(
         b"countries={GER={equipment={invalid=yes} units={

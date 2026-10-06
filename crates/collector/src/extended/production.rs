@@ -1004,6 +1004,7 @@ fn definitions(
             icon_active: r.icon_active,
             icon_kind: r.icon_kind,
             icon: owned_vec(copy_vec(text(bytes, r.icon).unwrap())),
+            version: rows::Recorded::Value(r.version),
         }
     })
 }

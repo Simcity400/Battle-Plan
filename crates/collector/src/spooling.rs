@@ -1514,6 +1514,11 @@ fn needs_retry(tables: &[TableInput; TABLE_COUNT]) -> bool {
 }
 
 struct Statistics {
+    country_rosters: crate::extended::country_counters::RosterWork,
+    division_naming: crate::extended::division_presentation::NamingWork,
+    character_naming: crate::extended::character_inputs::NamingWork,
+    supply_vehicles: crate::extended::supply_trains::VehicleWork,
+    variable_seeds: crate::extended::intel::SeedWork,
     naval_breakdowns: crate::extended::naval_details::BreakdownWork,
     war_snapshots: WarSnapshotWork,
     order_counters: OrderCounterWitness,
@@ -1542,6 +1547,8 @@ struct Statistics {
     interval_qpc: u64,
     errors: u64,
     last_error: Option<&'static str>,
+    input_demand_errors: u64,
+    input_demand_last_error: Option<&'static str>,
     conversion: Distribution,
     conversion_packs: [Distribution; crate::extended::PACK_NAMES.len()],
     frame_encoding: Distribution,
@@ -1557,6 +1564,11 @@ struct Statistics {
 impl Default for Statistics {
     fn default() -> Self {
         Self {
+            country_rosters: crate::extended::country_counters::RosterWork::default(),
+            division_naming: crate::extended::division_presentation::NamingWork::default(),
+            character_naming: crate::extended::character_inputs::NamingWork::default(),
+            supply_vehicles: crate::extended::supply_trains::VehicleWork::default(),
+            variable_seeds: crate::extended::intel::SeedWork::default(),
             naval_breakdowns: crate::extended::naval_details::BreakdownWork::default(),
             order_counters: OrderCounterWitness::default(),
             war_snapshots: WarSnapshotWork::default(),
@@ -1587,6 +1599,8 @@ impl Default for Statistics {
             interval_qpc: 0,
             errors: 0,
             last_error: None,
+            input_demand_errors: 0,
+            input_demand_last_error: None,
             conversion: Distribution::default(),
             conversion_packs: std::array::from_fn(|_| Distribution::default()),
             frame_encoding: Distribution::default(),
@@ -1825,6 +1839,11 @@ impl Processor {
         self.stats.last_error = Some(error_reason(error));
     }
 
+    pub(crate) fn observe_input_demand_error(&mut self, reason: &'static str) {
+        self.stats.input_demand_errors = self.stats.input_demand_errors.saturating_add(1);
+        self.stats.input_demand_last_error = Some(reason);
+    }
+
     /// The caller retains the buffer until this succeeds. Opening a campaign may
     /// do I/O, but this preflight never observes or acknowledges a callback.
     /// Once prepared, consume its loss witnesses and then call `frame` once.
@@ -1942,6 +1961,21 @@ impl Processor {
             crate::allocation::set_context(Default::default());
         }
         if captured.clock.is_some() {
+            captured
+                .extended
+                .observe_country_rosters(&mut self.stats.country_rosters)?;
+            captured
+                .extended
+                .observe_division_naming(&mut self.stats.division_naming)?;
+            captured
+                .extended
+                .observe_character_naming(&mut self.stats.character_naming)?;
+            captured
+                .extended
+                .observe_supply_vehicles(&mut self.stats.supply_vehicles);
+            captured
+                .extended
+                .observe_variable_seeds(&mut self.stats.variable_seeds);
             self.stats
                 .naval_breakdowns
                 .observe(captured.extended.naval_breakdown_status())?;
@@ -2541,6 +2575,8 @@ impl Processor {
                 "accounted_in": "Countries",
             },
             "pool_bytes": stats.pool_bytes, "write_errors": stats.errors, "last_error": &stats.last_error,
+            "input_demand_errors": stats.input_demand_errors,
+            "input_demand_last_error": stats.input_demand_last_error,
             "sampled_buffer_allocation": {
                 "scope": "last consumed native row buffer, before off-thread growth; not the whole pool",
                 "bytes": stats.sampled_buffer_bytes,
@@ -2552,6 +2588,11 @@ impl Processor {
             "spool_work": spool_work,
             "war_owned_snapshots": stats.war_snapshots.status(),
             "naval_modifier_breakdowns": stats.naval_breakdowns.status(),
+            "division_naming": stats.division_naming.status(),
+            "country_rosters": stats.country_rosters.status(),
+            "character_naming": stats.character_naming.status(),
+            "supply_vehicles": stats.supply_vehicles.status(),
+            "script_variable_seeds": stats.variable_seeds.status(),
             "research_walk_ns": research_walk_ns,
             "relations_copy_ns": relations_copy_ns,
             "characters_copy_ns": characters_copy_ns,
@@ -3469,6 +3510,16 @@ mod tests {
         assert_eq!(first["callback_work"]["calls"], 3);
         assert_eq!(first["callback_work"]["total_ns"], 600);
         assert_eq!(processor.json(), first);
+
+        processor.observe_input_demand_error("country roster header unreadable or invalid");
+        processor.observe_input_demand_error("unit leader identity unreadable");
+        let demand_failed = processor.json();
+        assert_eq!(demand_failed["input_demand_errors"], 2);
+        assert_eq!(
+            demand_failed["input_demand_last_error"],
+            "unit leader identity unreadable"
+        );
+        assert_eq!(demand_failed["write_errors"], 0);
 
         processor.error(&io::Error::other("new disk failure while paused"));
         let failed = processor.json();

@@ -6,6 +6,8 @@ pub const PROVEN_FROM: u16 = 91;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
+/// Provisional introduction format for the batched recorder inputs.
+pub(crate) const RECORDER_INPUTS_FORMAT: u16 = 98;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordKind {
@@ -24,10 +26,12 @@ pub enum RecordKind {
     ClockWitness,
     GapSummary,
     Partial,
+    NavalCommanderInputs,
+    LandBorderWarInputs,
 }
 
 impl RecordKind {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 17] = [
         Self::ReplayHeader,
         Self::ReplayBlock,
         Self::ReplayTrailer,
@@ -43,6 +47,8 @@ impl RecordKind {
         Self::ClockWitness,
         Self::GapSummary,
         Self::Partial,
+        Self::NavalCommanderInputs,
+        Self::LandBorderWarInputs,
     ];
 }
 
@@ -84,11 +90,12 @@ pub struct AppendedField {
     pub introduced: u16,
 }
 
-/// One code-owned catalog for tables and every framing/metadata/control kind.
+/// One code-owned catalog for tables, nested values and framing/control kinds.
 /// Evidence: row declarations and typed_codec diffs at each listed commit,
 /// including the wider DivisionStatus mask (the recorded field count owns it).
 /// The baseline is #302; #323/#325/#328/#341/#343 were audited against it. New
 /// fields were appended; nested Opaque values keep their byte-length framing.
+/// Nested suffixes use source format even when parent field counts are unchanged.
 /// Record-kind dates 1/24/33 are inert below the proven horizon of 91.
 /// Adding/retiring a table changes its lifetime, not the Frame framing date.
 pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
@@ -116,6 +123,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             RecordKind::Frame => (91, "0e632a9b16"),
             RecordKind::GapSummary => (1, "7185d6e386"),
             RecordKind::Partial => (92, "11b905d2b2"),
+            RecordKind::NavalCommanderInputs => (RECORDER_INPUTS_FORMAT, "d53fa4e05c"),
+            RecordKind::LandBorderWarInputs => (RECORDER_INPUTS_FORMAT, "9d09404c0d"),
             _ => (1, "5d3b4dd945"),
         };
         history[i + r] = LastChange {
@@ -136,12 +145,10 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     history[TableId::Countries.index()] = table(TableId::Countries, 93, "9fb09a565f");
     history[TableId::LandCombatDetails.index()] =
         table(TableId::LandCombatDetails, 93, "9fb09a565f");
-    history[TableId::UnitLeaders.index()] = table(TableId::UnitLeaders, 93, "9fb09a565f");
     history[TableId::SimulationFeatures.index()] =
         table(TableId::SimulationFeatures, 93, "9fb09a565f");
     history[TableId::WeatherProvinces.index()] = table(TableId::WeatherProvinces, 93, "9fb09a565f");
     history[TableId::StateFlags.index()] = table(TableId::StateFlags, 93, "9fb09a565f");
-    history[TableId::DivisionStatus.index()] = table(TableId::DivisionStatus, 93, "9fb09a565f");
     // WING_NAME extended the meaning of the existing packed entry family.
     history[TableId::RaidTooltipOperands.index()] =
         table(TableId::RaidTooltipOperands, 94, "ccf740b81d");
@@ -161,12 +168,6 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     history[TableId::LandCombatDetails.index()].appended = &[AppendedField {
         index: 9,
         name: "border_war",
-        introduced: 93,
-    }];
-    history[TableId::UnitLeaders.index()].kind = ChangeKind::AppendedOnly;
-    history[TableId::UnitLeaders.index()].appended = &[AppendedField {
-        index: 20,
-        name: "exile_country",
         introduced: 93,
     }];
     history[TableId::SimulationFeatures.index()].kind = ChangeKind::AppendedOnly;
@@ -201,12 +202,6 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             introduced: 93,
         },
     ];
-    history[TableId::DivisionStatus.index()].kind = ChangeKind::AppendedOnly;
-    history[TableId::DivisionStatus.index()].appended = &[AppendedField {
-        index: 16,
-        name: "border_combat_stats",
-        introduced: 93,
-    }];
     history[TableId::DivisionMovement.index()].kind = ChangeKind::AppendedOnly;
     history[TableId::DivisionMovement.index()].appended = &[AppendedField {
         index: 14,
@@ -232,8 +227,193 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         introduced: 97,
     }];
     history[TableId::RaidTooltipOperands.index()].kind = ChangeKind::Meaning;
+    history[TableId::AvailableAdvisors.index()] = table(
+        TableId::AvailableAdvisors,
+        RECORDER_INPUTS_FORMAT,
+        "d53fa4e05c",
+    );
+    history[TableId::AvailableAdvisors.index()].introduced = RECORDER_INPUTS_FORMAT;
+    history[TableId::OwnedWargoals.index()] =
+        table(TableId::OwnedWargoals, RECORDER_INPUTS_FORMAT, "9d09404c0d");
+    history[TableId::OwnedWargoals.index()].introduced = RECORDER_INPUTS_FORMAT;
+    history[TableId::AdvisorRoles.index()] = appended(
+        TableId::AdvisorRoles,
+        "d53fa4e05c",
+        &[AppendedField {
+            index: 4,
+            name: "modifier_cache",
+            introduced: RECORDER_INPUTS_FORMAT,
+        }],
+    );
+    history[TableId::UnitLeaders.index()] = appended(
+        TableId::UnitLeaders,
+        "d53fa4e05c",
+        &[
+            AppendedField {
+                index: 20,
+                name: "exile_country",
+                introduced: 93,
+            },
+            AppendedField {
+                index: 21,
+                name: "codename",
+                introduced: RECORDER_INPUTS_FORMAT,
+            },
+        ],
+    );
+    history[TableId::CharacterOperatives.index()] = appended(
+        TableId::CharacterOperatives,
+        "d53fa4e05c",
+        &[
+            AppendedField {
+                index: 6,
+                name: "codename",
+                introduced: RECORDER_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 7,
+                name: "name",
+                introduced: RECORDER_INPUTS_FORMAT,
+            },
+        ],
+    );
+    history[TableId::OperativeMemberships.index()] = appended(
+        TableId::OperativeMemberships,
+        "d53fa4e05c",
+        &[AppendedField {
+            index: 8,
+            name: "ordinal",
+            introduced: RECORDER_INPUTS_FORMAT,
+        }],
+    );
+    history[TableId::DivisionStatus.index()] = appended(
+        TableId::DivisionStatus,
+        "d53fa4e05c",
+        &[
+            AppendedField {
+                index: 16,
+                name: "border_combat_stats",
+                introduced: 93,
+            },
+            AppendedField {
+                index: 17,
+                name: "naming",
+                introduced: RECORDER_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 18,
+                name: "supply_grace_maximum",
+                introduced: RECORDER_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 19,
+                name: "supply_grace_remaining",
+                introduced: RECORDER_INPUTS_FORMAT,
+            },
+        ],
+    );
+    history[TableId::CountryCounterInputs.index()] = appended(
+        TableId::CountryCounterInputs,
+        "d53fa4e05c",
+        &[
+            AppendedField {
+                index: 4,
+                name: "owned_states",
+                introduced: RECORDER_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 5,
+                name: "controlled_states",
+                introduced: RECORDER_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 6,
+                name: "core_states",
+                introduced: RECORDER_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 7,
+                name: "army_leaders",
+                introduced: RECORDER_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 8,
+                name: "navy_leaders",
+                introduced: RECORDER_INPUTS_FORMAT,
+            },
+        ],
+    );
+    history[TableId::VariantDefinitions.index()] = appended(
+        TableId::VariantDefinitions,
+        "9d09404c0d",
+        &[AppendedField {
+            index: 14,
+            name: "version",
+            introduced: RECORDER_INPUTS_FORMAT,
+        }],
+    );
+    history[TableId::ScriptVariables.index()] = appended(
+        TableId::ScriptVariables,
+        "c8c5165b33",
+        &[AppendedField {
+            index: 1,
+            name: "seed",
+            introduced: RECORDER_INPUTS_FORMAT,
+        }],
+    );
+    history[TableId::TrainInventory.index()] = appended(
+        TableId::TrainInventory,
+        "c8c5165b33",
+        &[
+            AppendedField {
+                index: 3,
+                name: "allocated_trucks",
+                introduced: RECORDER_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 4,
+                name: "required_trucks_raw",
+                introduced: RECORDER_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 5,
+                name: "required_trains",
+                introduced: RECORDER_INPUTS_FORMAT,
+            },
+        ],
+    );
+    history[TableId::ALL.len() + RecordKind::NavalCommanderInputs as usize].introduced =
+        PROVEN_FROM;
+    history[TableId::ALL.len() + RecordKind::NavalCommanderInputs as usize].kind =
+        ChangeKind::AppendedOnly;
+    history[TableId::ALL.len() + RecordKind::NavalCommanderInputs as usize].appended =
+        &[AppendedField {
+            index: 17,
+            name: "NavalCommanderInputs.timed_traits",
+            introduced: RECORDER_INPUTS_FORMAT,
+        }];
+    history[TableId::ALL.len() + RecordKind::LandBorderWarInputs as usize].introduced = PROVEN_FROM;
+    history[TableId::ALL.len() + RecordKind::LandBorderWarInputs as usize].kind =
+        ChangeKind::AppendedOnly;
+    history[TableId::ALL.len() + RecordKind::LandBorderWarInputs as usize].appended =
+        &[AppendedField {
+            index: 2,
+            name: "LandBorderWarInputs.combat_width",
+            introduced: RECORDER_INPUTS_FORMAT,
+        }];
     history
 };
+
+const fn appended(
+    id: TableId,
+    commit: &'static str,
+    fields: &'static [AppendedField],
+) -> LastChange {
+    let mut change = table(id, RECORDER_INPUTS_FORMAT, commit);
+    change.kind = ChangeKind::AppendedOnly;
+    change.appended = fields;
+    change
+}
 
 const fn table(id: TableId, format: u16, commit: &'static str) -> LastChange {
     LastChange {
@@ -326,7 +506,28 @@ mod tests {
             }
         }
         for kind in RecordKind::ALL {
-            assert_eq!(kind.last_change().subject, Subject::Record(kind));
+            let entry = kind.last_change();
+            assert_eq!(entry.subject, Subject::Record(kind));
+            let fields = match kind {
+                RecordKind::NavalCommanderInputs => {
+                    Some(<super::super::NavalCommanderInputs as crate::value::Value>::STRUCT_FIELDS)
+                }
+                RecordKind::LandBorderWarInputs => {
+                    Some(<super::super::LandBorderWarInputs as crate::value::Value>::STRUCT_FIELDS)
+                }
+                _ => None,
+            };
+            if let Some(fields) = fields {
+                assert_eq!(entry.introduced, PROVEN_FROM);
+                assert_eq!(entry.kind, ChangeKind::AppendedOnly);
+                let first = entry.appended[0].index;
+                for (offset, field) in entry.appended.iter().enumerate() {
+                    assert_eq!(field.index, first + offset);
+                    assert!(field.name.contains('.'));
+                    assert!(field.introduced > PROVEN_FROM && field.introduced <= entry.format);
+                }
+                assert_eq!(first + entry.appended.len(), fields);
+            }
         }
         let distinct: std::collections::BTreeSet<_> = HISTORY
             .iter()

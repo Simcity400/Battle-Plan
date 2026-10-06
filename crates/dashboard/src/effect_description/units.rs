@@ -19,10 +19,12 @@ fn integer_field(items: &[Item], name: &str, default: i32) -> i32 {
     items
         .iter()
         .filter(|item| item.keyword_is(name))
-        .filter_map(|item| match installed_content::crt::scan_i32(item.value.scalar()?) {
-            installed_content::crt::Scanned::Stored(value) => Some(value),
-            _ => None,
-        })
+        .filter_map(
+            |item| match installed_content::crt::scan_i32(item.value.scalar()?) {
+                installed_content::crt::Scanned::Stored(value) => Some(value),
+                _ => None,
+            },
+        )
         .next_back()
         .unwrap_or(default) // ReadScriptSignedInt32@1424AB970.
 }
@@ -130,10 +132,7 @@ impl Renderer<'_, '_, '_> {
         let mut kind = b"".as_slice();
         let mut creator = b"---".as_slice(); // Country-database slot0, 14070E670/1427CDA44.
         // 141411210 mutates the same reference across repeated equipment bodies.
-        for equipment in fields
-            .iter()
-            .filter(|field| field.keyword_is("equipment"))
-        {
+        for equipment in fields.iter().filter(|field| field.keyword_is("equipment")) {
             if let Some(name) = field(children(equipment), "version_name") {
                 version = parser::text(name.value.read_string().unwrap_or_default())
                     .map_err(|why| why.to_string())?;
@@ -210,7 +209,8 @@ impl Renderer<'_, '_, '_> {
         } else {
             count.to_string()
         };
-        let name = self.units_current_name(&self.units_equipment()?.equipment[index].name, scopes)?;
+        let name =
+            self.units_current_name(&self.units_equipment()?.equipment[index].name, scopes)?;
         self.line(
             if count == 1 {
                 b"EFFECT_DESTROY_SHIP"
@@ -236,7 +236,8 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         };
         let country = self.country_name(self.country_target(item, scopes)?.unwrap_or(0), false)?;
-        let name = self.units_current_name(&self.units_equipment()?.equipment[index].name, scopes)?;
+        let name =
+            self.units_current_name(&self.units_equipment()?.equipment[index].name, scopes)?;
         let amount = match field(fields, "amount") {
             Some(value) => self.scoped_value(scalar_operand(value)?, scopes)?,
             None => 0,
@@ -340,11 +341,7 @@ impl Renderer<'_, '_, '_> {
             .collect()) // 140E535D0/140E53740: primary roster in native order.
     }
 
-    pub(super) fn units_stockpile(
-        &self,
-        item: &Item,
-        scopes: Scopes,
-    ) -> Result<String, String> {
+    pub(super) fn units_stockpile(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let fields = children(item);
         let amount = match field(fields, "amount") {
             Some(value) => self.scoped_value(scalar_operand(value)?, scopes)?,
@@ -352,7 +349,9 @@ impl Renderer<'_, '_, '_> {
         };
         let amount = crate::triggers::fixed_round(amount) as i32;
         let producer = match field(fields, "producer") {
-            Some(value) => self.evaluator()?.scoped_country(scalar_operand(value)?, scopes)?,
+            Some(value) => self
+                .evaluator()?
+                .scoped_country(scalar_operand(value)?, scopes)?,
             None => None,
         };
         let Some(index) = self.units_equipment_type(fields, &["type"], scopes)? else {
@@ -489,7 +488,9 @@ impl Renderer<'_, '_, '_> {
             }
         };
         if self.context.localisation.get(&key).is_none() {
-            return Err(format!("native equipment role key {key} is not defined by the recorded content stack (140F74D40/140F74710/140F753E0)"));
+            return Err(format!(
+                "native equipment role key {key} is not defined by the recorded content stack (140F74D40/140F74710/140F753E0)"
+            ));
         }
         self.localised(key.as_bytes(), &[], scopes, false)
     }
@@ -540,7 +541,7 @@ impl Renderer<'_, '_, '_> {
                     .token(variant.equipment_token)?
                     .ok_or("LexicalTokens lacks the available variant equipment token")?;
                 if database.get(token) == Some(kind.family) {
-                    return Err("candidate-bearing no-tech probe needs unrecorded CEquipmentVariant.version u8 +0x41C (140E535D0/14049BEA0); allow_without_tech=yes or no matching family/creator/origin candidate is decidable without it".into());
+                    return Err("candidate-bearing no-tech probe of recorded CEquipmentVariant.version u8 +0x41C is not ported (140E535D0/14049BEA0); allow_without_tech=yes or no matching family/creator/origin candidate is decidable without it".into());
                 }
             }
             true
@@ -618,11 +619,7 @@ impl Renderer<'_, '_, '_> {
         self.localised(key, &args, scopes, true) // 14049BEA0: no added LF.
     }
 
-    pub(super) fn units_subsidy(
-        &self,
-        item: &Item,
-        scopes: Scopes,
-    ) -> Result<String, String> {
+    pub(super) fn units_subsidy(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let fields = children(item);
         let country = match scopes.this {
             Scope::Country(country) => country,
@@ -641,7 +638,10 @@ impl Renderer<'_, '_, '_> {
             None => self.units_current_name(b"", scopes)?,
         };
         let mut sellers = Vec::new();
-        for body in fields.iter().filter(|field| field.keyword_is("seller_tags")) {
+        for body in fields
+            .iter()
+            .filter(|field| field.keyword_is("seller_tags"))
+        {
             for value in children(body) {
                 let Some(country) = self
                     .evaluator()?
@@ -706,11 +706,18 @@ impl Renderer<'_, '_, '_> {
                 b"EFFECT_MANPOWER_ADD_COUNTRY".as_slice(),
                 self.country_name(0, false)?,
             ),
-            _ => return Err("native CEventScope state/country fields unavailable (140384C00)".into()),
+            _ => {
+                return Err(
+                    "native CEventScope state/country fields unavailable (140384C00)".into(),
+                );
+            }
         };
         self.line(
             key,
-            &[("NAME", Argument::Text(&name)), ("VAL", Argument::Int32(amount))],
+            &[
+                ("NAME", Argument::Text(&name)),
+                ("VAL", Argument::Int32(amount)),
+            ],
             scopes,
             true,
         ) // 140384C00, round 1424D8760.
@@ -1104,7 +1111,9 @@ impl Renderer<'_, '_, '_> {
                 .collect::<Vec<_>>()
         };
         if provinces.is_empty() {
-            return Err(format!("state {state} has no native province candidates; 14036A810 divides by the state's province count"));
+            return Err(format!(
+                "state {state} has no native province candidates; 14036A810 divides by the state's province count"
+            ));
         }
         let cursor = scopes
             .cursor
@@ -1119,9 +1128,9 @@ impl Renderer<'_, '_, '_> {
         let mut blocked = BTreeMap::new();
         let mut controller_scores = BTreeMap::new();
         let country = |raw| {
-            world.slot(raw).ok_or_else(|| {
-                format!("CountryLinks lacks province controller {raw} (1406F3A90)")
-            })
+            world
+                .slot(raw)
+                .ok_or_else(|| format!("CountryLinks lacks province controller {raw} (1406F3A90)"))
         };
         let war = |controller| -> Result<bool, String> {
             for row in frame
@@ -1171,9 +1180,14 @@ impl Renderer<'_, '_, '_> {
             }
             Ok(false) // Direct installed subjects, no date/cancel filter (1406F3B00).
         };
-        let mut admitted = |province: &replay::rows::ProvinceRow, ignore_occupants| -> Result<bool, String> {
+        let mut admitted = |province: &replay::rows::ProvinceRow,
+                            ignore_occupants|
+         -> Result<bool, String> {
             if !world.state_provinces.contains_key(&province.state) {
-                return Err(format!("province {} state {} is not defined by the recorded content stack (140E6A1A0)", province.id, province.state));
+                return Err(format!(
+                    "province {} state {} is not defined by the recorded content stack (140E6A1A0)",
+                    province.id, province.state
+                ));
             }
             let impassable_state = match blocked.get(&province.state) {
                 Some(&blocked) => blocked,
@@ -1204,7 +1218,10 @@ impl Renderer<'_, '_, '_> {
                 .iter()
                 .find(|row| row.province == province.id)
                 .ok_or_else(|| {
-                    format!("ProvinceUnitOrder lacks province {} (140339920)", province.id)
+                    format!(
+                        "ProvinceUnitOrder lacks province {} (140339920)",
+                        province.id
+                    )
                 })?;
             Ok(occupants.mixed.len() == occupants.naval.len())
             // 140E65210/140E6B110: mixed = land + naval + railway units.
@@ -1234,10 +1251,15 @@ impl Renderer<'_, '_, '_> {
                                 "country_score needs the caller's event graph cursor (14036A2F0)",
                             )?;
                             let at = self.graph.borrow().scopes.len();
-                            self.graph.borrow_mut().scopes.push(crate::scripted_text::EventScope {
-                                prev: Link::Scope(cursor),
-                                ..crate::scripted_text::EventScope::of(EventObject::Country(controller))
-                            }); // 140528800/14052DD00: fresh ROOT/FROM, PREV caller.
+                            self.graph
+                                .borrow_mut()
+                                .scopes
+                                .push(crate::scripted_text::EventScope {
+                                    prev: Link::Scope(cursor),
+                                    ..crate::scripted_text::EventScope::of(EventObject::Country(
+                                        controller,
+                                    ))
+                                }); // 140528800/14052DD00: fresh ROOT/FROM, PREV caller.
                             let result = (|| {
                                 let projected = crate::triggers::event_scopes::project(
                                     &self.graph.borrow(),
@@ -1293,7 +1315,8 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn units_unlock(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
-        let name = parser::text(parser::c_string(scalar_operand(item)?)).map_err(|why| why.to_string())?;
+        let name =
+            parser::text(parser::c_string(scalar_operand(item)?)).map_err(|why| why.to_string())?;
         let units = self
             .context
             .content
@@ -1303,7 +1326,9 @@ impl Renderer<'_, '_, '_> {
         let index = match units.get(name) {
             installed_content::unit_leader::SubUnit::Index(index) => index,
             installed_content::unit_leader::SubUnit::Unknown => {
-                return Err(format!("sub-unit {name} is not defined by the recorded content stack (140AB5DA0)"));
+                return Err(format!(
+                    "sub-unit {name} is not defined by the recorded content stack (140AB5DA0)"
+                ));
             }
             installed_content::unit_leader::SubUnit::Uncertain(why) => {
                 return Err(format!("sub-unit {name}: {why}"));
@@ -1327,7 +1352,9 @@ impl Renderer<'_, '_, '_> {
         let value = item
             .value
             .scalar()
-            .or_else(|| field(fields, "division_template").and_then(|item| item.value.read_string()))
+            .or_else(|| {
+                field(fields, "division_template").and_then(|item| item.value.read_string())
+            })
             .unwrap_or_default();
         let label = std::str::from_utf8(installed_content::parser::c_string(value))
             .map_err(|_| "template name is not UTF-8")?;
@@ -1347,84 +1374,84 @@ impl Renderer<'_, '_, '_> {
 
 // 1413D1220 / 1413D0370: native keys indexed by installed_content::equipment::STATS.
 const EQUIPMENT_STAT_KEYS: [(&[u8], bool); 78] = [
-    (b"STAT_ARMY_DEFAULT_MORALE", true), // 142938668.
-    (b"STAT_ARMY_DEFENSE", true), // 142938688.
-    (b"STAT_ARMY_BREAKTHROUGH", true), // 1429386A0.
-    (b"STAT_ARMY_HARDNESS", true), // 1429386B8.
-    (b"STAT_ARMY_SOFT_ATTACK", true), // 1429386D0.
-    (b"STAT_ARMY_HARD_ATTACK", true), // 1429386E8.
-    (b"STAT_ARMY_RECON", true), // 142938700.
-    (b"STAT_ARMY_ENTRENCHMENT", true), // 142938710.
-    (b"STAT_ARMY_INITIATIVE", true), // 142938728.
-    (b"STAT_ARMY_CASUALTY_TRICKLEBACK", true), // 142938740.
-    (b"STAT_ARMY_SUPPLY_CONSUMPTION_FACTOR", true), // 142938618.
-    (b"STAT_ARMY_SUPPLY_CONSUMPTION", false), // 142938760.
-    (b"STAT_ARMY_SUPRESSION", true), // 142938780.
-    (b"STAT_ARMY_SUPRESSION_FACTOR", true), // 1429385F8.
-    (b"STAT_ARMY_EXPERIENCE_LOSS_FACTOR", true), // 142938798.
-    (b"STAT_ARMY_EQUIPMENT_CAPTURE_FACTOR", true), // 1429387C0.
-    (b"STAT_ARMY_FUEL_CAPACITY", true), // 1429387E8.
-    (b"STAT_ARMY_RECOVERY", true), // 142938800.
+    (b"STAT_ARMY_DEFAULT_MORALE", true),               // 142938668.
+    (b"STAT_ARMY_DEFENSE", true),                      // 142938688.
+    (b"STAT_ARMY_BREAKTHROUGH", true),                 // 1429386A0.
+    (b"STAT_ARMY_HARDNESS", true),                     // 1429386B8.
+    (b"STAT_ARMY_SOFT_ATTACK", true),                  // 1429386D0.
+    (b"STAT_ARMY_HARD_ATTACK", true),                  // 1429386E8.
+    (b"STAT_ARMY_RECON", true),                        // 142938700.
+    (b"STAT_ARMY_ENTRENCHMENT", true),                 // 142938710.
+    (b"STAT_ARMY_INITIATIVE", true),                   // 142938728.
+    (b"STAT_ARMY_CASUALTY_TRICKLEBACK", true),         // 142938740.
+    (b"STAT_ARMY_SUPPLY_CONSUMPTION_FACTOR", true),    // 142938618.
+    (b"STAT_ARMY_SUPPLY_CONSUMPTION", false),          // 142938760.
+    (b"STAT_ARMY_SUPRESSION", true),                   // 142938780.
+    (b"STAT_ARMY_SUPRESSION_FACTOR", true),            // 1429385F8.
+    (b"STAT_ARMY_EXPERIENCE_LOSS_FACTOR", true),       // 142938798.
+    (b"STAT_ARMY_EQUIPMENT_CAPTURE_FACTOR", true),     // 1429387C0.
+    (b"STAT_ARMY_FUEL_CAPACITY", true),                // 1429387E8.
+    (b"STAT_ARMY_RECOVERY", true),                     // 142938800.
     (b"STAT_ARMY_ADDITIONAL_COLLATERAL_DAMAGE", true), // 142938818.
-    (b"STAT_NAVY_SURFACE_DETECTION", true), // 142938840.
-    (b"STAT_NAVY_SUB_DETECTION", true), // 142938860.
-    (b"STAT_NAVY_SURFACE_VISIBILITY", false), // 142938878.
-    (b"STAT_NAVY_SUB_VISIBILITY", false), // 142938898.
-    (b"STAT_NAVY_CARRIER_SUB_DETECTION", false), // 1429388B8.
-    (b"STAT_NAVY_CARRIER_SURFACE_DETECTION", false), // 1429388D8.
-    (b"STAT_NAVY_LG_ATTACK", true), // 142938900.
-    (b"STAT_NAVY_LG_ARMOR_PIERCING", true), // 142938918.
-    (b"STAT_NAVY_HG_ATTACK", true), // 142938938.
-    (b"STAT_NAVY_HG_ARMOR_PIERCING", true), // 142938950.
-    (b"STAT_NAVY_TORPEDO_ATTACK", true), // 142938970.
-    (b"STAT_NAVY_SUB_ATTACK", true), // 142938990.
-    (b"STAT_NAVY_ANTI_AIR_ATTACK", true), // 1429389A8.
-    (b"STAT_NAVY_AMPHIBIOUS_DEFENSE", true), // 1429389C8.
-    (b"STAT_NAVY_MAXIMUM_SPEED", true), // 1429389E8.
-    (b"STAT_NAVY_RANGE", true), // 142938A00.
-    (b"STAT_NAVY_MINES_PLANTING", true), // 142938A10.
-    (b"STAT_NAVY_MINES_SWEEPING", true), // 142938A30.
-    (b"STAT_NAVY_LIGHT_GUN_HIT_CHANCE", true), // 142938A50.
-    (b"STAT_NAVY_HEAVY_GUN_HIT_CHANCE", true), // 142938A70.
-    (b"STAT_NAVY_TORPEDO_HIT_CHANCE", true), // 142938A90.
-    (b"STAT_NAVY_TORPEDO_DAMAGE_REDUCTION", true), // 142938AB0.
-    (b"STAT_NAVY_TORPEDO_ENEMY_CRIT_CHANCE", false), // 142938AD8.
-    (b"STAT_NAVY_WEATHER_PENALTY", false), // 142938B00.
-    (b"STAT_NAVY_RAIDING_COORDINATION", true), // 142938B20.
-    (b"STAT_NAVY_PATROL_COORDINATION", true), // 142938B40.
+    (b"STAT_NAVY_SURFACE_DETECTION", true),            // 142938840.
+    (b"STAT_NAVY_SUB_DETECTION", true),                // 142938860.
+    (b"STAT_NAVY_SURFACE_VISIBILITY", false),          // 142938878.
+    (b"STAT_NAVY_SUB_VISIBILITY", false),              // 142938898.
+    (b"STAT_NAVY_CARRIER_SUB_DETECTION", false),       // 1429388B8.
+    (b"STAT_NAVY_CARRIER_SURFACE_DETECTION", false),   // 1429388D8.
+    (b"STAT_NAVY_LG_ATTACK", true),                    // 142938900.
+    (b"STAT_NAVY_LG_ARMOR_PIERCING", true),            // 142938918.
+    (b"STAT_NAVY_HG_ATTACK", true),                    // 142938938.
+    (b"STAT_NAVY_HG_ARMOR_PIERCING", true),            // 142938950.
+    (b"STAT_NAVY_TORPEDO_ATTACK", true),               // 142938970.
+    (b"STAT_NAVY_SUB_ATTACK", true),                   // 142938990.
+    (b"STAT_NAVY_ANTI_AIR_ATTACK", true),              // 1429389A8.
+    (b"STAT_NAVY_AMPHIBIOUS_DEFENSE", true),           // 1429389C8.
+    (b"STAT_NAVY_MAXIMUM_SPEED", true),                // 1429389E8.
+    (b"STAT_NAVY_RANGE", true),                        // 142938A00.
+    (b"STAT_NAVY_MINES_PLANTING", true),               // 142938A10.
+    (b"STAT_NAVY_MINES_SWEEPING", true),               // 142938A30.
+    (b"STAT_NAVY_LIGHT_GUN_HIT_CHANCE", true),         // 142938A50.
+    (b"STAT_NAVY_HEAVY_GUN_HIT_CHANCE", true),         // 142938A70.
+    (b"STAT_NAVY_TORPEDO_HIT_CHANCE", true),           // 142938A90.
+    (b"STAT_NAVY_TORPEDO_DAMAGE_REDUCTION", true),     // 142938AB0.
+    (b"STAT_NAVY_TORPEDO_ENEMY_CRIT_CHANCE", false),   // 142938AD8.
+    (b"STAT_NAVY_WEATHER_PENALTY", false),             // 142938B00.
+    (b"STAT_NAVY_RAIDING_COORDINATION", true),         // 142938B20.
+    (b"STAT_NAVY_PATROL_COORDINATION", true),          // 142938B40.
     (b"STAT_NAVY_SEARCH_AND_DESTROY_COORDINATION", true), // 142938B60.
-    (b"STAT_AIR_RANGE", true), // 142938B90.
-    (b"STAT_AIR_DEFENCE", true), // 142938BA0.
-    (b"STAT_AIR_ATTACK", true), // 142938BB8.
-    (b"STAT_AIR_AGILITY", true), // 142938BC8.
-    (b"STAT_AIR_BOMBING", true), // 142938BE0.
-    (b"STAT_AIR_SUPERIORITY", true), // 142938BF8.
-    (b"STAT_AIR_NAVAL_STRIKE_ATTACK", true), // 142938C10.
-    (b"STAT_AIR_NAVAL_STRIKE_TARGETTING", true), // 142938C30.
-    (b"STAT_AIR_GROUND_ATTACK", true), // 142938C58.
-    (b"STAT_AIR_VISIBILITY_FACTOR", true), // 142938C70.
-    (b"STAT_RAILWAY_GUN_ATTACK", true), // 142938C90.
-    (b"STAT_RAILWAY_GUN_ATTACK_RANGE", true), // 142938CA8.
-    (b"STAT_RAILWAY_GUN_ANNEX_RATIO", false), // 142938CC8.
+    (b"STAT_AIR_RANGE", true),                         // 142938B90.
+    (b"STAT_AIR_DEFENCE", true),                       // 142938BA0.
+    (b"STAT_AIR_ATTACK", true),                        // 142938BB8.
+    (b"STAT_AIR_AGILITY", true),                       // 142938BC8.
+    (b"STAT_AIR_BOMBING", true),                       // 142938BE0.
+    (b"STAT_AIR_SUPERIORITY", true),                   // 142938BF8.
+    (b"STAT_AIR_NAVAL_STRIKE_ATTACK", true),           // 142938C10.
+    (b"STAT_AIR_NAVAL_STRIKE_TARGETTING", true),       // 142938C30.
+    (b"STAT_AIR_GROUND_ATTACK", true),                 // 142938C58.
+    (b"STAT_AIR_VISIBILITY_FACTOR", true),             // 142938C70.
+    (b"STAT_RAILWAY_GUN_ATTACK", true),                // 142938C90.
+    (b"STAT_RAILWAY_GUN_ATTACK_RANGE", true),          // 142938CA8.
+    (b"STAT_RAILWAY_GUN_ANNEX_RATIO", false),          // 142938CC8.
     (b"STAT_RAILWAY_GUN_HOURS_TO_REDISTRIBUTE", false), // 142938CE8.
-    (b"STAT_COMMON_MAX_ORG", true), // 142938D10.
-    (b"STAT_COMMON_MAX_STRENGTH", true), // 142938D28.
-    (b"STAT_COMMON_MAXIMUM_SPEED", true), // 142938D48.
-    (b"STAT_COMMON_ARMOR", true), // 142938D68.
-    (b"STAT_COMMON_PIERCING", true), // 142938D80.
-    (b"STAT_COMMON_RELIABILITY", true), // 142938D98.
-    (b"STAT_COMMON_RELIABILITY_FACTOR", true), // 142938DB0.
-    (b"STAT_COMMON_WEIGHT", false), // 142938DD0.
-    (b"STAT_COMMON_THRUST", true), // 142938DE8.
-    (b"STAT_COMMON_FUEL_CONSUMPTION", false), // 142938E00.
-    (b"STAT_COMMON_FUEL_CONSUMPTION_FACTOR", false), // 142938640.
-    (b"STAT_STRATEGIC_ATTACK", true), // 142938E20.
-    (b"STAT_CARRIER_SIZE", true), // 142938E38.
-    (b"STAT_SUB_CARRIER_SIZE", true), // 142938E50.
-    (b"STAT_COMMON_ACCLIMATIZATION_HOT_GAIN", true), // 142938E68.
-    (b"STAT_COMMON_ACCLIMATIZATION_COLD_GAIN", true), // 142938E90.
-    (b"STAT_COMMON_NIGHT_PENALTY", false), // 142938EB8.
-    (b"STAT_COMMON_BUILD_COST_IC", false), // 142938ED8.
+    (b"STAT_COMMON_MAX_ORG", true),                    // 142938D10.
+    (b"STAT_COMMON_MAX_STRENGTH", true),               // 142938D28.
+    (b"STAT_COMMON_MAXIMUM_SPEED", true),              // 142938D48.
+    (b"STAT_COMMON_ARMOR", true),                      // 142938D68.
+    (b"STAT_COMMON_PIERCING", true),                   // 142938D80.
+    (b"STAT_COMMON_RELIABILITY", true),                // 142938D98.
+    (b"STAT_COMMON_RELIABILITY_FACTOR", true),         // 142938DB0.
+    (b"STAT_COMMON_WEIGHT", false),                    // 142938DD0.
+    (b"STAT_COMMON_THRUST", true),                     // 142938DE8.
+    (b"STAT_COMMON_FUEL_CONSUMPTION", false),          // 142938E00.
+    (b"STAT_COMMON_FUEL_CONSUMPTION_FACTOR", false),   // 142938640.
+    (b"STAT_STRATEGIC_ATTACK", true),                  // 142938E20.
+    (b"STAT_CARRIER_SIZE", true),                      // 142938E38.
+    (b"STAT_SUB_CARRIER_SIZE", true),                  // 142938E50.
+    (b"STAT_COMMON_ACCLIMATIZATION_HOT_GAIN", true),   // 142938E68.
+    (b"STAT_COMMON_ACCLIMATIZATION_COLD_GAIN", true),  // 142938E90.
+    (b"STAT_COMMON_NIGHT_PENALTY", false),             // 142938EB8.
+    (b"STAT_COMMON_BUILD_COST_IC", false),             // 142938ED8.
 ];
 
 impl Renderer<'_, '_, '_> {

@@ -129,6 +129,8 @@ struct LeaderRow {
     text_a_len: usize,
     text_b_start: usize,
     text_b_len: usize,
+    codename: Option<engine::cname_group_member::Inputs>,
+    codename_reason: Option<&'static str>,
 }
 
 pub struct Captured {
@@ -194,6 +196,7 @@ pub(crate) fn acquisition_diagnostics() -> impl serde::Serialize {
         "scope": "cumulative active character acquisitions; backend is fresh prepared execution only; other includes discovery/continuation, trait acquisition and metadata restoration; overlapping jobs must not be summed as callback wall",
         "parts": crate::status::sequence(parts.into_iter()),
         "advisor_sections": crate::status::sequence(sections.into_iter()),
+        "advisor_modifiers": advisors::modifier_status(),
     })
 }
 
@@ -212,6 +215,18 @@ mod shadow;
 pub(crate) use shadow::*;
 
 impl Captured {
+    pub(crate) fn observe_naming(
+        &self,
+        work: &mut super::character_inputs::NamingWork,
+    ) -> std::io::Result<()> {
+        for row in &self.units.rows.rows[..self.units.rows.outcome.len()] {
+            if let Some(reason) = row.codename_reason {
+                work.refuse(reason)?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn character_activity(&self) -> [bool; 6] {
         self.active
     }
@@ -394,11 +409,7 @@ impl Captured {
             &self.advisors,
             &mut reuse.shadow.advisors,
             reuse.cached[2],
-            |row, bytes| {
-                valid(bytes, row.key_start, row.key_len)
-                    && valid(bytes, row.idea_start, row.idea_len)
-                    && valid(bytes, row.slot_start, row.slot_len)
-            },
+            advisor_ranges_valid,
             || self.advisors_table(),
         );
         let traits = shadow_input(
@@ -445,22 +456,28 @@ impl Captured {
     }
 
     fn advisors_table(&self) -> TableView {
-        view::<tables::AdvisorRoles, _>(
-            &self.advisors,
-            |row, bytes| {
-                valid(bytes, row.key_start, row.key_len)
-                    && valid(bytes, row.idea_start, row.idea_len)
-                    && valid(bytes, row.slot_start, row.slot_len)
-            },
-            |row, bytes| AdvisorRoleRow {
+        view::<tables::AdvisorRoles, _>(&self.advisors, advisor_ranges_valid, |row, bytes| {
+            AdvisorRoleRow {
                 character: row.character,
                 country: row.country,
                 ordinal: row.ordinal,
                 key: owned(bytes, row.key_start, row.key_len),
                 idea: owned(bytes, row.idea_start, row.idea_len),
                 slot: owned(bytes, row.slot_start, row.slot_len),
-            },
-        )
+                modifier_cache: replay::rows::Recorded::Value(row.modifier_recorded.then(|| {
+                    let entries = bytes[row.modifier_start..row.modifier_start + row.modifier_len]
+                        .chunks_exact(engine::modifier_entry::STRIDE);
+                    let mut values = owned_vec(engine::allocation::vec(entries.len()));
+                    for entry in entries {
+                        values.push(replay::rows::CachedModifier {
+                            definition: u32::from_le_bytes(entry[..4].try_into().unwrap()),
+                            value: i64::from_le_bytes(entry[8..16].try_into().unwrap()),
+                        });
+                    }
+                    replay::rows::AdvisorModifierCache { entries: values }
+                })),
+            }
+        })
     }
 
     fn traits_table(&self) -> TableView {
@@ -494,6 +511,10 @@ impl Captured {
                 |row, bytes| {
                     valid(bytes, row.text_a_start, row.text_a_len)
                         && valid(bytes, row.text_b_start, row.text_b_len)
+                        && row.codename.is_none_or(|name| {
+                            valid(bytes, name.custom.0, name.custom.1)
+                                && valid(bytes, name.group.0, name.group.1)
+                        })
                 },
                 leader_row,
             )),
@@ -936,6 +957,7 @@ impl Family<'_> {
                         relocate(&mut row.key_start, offset)
                             && relocate(&mut row.idea_start, offset)
                             && relocate(&mut row.slot_start, offset)
+                            && relocate(&mut row.modifier_start, offset)
                     },
                 );
             }
@@ -971,7 +993,11 @@ impl Family<'_> {
         units.append(
             |rows, bytes| read_unit(memory, base, pointer, character_id, rows, bytes),
             |row, offset| {
-                relocate(&mut row.text_a_start, offset) && relocate(&mut row.text_b_start, offset)
+                relocate(&mut row.text_a_start, offset)
+                    && relocate(&mut row.text_b_start, offset)
+                    && row.codename.as_mut().is_none_or(|name| {
+                        relocate(&mut name.custom.0, offset) && relocate(&mut name.group.0, offset)
+                    })
             },
         );
         // Reuse the authenticated scalar header on the normal path. The
@@ -1165,7 +1191,35 @@ fn read_unit(
         Err(reason) => return ReadResult::rows(Outcome::Unavailable { reason }),
     };
     let text = cunit_leader::read_text(memory, pointer, bytes);
-    if matches!(text.outcome, Outcome::Rows { len: 1 }) {
+    if let Outcome::Unavailable { .. } = text.outcome {
+        return ReadResult {
+            outcome: text.outcome,
+            bytes_len: 0,
+            required_bytes: text.required_bytes,
+        };
+    }
+    let mut names = engine::cname_group_member::Names {
+        bytes,
+        len: text.bytes_len,
+        required: text.required_bytes,
+    };
+    let (codename, codename_reason) = if cunit_leader::has_codename(native.kind) {
+        match cunit_leader::read_codename(memory, base, pointer, &mut names) {
+            Ok(engine::cname_group_member::Naming::Row(row)) => (Some(row), None),
+            Ok(engine::cname_group_member::Naming::DoesNotFit) => {
+                names.len = text.bytes_len;
+                (None, Some("unit leader codename byte capacity exceeded"))
+            }
+            Err(reason) => {
+                names.len = text.bytes_len;
+                (None, Some(reason))
+            }
+        }
+    } else {
+        (None, None)
+    };
+    let fits = matches!(text.outcome, Outcome::Rows { len: 1 });
+    if fits {
         *output = LeaderRow {
             native,
             // Native +20 is saved as name; +40 is a separate unsaved string.
@@ -1173,12 +1227,21 @@ fn read_unit(
             text_a_len: text.token_len,
             text_b_start: text.name_start,
             text_b_len: text.name_len,
+            codename,
+            codename_reason,
         };
     }
     ReadResult {
-        outcome: text.outcome,
-        bytes_len: text.bytes_len,
-        required_bytes: text.required_bytes,
+        outcome: if fits {
+            Outcome::Rows { len: 1 }
+        } else {
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 1,
+            }
+        },
+        bytes_len: if fits { names.len } else { 0 },
+        required_bytes: names.required,
     }
 }
 
@@ -1246,6 +1309,16 @@ pub(super) fn valid(bytes: &[u8], start: usize, len: usize) -> bool {
         .is_some_and(|end| bytes.get(start..end).is_some())
 }
 
+fn advisor_ranges_valid(row: &cadvisor::Row, bytes: &[u8]) -> bool {
+    valid(bytes, row.key_start, row.key_len)
+        && valid(bytes, row.idea_start, row.idea_len)
+        && valid(bytes, row.slot_start, row.slot_len)
+        && valid(bytes, row.modifier_start, row.modifier_len)
+        && row
+            .modifier_len
+            .is_multiple_of(engine::modifier_entry::STRIDE)
+}
+
 /// Used only after `view` validates every range for this table.
 fn owned(bytes: &[u8], start: usize, len: usize) -> Vec<u8> {
     owned_vec(copy_vec(&bytes[start..start + len]))
@@ -1278,6 +1351,10 @@ fn leader_row(row: &LeaderRow, bytes: &[u8]) -> UnitLeaderRow {
         visibility_choice: native.visibility_choice,
         template_visibility: native.template_visibility,
         exile_country: replay::rows::Recorded::Value(native.exile_country),
+        codename: replay::rows::Recorded::Value(
+            row.codename
+                .map(|name| super::character_inputs::operands(name, bytes)),
+        ),
     }
 }
 
@@ -1493,6 +1570,7 @@ impl Captured {
         }
         if active[2] {
             self.advisors.primary(results[2]);
+            advisors::record_modifiers(&self.advisors.rows.rows[..results[2].outcome.len()]);
         }
         if active[3] {
             self.units.primary(results[3]);
@@ -1666,6 +1744,7 @@ impl Captured {
             }
             let result = advisors.result();
             self.advisors.primary(result);
+            advisors::record_modifiers(&self.advisors.rows.rows[..result.outcome.len()]);
             self.raw_active[2] = false;
             decode_ticks[2] += elapsed(started);
             return;

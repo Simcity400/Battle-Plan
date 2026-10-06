@@ -176,8 +176,11 @@ fn need_is_derived_only_where_the_available_stock_is_the_recorded_stock() {
     let note = |key| need_note(&units, key).unwrap();
     assert_eq!(note("infantry_equipment"), None);
     assert_eq!(note("mechanized_equipment"), None);
-    assert!(note("motorized_equipment").unwrap().contains("trucks"));
-    assert!(note("train_equipment").unwrap().contains("trains"));
+    for key in ["motorized_equipment", "train_equipment"] {
+        let refusal = note(key).unwrap();
+        assert!(refusal.contains("daily balance"));
+        assert!(!refusal.contains("recording lacks"));
+    }
     assert!(note("convoy").unwrap().contains("convoy"));
 }
 

@@ -893,7 +893,7 @@ fn timed_days(
 
 struct AssignedCommander<'a> {
     traits: &'a [LandCombatCommanderTrait],
-    timed_traits: &'a [LandCombatCommanderTimedTrait],
+    timed_traits: Result<&'a [LandCombatCommanderTimedTrait], String>,
     country_tag: Result<&'a str, &'a str>,
     advisor_feature: Option<bool>,
     skill: Option<i32>,
@@ -934,6 +934,11 @@ fn assigned(
     for (index, (entry, &item)) in grid.entries.iter_mut().zip(&shown).enumerate() {
         let label = String::from_utf8_lossy(&item.token).into_owned();
         let result = (|| -> Result<(String, String), String> {
+            let timed = commander
+                .timed_traits
+                .as_ref()
+                .copied()
+                .map_err(Clone::clone)?;
             // 141C5F730 names HEADER literally; exile hovers require the
             // content definition rather than the localiser's missing-key text.
             if item.kind == 6 && loc.get(super::tooltips::HEADER).is_none() {
@@ -1041,7 +1046,7 @@ fn assigned(
             // 141C5F730: a temporary trait (140C0B3C0: the first +0xDE0 entry
             // of the trait with nonnegative days) appends a newline and
             // TRAIT_WILL_EXPIRE with its days (140C07810) to the delayed text.
-            if let Some(days) = timed_days(commander.timed_traits, item) {
+            if let Some(days) = timed_days(timed, item) {
                 description.push('\n');
                 description.push_str(&builtin(
                     icons,
@@ -1128,9 +1133,11 @@ fn assigned(
         ));
     }
     for (what, count) in absent {
-        out.warnings.push(format!(
-            "Combat trait hover {key}: the hover of {what} is omitted ({count} shown)."
-        ));
+        for _ in 0..count {
+            out.refuse(format!(
+                "Combat trait hover {key}: the hover of {what} is omitted"
+            ));
+        }
     }
 }
 
@@ -1179,17 +1186,23 @@ fn advisor_roles<'a>(
     Ok(roles)
 }
 
+pub(super) struct BindContent<'a> {
+    pub icons: &'a dyn TextIcons,
+    pub loc: &'a Localisation,
+    pub commanders: &'a Content,
+    pub windows: &'a NativeWindows,
+    pub land_defines: Result<&'a super::defines::LandDefines, &'a str>,
+    pub modifier_names: &'a super::modifier_text::NameIndexCache,
+}
+
 pub(super) fn bind(
     out: &mut Bindings,
-    document: &Document,
+    content: BindContent<'_>,
     frame: &DecodedFrame,
     selection: Selection,
     vision: &Vision,
 ) -> io::Result<()> {
-    let Selection::Land(id) = selection else {
-        return Ok(());
-    };
-    let (icons, loc) = (&document.icons.combat, &document.names.localisation);
+    let (icons, loc) = (content.icons, content.loc);
     let country_rows = rows::<tables::Countries>(frame)?;
     let countries = country_rows.rows();
     let links = rows::<tables::CountryLinks>(frame)?;
@@ -1204,6 +1217,91 @@ pub(super) fn bind(
     } else {
         None
     };
+    let definitions = Definitions::read(frame, content.modifier_names)?;
+    let read = content.commanders.settled(definitions.as_ref());
+    let effect_context = EffectContext {
+        icons,
+        loc,
+        definitions: definitions.as_ref(),
+        traits: &read.traits,
+        proximity: content
+            .commanders
+            .proximity
+            .as_ref()
+            .copied()
+            .map_err(String::as_str),
+        viewing_tag,
+        sub_units: content
+            .commanders
+            .sub_units
+            .as_ref()
+            .map_err(String::as_str),
+    };
+    // 1417D81B0/1417C6800 install the same 141C5F730 trait hover handler
+    // as land. presentation.rs has already bound each of these trait grids.
+    let naval = |out: &mut Bindings, key: &str, commander: &replay::rows::NavalCommanderInputs| {
+        if commander.commander == 0 {
+            return;
+        }
+        let leader = unit_leader(leaders.rows(), commander.commander);
+        assigned(
+            out,
+            content.commanders,
+            content.windows,
+            key,
+            AssignedCommander {
+                traits: &commander.traits,
+                timed_traits: commander
+                    .timed_traits
+                    .require("NavalCommanderInputs.timed_traits")
+                    .map(Vec::as_slice),
+                country_tag: country_tag(countries, commander.country),
+                advisor_feature,
+                skill: leader
+                    .filter(|row| row.skill_status != 0)
+                    .map(|row| row.skill_level),
+                advisor_roles: advisor_roles(
+                    leader,
+                    frame
+                        .complete::<tables::Characters>()
+                        .map_err(|error| error.to_string()),
+                    frame
+                        .complete::<tables::CharacterRoleTraits>()
+                        .map_err(|error| error.to_string()),
+                ),
+            },
+            &effect_context,
+        );
+    };
+    let id = match selection {
+        Selection::Naval(id) => {
+            let details = rows::<tables::NavalCombatDetails>(frame)?;
+            if let Some(detail) = details.rows().iter().find(|row| row.combat == id) {
+                for (side, prefix) in detail.sides.iter().zip(["attacker", "defender"]) {
+                    if let Some(commander) = &side.commander_inputs {
+                        naval(
+                            out,
+                            &format!("header_container/traits_grid_{prefix}"),
+                            commander,
+                        );
+                    }
+                }
+            }
+            return Ok(());
+        }
+        Selection::NavalResult(id) => {
+            let details = rows::<tables::NavalCombatResultDetails>(frame)?;
+            if let Some(detail) = details.rows().iter().find(|row| row.result == id) {
+                for (side, prefix) in detail.sides.iter().zip(["attacker", "defender"]) {
+                    if let Some(commander) = &side.commander_context {
+                        naval(out, &format!("{prefix}_leader/traits_grid"), commander);
+                    }
+                }
+            }
+            return Ok(());
+        }
+        Selection::Land(id) => id,
+    };
     let details = rows::<tables::LandCombatDetails>(frame)?;
     let Some(detail) = details.rows().iter().find(|row| row.combat == id) else {
         out.warnings.push(format!(
@@ -1214,18 +1312,6 @@ pub(super) fn bind(
             ["land_battle_leader_frame", "land_battle_leader_frame2"],
         );
         return Ok(());
-    };
-    let definitions = Definitions::read(frame, &document.modifier_names)?;
-    let content = &document.icons.combat.commander_tooltips;
-    let read = content.settled(definitions.as_ref());
-    let effect_context = EffectContext {
-        icons,
-        loc,
-        definitions: definitions.as_ref(),
-        traits: &read.traits,
-        proximity: content.proximity.as_ref().copied().map_err(String::as_str),
-        viewing_tag,
-        sub_units: content.sub_units.as_ref().map_err(String::as_str),
     };
     for (index, prefix) in ["attacker", "defender"].into_iter().enumerate() {
         let side = &detail.sides[index];
@@ -1254,7 +1340,7 @@ pub(super) fn bind(
             _ => None,
         };
         let progress = if own_commander == Ok(true) {
-            match &document.icons.combat.land_defines {
+            match content.land_defines {
                 Ok(defines) => Some((
                     side.learning_traits.as_slice(),
                     defines.learning_threshold,
@@ -1302,12 +1388,12 @@ pub(super) fn bind(
         let leader = unit_leader(leaders.rows(), side.commander);
         assigned(
             out,
-            content,
-            &document.icons.combat.native_windows,
+            content.commanders,
+            content.windows,
             &format!("{prefix}_traits_grid"),
             AssignedCommander {
                 traits: &side.traits,
-                timed_traits: &side.timed_traits,
+                timed_traits: Ok(&side.timed_traits),
                 country_tag: country_tag(countries, side.commander_country),
                 advisor_feature,
                 skill: leader
@@ -1401,7 +1487,10 @@ fn naval_skills(
                 .filter(|tooltip| tooltip.source == index as u8 + 1)
                 .collect();
             tooltips.sort_by_key(|tooltip| tooltip.bucket);
-            block.custom_tooltips = tooltips.iter().map(|tooltip| tooltip.text.clone()).collect();
+            block.custom_tooltips = tooltips
+                .iter()
+                .map(|tooltip| tooltip.text.clone())
+                .collect();
             // 140AD9010 -> 14054E050: precision 2, all categories, no
             // indentation, scale 1.0. Reuse its shared modifier formatter.
             text.push_str(
@@ -1432,89 +1521,12 @@ fn naval_skills(
     }
 }
 
-fn refuse_naval_traits(
-    out: &mut Bindings,
-    windows: &NativeWindows,
-    key: &str,
-    traits: &[LandCombatCommanderTrait],
-) {
-    let Some(grid) = out.values.get_mut(key) else {
-        out.warnings.push(format!(
-            "Combat trait hover {key}: the trait grid is not bound; its hovers are omitted."
-        ));
-        return;
-    };
-    let shown: Vec<_> = traits
-        .iter()
-        .filter(|item| item.kind != 0 && item.relevant != 0)
-        .collect();
-    let entry_count = grid.entries.len();
-    let mut refused = Vec::new();
-    for (index, (entry, &item)) in grid.entries.iter_mut().zip(&shown).enumerate() {
-        if item.kind != 6 {
-            // 141C5EF70 installs the ordinary trait handler only on Background.
-            refuse_hovers(entry, ["Background"]);
-        } else {
-            // Exile handlers propagate to the authored tree (1422AF2D0 / 14229D3A0).
-            let template = grid
-                .entry_templates
-                .get(&index)
-                .or(grid.entry_template.as_ref());
-            let keys: Vec<_> = template
-                .and_then(|name| windows.gui_type(name.as_bytes()))
-                .map(|root| {
-                    super::gui::elements(root)
-                        .into_iter()
-                        .map(|(path, _)| path)
-                        .collect()
-                })
-                .unwrap_or_else(|| entry.keys().cloned().collect());
-            refuse_hovers(entry, keys);
-        }
-        // 141C5F730 unconditionally queries 140C0B3C0 / 140C07810:
-        // CUnitLeader+0xDE0 pointer, +0xDEC count; stride 0x10, definition +0, days +8.
-        // The naval recording has no timed-trait vector, including zero-day entries.
-        refused.push(format!(
-            "Naval trait {} hover is omitted: the commander's timed-trait entries are not recorded",
-            String::from_utf8_lossy(&item.token)
-        ));
-    }
-    if entry_count != shown.len() {
-        out.warnings.push(format!(
-            "Combat trait hover {key}: the grid has {entry_count} entries for {} shown traits; the unmatched ones have no hover.",
-            shown.len()
-        ));
-    }
-    for reason in refused {
-        out.refuse(reason);
-    }
-}
-
 pub(super) fn bind_naval(
     out: &mut Bindings,
     document: &Document,
     frame: &DecodedFrame,
     selection: Selection,
 ) -> io::Result<()> {
-    if let Selection::NavalResult(id) = selection {
-        let details = rows::<tables::NavalCombatResultDetails>(frame)?;
-        if let Some(detail) = details.rows().iter().find(|row| row.result == id) {
-            for (side, label) in detail.sides.iter().zip(["attacker", "defender"]) {
-                if let Some(commander) = &side.commander_context
-                    && commander.commander != 0
-                {
-                    // 1417C71F0 / 1417C6800 bind {attacker,defender}_leader/traits_grid.
-                    refuse_naval_traits(
-                        out,
-                        &document.icons.combat.native_windows,
-                        &format!("{label}_leader/traits_grid"),
-                        &commander.traits,
-                    );
-                }
-            }
-        }
-        return Ok(());
-    }
     let Selection::Naval(id) = selection else {
         return Ok(());
     };
@@ -1529,13 +1541,6 @@ pub(super) fn bind_naval(
         // 1417D81B0 binds header_container/{attacker,defender}_stats.
         let prefix = format!("header_container/{label}_stats");
         if let Some(commander) = &side.commander_inputs {
-            // 1417D81B0 binds header_container/traits_grid_{attacker,defender}.
-            refuse_naval_traits(
-                out,
-                &document.icons.combat.native_windows,
-                &format!("header_container/traits_grid_{label}"),
-                &commander.traits,
-            );
             if commander.commander != 0 {
                 naval_skills(
                     out,

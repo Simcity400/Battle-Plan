@@ -310,6 +310,24 @@ fn compare_advisors(
         if !seen.insert(key) {
             return Err(invalid("duplicate advisor role position"));
         }
+        let label = format!("advisor {key:?}");
+        if let Some(cache) = report.recorded(
+            &row.modifier_cache,
+            "AdvisorRoles.modifier_cache",
+            format!("{label}.modifier_cache"),
+        ) {
+            if cache.is_some() {
+                report.limitation(
+                    "CAdvisor::vf2@1412902F0 saves traits and the own modifier block, not the independently rebuilt +0x1A0 modifier cache",
+                    format!("{label}.modifier_cache.entries"),
+                );
+            } else {
+                report.limitation(
+                    "AdvisorRoles.modifier_cache is explicitly unavailable",
+                    format!("{label}.modifier_cache"),
+                );
+            }
+        }
         let Some(character) = manager.characters.get(&key.0) else {
             membership(report, "advisor character", key.0, true);
             continue;
@@ -319,7 +337,6 @@ fn compare_advisors(
             continue;
         };
         count += 1;
-        let label = format!("advisor {key:?}");
         equal(
             report,
             format!("{label}.country"),
@@ -635,6 +652,178 @@ fn compare_operatives(
         "CharacterOperatives.resolved, category, owner, skill_level, trait_definitions",
     );
     Ok(())
+}
+
+/// Operative names are saved with agency/recruitment entries, rather than
+/// character-manager roles. 140C18FF0 always writes the embedded codename;
+/// 1409BCC70 owns the same omission rules as division_name.
+pub(super) fn compare_codenames(
+    frame: &DecodedFrame,
+    pack: &installed_content::save::intel::Pack,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut saved = BTreeMap::new();
+    for country in pack.countries.values() {
+        let Some(agency) = &country.agency else {
+            continue;
+        };
+        let recruitment = agency.recruitment.iter().flat_map(|recruitment| {
+            recruitment
+                .recruitable
+                .iter()
+                .chain(&recruitment.not_to_spy_master)
+        });
+        for entry in agency.operatives.iter().chain(recruitment) {
+            if let Some(previous) = saved.insert(entry.id, entry)
+                && previous.codename != entry.codename
+            {
+                return Err(invalid("conflicting codename for repeated saved operative"));
+            }
+        }
+    }
+    let mut complete_tables = report.attempt("CharacterOperatives codenames", |report| {
+        let mut compared = 0;
+        for row in complete::<tables::CharacterOperatives>(frame)? {
+            let name_label = format!("CharacterOperatives {}.name", row.character);
+            if let Some(name) = report.recorded(
+                &row.name,
+                "CharacterOperatives.name",
+                name_label.clone(),
+            ) {
+                if name.is_some() {
+                    report.limitation(
+                        "140C0D920 saves name from +0x20, while the captured localized +0x40 string is not serialized by 140C18FF0",
+                        name_label,
+                    );
+                } else {
+                    report.limitation(
+                        "CharacterOperatives.name is explicitly unavailable",
+                        name_label,
+                    );
+                }
+            }
+            let label = format!("CharacterOperatives {} codename", row.character);
+            let Some(actual) = report.recorded(
+                &row.codename,
+                "CharacterOperatives.codename",
+                label.clone(),
+            ) else {
+                continue;
+            };
+            let Some(actual) = actual.as_ref() else {
+                report.limitation(
+                    "CharacterOperatives.codename is explicitly unavailable",
+                    label,
+                );
+                continue;
+            };
+            if !row.resolved {
+                continue;
+            }
+            compared += usize::from(codename(
+                report,
+                &label,
+                actual,
+                saved.get(&row.reference).copied(),
+            ));
+        }
+        report.compared("CharacterOperatives codenames", compared);
+        Ok(())
+    });
+    complete_tables &= report.attempt("UnitLeaders codenames", |report| {
+        let mut compared = 0;
+        for row in complete::<tables::UnitLeaders>(frame)?
+            .iter()
+            .filter(|row| engine::cunit_leader::has_codename(row.kind))
+        {
+            let label = format!("UnitLeaders {} codename", row.id);
+            let Some(actual) =
+                report.recorded(&row.codename, "UnitLeaders.codename", label.clone())
+            else {
+                continue;
+            };
+            let Some(actual) = actual.as_ref() else {
+                report.limitation("UnitLeaders.codename is explicitly unavailable", label);
+                continue;
+            };
+            compared += usize::from(codename(
+                report,
+                &label,
+                actual,
+                saved.get(&handle(row.reference_type, row.id)).copied(),
+            ));
+        }
+        report.compared("UnitLeaders codenames", compared);
+        Ok(())
+    });
+    report.limitation(
+        "1409BCC70 omits the codename member's +0x10 group key",
+        "CharacterOperatives.codename.group, UnitLeaders.codename.group",
+    );
+    if complete_tables {
+        Ok(())
+    } else {
+        Err(invalid("operative codename table comparison failed"))
+    }
+}
+
+fn codename(
+    report: &mut Report,
+    label: &str,
+    actual: &replay::rows::NameOperands,
+    entry: Option<&installed_content::save::intel::OperativeEntry>,
+) -> bool {
+    let Some(entry) = entry else {
+        report.limitation(
+            "the operative has no saved agency or recruitment entry; captured-only and unsaved holding vectors cannot certify its codename",
+            label,
+        );
+        return false;
+    };
+    let Some(expected) = &entry.codename else {
+        report.difference(label, "present", "absent");
+        return true;
+    };
+    report.scalar_checks += 4;
+    equal(report, format!("{label} type"), actual.kind, expected.kind);
+    equal(
+        report,
+        format!("{label} name_order"),
+        actual.order,
+        expected.order.unwrap_or(0),
+    );
+    equal(
+        report,
+        format!("{label} is_name_ordered"),
+        actual.ordered != 0,
+        expected.ordered.unwrap_or(true),
+    );
+    equal(
+        report,
+        format!("{label} override_set_programmatically"),
+        actual.programmatic != 0,
+        expected.programmatic.unwrap_or(false),
+    );
+    if actual.programmatic == 0 || !actual.custom.is_empty() {
+        optional_text(
+            report,
+            &format!("{label} override"),
+            &actual.custom,
+            expected.custom.as_deref(),
+        );
+    } else {
+        equal(
+            report,
+            format!("{label} override"),
+            actual.custom.as_slice(),
+            b"".as_slice(),
+        );
+        report.limitation(
+            "1409B5640 hides a programmatic override for a resolved type-two group; the save retains +0x88 regardless, so the omitted displayed bytes cannot certify the stored override",
+            label,
+        );
+    }
+    true
 }
 
 fn compare_leaders(

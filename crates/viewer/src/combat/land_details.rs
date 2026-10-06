@@ -359,13 +359,33 @@ pub(super) fn total_width(
     width.wrapping_add(extra.wrapping_mul(100_000).wrapping_mul(support) / 100_000)
 }
 
+/// Border vf26 1413D6800 uses the configured base alone, with wrapped
+/// signed multiplication; terrain and attack directions are not operands.
+fn border_width(detail: &LandCombatDetailsRow) -> Result<i64, String> {
+    let base = detail
+        .border_war
+        .require("LandCombatDetails.border_war")?
+        .as_ref()
+        .ok_or_else(|| {
+            "LandCombatDetails.border_war is absent for the border combat (1413D6800)".to_owned()
+        })?
+        .combat_width
+        .require("LandBorderWarInputs.combat_width")?;
+    Ok(detail
+        .width_factor
+        .wrapping_add(100_000)
+        .wrapping_mul(*base)
+        / 100_000)
+}
+
 fn width_badge(
+    detail: &LandCombatDetailsRow,
     border_war: Option<bool>,
     ordinary: impl FnOnce() -> Result<i64, String>,
 ) -> Result<String, String> {
     // vf26: border 1413D6800 reads +0xD8, unlike terrain/directions@141298D50.
     match border_war {
-        Some(true) => Err("CLandBorderWarCombat configured width +0xD8 (i64 fixed5) is unrecorded; 1413D6800 multiplies it by 1 + LandCombatDetails.width_factor, independently of terrain and attack directions".into()),
+        Some(true) => border_width(detail).map(|width| (width / 100_000).to_string()),
         Some(false) => ordinary().map(|width| (width / 100_000).to_string()),
         None => Err("LandCombatModifiers lacks the combat class, so its native width getter (141298D50/1413D6800) is unknown".into()),
     }
@@ -511,37 +531,41 @@ pub(super) fn bind(
         return Ok(());
     };
     let modifiers = rows::<tables::LandCombatModifiers>(frame)?;
-    let total = width_badge(super::details::border_war(modifiers.rows(), id), || {
-        let movement: BTreeMap<_, _> = rows::<tables::DivisionMovement>(frame)
-            .map_err(|error| error.to_string())?
-            .rows()
-            .iter()
-            .map(|row| (row.division, row.source))
-            .collect();
-        let widths = document
-            .counters
-            .combat_terrain
-            .get(&detail.province)
-            .and_then(|terrain| document.counters.combat_widths(terrain));
-        let directions = direction_count(
-            &detail.sides[0].committed,
-            &divisions,
-            detail.province,
-            &movement,
-        );
-        match widths {
-            Some(&widths) => match directions {
-                Ok(count) => Ok(total_width(detail, widths, count)),
-                // Without a support width the direction count cannot matter.
-                Err(_) if widths[1] == 0 => Ok(total_width(detail, widths, 0)),
-                Err(reason) => Err(format!("141298E00 direction count is unknown ({reason})")),
-            },
-            None => Err(format!(
-                "province {} has no terrain category in the content",
-                detail.province
-            )),
-        }
-    })
+    let total = width_badge(
+        detail,
+        super::details::border_war(modifiers.rows(), id),
+        || {
+            let movement: BTreeMap<_, _> = rows::<tables::DivisionMovement>(frame)
+                .map_err(|error| error.to_string())?
+                .rows()
+                .iter()
+                .map(|row| (row.division, row.source))
+                .collect();
+            let widths = document
+                .counters
+                .combat_terrain
+                .get(&detail.province)
+                .and_then(|terrain| document.counters.combat_widths(terrain));
+            let directions = direction_count(
+                &detail.sides[0].committed,
+                &divisions,
+                detail.province,
+                &movement,
+            );
+            match widths {
+                Some(&widths) => match directions {
+                    Ok(count) => Ok(total_width(detail, widths, count)),
+                    // Without a support width the direction count cannot matter.
+                    Err(_) if widths[1] == 0 => Ok(total_width(detail, widths, 0)),
+                    Err(reason) => Err(format!("141298E00 direction count is unknown ({reason})")),
+                },
+                None => Err(format!(
+                    "province {} has no terrain category in the content",
+                    detail.province
+                )),
+            }
+        },
+    )
     .map_err(|why| format!("Land combat {id} total width is hidden: {why}."));
     out.bind("combat_width", TEXT, total);
     let conditions = conditions(frame)?;

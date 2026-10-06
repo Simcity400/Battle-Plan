@@ -64,6 +64,7 @@ fn meta_uses_native_reader_and_case_sensitive_parameter_substitution() {
     *fixture.frame.tables[replay::rows::TableId::ScriptVariables.index()] =
         replay::frame::TableView::Complete(replay::rows::TableRows::ScriptVariables(vec![
             replay::rows::ScriptVariablesRow {
+                seed: replay::rows::Recorded::Value(None),
                 scope_kind: 1,
                 scope_id: 100,
                 entries: Vec::new(),
@@ -116,6 +117,7 @@ fn array_selectors_decode_in_order_and_loop_keeps_links_with_default_seed() {
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
+            seed: replay::rows::Recorded::Value(None),
             scope_kind: 1,
             scope_id: 100,
             entries: vec![
@@ -167,6 +169,7 @@ fn random_list_maximum_weight_uses_native_invalid_chance_sentinel() {
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
+            seed: replay::rows::Recorded::Value(None),
             scope_kind: 1,
             scope_id: 100,
             entries: vec![
@@ -275,6 +278,7 @@ fn random_array_probe_recurses_through_its_children() {
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
+            seed: replay::rows::Recorded::Value(None),
             scope_kind: 1,
             scope_id: 200,
             entries: vec![

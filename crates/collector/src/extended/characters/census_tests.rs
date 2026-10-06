@@ -33,7 +33,7 @@ const STRIDES: [(usize, usize); 11] = [
     (LEADER_ROLE, 0x20),
     (ADVISOR_HEAD, 0x40),
     (ADVISOR_NODE, 0x60),
-    (ADVISOR_ROLE, 0x100),
+    (ADVISOR_ROLE, 0x400),
     // A CArmyLeader reaches past +0x1059 (its captured byte).
     (UNIT, 0x2000),
     (TRAITS, 0x40),
@@ -231,7 +231,7 @@ impl World {
                 );
                 window.pointer(
                     object + character_advisor_node::ADVISOR,
-                    ADVISOR_ROLE + index * 0x100,
+                    ADVISOR_ROLE + index * 0x400,
                 );
             }
             ADVISOR_ROLE if self.advisor(index) => {
@@ -700,7 +700,8 @@ fn check(world: &World, captured: &Captured, active: [bool; 6]) {
 
 fn advisor_cache(world: &World, loan: Option<census::Admitted<'_>>) -> advisors::Cache {
     let ctx = context(PART_MASKS[2]);
-    let mut cache = advisors::Cache::new();
+    let demand = cadvisor::modifier_demand(world, MODULE, GAME_STATE).unwrap();
+    let mut cache = advisors::Cache::with_modifier_demand(demand);
     for _ in 0..4 {
         cache.capture(world, ctx, &Quiet, loan);
         if cache.needs_growth() {
@@ -913,7 +914,7 @@ fn census_roles_match_the_independent_walk_at_every_fault_and_broken_map() {
         LEADER_NODE + 10 * 0x40 + character_leader_node::IDEOLOGY,
         LEADER_ROLE + 15 * 0x20,
         ADVISOR_NODE + 43 * 0x60 + character_advisor_node::KEY_HASH,
-        ADVISOR_ROLE + 3 * 0x100 + cadvisor::SLOT,
+        ADVISOR_ROLE + 3 * 0x400 + cadvisor::SLOT,
         UNIT + 5 * 0x2000 + cunit_leader::TRAIT_DATA,
         UNIT + 9 * 0x2000 + cunit_leader::TRAIT_EXPERIENCE_DATA,
         TRAITS + 13 * 0x40,
@@ -1096,7 +1097,8 @@ fn census_advisor_cache_keeps_reuse_verification_and_fresh_countries() {
     let fresh = |world: &World| typed(world, 2);
     let owner = roster(&world);
     let loan = owner.role_census().unwrap();
-    let mut cache = advisors::Cache::new();
+    let demand = cadvisor::modifier_demand(&world, MODULE, GAME_STATE).unwrap();
+    let mut cache = advisors::Cache::with_modifier_demand(demand);
     cache.capture(&world, ctx, &Quiet, loan.admitted(MODULE, GAME_STATE));
     assert_eq!(cache.counts.planned, 0);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
@@ -1104,7 +1106,8 @@ fn census_advisor_cache_keeps_reuse_verification_and_fresh_countries() {
     // A quiet, unchanged census certifies both sections in one execution each.
     let counting = Counting::new(&world);
     cache.capture(&counting, ctx, &Quiet, loan.admitted(MODULE, GAME_STATE));
-    assert_eq!((cache.counts.planned, counting.calls.get()), (2, 2));
+    assert_eq!(cache.counts.planned, 2);
+    assert_eq!(counting.calls.get(), 2 + demand.rows);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
     cache.prepare();
     // A changed country comes from the current census, never the entry.

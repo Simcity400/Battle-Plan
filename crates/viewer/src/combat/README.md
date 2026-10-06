@@ -46,7 +46,9 @@ Combat hovers reject transparent text and follow graphical attach order
 (`1422D8240`, `142226BD0`). Authored button shortcuts append native keycaps and
 use the normal show delay (`1402A2810`, `1402A4080`). Naval header skills use
 recorded component values and retained definitions (`141DF4270`, `140AD9010`);
-trait hovers are refused by name and counted until timed traits are recorded.
+trait hovers share the land reader and use recorded timed traits for live and
+result commanders (`141C5F730`, `140C0B3C0`, `140C07810`). A historical timed-trait
+gap refuses only the trait hover by field name and counts it.
 
 Unseen combat icons retain established frames. Without history, the owner ruling
 (2026-10-06) draws the land frame child's authored initial value (`CIconType+0x134`,

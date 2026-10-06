@@ -12,8 +12,13 @@ use engine::allocation;
 pub(crate) trait Value: Sized {
     /// Lower bound for every encoding of this type, including absent/empty values.
     const MINIMUM_ENCODED_BYTES: usize;
+    #[cfg(test)]
+    const STRUCT_FIELDS: usize = 0;
 
     fn encoded_bytes(&self) -> io::Result<usize>;
+    fn recorded_bytes(&self) -> io::Result<usize> {
+        Value::encoded_bytes(self)
+    }
     fn encoded_many_bytes(values: &[Self]) -> io::Result<usize> {
         values.iter().try_fold(0, |size, value| {
             allocation::add(size, Value::encoded_bytes(value)?)
@@ -22,10 +27,14 @@ pub(crate) trait Value: Sized {
     fn try_clone(&self) -> io::Result<Self>;
     fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()>;
     fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
-        allocation::reserve(output, self.encoded_bytes()?)?;
+        allocation::reserve(output, Value::encoded_bytes(self)?)?;
         self.encode_reserved(output)
     }
     fn decode(input: &mut Decoder<'_>) -> io::Result<Self>;
+    fn not_recorded() -> io::Result<Self> {
+        Err(invalid("uncatalogued absent nested field"))
+    }
+    fn visit_field_gaps(&self, _visit: &mut dyn FnMut(&'static str)) {}
 
     /// The default handles structured elements; byte values override it to copy once.
     fn encode_many(values: &[Self], output: &mut Vec<u8>) -> io::Result<()> {
@@ -46,16 +55,59 @@ pub(crate) trait Value: Sized {
     }
 }
 
+impl<T: Value> Value for crate::rows::Recorded<T> {
+    fn recorded_bytes(&self) -> io::Result<usize> {
+        match self {
+            Self::Value(value) => Value::recorded_bytes(value),
+            Self::NotRecorded => Ok(0),
+        }
+    }
+    const MINIMUM_ENCODED_BYTES: usize = T::MINIMUM_ENCODED_BYTES;
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        match self {
+            Self::Value(value) => Value::encoded_bytes(value),
+            Self::NotRecorded => Err(invalid("nested field not recorded")),
+        }
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        match self {
+            Self::Value(value) => value.try_clone().map(Self::Value),
+            Self::NotRecorded => Ok(Self::NotRecorded),
+        }
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        match self {
+            Self::Value(value) => value.encode_reserved(output),
+            Self::NotRecorded => Err(invalid("nested field not recorded")),
+        }
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        T::decode(input).map(Self::Value)
+    }
+    fn not_recorded() -> io::Result<Self> {
+        Ok(Self::NotRecorded)
+    }
+    fn visit_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
+        if let Self::Value(value) = self {
+            value.visit_field_gaps(visit);
+        }
+    }
+}
+
 /// Object-safe adapter for a borrowed native complex field. Its caller owns any
 /// outer byte-length prefix and can write/fill that prefix around this direct append.
 pub(crate) trait EncodeValue {
     fn encoded_bytes(&self) -> io::Result<usize>;
+    fn recorded_bytes(&self) -> io::Result<usize>;
     fn encode_value(&self, output: &mut Vec<u8>) -> io::Result<()>;
 }
 
 impl<T: Value> EncodeValue for T {
     fn encoded_bytes(&self) -> io::Result<usize> {
         Value::encoded_bytes(self)
+    }
+    fn recorded_bytes(&self) -> io::Result<usize> {
+        Value::recorded_bytes(self)
     }
     fn encode_value(&self, output: &mut Vec<u8>) -> io::Result<()> {
         self.encode(output)
@@ -152,6 +204,9 @@ impl Value for bool {
 }
 
 impl<T: Value> Value for Option<T> {
+    fn recorded_bytes(&self) -> io::Result<usize> {
+        allocation::add(1, self.as_ref().map_or(Ok(0), Value::recorded_bytes)?)
+    }
     const MINIMUM_ENCODED_BYTES: usize = 1;
     fn encoded_bytes(&self) -> io::Result<usize> {
         allocation::add(
@@ -164,6 +219,11 @@ impl<T: Value> Value for Option<T> {
     }
     fn try_clone(&self) -> io::Result<Self> {
         self.as_ref().map(Value::try_clone).transpose()
+    }
+    fn visit_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
+        if let Some(value) = self {
+            value.visit_field_gaps(visit);
+        }
     }
     fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
         match self {
@@ -186,6 +246,11 @@ impl<T: Value> Value for Option<T> {
 }
 
 impl<T: Value> Value for Vec<T> {
+    fn recorded_bytes(&self) -> io::Result<usize> {
+        self.iter().try_fold(4, |size, value| {
+            allocation::add(size, Value::recorded_bytes(value)?)
+        })
+    }
     const MINIMUM_ENCODED_BYTES: usize = 4;
     fn encoded_bytes(&self) -> io::Result<usize> {
         allocation::add(4, T::encoded_many_bytes(self)?)
@@ -196,6 +261,11 @@ impl<T: Value> Value for Vec<T> {
             values.push(Value::try_clone(value)?);
         }
         Ok(values)
+    }
+    fn visit_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
+        for value in self {
+            value.visit_field_gaps(visit);
+        }
     }
     fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
         let count = u32::try_from(self.len())
@@ -218,6 +288,16 @@ impl<T: Value> Value for Vec<T> {
 }
 
 impl<T: Value, const N: usize> Value for [T; N] {
+    fn recorded_bytes(&self) -> io::Result<usize> {
+        self.iter().try_fold(0, |size, value| {
+            allocation::add(size, Value::recorded_bytes(value)?)
+        })
+    }
+    fn visit_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
+        for value in self {
+            value.visit_field_gaps(visit);
+        }
+    }
     const MINIMUM_ENCODED_BYTES: usize = T::MINIMUM_ENCODED_BYTES.saturating_mul(N);
 
     fn encoded_bytes(&self) -> io::Result<usize> {
@@ -248,31 +328,74 @@ impl<T: Value, const N: usize> Value for [T; N] {
     }
 }
 
+/// Nested values use their own catalog, independent of the parent's field count.
+pub(crate) fn decode_appended<T: Value>(
+    record: crate::rows::compatibility::RecordKind,
+    name: &str,
+    input: &mut Decoder<'_>,
+) -> io::Result<T> {
+    let field = record
+        .last_change()
+        .appended
+        .iter()
+        .find(|field| field.name == name)
+        .ok_or_else(|| invalid("uncatalogued nested field"))?;
+    if input.format < field.introduced {
+        T::not_recorded()
+    } else {
+        T::decode(input)
+    }
+}
+
 /// Implement a declared struct's wire field order without encoding its layout.
 /// Example: value_struct!(Entry { name: Vec<u8>, amount: i64 });
 macro_rules! value_struct {
-    ($ty:ty { $($field:ident : $field_ty:ty),* $(,)? }) => {
+    ($ty:ty { $($field:ident : $field_ty:ty),* $(,)? } $(appended $record:ident { $($appended:ident : $appended_ty:ty),* $(,)? })?) => {
         impl $crate::value::Value for $ty {
+            #[cfg(test)]
+            const STRUCT_FIELDS: usize = [$(stringify!($field)),*].len()
+                $(+ [$(stringify!($appended)),*].len())?;
             const MINIMUM_ENCODED_BYTES: usize = 0_usize
                 $(.saturating_add(<$field_ty as $crate::value::Value>::MINIMUM_ENCODED_BYTES))*;
 
+            fn recorded_bytes(&self) -> std::io::Result<usize> {
+                let size = 0;
+                $(let size = engine::allocation::add(size, <$field_ty as $crate::value::Value>::recorded_bytes(&self.$field)?)?;)*
+                $($(let size = engine::allocation::add(size, <$appended_ty as $crate::value::Value>::recorded_bytes(&self.$appended)?)?;)*)?
+                Ok(size)
+            }
             fn encoded_bytes(&self) -> std::io::Result<usize> {
                 let size = 0;
                 $(let size = engine::allocation::add(size, <$field_ty as $crate::value::Value>::encoded_bytes(&self.$field)?)?;)*
+                $($(let size = engine::allocation::add(size, <$appended_ty as $crate::value::Value>::encoded_bytes(&self.$appended)?)?;)*)?
                 Ok(size)
             }
             fn try_clone(&self) -> std::io::Result<Self> {
-                Ok(Self { $($field: <$field_ty as $crate::value::Value>::try_clone(&self.$field)?,)* })
+                Ok(Self { $($field: <$field_ty as $crate::value::Value>::try_clone(&self.$field)?,)*
+                    $($($appended: <$appended_ty as $crate::value::Value>::try_clone(&self.$appended)?,)*)? })
             }
             fn encode_reserved(&self, output: &mut Vec<u8>) -> std::io::Result<()> {
                 $(<$field_ty as $crate::value::Value>::encode_reserved(&self.$field, output)?;)*
+                $($(<$appended_ty as $crate::value::Value>::encode_reserved(&self.$appended, output)?;)*)?
                 Ok(())
             }
 
             fn decode(input: &mut $crate::codec::Decoder<'_>) -> std::io::Result<Self> {
                 Ok(Self {
                     $($field: <$field_ty as $crate::value::Value>::decode(input)?,)*
+                    $($($appended: $crate::value::decode_appended::<$appended_ty>(
+                        $crate::rows::compatibility::RecordKind::$record,
+                        concat!(stringify!($record), ".", stringify!($appended)), input,
+                    )?,)*)?
                 })
+            }
+            fn visit_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
+                $(<$field_ty as $crate::value::Value>::visit_field_gaps(&self.$field, visit);)*
+                $($(if matches!(self.$appended, $crate::rows::Recorded::NotRecorded) {
+                    visit(concat!(stringify!($record), ".", stringify!($appended)));
+                } else {
+                    <$appended_ty as $crate::value::Value>::visit_field_gaps(&self.$appended, visit);
+                })*)?
             }
         }
     };

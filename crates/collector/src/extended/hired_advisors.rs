@@ -18,12 +18,13 @@ use replay::{
     rows::{AdvisorTokenRow, CountryCharacterRow, HiredAdvisorRow, TableId, tables},
 };
 
-pub const N: usize = 4;
+pub const N: usize = 5;
 pub const TABLES: [TableId; N] = [
     TableId::HiredAdvisors,
     TableId::CountryCharacters,
     TableId::AdvisorTokens,
     TableId::CountryRetiredCharacters,
+    TableId::AvailableAdvisors,
 ];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] =
     &[("active and retired character records", 1, &[1, 3])];
@@ -42,6 +43,8 @@ pub struct Capacities {
     tokens: usize,
     token_bytes: usize,
     retired: usize,
+    available: usize,
+    available_bytes: usize,
 }
 impl Default for Capacities {
     fn default() -> Self {
@@ -52,6 +55,8 @@ impl Default for Capacities {
             tokens: 256,
             token_bytes: 256 * BYTES_PER_ADVISOR,
             retired: 256,
+            available: 0,
+            available_bytes: 0,
         }
     }
 }
@@ -81,6 +86,12 @@ impl Capacities {
         raise(&mut self.tokens, rows(tokens, 1));
         raise(&mut self.token_bytes, rows(bytes, 1));
     }
+
+    pub(crate) fn raise_for_available_advisors(&mut self, count: usize, bytes: usize) {
+        use crate::country_scale::{raise, rows};
+        raise(&mut self.available, rows(count, 1));
+        raise(&mut self.available_bytes, rows(bytes, 1));
+    }
 }
 
 pub struct Captured {
@@ -90,6 +101,8 @@ pub struct Captured {
     tokens: CaptureRows<advisor_tokens::Row>,
     token_bytes: Arena<u8>,
     retired: CaptureRows<native::ActiveRow>,
+    available: CaptureRows<native::Row>,
+    available_bytes: Arena<u8>,
 }
 
 impl Captured {
@@ -102,6 +115,8 @@ impl Captured {
             .fail(super::failed_capture(TABLES[2], hour, force_full, reason));
         self.retired
             .fail(super::failed_capture(TABLES[3], hour, force_full, reason));
+        self.available
+            .fail(super::failed_capture(TABLES[4], hour, force_full, reason));
     }
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
@@ -112,6 +127,8 @@ impl Captured {
             tokens: 0,
             token_bytes: 0,
             retired: 0,
+            available: 0,
+            available_bytes: 0,
         })
     }
     pub fn with_capacities(capacity: &Capacities) -> Self {
@@ -122,6 +139,8 @@ impl Captured {
             tokens: CaptureRows::new(capacity.tokens),
             token_bytes: Arena::new(capacity.token_bytes),
             retired: CaptureRows::new(capacity.retired),
+            available: CaptureRows::new(capacity.available),
+            available_bytes: Arena::new(capacity.available_bytes),
         }
     }
     pub fn reset(&mut self) {
@@ -131,6 +150,8 @@ impl Captured {
         self.tokens.reset();
         self.token_bytes.reset();
         self.retired.reset();
+        self.available.reset();
+        self.available_bytes.reset();
     }
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
@@ -139,6 +160,8 @@ impl Captured {
             + self.tokens.allocated_bytes()
             + self.token_bytes.allocated_bytes()
             + self.retired.allocated_bytes()
+            + self.available.allocated_bytes()
+            + self.available_bytes.allocated_bytes()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.rows.grow(&mut capacity.rows);
@@ -149,6 +172,8 @@ impl Captured {
         // The token walk reports every key's bytes, read or not.
         self.token_bytes.grow(&mut capacity.token_bytes);
         self.retired.grow(&mut capacity.retired);
+        self.available.grow(&mut capacity.available);
+        self.available_bytes.grow(&mut capacity.available_bytes);
     }
     pub fn capture(
         &mut self,
@@ -231,6 +256,25 @@ impl Captured {
                 reason: SKIPPED_REASON,
             };
         }
+        if should_walk(TABLES[4], hour, force_full) {
+            let _reads = crate::read_accounting::table(TABLES[4]);
+            let started = qpc();
+            let walk = native::walk_available(
+                memory,
+                base,
+                game_state,
+                &mut self.available.rows,
+                &mut self.available_bytes.first,
+            );
+            self.available.outcome = walk.outcome;
+            self.available_bytes.len = walk.bytes_len;
+            self.available_bytes.required = walk.required_bytes;
+            ticks[4] = qpc().saturating_sub(started).max(0) as u64;
+        } else {
+            self.available.outcome = Outcome::Unavailable {
+                reason: SKIPPED_REASON,
+            };
+        }
         ticks
     }
     pub fn outcomes(&self) -> [Outcome; N] {
@@ -239,6 +283,7 @@ impl Captured {
             self.active.outcome,
             self.tokens.outcome,
             self.retired.outcome,
+            self.available.outcome,
         ]
     }
     pub fn tables(&self) -> [TableView; N] {
@@ -256,7 +301,32 @@ impl Captured {
                 &self.retired.rows,
                 record,
             ),
+            self.available_table(),
         ]
+    }
+    fn available_table(&self) -> TableView {
+        let Some(bytes) = self.available_bytes.first.get(..self.available_bytes.len) else {
+            return unavailable("available advisor string arena invalid");
+        };
+        let Some(rows) = self.available.rows.get(..self.available.outcome.len()) else {
+            return unavailable("available advisor row count invalid");
+        };
+        let text = |row: &native::Row| {
+            row.idea_start
+                .checked_add(row.idea_len)
+                .and_then(|end| bytes.get(row.idea_start..end))
+        };
+        if rows.iter().any(|row| text(row).is_none()) {
+            return unavailable("available advisor idea outside captured arena");
+        }
+        table::<tables::AvailableAdvisors, _>(self.available.outcome, rows, |row| {
+            replay::rows::AvailableAdvisorRow {
+                country: row.country,
+                ordinal: row.ordinal,
+                character: row.character,
+                idea: owned_vec(copy_vec(text(row).unwrap())),
+            }
+        })
     }
     /// The keys sorted by their bytes, numbered in that order: the set's
     /// bucket order follows hashes and insertion history, not a meaning.
@@ -333,6 +403,10 @@ mod tests {
         let mut captured = Captured::with_capacities(&Capacities::default());
         for hour in 0..24 {
             captured.capture(&memory, 0, 0x1000, hour, false);
+            assert!(matches!(
+                captured.outcomes()[4],
+                Outcome::Unavailable { reason } if reason != SKIPPED_REASON
+            ));
             let skipped = captured.outcomes()[0]
                 == Outcome::Unavailable {
                     reason: SKIPPED_REASON,
@@ -368,6 +442,8 @@ mod tests {
             tokens: 0,
             token_bytes: 0,
             retired: 0,
+            available: 0,
+            available_bytes: 0,
         });
         captured.bytes.first[..12].copy_from_slice(b"idea\0slotabc");
         captured.bytes.len = 12;
@@ -390,7 +466,13 @@ mod tests {
             slot_len: 0,
         };
         captured.rows.outcome = Outcome::Rows { len: 2 };
-        let [TableView::Complete(TableRows::HiredAdvisors(rows)), _, _, _] = captured.tables()
+        let [
+            TableView::Complete(TableRows::HiredAdvisors(rows)),
+            _,
+            _,
+            _,
+            _,
+        ] = captured.tables()
         else {
             panic!("complete hired advisors");
         };
@@ -445,6 +527,7 @@ mod tests {
             TableView::Complete(TableRows::CountryCharacters(rows)),
             _,
             TableView::Complete(TableRows::CountryRetiredCharacters(retired)),
+            _,
         ] = captured.tables()
         else {
             panic!("complete country characters");
@@ -491,6 +574,9 @@ mod tests {
                 },
                 Outcome::Unavailable {
                     reason: "job failed"
+                },
+                Outcome::Unavailable {
+                    reason: "job failed"
                 }
             ]
         );
@@ -505,7 +591,13 @@ mod tests {
             captured.tokens.rows[index] = advisor_tokens::Row { start, len };
         }
         captured.tokens.outcome = Outcome::Rows { len: 3 };
-        let [_, _, TableView::Complete(TableRows::AdvisorTokens(rows)), _] = captured.tables()
+        let [
+            _,
+            _,
+            TableView::Complete(TableRows::AdvisorTokens(rows)),
+            _,
+            _,
+        ] = captured.tables()
         else {
             panic!("complete advisor tokens");
         };
@@ -546,5 +638,46 @@ mod tests {
         let raised = capacity;
         capacity.raise_for_character_records(10, 1);
         assert!(capacity == raised);
+    }
+
+    #[test]
+    fn available_advisors_are_lean_hourly_rows_sized_for_5000_countries() {
+        let mut capacity = Capacities::default();
+        capacity.raise_for_available_advisors(5_000, 20_000);
+        assert!(capacity.available >= 5_000);
+        assert!(capacity.available_bytes >= 20_000);
+        let mut captured = Captured::with_capacities(&capacity);
+        for index in 0..5_000 {
+            captured.available.rows[index] = native::Row {
+                country: index as u32 + 1,
+                character: index as u32 + 10_000,
+                idea_start: index * 4,
+                idea_len: 4,
+                // This inaccessible slot must not affect the lean projection.
+                slot_start: usize::MAX,
+                slot_len: 1,
+                ..Default::default()
+            };
+            captured.available_bytes.first[index * 4..index * 4 + 4].copy_from_slice(b"idea");
+        }
+        captured.available.outcome = Outcome::Rows { len: 5_000 };
+        captured.available_bytes.len = 20_000;
+        let TableView::Complete(TableRows::AvailableAdvisors(rows)) = captured.available_table()
+        else {
+            panic!("complete available advisors");
+        };
+        assert_eq!(rows.len(), 5_000);
+        assert_eq!(rows[4_999].character, 14_999);
+        assert_eq!(rows[4_999].idea, b"idea");
+        captured.available.rows[4_999].idea_len = usize::MAX;
+        assert!(matches!(
+            captured.available_table(),
+            TableView::Unavailable { .. }
+        ));
+        captured.available.outcome = Outcome::Rows { len: 0 };
+        assert!(matches!(
+            captured.available_table(),
+            TableView::Complete(TableRows::AvailableAdvisors(rows)) if rows.is_empty()
+        ));
     }
 }

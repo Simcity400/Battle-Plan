@@ -9,6 +9,9 @@ pub struct LandDetails {
     pub sides: [LandSide; 2],
     /// Present only for the border-war serializer 1413DAC80.
     pub transfer_state: Option<bool>,
+    /// Border serializer 1413DAC80 always writes the signed fixed5 primary
+    /// +0xD8 as `combat_width` (token 0x2CCF), including zero.
+    pub combat_width: Option<Decimal>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LandSide {
@@ -112,6 +115,11 @@ pub(super) fn land(items: &[Item], border_war: bool) -> io::Result<LandDetails> 
     Ok(LandDetails {
         border_war,
         terrain: optional_bytes(items, b"terrain")?,
+        combat_width: if border_war {
+            decimal(items, b"combat_width")?
+        } else {
+            None
+        },
         transfer_state: optional_bytes(items, b"change_state_after_war")?
             .map(|value| match value.as_slice() {
                 b"yes" => Ok(true),

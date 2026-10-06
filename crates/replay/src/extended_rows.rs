@@ -2,6 +2,21 @@
 use super::*;
 use crate::value::value_struct;
 
+/// CNameGroupMember generator operands (1409B5640 / 1409B4C40), never its +0x60 cache.
+/// `custom` keeps +0x88 bytes shown by the generator, including its stored
+/// programmatic fallback for a null group; `group` is a content key.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct NameOperands {
+    pub kind: i32,
+    pub order: i32,
+    pub ordered: u8,
+    pub programmatic: u8,
+    pub custom: Vec<u8>,
+    pub group: Vec<u8>,
+}
+value_struct!(NameOperands { kind: i32, order: i32, ordered: u8, programmatic: u8, custom: Vec<u8>, group: Vec<u8> });
+opaque_value!(Option<NameOperands>);
+
 pub use air::*;
 pub use characters_intelligence::*;
 pub use economy_construction::*;
@@ -51,6 +66,8 @@ mod country_appearance_tests {
 }
 // Variable records borrow their typed values during encoding and allocate only on decode.
 opaque_value!(Option<Vec<u8>>);
+opaque_value!(Option<Vec<u32>>);
+opaque_value!(Option<Vec<u64>>);
 opaque_value!(Vec<i64>);
 opaque_value!(Vec<i32>);
 opaque_value!(Option<Option<i32>>);

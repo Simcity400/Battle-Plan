@@ -54,7 +54,10 @@ fn advisor_templates_and_idea_notes_share_one_read() {
     .unwrap();
     let content = scripted.effects().unwrap();
     let warning = "1 ideas are defined more than once; the last definition in load order is used.";
-    assert_eq!(content.notes.iter().filter(|note| *note == warning).count(), 1);
+    assert_eq!(
+        content.notes.iter().filter(|note| *note == warning).count(),
+        1
+    );
     for catalogue_name in [
         "Ideology synthetic_ideology",
         "terrain category synthetic_terrain",
@@ -88,21 +91,33 @@ fn advisor_templates_and_idea_notes_share_one_read() {
     assert!(std::ptr::eq(content, scripted.effects().unwrap()));
     let templates = content.advisor_templates.as_ref().unwrap();
     assert_eq!(
-        templates.advisor("synthetic_advisor").unwrap().unwrap().slot,
+        templates
+            .advisor("synthetic_advisor")
+            .unwrap()
+            .unwrap()
+            .slot,
         "synthetic_slot"
     );
     assert_eq!(
         templates.name("synthetic_advisor").unwrap(),
-        Some(&installed_content::characters::Authored::Asset("synthetic_name".to_owned()))
+        Some(&installed_content::characters::Authored::Asset(
+            "synthetic_name".to_owned()
+        ))
     );
 }
 
 #[test]
 fn effect_catalogues_remain_available_without_map_inputs() {
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
-        ("common/defines/test.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}"),
+        (
+            "common/defines/test.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+        ),
         ("common/ideologies/test.txt", "ideologies={synthetic={}}"),
-        ("common/terrain/test.txt", "categories={synthetic={movement_cost=2}}"),
+        (
+            "common/terrain/test.txt",
+            "categories={synthetic={movement_cost=2}}",
+        ),
     ]);
     let scripted = catalogue.scripted_content().unwrap();
     let environment = scripted.environment().unwrap();
@@ -544,6 +559,7 @@ fn native_country_target_capital_and_random_keep_country_zero() {
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
             scope_kind: 1,
             scope_id: 100,
+            seed: replay::rows::Recorded::Value(None),
             entries: vec![ScriptVariableEntry {
                 name: b"capital".to_vec(),
                 value_raw: 200 * 100_000,
@@ -1064,6 +1080,7 @@ fn numeric_operands_use_recorded_variables_and_state_values_remain_unvalidated()
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
             scope_kind: 1,
             scope_id: 100,
+            seed: replay::rows::Recorded::Value(None),
             entries: vec![ScriptVariableEntry {
                 name: b"bonus".to_vec(),
                 value_raw: -123_456,

@@ -82,6 +82,10 @@ pub struct OperativeRow {
     pub leader: Option<Leader>,
     pub start: usize,
     pub len: usize,
+    pub name: Option<crate::cname_group_member::Span>,
+    pub codename: Option<crate::cname_group_member::Inputs>,
+    pub name_reason: Option<&'static str>,
+    pub codename_reason: Option<&'static str>,
 }
 
 /// Caller-owned storage; the walk never allocates.
@@ -90,6 +94,7 @@ pub struct Buffers<'a> {
     pub trait_values: &'a mut [Trait],
     pub operatives: &'a mut [OperativeRow],
     pub definitions: &'a mut [u32],
+    pub bytes: &'a mut [u8],
 }
 
 /// Outcomes of both tables. Rows that do not fit are counted (a row whose
@@ -101,6 +106,8 @@ pub struct Walk {
     pub operatives: Outcome,
     pub required_trait_values: usize,
     pub required_definitions: usize,
+    pub bytes_len: usize,
+    pub required_bytes: usize,
 }
 
 /// Roster pointers per page.
@@ -233,6 +240,11 @@ pub fn walk(memory: &impl Memory, base: usize, game_state: usize, buffers: Buffe
     let mut traits = Table::new(buffers.traits, buffers.trait_values);
     let mut operatives = Table::new(buffers.operatives, buffers.definitions);
     let mut resolver = creference_registry::HeaderResolver::default();
+    let mut names = crate::cname_group_member::Names {
+        bytes: buffers.bytes,
+        len: 0,
+        required: 0,
+    };
     let mut page_pointers = [0_usize; PAGE];
     let mut page_records = [0_u8; PAGE * ROW];
     let mut page_heads = [0_usize; PAGE * MAPS.len()];
@@ -297,7 +309,15 @@ pub fn walk(memory: &impl Memory, base: usize, game_state: usize, buffers: Buffe
                     let reference = field(ccharacter::OPERATIVE);
                     if reference != 0 {
                         operatives.run(|table| {
-                            operative(memory, base, &mut resolver, character, reference, table)
+                            operative(
+                                memory,
+                                base,
+                                &mut resolver,
+                                character,
+                                reference,
+                                table,
+                                &mut names,
+                            )
                         });
                     }
                 }
@@ -312,6 +332,8 @@ pub fn walk(memory: &impl Memory, base: usize, game_state: usize, buffers: Buffe
         operatives: operatives.outcome(shared),
         required_trait_values: traits.required,
         required_definitions: operatives.required,
+        bytes_len: names.len,
+        required_bytes: names.required,
     }
 }
 
@@ -508,6 +530,7 @@ fn operative(
     character: u32,
     reference: u64,
     table: &mut Table<'_, OperativeRow, u32>,
+    names: &mut crate::cname_group_member::Names<'_>,
 ) -> Result<(), &'static str> {
     let Some(object) = resolver.resolve(memory, base, reference)? else {
         if let Some(start) = table.reserve(0)? {
@@ -517,11 +540,15 @@ fn operative(
                 leader: None,
                 start,
                 len: 0,
+                name: None,
+                codename: None,
+                name_reason: None,
+                codename_reason: None,
             });
         }
         return Ok(());
     };
-    cunit_leader::identity(memory, base, object)?;
+    let (kind, _, _) = cunit_leader::identity(memory, base, object)?;
     let mut owner = [0; 4];
     let mut traits = [0; 16];
     let mut skill = [0; 8];
@@ -563,6 +590,35 @@ fn operative(
     };
     let array = Array::from_header(traits, 8).ok_or("operative trait array invalid")?;
     let len = array.count as usize;
+    let mut pending = crate::cname_group_member::Names {
+        bytes: &mut *names.bytes,
+        len: names.len,
+        required: names.required,
+    };
+    let (name, name_reason) = match cunit_leader::read_name(memory, object, &mut pending) {
+        Ok(Some(span)) => (Some(span), None),
+        Ok(None) => (None, Some("operative name byte capacity exceeded")),
+        Err(reason) => (None, Some(reason)),
+    };
+    let category = i32::from_le_bytes(category);
+    let codename_start = pending.len;
+    let (codename, codename_reason) = if cunit_leader::has_codename(kind) {
+        match cunit_leader::read_codename(memory, base, object, &mut pending) {
+            Ok(crate::cname_group_member::Naming::Row(row)) => (Some(row), None),
+            Ok(crate::cname_group_member::Naming::DoesNotFit) => {
+                pending.len = codename_start;
+                (None, Some("operative codename byte capacity exceeded"))
+            }
+            Err(reason) => {
+                pending.len = codename_start;
+                (None, Some(reason))
+            }
+        }
+    } else {
+        (None, None)
+    };
+    let (bytes_len, required_bytes) = (pending.len, pending.required);
+    names.required = required_bytes;
     let Some(start) = table.reserve(len)? else {
         return Ok(());
     };
@@ -587,16 +643,22 @@ fn operative(
             Ok(u32::from_le_bytes(ordinal))
         },
     )?;
+    // Only an admitted old row commits its optional name spans.
+    names.len = bytes_len;
     table.push(OperativeRow {
         character,
         reference,
         leader: Some(Leader {
-            category: i32::from_le_bytes(category),
+            category,
             owner: u32::from_le_bytes(owner),
             skill_level,
         }),
         start,
         len,
+        name,
+        codename,
+        name_reason,
+        codename_reason,
     });
     Ok(())
 }
@@ -648,7 +710,7 @@ mod tests {
     const C: usize = 0x3800;
     const TABLE: usize = 0x8000;
     const ENTRIES: usize = 0x8100;
-    const OPERATIVE: usize = 0x7000;
+    const OPERATIVE: usize = 0xa000;
     const RESOLVED: u64 = (77 << 32) | cunit_leader::REFERENCE_TYPE as u64;
     const DANGLING: u64 = (78 << 32) | cunit_leader::REFERENCE_TYPE as u64;
 
@@ -787,6 +849,19 @@ mod tests {
         m.array(OPERATIVE + cunit_leader::TRAIT_DATA, 0x7100, &[0x7200]);
         m.u64(OPERATIVE + cunit_leader::SKILL, 0x7300);
         m.u32(OPERATIVE + cunit_leader::CATEGORY, 3);
+        m.put(OPERATIVE + cunit_leader::NAME, &[0; 32]);
+        m.put(OPERATIVE + cunit_leader::NAME, b"Alias");
+        m.u64(OPERATIVE + cunit_leader::NAME + 16, 5);
+        m.u64(OPERATIVE + cunit_leader::NAME + 24, 15);
+        let member = OPERATIVE + coperative_leader::CODENAME;
+        m.put(member, &[0; crate::cname_group_member::INPUT_SPAN]);
+        m.u64(member, crate::cname_group_member::VTABLE_RVA as u64);
+        m.u32(member + crate::cname_group_member::TYPE, 2);
+        m.put(member + 0x10, b"GROUP");
+        m.u64(member + 0x20, 5);
+        m.u64(member + 0x28, 15);
+        m.u64(member + 0xa0, 15);
+        m.put(member + 0xa8, &[1]);
         m.u64(0x7200, cunit_leader_trait::VTABLE_RVA as u64);
         m.u32(0x7200 + cunit_leader_trait::ORDINAL, 3);
         m.u64(0x7300, cunit_leader_skill::VTABLE_RVA as u64);
@@ -805,6 +880,7 @@ mod tests {
         let mut values = vec![Trait::default(); 16];
         let mut operatives = vec![OperativeRow::default(); rows];
         let mut definitions = vec![0; 16];
+        let mut bytes = vec![0; 64];
         let walk = walk(
             memory,
             0,
@@ -814,6 +890,7 @@ mod tests {
                 trait_values: &mut values,
                 operatives: &mut operatives,
                 definitions: &mut definitions,
+                bytes: &mut bytes,
             },
         );
         Output {
@@ -882,9 +959,9 @@ mod tests {
                     Some(Leader {
                         category: 3,
                         owner: 9,
-                        skill_level: Some(4)
+                        skill_level: Some(4),
                     }),
-                    vec![3]
+                    vec![3],
                 ),
                 (13, DANGLING, None, vec![]),
             ]
@@ -895,6 +972,87 @@ mod tests {
                 output.walk.required_definitions
             ),
             (4, 1)
+        );
+    }
+
+    #[test]
+    fn resolved_name_and_codename_are_owned_and_dangling_references_stay_absent() {
+        let mut memory = world();
+        let mut rows = [OperativeRow::default(); 2];
+        let mut definitions = [0; 1];
+        let mut bytes = [0; 10];
+        fn capture(
+            memory: &Sparse,
+            rows: &mut [OperativeRow],
+            definitions: &mut [u32],
+            bytes: &mut [u8],
+        ) -> Walk {
+            walk(
+                memory,
+                0,
+                GS,
+                Buffers {
+                    traits: &mut [],
+                    trait_values: &mut [],
+                    operatives: rows,
+                    definitions,
+                    bytes,
+                },
+            )
+        }
+        let result = capture(&memory, &mut rows, &mut definitions, &mut bytes);
+        assert_eq!(result.operatives, Outcome::Rows { len: 2 });
+        assert_eq!((result.required_bytes, result.bytes_len), (10, 10));
+        assert_eq!(rows[0].name, Some((0, 5)));
+        assert_eq!(&bytes[..5], b"Alias");
+        let codename = rows[0].codename.unwrap();
+        assert_eq!((codename.kind, codename.group), (2, (5, 5)));
+        assert_eq!(&bytes[5..], b"GROUP");
+        assert_eq!((rows[1].name, rows[1].codename), (None, None));
+        let before = rows;
+        memory.put(OPERATIVE + coperative_leader::CODENAME + 0x60, &[b'Z'; 32]);
+        capture(&memory, &mut rows, &mut definitions, &mut bytes);
+        assert_eq!(rows, before);
+        let short = capture(&memory, &mut rows, &mut definitions, &mut []);
+        assert_eq!(short.operatives, Outcome::Rows { len: 2 });
+        assert_eq!(short.required_bytes, 10);
+        assert_eq!(
+            (short.bytes_len, rows[0].name, rows[0].codename),
+            (0, None, None)
+        );
+        assert_eq!(rows[0].leader.unwrap().skill_level, Some(4));
+        assert_eq!(&definitions, &[3]);
+        assert_eq!(
+            rows[0].name_reason,
+            Some("operative name byte capacity exceeded")
+        );
+        assert_eq!(
+            rows[0].codename_reason,
+            Some("operative codename byte capacity exceeded")
+        );
+        // A withheld old row must not commit either appended string.
+        let withheld = capture(&memory, &mut [], &mut definitions, &mut bytes);
+        assert_eq!((withheld.bytes_len, withheld.required_bytes), (0, 10));
+        memory.u32(OPERATIVE + cunit_leader::CATEGORY, 0);
+        capture(&memory, &mut rows, &mut definitions, &mut bytes);
+        assert!(rows[0].codename.is_some());
+        memory.u32(OPERATIVE + coperative_leader::CODENAME + 8, 1);
+        let wrong_kind = capture(&memory, &mut rows, &mut definitions, &mut bytes);
+        assert_eq!(wrong_kind.operatives, Outcome::Rows { len: 2 });
+        assert_eq!(rows[0].codename, None);
+        assert_eq!(
+            rows[0].codename_reason,
+            Some("operative codename member is not type two")
+        );
+        memory.u32(OPERATIVE + coperative_leader::CODENAME + 8, 2);
+        memory.u64(OPERATIVE + coperative_leader::CODENAME, 0);
+        assert_eq!(
+            capture(&memory, &mut rows, &mut definitions, &mut bytes).operatives,
+            Outcome::Rows { len: 2 }
+        );
+        assert_eq!(
+            rows[0].codename_reason,
+            Some("division name vtable mismatch")
         );
     }
 

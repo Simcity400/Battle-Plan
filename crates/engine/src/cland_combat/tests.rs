@@ -1675,6 +1675,31 @@ fn bad_objects_fail_the_table_instead_of_producing_a_partial_census() {
 }
 
 #[test]
+fn border_width_fault_stops_before_side_payloads() {
+    let fixture = commander_fixture();
+    let source = detail_source();
+    let image = fixture.memory();
+    let mut memory = Observed::new(&image, &[]);
+    memory.fault = Some(1);
+    let reader = Reader {
+        memory: &memory,
+        base: BASE,
+        provinces: source.provinces,
+    };
+    assert_eq!(
+        super::details::read_border_war(&reader, source, &mut Arenas::new().view()),
+        Err("land combat field unreadable or address overflow")
+    );
+    assert_eq!(
+        memory.reads.borrow().as_slice(),
+        &[
+            (COMBAT + cland_border_war_combat::TRANSFER_STATE, 1),
+            (COMBAT + cland_border_war_combat::COMBAT_WIDTH, 8),
+        ]
+    );
+}
+
+#[test]
 fn border_marker_inputs_keep_stored_country_state_event_bytes_and_inactive_skip() {
     let mut fixture = commander_fixture();
     // Subclass strings occupy the ordinary fixture's list storage at +0x500.
@@ -1718,6 +1743,10 @@ fn border_marker_inputs_keep_stored_country_state_event_bytes_and_inactive_skip(
         (BASE + cland_border_war_combat::BODY_VTABLE_RVA) as u64,
     );
     fixture.0[COMBAT + 0xf0 - STATE] = 9;
+    fixture.u64(
+        COMBAT + cland_border_war_combat::COMBAT_WIDTH,
+        (-1_i64) as u64,
+    );
     for (side, country, state) in [(ATTACK, -7_i32, 19), (DEFEND, 11, 21)] {
         fixture.u64(side, (BASE + cland_border_war_combatant::VTABLE_RVA) as u64);
         fixture.u32(side + 0x4a0, country as u32);
@@ -1748,6 +1777,7 @@ fn border_marker_inputs_keep_stored_country_state_event_bytes_and_inactive_skip(
     .unwrap();
     let border = row.border_war.unwrap();
     assert_eq!(border.transfer_state, 9);
+    assert_eq!(border.combat_width, -1);
     assert_eq!(border.sides[0].country, -7);
     assert_eq!(border.sides[1].state, 21);
     assert_eq!(&arenas.text[border.sides[0].win_event.range()], b"event.1");

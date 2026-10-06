@@ -173,6 +173,7 @@ fn pool_check_starts_a_fresh_variable_context() {
             ScriptVariablesRow {
                 scope_kind: 0,
                 scope_id: 0,
+                seed: replay::rows::Recorded::Value(None),
                 entries: vec![ScriptVariableEntry {
                     name: b"pool_ready".to_vec(),
                     value_raw: 100_000,

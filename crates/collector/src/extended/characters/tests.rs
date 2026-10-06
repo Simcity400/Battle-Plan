@@ -74,6 +74,95 @@ fn assert_advisors_match(job: &CharactersJob, memory: &impl Memory) {
 }
 
 #[test]
+fn advisor_raw_copy_keeps_fresh_ordered_modifier_entries_and_owned_bytes() {
+    let mut bytes = section_fixture();
+    let data = 0x8a00;
+    array(
+        &mut bytes,
+        characters_test_kit::ADV_ROLE + cadvisor::MODIFIER_ENTRIES,
+        data,
+        65,
+    );
+    bytes.resize(0x9000 + 65 * engine::modifier_entry::STRIDE, 0);
+    for index in 0..65 {
+        put(&mut bytes, data + index * 16, (index as u32).to_le_bytes());
+        put(
+            &mut bytes,
+            data + index * 16 + 8,
+            (-(index as i64)).to_le_bytes(),
+        );
+    }
+    let mut job = section_job();
+    let mut expected = direct_advisors(&characters_test_kit::memory(&bytes));
+    for round in 0..2 {
+        if round != 0 {
+            put(&mut bytes, data + 8, i64::MIN.to_le_bytes());
+            expected = direct_advisors(&characters_test_kit::memory(&bytes));
+        }
+        let report = copy_characters_refresh(
+            &characters_test_kit::memory(&bytes),
+            section_context(),
+            &mut job,
+        );
+        assert!(report.raw_ok);
+        assert_advisors_match(&job, &characters_test_kit::memory(&bytes));
+        job.prepare_read_plans();
+    }
+    bytes.fill(0);
+    let mut captured = Captured::with_capacities(&split_capacities());
+    captured.decode_characters_payload(IMAGE, &job, &mut [0; 6]);
+    assert_eq!(captured.advisors_table(), expected.advisors_table());
+    let TableView::Complete(TableRows::AdvisorRoles(rows)) = captured.advisors_table() else {
+        panic!("complete advisor roles");
+    };
+    let entries = &rows[0]
+        .modifier_cache
+        .require("AdvisorRoles.modifier_cache")
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .entries;
+    assert_eq!(entries.len(), 65);
+    assert_eq!(entries[0].value, i64::MIN);
+    assert_eq!(entries[64].definition, 64);
+    assert_eq!(entries[64].value, -64);
+}
+
+#[test]
+fn advisor_projection_refuses_partial_modifier_entries() {
+    let mut captured = Captured::with_capacities(&small_capacities());
+    captured.advisors.rows.rows[0] = cadvisor::Row {
+        character: 1,
+        modifier_len: engine::modifier_entry::STRIDE,
+        modifier_recorded: true,
+        ..Default::default()
+    };
+    captured.advisors.rows.outcome = Outcome::Rows { len: 1 };
+    captured.advisors.bytes.len = engine::modifier_entry::STRIDE;
+    captured.advisors.bytes.first[..4].copy_from_slice(&77_u32.to_le_bytes());
+    captured.advisors.bytes.first[8..16].copy_from_slice(&i64::MIN.to_le_bytes());
+    let TableView::Complete(TableRows::AdvisorRoles(rows)) = captured.advisors_table() else {
+        panic!("complete advisor roles");
+    };
+    assert_eq!(
+        rows[0]
+            .modifier_cache
+            .require("AdvisorRoles.modifier_cache")
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .entries[0]
+            .value,
+        i64::MIN
+    );
+    captured.advisors.rows.rows[0].modifier_len -= 1;
+    assert!(matches!(
+        captured.advisors_table(),
+        TableView::Unavailable { .. }
+    ));
+}
+
+#[test]
 fn advisor_roster_growth_rebuilds_only_its_section_and_reads_fresh_inactive_roles() {
     let mut bytes = section_fixture();
     let mut job = section_job();
@@ -2376,12 +2465,13 @@ fn character_family_read_cost_stays_at_its_measured_shape() {
     // (12 bytes, no read); none of these characters has a template.
     // Gender adds one four-byte span per view in the same scatter, and each
     // unit leader's state scatter its four-byte exile country (+0xED4).
+    // Each advisor adds its fresh 16-byte modifier-cache header; all are empty.
     assert_eq!(
         (memory.guards.get(), memory.spans.get(), memory.bytes.get()),
         (
-            588 + 3,
-            1204 + 9 + 32 + 3,
-            16_872 + 39 + 32 * (12 + 4) + 3 * 4
+            588 + 3 + 22,
+            1204 + 9 + 32 + 3 + 22,
+            16_872 + 39 + 32 * (12 + 4) + 3 * 4 + 22 * 16
         )
     );
 }
@@ -2411,6 +2501,136 @@ fn split_capacities() -> Capacities {
         rows: [4096; N],
         bytes: [131_072; N],
     }
+}
+
+#[test]
+fn operative_codenames_match_raw_and_typed_capture_with_heap_faults_and_growth() {
+    use super::characters_test_kit as kit;
+    use engine::cname_group_member as naming;
+    let mut bytes = kit::mapped_fixture();
+    // The third fixture leader overlaps unit one's expanded operative tail.
+    put(
+        &mut bytes,
+        0x2300 + ccharacter::UNIT_LEADER,
+        0_u64.to_le_bytes(),
+    );
+    let group = b"long-operative-group-key";
+    let custom = b"player-operative-rename";
+    for (index, unit) in UNITS.into_iter().enumerate() {
+        put(
+            &mut bytes,
+            unit,
+            ((IMAGE + coperative_leader::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            unit + cunit_leader::CATEGORY,
+            3_i32.to_le_bytes(),
+        );
+        let member = unit + coperative_leader::CODENAME;
+        bytes[member..member + naming::INPUT_SPAN].fill(0);
+        put(
+            &mut bytes,
+            member,
+            ((IMAGE + naming::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(&mut bytes, member + naming::TYPE, 2_i32.to_le_bytes());
+        put(
+            &mut bytes,
+            member + naming::ORDER,
+            (index as i32 - 1).to_le_bytes(),
+        );
+        bytes[member + naming::FLAG_A] = 1;
+        for (offset, payload, value) in [
+            (
+                naming::FIRST_NAME_TEXT,
+                0x8a00 + index * 0x100,
+                group.as_slice(),
+            ),
+            (
+                naming::OVERRIDE_NAME,
+                0x8a40 + index * 0x100,
+                custom.as_slice(),
+            ),
+        ] {
+            pointer(&mut bytes, member + offset, payload);
+            put(
+                &mut bytes,
+                member + offset + 16,
+                (value.len() as u64).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                member + offset + 24,
+                (value.len() as u64).to_le_bytes(),
+            );
+            bytes[payload..payload + value.len()].copy_from_slice(value);
+        }
+    }
+    let capacities = split_capacities();
+    let direct = kit::direct(&kit::memory(&bytes), &capacities);
+    assert_eq!(direct.units.rows.outcome, Outcome::Rows { len: 2 });
+    let (split, _, _) = kit::split(&kit::memory(&bytes), &capacities);
+    kit::assert_matches_direct(&split, &direct);
+    for (index, row) in direct.units.rows.rows[..2].iter().enumerate() {
+        let captured = leader_row(row, &direct.units.bytes.first);
+        let name = captured
+            .codename
+            .require("UnitLeaders.codename")
+            .unwrap()
+            .as_ref()
+            .unwrap();
+        assert_eq!(name.group.as_slice(), group.as_slice());
+        assert_eq!(name.custom.as_slice(), custom.as_slice());
+        assert_eq!(name.order, index as i32 - 1);
+    }
+    let mut small = capacities;
+    small.bytes[3] = 24;
+    let (mut split, _, _) = kit::split(&kit::memory(&bytes), &small);
+    kit::assert_matches_direct(&split, &kit::direct(&kit::memory(&bytes), &small));
+    assert_eq!(split.units.rows.outcome, Outcome::Rows { len: 2 });
+    assert!(split.units.rows.rows[..2].iter().all(|row| {
+        row.codename.is_none()
+            && row.codename_reason == Some("unit leader codename byte capacity exceeded")
+    }));
+    assert!(split.units.rows.rows[..2].iter().all(|row| {
+        leader_row(row, &split.units.bytes.first).codename == replay::rows::Recorded::Value(None)
+    }));
+    assert_eq!(
+        leader_row(&split.units.rows.rows[1], &split.units.bytes.first).inherited_text_a,
+        b"saved2"
+    );
+    split.grow(&mut small);
+    assert!(small.bytes[3] >= 12 + group.len() + custom.len());
+    for fault in [
+        UNITS[0] + coperative_leader::CODENAME,
+        0x8a00,
+        0x8a00 + group.len(),
+        0x8a40 + custom.len(),
+    ] {
+        let source = WaveMemory::new(&bytes, Some(ADDRESS + fault));
+        let (split, _, _) = kit::split(&source, &capacities);
+        let source = WaveMemory::new(&bytes, Some(ADDRESS + fault));
+        let direct = kit::direct(&source, &capacities);
+        kit::assert_matches_direct(&split, &direct);
+        assert_eq!(direct.units.rows.outcome, Outcome::Rows { len: 2 });
+        assert!(direct.units.rows.rows[0].codename_reason.is_some());
+        assert!(direct.units.rows.rows[1].codename.is_some());
+        assert!(matches!(direct.traits.rows.outcome, Outcome::Rows { .. }));
+    }
+    put(
+        &mut bytes,
+        UNITS[0] + coperative_leader::CODENAME + naming::TYPE,
+        1_i32.to_le_bytes(),
+    );
+    let (split, _, _) = kit::split(&kit::memory(&bytes), &capacities);
+    let direct = kit::direct(&kit::memory(&bytes), &capacities);
+    kit::assert_matches_direct(&split, &direct);
+    assert_eq!(direct.units.rows.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(
+        direct.units.rows.rows[0].codename_reason,
+        Some("operative codename member is not type two")
+    );
 }
 
 #[test]

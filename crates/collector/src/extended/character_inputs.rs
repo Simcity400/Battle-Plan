@@ -18,7 +18,7 @@ use engine::{
 use replay::{
     cadence::{SKIPPED_REASON, should_walk},
     frame::TableView,
-    rows::{CharacterOperativeRow, CharacterRoleTraitRow, TableId, tables},
+    rows::{CharacterOperativeRow, CharacterRoleTraitRow, Recorded, TableId, tables},
 };
 
 pub const N: usize = 2;
@@ -32,6 +32,7 @@ pub struct Capacities {
     values: usize,
     operatives: usize,
     definitions: usize,
+    bytes: usize,
 }
 impl Default for Capacities {
     /// Starting sizes only; the live demand (`country_scale::observe_politics`)
@@ -42,6 +43,7 @@ impl Default for Capacities {
             values: 16_384,
             operatives: 512,
             definitions: 2048,
+            bytes: 16_384,
         }
     }
 }
@@ -55,6 +57,7 @@ impl Capacities {
         raise(&mut self.values, rows(demand.values, 1));
         raise(&mut self.operatives, rows(demand.operatives, 1));
         raise(&mut self.definitions, rows(demand.definitions, 1));
+        raise(&mut self.bytes, rows(demand.bytes, 1));
     }
 }
 
@@ -66,11 +69,16 @@ pub struct Demand {
     pub values: usize,
     pub operatives: usize,
     pub definitions: usize,
+    pub bytes: usize,
 }
 
 impl Demand {
     /// The live demand, from the walk with no storage.
-    pub(crate) fn observe(memory: &impl Memory, base: usize, game_state: usize) -> Self {
+    pub(crate) fn observe(
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+    ) -> Result<Self, &'static str> {
         let walk = native::walk(
             memory,
             base,
@@ -80,19 +88,23 @@ impl Demand {
                 trait_values: &mut [],
                 operatives: &mut [],
                 definitions: &mut [],
+                bytes: &mut [],
             },
         );
         let rows = |outcome: Outcome| match outcome {
-            Outcome::Rows { len } => len,
-            Outcome::Truncated { len, unread_rows } => len.saturating_add(unread_rows as usize),
-            Outcome::Unavailable { .. } => 0,
+            Outcome::Rows { len } => Ok(len),
+            Outcome::Truncated { len, unread_rows } => len
+                .checked_add(unread_rows as usize)
+                .ok_or("character input demand row count overflow"),
+            Outcome::Unavailable { reason } => Err(reason),
         };
-        Self {
-            traits: rows(walk.traits),
+        Ok(Self {
+            traits: rows(walk.traits)?,
             values: walk.required_trait_values,
-            operatives: rows(walk.operatives),
+            operatives: rows(walk.operatives)?,
             definitions: walk.required_definitions,
-        }
+            bytes: walk.required_bytes,
+        })
     }
 
     pub(crate) fn exceeds(&self, seen: &Self) -> bool {
@@ -100,6 +112,7 @@ impl Demand {
             || self.values > seen.values
             || self.operatives > seen.operatives
             || self.definitions > seen.definitions
+            || self.bytes > seen.bytes
     }
 
     pub(crate) fn max(self, other: Self) -> Self {
@@ -108,6 +121,7 @@ impl Demand {
             values: self.values.max(other.values),
             operatives: self.operatives.max(other.operatives),
             definitions: self.definitions.max(other.definitions),
+            bytes: self.bytes.max(other.bytes),
         }
     }
 }
@@ -117,9 +131,48 @@ pub struct Captured {
     values: Arena<native::Trait>,
     operatives: CaptureRows<native::OperativeRow>,
     definitions: Arena<u32>,
+    bytes: Arena<u8>,
+}
+
+/// Optional name failures keep the preexisting row and are counted off-thread.
+#[derive(Default)]
+pub(crate) struct NamingWork {
+    refusals: Vec<(&'static str, u64)>,
+}
+
+impl NamingWork {
+    pub(super) fn refuse(&mut self, reason: &'static str) -> std::io::Result<()> {
+        let index = match self.refusals.binary_search_by_key(&reason, |entry| entry.0) {
+            Ok(index) => index,
+            Err(index) => {
+                engine::allocation::reserve(&mut self.refusals, 1)?;
+                self.refusals.insert(index, (reason, 0));
+                index
+            }
+        };
+        self.refusals[index].1 = self.refusals[index].1.saturating_add(1);
+        Ok(())
+    }
+
+    pub(crate) fn status(&self) -> impl serde::Serialize + '_ {
+        crate::status::status!({
+            "refused": self.refusals.iter().fold(0_u64, |sum, (_, count)| sum.saturating_add(*count)),
+            "refusals": crate::status::map(self.refusals.iter().map(|&(reason, count)| (reason, count))),
+            "scope": "optional hourly CharacterOperatives names and UnitLeaders codenames; existing row fields remain available",
+        })
+    }
 }
 
 impl Captured {
+    pub(crate) fn observe_naming(&self, work: &mut NamingWork) -> std::io::Result<()> {
+        for row in &self.operatives.rows[..self.operatives.outcome.len()] {
+            for reason in [row.name_reason, row.codename_reason].into_iter().flatten() {
+                work.refuse(reason)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
         Self::with_capacities(&Capacities {
@@ -127,6 +180,7 @@ impl Captured {
             values: 0,
             operatives: 0,
             definitions: 0,
+            bytes: 0,
         })
     }
     pub fn with_capacities(capacity: &Capacities) -> Self {
@@ -135,6 +189,7 @@ impl Captured {
             values: Arena::new(capacity.values),
             operatives: CaptureRows::new(capacity.operatives),
             definitions: Arena::new(capacity.definitions),
+            bytes: Arena::new(capacity.bytes),
         }
     }
     pub fn reset(&mut self) {
@@ -142,6 +197,7 @@ impl Captured {
         self.values.reset();
         self.operatives.reset();
         self.definitions.reset();
+        self.bytes.reset();
     }
     pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         self.traits
@@ -154,12 +210,14 @@ impl Captured {
             + self.values.allocated_bytes()
             + self.operatives.allocated_bytes()
             + self.definitions.allocated_bytes()
+            + self.bytes.allocated_bytes()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.traits.grow(&mut capacity.traits);
         self.values.grow(&mut capacity.values);
         self.operatives.grow(&mut capacity.operatives);
         self.definitions.grow(&mut capacity.definitions);
+        self.bytes.grow(&mut capacity.bytes);
     }
     pub fn capture(
         &mut self,
@@ -189,6 +247,7 @@ impl Captured {
                 trait_values: &mut self.values.first,
                 operatives: &mut self.operatives.rows,
                 definitions: &mut self.definitions.first,
+                bytes: &mut self.bytes.first,
             },
         );
         let skipped = Outcome::Unavailable {
@@ -198,6 +257,8 @@ impl Captured {
         self.operatives.outcome = if walked[1] { walk.operatives } else { skipped };
         self.values.required = walk.required_trait_values;
         self.definitions.required = walk.required_definitions;
+        self.bytes.len = walk.bytes_len;
+        self.bytes.required = walk.required_bytes;
         self.values.len = spans_end(&self.traits.rows[..walk.traits.len()], |row| {
             (row.start, row.len)
         });
@@ -257,6 +318,17 @@ impl Captured {
         {
             return unavailable("character operative traits outside captured arena");
         }
+        let bytes = &self.bytes.first[..self.bytes.len.min(self.bytes.first.len())];
+        if rows.iter().any(|row| {
+            row.name
+                .is_some_and(|(start, len)| span(bytes, start, len).is_none())
+                || row.codename.is_some_and(|name| {
+                    span(bytes, name.custom.0, name.custom.1).is_none()
+                        || span(bytes, name.group.0, name.group.1).is_none()
+                })
+        }) {
+            return unavailable("character operative names outside captured arena");
+        }
         table::<tables::CharacterOperatives, _>(self.operatives.outcome, rows, |row| {
             let leader = row.leader.unwrap_or_default();
             CharacterOperativeRow {
@@ -267,6 +339,11 @@ impl Captured {
                 owner: leader.owner,
                 skill_level: leader.skill_level,
                 trait_definitions: owned_vec(copy_vec(span(values, row.start, row.len).unwrap())),
+                codename: Recorded::Value(row.codename.map(|name| operands(name, bytes))),
+                name: Recorded::Value(
+                    row.name
+                        .map(|(start, len)| owned_vec(copy_vec(span(bytes, start, len).unwrap()))),
+                ),
             }
         })
     }
@@ -287,6 +364,7 @@ pub(crate) fn allocation_failure_exercise() {
         values: 2,
         operatives: 1,
         definitions: 2,
+        bytes: 32,
     });
     if crate::allocation::failed() {
         return;
@@ -317,9 +395,24 @@ pub(crate) fn allocation_failure_exercise() {
         leader: None,
         start: 0,
         len: 2,
+        ..Default::default()
     };
     captured.operatives.outcome = Outcome::Rows { len: 1 };
     let _ = captured.tables();
+}
+
+pub(super) fn operands(
+    name: engine::cname_group_member::Inputs,
+    bytes: &[u8],
+) -> replay::rows::NameOperands {
+    replay::rows::NameOperands {
+        kind: name.kind,
+        order: name.order,
+        ordered: name.ordered,
+        programmatic: name.programmatic,
+        custom: owned_vec(copy_vec(span(bytes, name.custom.0, name.custom.1).unwrap())),
+        group: owned_vec(copy_vec(span(bytes, name.group.0, name.group.1).unwrap())),
+    }
 }
 
 fn span<V>(values: &[V], start: usize, len: usize) -> Option<&[V]> {
@@ -347,12 +440,29 @@ mod tests {
     use engine::character_inputs::Leader;
     use replay::rows::TableRows;
 
+    #[test]
+    fn programmatic_override_survives_projection_when_native_shows_it() {
+        let naming = operands(
+            engine::cname_group_member::Inputs {
+                kind: 2,
+                programmatic: 1,
+                custom: (0, 6),
+                group: (6, 5),
+                ..Default::default()
+            },
+            b"legacyGROUP",
+        );
+        assert_eq!(naming.custom, b"legacy");
+        assert_eq!(naming.group, b"GROUP");
+    }
+
     fn captured() -> Captured {
         let mut captured = Captured::with_capacities(&Capacities {
             traits: 3,
             values: 4,
             operatives: 2,
             definitions: 2,
+            bytes: 32,
         });
         captured.values.first[..3].copy_from_slice(&[
             native::Trait {
@@ -390,6 +500,7 @@ mod tests {
             leader: None,
             start: 0,
             len: 0,
+            ..Default::default()
         };
         captured.operatives.rows[1] = native::OperativeRow {
             character: 12,
@@ -401,7 +512,19 @@ mod tests {
             }),
             start: 0,
             len: 1,
+            name: Some((0, 5)),
+            codename: Some(engine::cname_group_member::Inputs {
+                kind: 2,
+                order: -1,
+                ordered: 1,
+                group: (5, 5),
+                custom: (10, 4),
+                ..Default::default()
+            }),
+            ..Default::default()
         };
+        captured.bytes.first[..14].copy_from_slice(b"AliasGROUPUser");
+        captured.bytes.len = 14;
         captured.operatives.outcome = Outcome::Rows { len: 2 };
         captured
     }
@@ -445,6 +568,15 @@ mod tests {
                     owner: 9,
                     skill_level: None,
                     trait_definitions: vec![3],
+                    codename: Recorded::Value(Some(replay::rows::NameOperands {
+                        kind: 2,
+                        order: -1,
+                        ordered: 1,
+                        group: b"GROUP".to_vec(),
+                        custom: b"User".to_vec(),
+                        ..Default::default()
+                    })),
+                    name: Recorded::Value(Some(b"Alias".to_vec())),
                 },
                 CharacterOperativeRow {
                     character: 13,

@@ -2,7 +2,8 @@ use super::*;
 use replay::{
     frame::TableView,
     rows::{
-        AirBaseRow, AirWingRow, NavalCombatAirBaseWingHandlesRow, NavalCombatShipRow, TableRows,
+        AirBaseRow, AirWingRow, NavalCombatAirBaseWingHandlesRow, NavalCombatShipRow, Recorded,
+        TableRows,
     },
 };
 
@@ -13,6 +14,7 @@ fn border_marker_witnesses_compare_stored_country_state_and_event_strings() {
     let combat = (7_u64 << 32) | 62;
     let border = LandBorderWarInputs {
         transfer_state: 128,
+        combat_width: Recorded::NotRecorded,
         sides: [
             LandBorderWarSide {
                 country: 102,
@@ -32,7 +34,7 @@ fn border_marker_witnesses_compare_stored_country_state_and_event_strings() {
         TableView::Complete(TableRows::LandCombatDetails(vec![LandCombatDetailsRow {
             combat,
             province: 2,
-            border_war: replay::rows::Recorded::Value(Some(border)),
+            border_war: Recorded::Value(Some(border)),
             ..Default::default()
         }]));
     let mut details = save::combat_details::LandDetails {
@@ -78,6 +80,85 @@ fn border_marker_witnesses_compare_stored_country_state_and_event_strings() {
     let mut report = Report::default();
     land(&frame, &save, &mut report).unwrap();
     assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+    // Historical absence limits only border operands; the province still compares.
+    *frame.tables[TableId::LandCombatDetails.index()] =
+        TableView::Complete(TableRows::LandCombatDetails(vec![LandCombatDetailsRow {
+            combat,
+            province: 3,
+            border_war: Recorded::NotRecorded,
+            ..Default::default()
+        }]));
+    let mut report = Report::default();
+    land(&frame, &save, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    assert!(report.differences[0].contains("province"));
+    assert_eq!(
+        report.limitations["LandCombatDetails.border_war not recorded"].len(),
+        1
+    );
+}
+
+#[test]
+fn border_width_oracle_compares_zero_precision_and_unconditional_presence() {
+    use replay::rows::{LandBorderWarInputs, LandCombatDetailsRow};
+    let (mut frame, mut save, ..) = super::super::tests::fixture();
+    let combat = (7_u64 << 32) | 62;
+    let mut details = save::combat_details::LandDetails {
+        border_war: true,
+        transfer_state: Some(false),
+        combat_width: Some(Decimal::parse(b"0").unwrap()),
+        ..Default::default()
+    };
+    for side in &mut details.sides {
+        side.border_state = Some(0);
+        side.organisation_loss_count = Some(0);
+    }
+    save.land_combats.insert(
+        combat,
+        save::LandCombat {
+            id: combat,
+            province: 2,
+            details,
+            day: 0,
+            duration: 0,
+            attackers: Vec::new(),
+            defenders: Vec::new(),
+        },
+    );
+    let run = |frame: &mut DecodedFrame, save: &Save, combat_width| {
+        *frame.tables[TableId::LandCombatDetails.index()] =
+            TableView::Complete(TableRows::LandCombatDetails(vec![LandCombatDetailsRow {
+                combat,
+                province: 2,
+                border_war: Recorded::Value(Some(LandBorderWarInputs {
+                    combat_width,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }]));
+        let mut report = Report::default();
+        land(frame, save, &mut report).unwrap();
+        report
+    };
+    let report = run(&mut frame, &save, Recorded::Value(0));
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    let report = run(&mut frame, &save, Recorded::Value(-1));
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    save.land_combats
+        .get_mut(&combat)
+        .unwrap()
+        .details
+        .combat_width = None;
+    let report = run(&mut frame, &save, Recorded::Value(0));
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    let report = run(&mut frame, &save, Recorded::NotRecorded);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|field| field == "LandBorderWarInputs.combat_width not recorded")
+    );
 }
 
 #[test]
@@ -345,7 +426,15 @@ fn timed_traits_compare_saved_tokens_and_signed_days_in_vector_order() {
         BTreeMap::from([(1, b"sick".as_slice()), (2, b"wounded".as_slice())]);
     let compare = |side: &LandCombatSideDetails, tokens: &TokenNames<'_>| {
         let mut report = Report::default();
-        timed_traits(&mut report, "side", side, &save, tokens);
+        timed_traits(
+            &mut report,
+            "side",
+            side.commander,
+            side.commander_category,
+            &side.timed_traits,
+            &save,
+            tokens,
+        );
         report
     };
     let report = compare(&side, &tokens);
@@ -372,6 +461,50 @@ fn timed_traits_compare_saved_tokens_and_signed_days_in_vector_order() {
         ..side.clone()
     };
     assert_eq!(compare(&absent, &tokens).differences.len(), 1);
+    let mut save = save;
+    save.characters
+        .manager
+        .as_mut()
+        .unwrap()
+        .unit_leaders
+        .get_mut(&side.commander)
+        .unwrap()
+        .category = 2;
+    let mut naval = replay::rows::NavalCommanderInputs {
+        commander: side.commander,
+        category: 2,
+        skills: [1, 0, 0, 0, 0],
+        timed_traits: Recorded::Value(side.timed_traits.clone()),
+        ..Default::default()
+    };
+    let compare_naval = |actual: &replay::rows::NavalCommanderInputs| {
+        let mut report = Report::default();
+        naval_commander_values(&mut report, "naval", actual, &save, &tokens).unwrap();
+        report
+    };
+    assert!(compare_naval(&naval).differences.is_empty());
+    naval
+        .timed_traits
+        .require_mut("NavalCommanderInputs.timed_traits")
+        .unwrap()[0]
+        .remaining_days = 19;
+    assert_eq!(compare_naval(&naval).differences.len(), 1);
+    naval
+        .timed_traits
+        .require_mut("NavalCommanderInputs.timed_traits")
+        .unwrap()
+        .clear();
+    assert_eq!(compare_naval(&naval).differences.len(), 1);
+    // Historical field absence differs from a recorded empty vector.
+    naval.timed_traits = Recorded::NotRecorded;
+    let report = compare_naval(&naval);
+    assert!(report.differences.is_empty());
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason == "NavalCommanderInputs.timed_traits not recorded")
+    );
 }
 
 #[test]
@@ -663,6 +796,24 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
         &templates,
     );
     assert!(report.differences.is_empty(), "{:?}", report.differences);
+    // Whole-roster operands share the flat rows' displayed override rule.
+    let operands = replay::rows::NameOperands {
+        order: custom.name_order,
+        ordered: custom.name_ordered,
+        programmatic: 1,
+        custom: shown.name_custom.clone(),
+        ..Default::default()
+    };
+    let mut operand_report = Report::default();
+    naming(
+        &mut operand_report,
+        "whole roster generated",
+        &operands,
+        &unit(Some(generated.clone()), Some(fake)),
+        &templates,
+    );
+    assert!(operand_report.differences.is_empty());
+    assert!(operand_report.limitations.is_empty());
     for (label, row, alternate) in [
         // Not recorded where the game shows it.
         ("unrecorded", &programmatic, Some(fake)),

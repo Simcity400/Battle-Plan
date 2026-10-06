@@ -6,8 +6,8 @@
 //! hold, and a retired character. The live demand sizes a complete first
 //! capture; the default capacities truncate and grow to the whole table.
 
-use super::{Capacities, Captured, Demand};
-use crate::{country_scale, extended::hired_advisors};
+use super::{Capacities, Captured, Demand, NamingWork};
+use crate::extended::hired_advisors;
 use engine::{
     Memory, cadvisor, ccharacter, ccharacter_manager, ccountry, ccountry_characters,
     ccountry_leader, cgame_state as gs, character_advisor_node, character_leader_node,
@@ -205,26 +205,190 @@ fn rows(table: &TableView) -> usize {
     }
 }
 
+#[test]
+fn resolved_operative_names_size_from_live_demand_at_five_thousand_countries() {
+    use engine::{cname_group_member as naming, coperative_leader, reference_bucket as bucket};
+    use replay::rows::TableRows;
+    for countries in [1500_usize, 5000] {
+        let mut world = Populated::new(countries);
+        let first = world.data.len();
+        let registry = first + countries * 0x1100;
+        let entries = registry + 0x40;
+        let capacity = (countries * 4).next_power_of_two();
+        let overflow = capacity.trailing_zeros() as usize + 2;
+        world
+            .data
+            .resize(entries + (capacity + overflow + 1) * bucket::STRIDE, 0);
+        for (index, byte) in (registry as u64).to_le_bytes().into_iter().enumerate() {
+            world
+                .globals
+                .insert(BASE + creference_registry::HIGH_ROOT_RVA + index, byte);
+        }
+        world.u64(registry + creference_registry::ENTRIES, entries as u64);
+        world.u32(registry + creference_registry::COUNT, countries as u32);
+        world.u32(registry + creference_registry::MASK, (capacity - 1) as u32);
+        world.data[registry + creference_registry::OVERFLOW_DISTANCE] = overflow as u8;
+        world.data[entries + (capacity + overflow) * bucket::STRIDE + bucket::DISTANCE] = 255;
+        let roster = u64::from_le_bytes(
+            world.data[MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS..][..8]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let mut used = vec![false; capacity];
+        let mut id = 0_u32;
+        for index in 0..countries {
+            let (reference, cell) = loop {
+                id += 1;
+                let reference = (u64::from(id) << 32) | u64::from(cunit_leader::REFERENCE_TYPE);
+                let hash = reference
+                    .rotate_left(32)
+                    .wrapping_mul(creference_registry::HASH_MULTIPLIER);
+                let cell = ((hash >> 32) as usize ^ hash as usize) & (capacity - 1);
+                if !used[cell] {
+                    used[cell] = true;
+                    break (reference, cell);
+                }
+            };
+            let character =
+                u64::from_le_bytes(world.data[roster + index * 16..][..8].try_into().unwrap())
+                    as usize;
+            let leader = first + index * 0x1100;
+            world.u64(character + ccharacter::OPERATIVE, reference);
+            world.u64(character + ccharacter::UNIT_LEADER, leader as u64);
+            world.data[entries + cell * bucket::STRIDE + bucket::DISTANCE] = 1;
+            world.u64(entries + cell * bucket::STRIDE + bucket::TYPE, reference);
+            world.u64(
+                entries + cell * bucket::STRIDE + bucket::OBJECT,
+                leader as u64,
+            );
+            world.vtable(leader, coperative_leader::VTABLE_RVA);
+            world.u64(leader + cunit_leader::TYPE, reference);
+            // The authenticated operative layout owns the member regardless
+            // of the independent stored category operand.
+            world.u32(leader + cunit_leader::CATEGORY, 8);
+            world.u32(leader + cunit_leader::OWNER, (index + 1) as u32);
+            for (offset, value) in [
+                (cunit_leader::NAME, b"A\xfflias".as_slice()),
+                (cunit_leader::TOKEN, b"".as_slice()),
+                (
+                    coperative_leader::CODENAME + naming::FIRST_NAME_TEXT,
+                    b"GROUP".as_slice(),
+                ),
+                (
+                    coperative_leader::CODENAME + naming::OVERRIDE_NAME,
+                    b"Code".as_slice(),
+                ),
+            ] {
+                let at = leader + offset;
+                world.data[at..at + value.len()].copy_from_slice(value);
+                world.u64(at + 16, value.len() as u64);
+                world.u64(at + 24, 15);
+            }
+            let member = leader + coperative_leader::CODENAME;
+            world.vtable(member, naming::VTABLE_RVA);
+            world.u32(member + naming::TYPE, 2);
+            world.u32(member + naming::ORDER, index as u32);
+            world.data[member + naming::FLAG_A] = 1;
+        }
+        let demand = Demand::observe(&world, BASE, STATE).unwrap();
+        assert_eq!(demand.bytes, countries * 15);
+        assert_eq!(
+            cunit_leader::text_demand(&world, BASE, STATE),
+            Ok(countries * 15)
+        );
+        let mut capacity = Capacities::default();
+        capacity.raise_for_demand(demand);
+        let mut captured = Captured::with_capacities(&capacity);
+        captured.capture(&world, BASE, STATE, 0, false);
+        let [_, TableView::Complete(TableRows::CharacterOperatives(rows))] = captured.tables()
+        else {
+            panic!("complete operative inputs");
+        };
+        assert_eq!(rows.len(), countries);
+        for (index, row) in rows.iter().enumerate() {
+            assert_eq!(row.category, 8);
+            assert_eq!(
+                row.name
+                    .require("CharacterOperatives.name")
+                    .unwrap()
+                    .as_deref(),
+                Some(b"A\xfflias".as_slice())
+            );
+            let name = row
+                .codename
+                .require("CharacterOperatives.codename")
+                .unwrap()
+                .as_ref()
+                .unwrap();
+            assert_eq!(name.group.as_slice(), b"GROUP");
+            assert_eq!(name.custom.as_slice(), b"Code");
+            assert_eq!(name.order, index as i32);
+        }
+        // Appended byte shortfalls retain all old rows and count both reasons.
+        capacity.bytes = 1;
+        let mut captured = Captured::with_capacities(&capacity);
+        captured.capture(&world, BASE, STATE, 0, false);
+        assert_eq!(captured.outcomes()[1], Outcome::Rows { len: countries });
+        let [_, TableView::Complete(TableRows::CharacterOperatives(rows))] = captured.tables()
+        else {
+            panic!("operative rows survive optional byte shortfalls");
+        };
+        assert!(rows.iter().all(|row| {
+            row.resolved
+                && row
+                    .name
+                    .require("CharacterOperatives.name")
+                    .unwrap()
+                    .is_none()
+                && row
+                    .codename
+                    .require("CharacterOperatives.codename")
+                    .unwrap()
+                    .is_none()
+        }));
+        let mut work = NamingWork::default();
+        captured.observe_naming(&mut work).unwrap();
+        assert_eq!(
+            work.refusals,
+            [
+                (
+                    "operative codename byte capacity exceeded",
+                    countries as u64
+                ),
+                ("operative name byte capacity exceeded", countries as u64),
+            ]
+        );
+        captured.grow(&mut capacity);
+        assert!(capacity.bytes >= countries * 15);
+    }
+}
+
 fn check(countries: usize) {
     let world = Populated::new(countries);
-    let demand = country_scale::observe_politics(&world, BASE).unwrap();
+    let demand = Demand::observe(&world, BASE, STATE).unwrap();
+    let [active, retired] =
+        ccountry_characters::walk_records(&world, BASE, STATE, &mut [], &mut []).map(|outcome| {
+            match outcome {
+                Outcome::Rows { len } => len,
+                Outcome::Truncated { len, unread_rows } => len + unread_rows as usize,
+                Outcome::Unavailable { reason } => panic!("{reason}"),
+            }
+        });
+    assert_eq!((active, retired), (countries, countries));
     assert_eq!(
-        (demand.active_characters, demand.retired_characters),
-        (countries, countries)
-    );
-    assert_eq!(
-        demand.character_inputs,
+        demand,
         Demand {
             traits: 3 * countries,
             values: 3 * countries,
             operatives: countries,
             definitions: 0,
+            bytes: 0,
         }
     );
 
     // The live demand sizes a complete first capture.
     let mut sized = Capacities::default();
-    sized.raise_for_demand(demand.character_inputs);
+    sized.raise_for_demand(demand);
     let mut captured = Captured::with_capacities(&sized);
     captured.capture(&world, BASE, STATE, 0, false);
     assert_eq!(
@@ -240,7 +404,7 @@ fn check(countries: usize) {
         (3 * countries, countries)
     );
     let mut records = hired_advisors::Capacities::default();
-    records.raise_for_character_records(demand.active_characters, demand.retired_characters);
+    records.raise_for_character_records(active, retired);
     let mut hired = hired_advisors::Captured::with_capacities(&records);
     hired.capture(&world, BASE, STATE, 0, false);
     assert_eq!(hired.outcomes()[1], Outcome::Rows { len: countries });
@@ -276,6 +440,16 @@ fn check(countries: usize) {
 #[test]
 fn fifteen_hundred_countries_are_read_whole_from_their_live_demand() {
     check(1_500);
+}
+
+#[test]
+fn demand_observation_keeps_invalid_roster_errors_named() {
+    let mut world = Populated::new(1);
+    world.u64(MANAGER, 0);
+    assert_eq!(
+        Demand::observe(&world, BASE, STATE),
+        Err("character manager vtable mismatch")
+    );
 }
 
 #[test]

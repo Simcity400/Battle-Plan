@@ -34,6 +34,7 @@ pub(crate) fn character_shadow_fixture(value: u8) -> Captured {
             idea_len: 1,
             slot_start: index * 3 + 2,
             slot_len: 1,
+            ..Default::default()
         };
         captured.traits.rows.rows[index] = cunit_leader::TraitRow {
             leader_id: (index + 3) as u32,

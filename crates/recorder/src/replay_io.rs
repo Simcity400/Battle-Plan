@@ -11,6 +11,7 @@ use replay::{
     BranchId, Hour, SessionId,
     branches::{Gap, Parentage},
     container::{RecoveryNote, Replay, SeekResult},
+    format::FormatVersion,
     frame::{DecodedFrame, Frame, FrameDecoder, TABLE_COUNT, TableUpdate, TableView},
     identity::{Identity, SessionStart, Verification, is_campaign_uuid},
     rows::{TableId, TableRows, tables},
@@ -409,7 +410,7 @@ fn finalize_campaign(
     if unchanged {
         for record in &records {
             if let Record::Frame(frame) = record {
-                summary.observe(frame)?;
+                summary.observe(frame, FormatVersion::CURRENT)?;
             }
         }
     }
@@ -801,7 +802,7 @@ pub fn inspect(path: &Path) -> Result<()> {
             .read_block(index)
             .map_err(|error| failure(path, error))?
         {
-            summary.observe(&frame)?;
+            summary.observe(&frame, replay.format)?;
         }
     }
     for branch in &replay.branches {
@@ -1078,13 +1079,13 @@ impl Default for Summary {
 }
 
 impl Summary {
-    fn observe(&mut self, frame: &Frame) -> Result<()> {
+    fn observe(&mut self, frame: &Frame, format: FormatVersion) -> Result<()> {
         let decoded = self
             .decoder
             .apply(frame)
             .map_err(|error| error.to_string())?;
         let sizes = frame
-            .table_encoded_sizes()
+            .table_encoded_sizes_version(format)
             .map_err(|error| error.to_string())?;
         self.observe_decoded(frame, &decoded, sizes)
     }
@@ -1125,8 +1126,13 @@ impl Summary {
                 &*decoded.tables[i]
             {
                 for (field, count) in rows.field_gaps() {
+                    let name = if field.contains('.') {
+                        field.to_owned()
+                    } else {
+                        format!("{table:?}.{field}")
+                    };
                     println!(
-                        "Compatibility field gap: {table:?}.{field}: {count} rows not recorded at hour {}",
+                        "Compatibility field gap: {name}: {count} occurrences not recorded at hour {}",
                         frame.hour
                     );
                 }
@@ -1283,6 +1289,32 @@ fn print_throughput<'a>(
 mod tests {
     use super::*;
     use replay::branches::{BranchReason, BranchStart};
+
+    #[test]
+    fn inspect_historical_table_sizes_exclude_tables_not_recorded() {
+        // This is main's format 97, before the appended inputs and new tables.
+        let format = FormatVersion::read(97).unwrap();
+        let mut frame = crate::test_support::allocation_records()
+            .into_iter()
+            .find_map(|record| match record {
+                Record::Frame(frame) => Some(frame),
+                _ => None,
+            })
+            .unwrap();
+        for table in TableId::ALL {
+            if !table.last_change().present(format.version()) {
+                frame.tables[table.index()] = TableUpdate::Unavailable {
+                    reason: format!("{table:?} not recorded"),
+                };
+            }
+        }
+        let mut summary = Summary::default();
+        summary.observe(&frame, format).unwrap();
+        for table in [TableId::AvailableAdvisors, TableId::OwnedWargoals] {
+            assert_eq!(summary.table_bytes[table.index()], 0);
+        }
+        assert!(summary.table_bytes[TableId::Clock.index()] > 0);
+    }
 
     #[test]
     fn allocation_failure_json_configuration_requires_prepared_identity() {

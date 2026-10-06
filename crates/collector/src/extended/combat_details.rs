@@ -1555,6 +1555,7 @@ impl Captured {
                     border_war: replay::rows::Recorded::Value(r.border_war.map(|border| {
                         replay::rows::LandBorderWarInputs {
                             transfer_state: border.transfer_state,
+                            combat_width: replay::rows::Recorded::Value(border.combat_width),
                             sides: border.sides.map(|side| replay::rows::LandBorderWarSide {
                                 country: side.country,
                                 state: side.state,

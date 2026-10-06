@@ -3,12 +3,279 @@ use installed_content::save::{Decimal, GameDate};
 use replay::{
     frame::{Metrics, TableView},
     rows::{
-        ActiveAbilityRow, CharacterRow, TableId, TableRows, UnitLeaderRow,
+        ActiveAbilityRow, CharacterRow, Recorded, TableId, TableRows, UnitLeaderRow,
         UnitLeaderTraitExperienceRow, UnitLeaderTraitRow,
     },
 };
 
 const NO_TRAITS: Result<&LeaderTraits, &str> = Err("outside this fixture");
+
+#[test]
+fn advisor_modifier_cache_distinguishes_not_recorded_from_native_unavailable() {
+    use replay::rows::{AdvisorModifierCache, AdvisorRoleRow};
+    let (mut frame, mut pack, country) = fixture();
+    let manager = pack.manager.as_mut().unwrap();
+    let character = manager.characters.get_mut(&handle(73, u32::MAX)).unwrap();
+    character.advisors = vec![saved::Advisor {
+        slot: None,
+        idea: None,
+        traits: Vec::new(),
+    }];
+    *frame.tables[TableId::AdvisorRoles.index()] =
+        TableView::Complete(TableRows::AdvisorRoles(vec![AdvisorRoleRow {
+            character: u32::MAX,
+            country: 102,
+            ..Default::default()
+        }]));
+    let links = BTreeMap::from([(102, &country)]);
+    for (cache, reason) in [
+        (
+            Recorded::Value(Some(AdvisorModifierCache::default())),
+            "CAdvisor::vf2@1412902F0 saves traits and the own modifier block, not the independently rebuilt +0x1A0 modifier cache",
+        ),
+        (
+            Recorded::Value(None),
+            "AdvisorRoles.modifier_cache is explicitly unavailable",
+        ),
+        (
+            Recorded::NotRecorded,
+            "AdvisorRoles.modifier_cache not recorded",
+        ),
+    ] {
+        let TableView::Complete(TableRows::AdvisorRoles(rows)) =
+            &mut *frame.tables[TableId::AdvisorRoles.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].modifier_cache = cache;
+        let mut report = Report::default();
+        compare_advisors(&frame, manager, &links, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        assert_eq!(report.compared_tables["AdvisorRoles"], 1);
+        assert_eq!(report.limitations[reason].len(), 1);
+    }
+}
+
+#[test]
+fn operative_codename_oracle_checks_both_hosts_and_saved_omissions() {
+    use installed_content::save::{DivisionName, intel};
+    use replay::rows::{CharacterOperativeRow, NameOperands};
+    let (mut frame, _, _) = fixture();
+    let naming = NameOperands {
+        kind: 2,
+        ordered: 1,
+        group: b"SYNTHETIC_GROUP".to_vec(),
+        ..Default::default()
+    };
+    *frame.tables[TableId::CharacterOperatives.index()] =
+        TableView::Complete(TableRows::CharacterOperatives(vec![
+            CharacterOperativeRow {
+                character: 7,
+                reference: handle(4713, 9),
+                resolved: true,
+                category: 3,
+                codename: Recorded::Value(Some(naming.clone())),
+                name: Recorded::Value(Some(b"unsaved name".to_vec())),
+                ..Default::default()
+            },
+        ]));
+    *frame.tables[TableId::UnitLeaders.index()] =
+        TableView::Complete(TableRows::UnitLeaders(vec![UnitLeaderRow {
+            reference_type: 4713,
+            id: 9,
+            kind: 3,
+            codename: Recorded::Value(Some(naming)),
+            ..Default::default()
+        }]));
+    let mut pack = intel::Pack::default();
+    pack.countries.insert(
+        b"XXX".to_vec(),
+        intel::Country {
+            agency: Some(intel::Agency {
+                name: None,
+                created: false,
+                upgrade_progress: Decimal::parse(b"0").unwrap(),
+                defense: Decimal::parse(b"0").unwrap(),
+                active_count: 1,
+                unknown_f0: 0,
+                admission_ceiling: 1,
+                operatives: vec![intel::OperativeEntry {
+                    id: handle(4713, 9),
+                    codename: Some(DivisionName {
+                        kind: 2,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                recruitment: None,
+                cryptology: None,
+            }),
+            ..Default::default()
+        },
+    );
+    let mut report = Report::default();
+    compare_codenames(&frame, &pack, &mut report).unwrap();
+    assert!(report.differences.is_empty());
+    assert_eq!(report.scalar_checks, 8);
+    assert_eq!(report.compared_tables["CharacterOperatives codenames"], 1);
+    assert_eq!(report.compared_tables["UnitLeaders codenames"], 1);
+    assert!(report.limitations.keys().any(|reason| {
+        reason.contains("140C0D920 saves name from +0x20")
+            && reason.contains("localized +0x40 string")
+    }));
+    let change = |pack: &mut intel::Pack, value| {
+        pack.countries
+            .get_mut(b"XXX".as_slice())
+            .unwrap()
+            .agency
+            .as_mut()
+            .unwrap()
+            .operatives[0]
+            .codename = value;
+    };
+    change(
+        &mut pack,
+        Some(DivisionName {
+            kind: 2,
+            order: Some(-1),
+            ..Default::default()
+        }),
+    );
+    let mut report = Report::default();
+    compare_codenames(&frame, &pack, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 2);
+    change(
+        &mut pack,
+        Some(DivisionName {
+            kind: 2,
+            custom: Some(b"player rename".to_vec()),
+            ..Default::default()
+        }),
+    );
+    let mut report = Report::default();
+    compare_codenames(&frame, &pack, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 2);
+    change(&mut pack, None);
+    let mut report = Report::default();
+    compare_codenames(&frame, &pack, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 2);
+}
+
+#[test]
+fn operative_name_and_codename_compatibility_gaps_are_named_and_counted() {
+    use replay::rows::CharacterOperativeRow;
+    let (mut frame, _, _) = fixture();
+    *frame.tables[TableId::CharacterOperatives.index()] =
+        TableView::Complete(TableRows::CharacterOperatives(
+            (1..=2)
+                .map(|id| CharacterOperativeRow {
+                    character: id,
+                    reference: handle(4713, id),
+                    resolved: true,
+                    category: 3,
+                    name: Recorded::NotRecorded,
+                    codename: Recorded::NotRecorded,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    *frame.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(
+        (1..=2)
+            .map(|id| UnitLeaderRow {
+                reference_type: 4713,
+                id,
+                kind: 3,
+                codename: Recorded::NotRecorded,
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    for whole_frame in [false, true] {
+        let mut report = Report::default();
+        if whole_frame {
+            report.record_tables(&frame);
+        }
+        compare_codenames(
+            &frame,
+            &installed_content::save::intel::Pack::default(),
+            &mut report,
+        )
+        .unwrap();
+        assert!(report.differences.is_empty());
+        assert_eq!(report.scalar_checks, 0);
+        assert_eq!(report.compared_tables["CharacterOperatives codenames"], 0);
+        assert_eq!(report.compared_tables["UnitLeaders codenames"], 0);
+        for field in [
+            "CharacterOperatives.name",
+            "CharacterOperatives.codename",
+            "UnitLeaders.codename",
+        ] {
+            let subjects = &report.limitations[&format!("{field} not recorded")];
+            if whole_frame {
+                assert_eq!(subjects, &[format!("{field}: 2 rows not recorded")]);
+            } else {
+                assert_eq!(subjects.len(), 2);
+            }
+        }
+        assert!(
+            !report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("explicitly unavailable") || reason.contains("+0x40"))
+        );
+    }
+}
+
+#[test]
+fn operative_name_and_codename_native_absence_is_named_separately() {
+    use replay::rows::CharacterOperativeRow;
+    let (mut frame, _, _) = fixture();
+    *frame.tables[TableId::CharacterOperatives.index()] =
+        TableView::Complete(TableRows::CharacterOperatives(vec![
+            CharacterOperativeRow {
+                character: 7,
+                reference: handle(4713, 9),
+                resolved: true,
+                category: 3,
+                name: Recorded::Value(None),
+                codename: Recorded::Value(None),
+                ..Default::default()
+            },
+        ]));
+    *frame.tables[TableId::UnitLeaders.index()] =
+        TableView::Complete(TableRows::UnitLeaders(vec![UnitLeaderRow {
+            reference_type: 4713,
+            id: 9,
+            kind: 3,
+            codename: Recorded::Value(None),
+            ..Default::default()
+        }]));
+    let mut report = Report::default();
+    compare_codenames(
+        &frame,
+        &installed_content::save::intel::Pack::default(),
+        &mut report,
+    )
+    .unwrap();
+    assert!(report.differences.is_empty());
+    assert_eq!(report.scalar_checks, 0);
+    for field in [
+        "CharacterOperatives.name",
+        "CharacterOperatives.codename",
+        "UnitLeaders.codename",
+    ] {
+        assert_eq!(
+            report.limitations[&format!("{field} is explicitly unavailable")].len(),
+            1
+        );
+    }
+    assert!(
+        !report
+            .limitations
+            .keys()
+            .any(|reason| reason.ends_with("not recorded"))
+    );
+}
 
 /// The country-leader traits of one `common/country_leader` file.
 fn leader_traits(text: &str) -> LeaderTraits {

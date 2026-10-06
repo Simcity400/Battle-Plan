@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn report_prints_the_recordings_accepted_format() {
+    for version in [
+        replay::rows::compatibility::PROVEN_FROM,
+        97,
+        replay::FORMAT_VERSION,
+    ] {
+        let format = replay::format::FormatVersion::read(version).unwrap();
+        let tables = TableId::ALL
+            .into_iter()
+            .filter(|table| table.last_change().present(version))
+            .count();
+        assert_eq!(
+            Report::format_line(format),
+            format!("Replay format {version}: comparison checks {tables} table types")
+        );
+    }
+}
+
+#[test]
 fn oracle_output_keeps_the_latest_uncovered_content_note() {
     let root = std::env::temp_dir().join(format!(
         "hoi4_oracle_content_notes_{}_{:?}",
@@ -11,8 +30,8 @@ fn oracle_output_keeps_the_latest_uncovered_content_note() {
     fs::create_dir_all(root.join("gfx/leaders")).unwrap();
     fs::write(root.join("events/a.txt"), b"synthetic event").unwrap();
     fs::write(root.join("gfx/leaders/a.tga"), b"synthetic portrait").unwrap();
-    let layers = installed_content::ResolvedLayers::from_folders_with_coverage_policy(&[(&root, &[])], 2)
-        .unwrap();
+    let layers =
+        installed_content::ResolvedLayers::from_folders_with_coverage_policy(&[(&root, &[])], 2).unwrap();
     let report = Report {
         content_reads: Some(layers.report_uncovered_reads()),
         ..Default::default()
@@ -20,12 +39,17 @@ fn oracle_output_keeps_the_latest_uncovered_content_note() {
     assert_eq!(report.content_warning(), None);
     layers.read("events/a.txt").unwrap();
     assert!(
-        report.content_warning().unwrap().starts_with("Content: 1 file(s)")
+        report
+            .content_warning()
+            .unwrap()
+            .starts_with("Content: 1 file(s)")
     );
     layers.clone().read("gfx/leaders/a.tga").unwrap();
     let note = report.content_warning().unwrap();
     assert!(note.starts_with("Content: 2 file(s)"));
-    assert!(note.contains("coverage policy 2; these bytes are not hash-verified: events/a.txt, gfx/leaders/a.tga"));
+    assert!(note.contains(
+        "coverage policy 2; these bytes are not hash-verified: events/a.txt, gfx/leaders/a.tga"
+    ));
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -358,4 +382,154 @@ fn compatibility_field_limitations_aggregate_counts_without_duplicate_subjects()
             );
         }
     }
+}
+
+#[test]
+fn compatibility_nested_field_limitations_are_counted_after_table_aggregation() {
+    use replay::rows::{
+        LandBorderWarInputs, LandCombatDetailsRow, NavalCombatDetailsRow,
+        NavalCombatResultDetailsRow, NavalCommanderInputs, Recorded,
+    };
+
+    let (mut frame, ..) = tests::fixture();
+    let old_commander = NavalCommanderInputs {
+        timed_traits: Recorded::NotRecorded,
+        ..Default::default()
+    };
+    let old_border = LandBorderWarInputs {
+        combat_width: Recorded::NotRecorded,
+        ..Default::default()
+    };
+    let live: Vec<_> = (1..=5_000)
+        .map(|combat| {
+            let mut row = NavalCombatDetailsRow {
+                combat,
+                ..Default::default()
+            };
+            for side in &mut row.sides {
+                side.commander_inputs = Some(old_commander.clone());
+            }
+            row
+        })
+        .collect();
+    let results: Vec<_> = (1..=5_000)
+        .map(|result| {
+            let mut row = NavalCombatResultDetailsRow {
+                result,
+                ..Default::default()
+            };
+            for side in &mut row.sides {
+                side.commander_context = Some(old_commander.clone());
+                side.hq_commander_context = Some(old_commander.clone());
+            }
+            row
+        })
+        .collect();
+    let land: Vec<_> = (1..=5_000)
+        .map(|combat| LandCombatDetailsRow {
+            combat,
+            border_war: Recorded::Value(Some(old_border.clone())),
+            ..Default::default()
+        })
+        .collect();
+    *frame.tables[TableId::NavalCombatDetails.index()] =
+        TableView::Complete(TableRows::NavalCombatDetails(live));
+    *frame.tables[TableId::NavalCombatResultDetails.index()] = TableView::Truncated {
+        rows: TableRows::NavalCombatResultDetails(results),
+        missing: 1,
+    };
+    *frame.tables[TableId::LandCombatDetails.index()] =
+        TableView::Complete(TableRows::LandCombatDetails(land));
+    let mut report = Report::default();
+    report.record_tables(&frame);
+    let TableView::Complete(TableRows::NavalCombatDetails(rows)) =
+        &*frame.tables[TableId::NavalCombatDetails.index()]
+    else {
+        unreachable!()
+    };
+    for row in rows {
+        for side in &row.sides {
+            assert!(
+                report
+                    .recorded(
+                        &side.commander_inputs.as_ref().unwrap().timed_traits,
+                        "NavalCommanderInputs.timed_traits",
+                        row.combat.to_string(),
+                    )
+                    .is_none()
+            );
+        }
+    }
+    let TableView::Truncated {
+        rows: TableRows::NavalCombatResultDetails(rows),
+        ..
+    } = &*frame.tables[TableId::NavalCombatResultDetails.index()]
+    else {
+        unreachable!()
+    };
+    for row in rows {
+        for side in &row.sides {
+            for commander in [&side.commander_context, &side.hq_commander_context] {
+                assert!(
+                    report
+                        .recorded(
+                            &commander.as_ref().unwrap().timed_traits,
+                            "NavalCommanderInputs.timed_traits",
+                            row.result.to_string(),
+                        )
+                        .is_none()
+                );
+            }
+        }
+    }
+    let TableView::Complete(TableRows::LandCombatDetails(rows)) =
+        &*frame.tables[TableId::LandCombatDetails.index()]
+    else {
+        unreachable!()
+    };
+    for row in rows {
+        let border = row
+            .border_war
+            .require("LandCombatDetails.border_war")
+            .unwrap();
+        assert!(
+            report
+                .recorded(
+                    &border.as_ref().unwrap().combat_width,
+                    "LandBorderWarInputs.combat_width",
+                    row.combat.to_string(),
+                )
+                .is_none()
+        );
+    }
+    assert_eq!(report.limitations.len(), 2);
+    for (name, count) in [
+        ("NavalCommanderInputs.timed_traits", 30_000),
+        ("LandBorderWarInputs.combat_width", 5_000),
+    ] {
+        assert_eq!(
+            report.limitations[&format!("{name} not recorded")],
+            [format!("{name}: {count} rows not recorded")]
+        );
+    }
+    let native_commander = NavalCommanderInputs::default();
+    assert!(
+        report
+            .recorded(
+                &native_commander.timed_traits,
+                "NavalCommanderInputs.timed_traits",
+                "observed empty traits",
+            )
+            .unwrap()
+            .is_empty()
+    );
+    let native_border = LandBorderWarInputs::default();
+    assert_eq!(
+        report.recorded(
+            &native_border.combat_width,
+            "LandBorderWarInputs.combat_width",
+            "observed zero width",
+        ),
+        Some(&0)
+    );
 }

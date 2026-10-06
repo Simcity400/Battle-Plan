@@ -378,6 +378,8 @@ impl Section {
                             target.key_start = source.key_start - entry.bytes.start + byte_start;
                             target.idea_start = source.idea_start - entry.bytes.start + byte_start;
                             target.slot_start = source.slot_start - entry.bytes.start + byte_start;
+                            target.modifier_start =
+                                source.modifier_start - entry.bytes.start + byte_start;
                         }
                         batch.len += rows;
                         batch.bytes_len += bytes;
@@ -394,13 +396,20 @@ impl Section {
                                 // controls. Their future reuse is certified by the
                                 // watched revision, never by these omitted reads.
                                 let _payload = self.plan.untracked_reads();
-                                cadvisor::walk_entry(&map, context.base, character, rows, bytes)
-                                    .into()
+                                cadvisor::walk_definitions_entry(
+                                    &map,
+                                    context.base,
+                                    character,
+                                    rows,
+                                    bytes,
+                                )
+                                .into()
                             },
                             |row, offset| {
                                 relocate(&mut row.key_start, offset)
                                     && relocate(&mut row.idea_start, offset)
                                     && relocate(&mut row.slot_start, offset)
+                                    && relocate(&mut row.modifier_start, offset)
                             },
                         );
                         self.counts.read += 1;
@@ -424,6 +433,8 @@ impl Section {
                                             old_row.idea_start - old.bytes.start + byte_start;
                                         old_row.slot_start =
                                             old_row.slot_start - old.bytes.start + byte_start;
+                                        old_row.modifier_start =
+                                            old_row.modifier_start - old.bytes.start + byte_start;
                                         *new == old_row
                                     });
                             if !same {
@@ -583,34 +594,201 @@ enum Source<'a> {
     },
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct ModifierSpan {
+    start: usize,
+    len: usize,
+    recorded: bool,
+}
+
+static LIVE_MODIFIER_ROWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static LIVE_MODIFIER_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static MODIFIER_CAPTURED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static MODIFIER_REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn note_modifier_demand(demand: cadvisor::ModifierDemand) {
+    use std::sync::atomic::Ordering::Relaxed;
+    LIVE_MODIFIER_ROWS.fetch_max(demand.rows, Relaxed);
+    LIVE_MODIFIER_BYTES.fetch_max(demand.bytes, Relaxed);
+}
+
+fn live_modifier_demand() -> cadvisor::ModifierDemand {
+    use std::sync::atomic::Ordering::Relaxed;
+    cadvisor::ModifierDemand {
+        rows: LIVE_MODIFIER_ROWS.load(Relaxed),
+        bytes: LIVE_MODIFIER_BYTES.load(Relaxed),
+    }
+}
+
+pub(super) fn modifier_status() -> impl serde::Serialize {
+    use std::sync::atomic::Ordering::Relaxed;
+    crate::status::status!({
+        "captured": MODIFIER_CAPTURED.load(Relaxed),
+        "refused": MODIFIER_REFUSED.load(Relaxed),
+        "refusals": {
+            "advisor modifier cache exceeds admitted capacity": MODIFIER_REFUSED.load(Relaxed),
+        },
+        "scope": "cumulative hourly advisor modifier inputs; capacity refusals leave modifier_cache absent and retain AdvisorRoles and definition certificates",
+    })
+}
+
+pub(super) fn record_modifiers(rows: &[cadvisor::Row]) {
+    use std::sync::atomic::Ordering::Relaxed;
+    MODIFIER_CAPTURED.fetch_add(
+        rows.iter().filter(|row| row.modifier_recorded).count() as u64,
+        Relaxed,
+    );
+    MODIFIER_REFUSED.fetch_add(
+        rows.iter()
+            .filter(|row| row.modifier_failure.is_some())
+            .count() as u64,
+        Relaxed,
+    );
+}
+
+/// Fresh hourly inputs, outside the mutation-certified definition program.
+/// These headers and entries are never supplied by a previous observation.
+#[derive(Debug)]
+struct Modifiers {
+    spans: Vec<ModifierSpan>,
+    bytes: Vec<u8>,
+    len: usize,
+    required_rows: usize,
+    required_bytes: usize,
+    shortfall: usize,
+    failure: Option<&'static str>,
+    charge: crate::raw_memory::Charge,
+}
+
+impl Modifiers {
+    fn with_demand(demand: cadvisor::ModifierDemand) -> Self {
+        let mut value = Self {
+            spans: owned_vec(default_vec(crate::country_scale::rows(demand.rows, 1))),
+            bytes: owned_vec(default_vec(crate::country_scale::rows(demand.bytes, 1))),
+            len: 0,
+            required_rows: 0,
+            required_bytes: 0,
+            shortfall: 0,
+            failure: None,
+            charge: Default::default(),
+        };
+        value.update_charge();
+        value
+    }
+
+    fn update_charge(&mut self) {
+        self.charge.set(crate::raw_memory::Capacity {
+            payload_vectors: crate::raw_memory::vector_bytes(&self.spans)
+                + crate::raw_memory::vector_bytes(&self.bytes),
+            ..Default::default()
+        });
+    }
+
+    fn needs_growth(&self) -> bool {
+        let live = live_modifier_demand();
+        self.shortfall != 0
+            || self.required_rows.max(live.rows) > self.spans.len()
+            || self.required_bytes.max(live.bytes) > self.bytes.len()
+    }
+
+    fn grow(&mut self) {
+        let live = live_modifier_demand();
+        let rows = self.spans.len().max(crate::country_scale::rows(
+            self.required_rows.max(live.rows),
+            1,
+        ));
+        let bytes = self.bytes.len().max(crate::country_scale::rows(
+            self.required_bytes.max(live.bytes),
+            1,
+        ));
+        if resize(&mut self.spans, rows, ModifierSpan::default()).is_err()
+            || resize(&mut self.bytes, bytes, 0).is_err()
+        {
+            return;
+        }
+        self.update_charge();
+    }
+
+    fn capture<'a>(&mut self, memory: &impl Memory, rows: impl Iterator<Item = &'a cadvisor::Row>) {
+        self.len = 0;
+        self.required_rows = 0;
+        self.required_bytes = 0;
+        self.shortfall = 0;
+        self.failure = None;
+        self.spans.fill(ModifierSpan::default());
+        let result = (|| {
+            for row in rows {
+                let array = cadvisor::modifier_entries(memory, row.pointer)?;
+                let len = (array.count as usize)
+                    .checked_mul(engine::modifier_entry::STRIDE)
+                    .ok_or("advisor modifier cache size overflow")?;
+                self.required_bytes = self
+                    .required_bytes
+                    .checked_add(len)
+                    .ok_or("advisor byte count overflow")?;
+                let index = self.required_rows;
+                self.required_rows = index.checked_add(1).ok_or("advisor row count overflow")?;
+                if index >= self.spans.len() || len > self.bytes.len() - self.len {
+                    self.shortfall += 1;
+                    // The guarded header sizes the next off-thread arena.
+                    continue;
+                }
+                let start = self.len;
+                cadvisor::copy_modifier_entries(
+                    memory,
+                    array,
+                    &mut self.bytes[start..start + len],
+                )?;
+                self.spans[index] = ModifierSpan {
+                    start,
+                    len,
+                    recorded: true,
+                };
+                self.len += len;
+            }
+            Ok(())
+        })();
+        if let Err(reason) = result {
+            self.failure.get_or_insert(reason);
+        }
+    }
+}
+
 /// Independent historical/generated certificates keep generated roster growth
 /// from invalidating the large historical pass. Roots are acquired once first.
 #[derive(Debug)]
 pub(crate) struct Cache {
     sections: [Section; 2],
+    modifiers: Modifiers,
     pub(super) result: ReadResult,
     pub(super) raw_bytes: u64,
     pub(super) counts: Counts,
 }
 impl Cache {
     pub fn new() -> Self {
+        Self::with_modifier_demand(live_modifier_demand())
+    }
+
+    pub(super) fn with_modifier_demand(demand: cadvisor::ModifierDemand) -> Self {
         Self {
             sections: [
                 Section::with_capacity(16384, 1 << 20, 16384),
                 Section::with_capacity(4096, 1 << 18, 8192),
             ],
+            modifiers: Modifiers::with_demand(demand),
             result: ReadResult::rows(Outcome::Rows { len: 0 }),
             raw_bytes: 0,
             counts: Counts::default(),
         }
     }
     pub fn needs_growth(&self) -> bool {
-        self.sections.iter().any(Section::needs_growth)
+        self.sections.iter().any(Section::needs_growth) || self.modifiers.needs_growth()
     }
     pub fn grow(&mut self) {
         for section in &mut self.sections {
             section.grow();
         }
+        self.modifiers.grow();
     }
     pub fn prepare(&mut self) {
         for section in &mut self.sections {
@@ -628,6 +806,9 @@ impl Cache {
     ) {
         self.counts = Counts::default();
         self.raw_bytes = 0;
+        for section in &mut self.sections {
+            section.raw_bytes = 0;
+        }
         self.result = ReadResult::rows(Outcome::Rows { len: 0 });
         let counted = Counted::new(memory);
         let before = observer.quiet();
@@ -673,7 +854,6 @@ impl Cache {
                     sample[5..10].copy_from_slice(&section.diagnostic);
                     sample[10] = section.characters as u64;
                 }
-                self.raw_bytes += section.raw_bytes;
                 self.counts.planned += section.counts.planned;
                 self.counts.reused += section.counts.reused;
                 self.counts.read += section.counts.read;
@@ -715,23 +895,62 @@ impl Cache {
         })();
         #[cfg(feature = "advisor_profile")]
         profile::record(measurements);
-        self.raw_bytes += counted.bytes.get();
         if let Err(reason) = result {
             self.result = ReadResult::rows(Outcome::Unavailable { reason });
             for section in &mut self.sections {
                 section.valid = false;
                 section.plan.invalidate();
             }
+        } else {
+            self.modifiers.capture(
+                &counted,
+                self.sections.iter().flat_map(|section| {
+                    section.current.rows[..section.result.outcome.len()].iter()
+                }),
+            );
+            if let Some(reason) = self.modifiers.failure {
+                self.result = ReadResult::rows(Outcome::Unavailable { reason });
+                for section in &mut self.sections {
+                    section.valid = false;
+                    section.plan.invalidate();
+                }
+            }
         }
+        self.raw_bytes = self
+            .sections
+            .iter()
+            .map(|section| section.raw_bytes)
+            .sum::<u64>()
+            + counted.bytes.get();
     }
     pub fn decode(&self, captured: &mut Captured) {
         if let Outcome::Unavailable { .. } = self.result.outcome {
             captured.advisors.primary(self.result);
             return;
         }
+        let Some(bytes_len) = self.result.bytes_len.checked_add(self.modifiers.len) else {
+            captured
+                .advisors
+                .primary(ReadResult::rows(Outcome::Unavailable {
+                    reason: "advisor byte count overflow",
+                }));
+            return;
+        };
+        let Some(required_bytes) = self
+            .result
+            .required_bytes
+            .checked_add(self.modifiers.required_bytes)
+        else {
+            captured
+                .advisors
+                .primary(ReadResult::rows(Outcome::Unavailable {
+                    reason: "advisor byte count overflow",
+                }));
+            return;
+        };
         if let Err(reason) = captured.reserve_advisors(AdvisorDemand {
             rows: self.result.outcome.len(),
-            bytes: self.result.bytes_len,
+            bytes: bytes_len,
             overflowed: false,
         }) {
             captured
@@ -741,6 +960,9 @@ impl Cache {
         }
         let mut row_start = 0;
         let mut byte_start = 0;
+        let modifier_start = self.result.bytes_len;
+        captured.advisors.bytes.first[modifier_start..modifier_start + self.modifiers.len]
+            .copy_from_slice(&self.modifiers.bytes[..self.modifiers.len]);
         for section in &self.sections {
             let len = section.result.outcome.len();
             let bytes = section.result.bytes_len;
@@ -754,11 +976,31 @@ impl Cache {
                 target.key_start += byte_start;
                 target.idea_start += byte_start;
                 target.slot_start += byte_start;
+                let modifier = self
+                    .modifiers
+                    .spans
+                    .get(row_start)
+                    .copied()
+                    .unwrap_or_default();
+                target.modifier_start = if modifier.recorded {
+                    modifier_start + modifier.start
+                } else {
+                    0
+                };
+                target.modifier_len = modifier.len;
+                target.modifier_recorded = modifier.recorded;
+                target.modifier_failure =
+                    (!modifier.recorded).then_some(cadvisor::MODIFIER_CAPACITY_REASON);
+                row_start += 1;
             }
-            row_start += len;
             byte_start += bytes;
         }
-        captured.advisors.primary(self.result);
+        captured.advisors.primary(ReadResult {
+            bytes_len,
+            required_bytes,
+            ..self.result
+        });
+        record_modifiers(&captured.advisors.rows.rows[..row_start]);
     }
 }
 

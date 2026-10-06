@@ -237,6 +237,8 @@ fn seed() -> engine::carmy::DivisionSeed {
         entrenchment: Some(0),
         entrenchment_cap: Some(0),
         counter_supply_status: Some(0),
+        supply_grace_maximum: Some(0),
+        supply_grace_remaining: Some(0),
         invalid_orders: Some(0),
         strength_factor: Some(0),
         exiled: Some(0),

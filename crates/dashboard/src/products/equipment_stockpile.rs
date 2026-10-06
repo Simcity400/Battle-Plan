@@ -44,9 +44,12 @@
 //! `max(0, stock)`, so `max(0, stock) − balance` is exactly `clamp(Demand +
 //! PoolDifference)`: what divisions, training, garrisons, air wings and operations
 //! need plus net outgoing lend-lease. For the other archetypes `Avail` holds terms
-//! the recording lacks (the live convoy pool, the supply system's trucks and
-//! trains), so their need is not derived ([`StockType::need_note`]), and a value at
-//! the saturation bound is not a real sum.
+//! the recording does not establish at the daily calculation (the live convoy
+//! pool and supply adjustments), so their need is not derived
+//! ([`StockType::need_note`]). Hourly TrainInventory records allocated trucks and
+//! required trains; it does not bind them to the daily balance, nor record the
+//! truck subtractor at supply+0xc8 (14135DBC0). A value at the saturation bound
+//! is not a real sum.
 //!
 //! Stockpiles and production lines are read in one daily slot and carried in
 //! between (`metadata::slot_read`); both come from the same read, so their values
@@ -403,8 +406,9 @@ struct Cache {
 use super::equipment::{archetype_of, equipment_warnings};
 
 /// Why an archetype's need cannot be derived from its logistics record, when its
-/// available stock holds terms the recording lacks (`Logistics_GetAvailable
-/// EquipmentStockpile@14135dbc0`); none when `Avail` is exactly `max(0, stock)`.
+/// available stock holds terms not established at the daily calculation
+/// (`Logistics_GetAvailableEquipmentStockpile@14135dbc0`); none when `Avail`
+/// is exactly `max(0, stock)`.
 fn need_note(types: &Database, archetype: &str) -> Result<Option<String>, String> {
     let kind = types
         .named(archetype)
@@ -413,9 +417,9 @@ fn need_note(types: &Database, archetype: &str) -> Result<Option<String>, String
     Ok(if category & 1 != 0 {
         Some("The game counts its live convoy pool here, not the recorded stock, so what is needed cannot be derived.".to_owned())
     } else if kind.supply_truck {
-        Some("The game adds the supply system's trucks to its stock here, which the recording lacks, so what is needed cannot be derived.".to_owned())
+        Some("The game's daily balance uses truck adjustments that the recording does not establish at that update, so what is needed cannot be derived.".to_owned())
     } else if category & (1 << 31) != 0 {
-        Some("The game takes the supply system's trains off its stock here, which the recording lacks, so what is needed cannot be derived.".to_owned())
+        Some("The hourly train requirement does not establish the trains used by the game's daily balance update, so what is needed cannot be derived.".to_owned())
     } else {
         None
     })
@@ -423,9 +427,7 @@ fn need_note(types: &Database, archetype: &str) -> Result<Option<String>, String
 
 /// The same archetype name for the recorded reply and offline preparation.
 pub(crate) fn type_name(catalogue: &crate::catalogue::Catalogue, key: &str) -> Option<String> {
-    let name = catalogue
-        .text(key)
-        .filter(|name| !name.is_empty());
+    let name = catalogue.text(key).filter(|name| !name.is_empty());
     if name.is_none() {
         catalogue.note(crate::content_check::Finding::new(
             crate::content_check::Kind::Fallback,

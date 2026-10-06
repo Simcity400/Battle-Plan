@@ -1,5 +1,66 @@
 use super::*;
-use replay::rows::{LandDivisionModifier, LandDivisionWidthTerm};
+use replay::rows::{LandDivisionModifier, LandDivisionWidthTerm, Recorded};
+
+#[test]
+fn border_width_uses_the_recorded_base_and_native_signed_wrapping() {
+    let mut detail = LandCombatDetailsRow {
+        border_war: Recorded::Value(Some(replay::rows::LandBorderWarInputs {
+            combat_width: Recorded::Value(8_000_000),
+            ..Default::default()
+        })),
+        ..Default::default()
+    };
+    assert_eq!(border_width(&detail), Ok(8_000_000));
+    detail.width_factor = 25_000;
+    assert_eq!(border_width(&detail), Ok(10_000_000));
+    detail
+        .border_war
+        .require_mut("LandCombatDetails.border_war")
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .combat_width = Recorded::Value(-1);
+    assert_eq!(border_width(&detail), Ok(-1));
+    detail.width_factor = i64::MAX;
+    detail
+        .border_war
+        .require_mut("LandCombatDetails.border_war")
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .combat_width = Recorded::Value(i64::MIN);
+    assert_eq!(border_width(&detail), Ok(-92_233_720_368_547));
+    detail
+        .border_war
+        .require_mut("LandCombatDetails.border_war")
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .combat_width = Recorded::Value(0);
+    assert_eq!(border_width(&detail), Ok(0));
+    detail
+        .border_war
+        .require_mut("LandCombatDetails.border_war")
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .combat_width = Recorded::NotRecorded;
+    assert_eq!(
+        border_width(&detail),
+        Err("LandBorderWarInputs.combat_width not recorded".into())
+    );
+    detail.border_war = Recorded::NotRecorded;
+    assert_eq!(
+        border_width(&detail),
+        Err("LandCombatDetails.border_war not recorded".into())
+    );
+    detail.border_war = Recorded::Value(None);
+    assert!(
+        border_width(&detail)
+            .unwrap_err()
+            .contains("absent for the border combat")
+    );
+}
 
 #[test]
 fn early_score_uses_opposing_committed_damage_and_all_current_organisation() {
@@ -441,23 +502,47 @@ fn width_replays_direction_grouping_and_totals() {
 
 #[test]
 fn border_width_badge_refuses_missing_configured_width_instead_of_terrain_totals() {
-    let detail = LandCombatDetailsRow::default();
+    let mut detail = LandCombatDetailsRow {
+        border_war: Recorded::Value(Some(replay::rows::LandBorderWarInputs {
+            combat_width: Recorded::NotRecorded,
+            ..Default::default()
+        })),
+        ..Default::default()
+    };
     let terrain = [7_000_000, 3_500_000];
     for directions in [1, 2] {
         let expected = if directions == 1 { "70" } else { "105" };
         assert_eq!(
-            width_badge(Some(false), || Ok(total_width(
+            width_badge(&detail, Some(false), || Ok(total_width(
                 &detail, terrain, directions
             ))),
             Ok(expected.into())
         );
-        let refusal = width_badge(Some(true), || unreachable!()).unwrap_err();
-        assert!(refusal.contains("CLandBorderWarCombat configured width +0xD8"));
-        assert!(refusal.contains("1413D6800"));
+        assert_eq!(
+            width_badge(&detail, Some(true), || unreachable!()),
+            Err("LandBorderWarInputs.combat_width not recorded".into())
+        );
     }
     assert!(
-        width_badge(None, || unreachable!())
+        width_badge(&detail, None, || unreachable!())
             .unwrap_err()
             .contains("combat class")
+    );
+    detail.border_war = Recorded::NotRecorded;
+    assert_eq!(
+        width_badge(&detail, Some(false), || Ok(7_000_000)),
+        Ok("70".into())
+    );
+    assert_eq!(
+        width_badge(&detail, Some(true), || unreachable!()),
+        Err("LandCombatDetails.border_war not recorded".into())
+    );
+    detail.border_war = Recorded::Value(Some(replay::rows::LandBorderWarInputs {
+        combat_width: Recorded::Value(0),
+        ..Default::default()
+    }));
+    assert_eq!(
+        width_badge(&detail, Some(true), || unreachable!()),
+        Ok("0".into())
     );
 }

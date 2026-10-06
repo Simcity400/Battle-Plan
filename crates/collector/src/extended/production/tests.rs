@@ -614,6 +614,7 @@ fn arenas_preserve_bytes_and_native_ordinals_and_refuse_out_of_bounds_spans() {
         icon_active: 0xfe,
         icon_kind: u32::MAX,
         icon: TextSpan { start: 1, len: 3 },
+        version: u8::MAX,
     };
     captured.variants.modules.outcome = Outcome::Rows { len: 2 };
     captured.variants.modules.rows[0] = equipment_module_container::Row {
@@ -637,6 +638,13 @@ fn arenas_preserve_bytes_and_native_ordinals_and_refuse_out_of_bounds_spans() {
     };
     let views = captured.tables();
     let definition = &complete::<tables::VariantDefinitions>(&views[3])[0];
+    assert_eq!(
+        definition
+            .version
+            .require("VariantDefinitions.version")
+            .unwrap(),
+        &u8::MAX
+    );
     assert_eq!(
         (&definition.display_name[..], &definition.variant_name[..]),
         (&[0xff, 0][..], &[0x80, b'A'][..])

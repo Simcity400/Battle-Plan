@@ -29,11 +29,25 @@ impl Frame {
         self.encode_with_sizes(out).map(|_| ())
     }
 
+    /// Sizes current frames. Decoded recordings use `table_encoded_sizes_version`
+    /// with their source version.
     pub fn table_encoded_sizes(&self) -> io::Result<[usize; TABLE_COUNT]> {
+        self.table_encoded_sizes_version(FormatVersion::CURRENT)
+    }
+
+    /// Counts only tables present in the source recording, with its original
+    /// field prefix and nested values; historical rows are never rewritten.
+    pub fn table_encoded_sizes_version(
+        &self,
+        format: FormatVersion,
+    ) -> io::Result<[usize; TABLE_COUNT]> {
         // Size decoded values directly: absent historical fields are not
         // re-encoded as current rows, and deltas retain their recorded mask width.
         TableId::ALL
             .map(|table| {
+                if !table.last_change().present(format.version()) {
+                    return Ok(0);
+                }
                 let bytes = match &self.tables[table.index()] {
                     TableUpdate::Snapshot(rows) => 1 + rows.recorded_rows_bytes()?,
                     TableUpdate::Truncated { rows, .. } => 5 + rows.recorded_rows_bytes()?,

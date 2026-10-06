@@ -281,7 +281,7 @@ fn advisor_exact_batches_reduce_guards_and_discard_every_failed_span() {
     let traced = TracedMemory::new(&bytes, None);
     let result = cadvisor::walk_entry(&traced, 0, entry, &mut rows, &mut names);
     assert_eq!(result.outcome, Outcome::Rows { len: 1 });
-    assert_eq!(traced.guards.get(), 9);
+    assert_eq!(traced.guards.get(), 10);
     assert_eq!(
         traced
             .reads
@@ -289,7 +289,7 @@ fn advisor_exact_batches_reduce_guards_and_discard_every_failed_span() {
             .iter()
             .map(|&(_, len)| len)
             .sum::<usize>(),
-        237
+        253
     );
     assert_eq!(&names[..17], b"literal bytes\xff123");
     for (fault, untouched) in [
@@ -309,6 +309,65 @@ fn advisor_exact_batches_reduce_guards_and_discard_every_failed_span() {
                 .iter()
                 .any(|&(address, _)| address == untouched)
         );
+    }
+}
+
+#[test]
+fn advisor_cache_fit_and_shortfall_keep_the_existing_role() {
+    use crate::character_advisor_node as node;
+    let mut bytes = fixture();
+    let head = 0x840;
+    let role_node = 0xa00;
+    let role = 0x1300;
+    let data = 0x1c00;
+    u64_at(&mut bytes, FIRST + ADVISOR_MAP_SIZE, 1);
+    for offset in [0, 8, 16] {
+        u64_at(&mut bytes, head + offset, role_node as u64);
+        u64_at(&mut bytes, role_node + offset, head as u64);
+    }
+    u64_at(&mut bytes, role_node + node::ADVISOR, role as u64);
+    u32_at(&mut bytes, role_node + node::KEY_HASH, 17);
+    u64_at(&mut bytes, role, cadvisor::VTABLE_RVA as u64);
+    u64_at(&mut bytes, role + cadvisor::CHARACTER, FIRST as u64);
+    string(&mut bytes, role_node + node::KEY, b"key");
+    string(&mut bytes, role + cadvisor::IDEA_TOKEN, b"idea");
+    string(&mut bytes, role + cadvisor::SLOT, b"slot");
+    array(&mut bytes, role + cadvisor::MODIFIER_ENTRIES, data, 1);
+    u32_at(&mut bytes, data, 23);
+    u64_at(&mut bytes, data + 8, (-17_i64) as u64);
+    let entry = ccharacter_manager::Entry {
+        pointer: FIRST,
+        id: 900,
+        country: 7,
+        roster: 0,
+        ordinal: 0,
+    };
+    for (capacity, recorded, bytes_len) in [(27, true, 27), (26, false, 11)] {
+        let traced = TracedMemory::new(&bytes, None);
+        let mut rows = [cadvisor::Row::default(); 1];
+        let mut arena = vec![0; capacity];
+        let result = cadvisor::walk_entry(&traced, 0, entry, &mut rows, &mut arena);
+        assert_eq!(result.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(result.required_bytes, 27);
+        assert_eq!(result.bytes_len, bytes_len);
+        assert_eq!((rows[0].character, rows[0].country), (900, 7));
+        assert_eq!(&arena[..11], b"keyideaslot");
+        assert_eq!(rows[0].modifier_recorded, recorded);
+        assert_eq!(
+            rows[0].modifier_failure,
+            (!recorded).then_some(cadvisor::MODIFIER_CAPACITY_REASON)
+        );
+        assert_eq!(
+            traced
+                .reads
+                .borrow()
+                .iter()
+                .any(|&(address, _)| address == data),
+            recorded
+        );
+        if recorded {
+            assert_eq!(&arena[11..27], &bytes[data..data + 16]);
+        }
     }
 }
 

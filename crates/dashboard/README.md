@@ -381,9 +381,9 @@ completion cleanup; a combined scope saves its state before its country.
 Temporary country scorers load through the recorded content stack, reuse shared
 CScriptTargets/MTTH evaluation and retain native highest/sorted tie order.
 Array target filters run before the next indexed value is evaluated. Temporary
-random ranges refuse the unrecorded stored-variable seed except for native
-reversed-range no-ops. Temporary supply truck/train totals remain named,
-counted recording gaps; unknown supply types store native zero. Scorer dynamic
+random ranges refuse the unreproduced scoped-variable RNG context except for
+native reversed-range no-ops. Temporary supply truck/train totals remain named,
+counted operand-evaluation refusals; unknown supply types store native zero. Scorer dynamic
 tails and state-target modes are named refusals with no reached temporary
 scorer form in the audited corpus.
 
@@ -519,7 +519,7 @@ Balance context headers use the viewing country's perspective.
 
 Trigger-local temp assignment, addition, subtraction, multiplication, division, clamp, round and modulo execute in order over one evaluation's store ([variables/temps.rs](src/triggers/variables/temps.rs)). Nested checks share it; the next outer check clears it (1405354A0 / 140544190 / 140535830). A destination is inserted before its RHS, then read after the RHS and any alias conditions. Modulo (14047B280) instead caches the floored, signed32 target before its RHS, rounds the divisor to signed32, skips a negative target's RHS and preserves RHS mutations for a nonpositive divisor. The selected localisation's `random_list` weights and seed use that same evaluator. Arithmetic wraps at 64 bits before fixed5 division, round sends halves away from zero, zero division preserves the destination, and clamp applies max before min. Existing native trigger/effect readers supply the parsed items; no parallel reader is used. Core `CExpression` arithmetic is supported; other operators and repeated nonliteral operand reads remain named refusals. The separate `[?...]` text formatter remains unported.
 
-`set_temp_variable_to_random` remains a named, counted refusal: its TLS scoped-variable RNG (140537810, called by 14047B530) is initialized by 1405354A0 from unrecorded CVariables+8 words and scope/root hashes (140536DF0 / 140529EE0). The native effect reader's ambiguous bare scalar also retains its counted `Deferred effect` refusal (14047EF60 / 140481030). `randomize_temp_variable` is effect-only (registrar 14001BE20), so direct trigger bodies keep native invalid-key dispatch. Its own description (140176EE0, invoked by 140532780) is empty and never executes the setter; an actual effect-execution consumer is not ported. Its executor (1403452E0) draws from CEventScope+0x0C/+0x10 via 14039D050 or 1403A82C0 / 1424DB9D0, with the constructor seed derivation used by `random_list`. Neither random form uses the global game RNG. No outside-context residual temp history is inferred.
+`set_temp_variable_to_random` remains a named, counted refusal: its TLS scoped-variable RNG context and draws (1405354A0 / 140537810, called by 14047B530) are not reproduced from the recorded CVariables+8 seed and scope/root hashes (140536DF0 / 140529EE0). The native effect reader's ambiguous bare scalar also retains its counted `Deferred effect` refusal (14047EF60 / 140481030). `randomize_temp_variable` is effect-only (registrar 14001BE20), so direct trigger bodies keep native invalid-key dispatch. Its own description (140176EE0, invoked by 140532780) is empty and never executes the setter; an actual effect-execution consumer is not ported. Its executor (1403452E0) draws from CEventScope+0x0C/+0x10 via 14039D050 or 1403A82C0 / 1424DB9D0, with the constructor seed derivation used by `random_list`. Neither random form uses the global game RNG. No outside-context residual temp history is inferred.
 
 Explicit province text contexts use recorded province names, state ownership and perspective, with terrain from the recorded content stack. The native event scope cannot carry a province, and province text objects do not bind scripted entries.
 

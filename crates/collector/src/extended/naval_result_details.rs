@@ -34,6 +34,7 @@ pub struct Capacities {
     sources: usize,
     terms: usize,
     commanders: usize,
+    commander_timed_traits: usize,
 }
 impl Default for Capacities {
     fn default() -> Self {
@@ -46,6 +47,7 @@ impl Default for Capacities {
             sources: 1024,
             terms: 4096,
             commanders: 32,
+            commander_timed_traits: 0,
         }
     }
 }
@@ -72,6 +74,7 @@ pub struct Captured {
     sources: Arena<influence::SourceRow>,
     terms: Arena<influence::ModifierTerm>,
     commanders: Arena<commander::Row>,
+    commander_timed_traits: Arena<engine::cunit_leader::TimedTrait>,
     commander_keys: HashMap<u64, usize>,
 }
 impl Captured {
@@ -86,6 +89,7 @@ impl Captured {
             sources: Arena::new(0),
             terms: Arena::new(0),
             commanders: Arena::new(0),
+            commander_timed_traits: Arena::new(0),
             commander_keys: HashMap::default(),
         }
     }
@@ -104,6 +108,7 @@ impl Captured {
             sources: Arena::new(c.sources),
             terms: Arena::new(c.terms),
             commanders: Arena::new(c.commanders),
+            commander_timed_traits: Arena::new(c.commander_timed_traits),
             commander_keys,
         }
     }
@@ -116,6 +121,7 @@ impl Captured {
         self.sources.reset();
         self.terms.reset();
         self.commanders.reset();
+        self.commander_timed_traits.reset();
     }
     pub fn allocated_bytes(&self) -> usize {
         self.results.allocated_bytes()
@@ -133,6 +139,7 @@ impl Captured {
             + self.sources.allocated_bytes()
             + self.terms.allocated_bytes()
             + self.commanders.allocated_bytes()
+            + self.commander_timed_traits.allocated_bytes()
             + self.commander_keys.capacity() * (size_of::<(u64, usize)>() + 1)
     }
     pub fn grow(&mut self, c: &mut Capacities) {
@@ -146,6 +153,11 @@ impl Captured {
         c.sources = c.sources.max(self.sources.first.capacity());
         c.terms = c.terms.max(self.terms.first.capacity());
         c.commanders = c.commanders.max(self.commanders.first.capacity());
+        c.commander_timed_traits = c
+            .commander_timed_traits
+            .max(self.commander_timed_traits.first.capacity());
+        self.commander_timed_traits
+            .grow(&mut c.commander_timed_traits);
         self.results.grow(&mut c.results);
         // All owned arenas grow from readable entries in the original pass;
         // copy their allocations without trusting a failed payload's count.
@@ -190,6 +202,8 @@ impl Captured {
             sources: &mut self.sources.first,
             terms: &mut self.terms.first,
             commanders: &mut self.commanders.first,
+            commander_timed_traits: &mut self.commander_timed_traits.first,
+            commander_timed_traits_len: 0,
             commander_keys: &mut self.commander_keys,
             commanders_len: 0,
             commanders_required: 0,
@@ -206,6 +220,9 @@ impl Captured {
         };
         let lengths = pass.lengths;
         let required = pass.required_arenas;
+        let timed_length = pass.commander_timed_traits_len;
+        self.commander_timed_traits.len = timed_length;
+        self.commander_timed_traits.required = timed_length;
         let commander_length = pass.commanders_len;
         let commander_required = pass.commanders_required;
         self.commanders.len = commander_length;
@@ -260,12 +277,18 @@ impl Captured {
                     commander_context: s.commanders[0]
                         .filter(|index| self.commanders.first[*index].commander != 0)
                         .map(|index| {
-                            super::naval_details::commander_inputs(&self.commanders.first[index])
+                            super::naval_details::commander_inputs(
+                                &self.commanders.first[index],
+                                &self.commander_timed_traits.first,
+                            )
                         }),
                     hq_commander_context: s.commanders[1]
                         .filter(|index| self.commanders.first[*index].commander != 0)
                         .map(|index| {
-                            super::naval_details::commander_inputs(&self.commanders.first[index])
+                            super::naval_details::commander_inputs(
+                                &self.commanders.first[index],
+                                &self.commander_timed_traits.first,
+                            )
                         }),
                     hq_modifiers: owned_vec(collect_vec(
                         range(&self.sources.first, s.hq_modifiers).iter().map(|v| {
@@ -351,6 +374,8 @@ struct Pass<'a> {
     sources: &'a mut Vec<influence::SourceRow>,
     terms: &'a mut Vec<influence::ModifierTerm>,
     commanders: &'a mut Vec<commander::Row>,
+    commander_timed_traits: &'a mut Vec<engine::cunit_leader::TimedTrait>,
+    commander_timed_traits_len: usize,
     commander_keys: &'a mut HashMap<u64, usize>,
     commanders_len: usize,
     commanders_required: usize,
@@ -383,7 +408,13 @@ impl Pass<'_> {
         // the side's full handle while the optional context is absent.
         self.commanders[index] =
             if engine::creference_registry::resolve(memory, base, handle)?.is_some() {
-                commander::capture(memory, base, handle)?
+                commander::capture(
+                    memory,
+                    base,
+                    handle,
+                    self.commander_timed_traits,
+                    &mut self.commander_timed_traits_len,
+                )?
             } else {
                 commander::Row::default()
             };
@@ -536,6 +567,7 @@ mod tests {
             sources: n,
             terms: n,
             commanders: n,
+            commander_timed_traits: 0,
         }
     }
     #[test]
@@ -549,6 +581,7 @@ mod tests {
             sources: 1,
             terms: 1,
             commanders: 1,
+            commander_timed_traits: 0,
         };
         let mut captured = Captured::with_capacities(&c);
         let memory = engine::memory::SliceMemory {
@@ -602,6 +635,8 @@ mod tests {
             sources: &mut Vec::new(),
             terms: &mut Vec::new(),
             commanders: &mut Vec::new(),
+            commander_timed_traits: &mut Vec::new(),
+            commander_timed_traits_len: 0,
             commander_keys: &mut HashMap::default(),
             commanders_len: 0,
             commanders_required: 0,
@@ -661,6 +696,8 @@ mod tests {
             sources: &mut captured.sources.first,
             terms: &mut captured.terms.first,
             commanders: &mut captured.commanders.first,
+            commander_timed_traits: &mut captured.commander_timed_traits.first,
+            commander_timed_traits_len: 0,
             commander_keys: &mut captured.commander_keys,
             commanders_len: 0,
             commanders_required: 0,
@@ -702,6 +739,56 @@ mod tests {
         };
         assert_eq!(rows[0].sides[0].hq_influences.len(), COUNT);
         assert_eq!(rows[0].sides[0].hq_influences[COUNT - 1], COUNT as u64);
+    }
+
+    #[test]
+    fn retained_commander_and_hq_contexts_project_timed_traits() {
+        let mut captured = Captured::with_capacities(&capacities(1));
+        captured.results.outcome = Outcome::Rows { len: 1 };
+        captured.results.rows[0].result = 42;
+        captured.results.rows[0].sides[0].commanders = [Some(0), Some(0)];
+        captured.commanders.first[0] = commander::Row {
+            commander: (7 << 32) | 4713,
+            timed_traits: [0, 2],
+            ..Default::default()
+        };
+        captured.commander_timed_traits.first = vec![
+            engine::cunit_leader::TimedTrait {
+                token_id: 23,
+                definition_ordinal: 5,
+                remaining_days: 0,
+            },
+            engine::cunit_leader::TimedTrait {
+                token_id: 23,
+                definition_ordinal: 5,
+                remaining_days: -1,
+            },
+        ];
+        let [TableView::Complete(rows::TableRows::NavalCombatResultDetails(rows))] =
+            captured.tables()
+        else {
+            panic!("retained commander contexts were not projected")
+        };
+        for context in [
+            &rows[0].sides[0].commander_context,
+            &rows[0].sides[0].hq_commander_context,
+        ] {
+            let context = context.as_ref().unwrap();
+            assert_eq!(
+                context
+                    .timed_traits
+                    .require("NavalCommanderInputs.timed_traits")
+                    .unwrap()
+                    .iter()
+                    .map(|value| (
+                        value.token_id,
+                        value.definition_ordinal,
+                        value.remaining_days
+                    ))
+                    .collect::<Vec<_>>(),
+                [(23, 5, 0), (23, 5, -1)]
+            );
+        }
     }
 
     #[test]

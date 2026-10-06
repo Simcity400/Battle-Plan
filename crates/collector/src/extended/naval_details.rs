@@ -99,6 +99,7 @@ pub struct Capacities {
     plane_hits: usize,
     plane_kills: usize,
     commanders: usize,
+    commander_timed_traits: usize,
     weapon_sources: usize,
     weapon_terms: usize,
     dense_bases: usize,
@@ -128,6 +129,7 @@ impl Default for Capacities {
             plane_hits: 512,
             plane_kills: 1024,
             commanders: 16,
+            commander_timed_traits: 0,
             weapon_sources: 4096,
             weapon_terms: 16384,
             dense_bases: 128,
@@ -158,6 +160,7 @@ pub struct Captured {
     plane_hits: Arena<naval_combat_hit::Row>,
     plane_kills: Arena<naval_air_efficiency_inputs::WingKill>,
     commanders: Arena<engine::naval_commander_inputs::Row>,
+    commander_timed_traits: Arena<engine::cunit_leader::TimedTrait>,
     weapon_sources: Arena<naval_ship_modifier_inputs::SourceRow>,
     weapon_terms: Arena<naval_ship_modifier_inputs::ModifierTerm>,
     /// Air bases the hour's combats reference, in first-reference order.
@@ -195,6 +198,7 @@ impl Captured {
             plane_hits: 0,
             plane_kills: 0,
             commanders: 0,
+            commander_timed_traits: 0,
             weapon_sources: 0,
             weapon_terms: 0,
             dense_bases: 0,
@@ -226,6 +230,7 @@ impl Captured {
             plane_hits: Arena::new(c.plane_hits),
             plane_kills: Arena::new(c.plane_kills),
             commanders: Arena::new(c.commanders),
+            commander_timed_traits: Arena::new(c.commander_timed_traits),
             weapon_sources: Arena::new(c.weapon_sources),
             weapon_terms: Arena::new(c.weapon_terms),
             dense_bases: CaptureRows::new(c.dense_bases),
@@ -261,6 +266,7 @@ impl Captured {
         self.plane_hits.reset();
         self.plane_kills.reset();
         self.commanders.reset();
+        self.commander_timed_traits.reset();
         self.weapon_sources.reset();
         self.weapon_terms.reset();
         self.dense_bases.reset();
@@ -291,6 +297,7 @@ impl Captured {
             + self.plane_hits.allocated_bytes()
             + self.plane_kills.allocated_bytes()
             + self.commanders.allocated_bytes()
+            + self.commander_timed_traits.allocated_bytes()
             + self.weapon_sources.allocated_bytes()
             + self.weapon_terms.allocated_bytes()
             + self.dense_bases.allocated_bytes()
@@ -343,6 +350,11 @@ impl Captured {
         self.plane_hits.grow(&mut c.plane_hits);
         self.plane_kills.grow(&mut c.plane_kills);
         self.commanders.grow(&mut c.commanders);
+        c.commander_timed_traits = c
+            .commander_timed_traits
+            .max(self.commander_timed_traits.first.capacity());
+        self.commander_timed_traits
+            .grow(&mut c.commander_timed_traits);
         if self.weapon_sources.first.len() < c.weapon_sources
             && resize_default(&mut self.weapon_sources.first, c.weapon_sources).is_err()
         {
@@ -464,6 +476,8 @@ impl Captured {
             commander_inputs: &mut self.commanders.first,
             commander_inputs_len: 0,
             commander_inputs_required: 0,
+            commander_timed_traits: &mut self.commander_timed_traits.first,
+            commander_timed_traits_len: 0,
             side_units: &mut self.side_units.first,
             side_units_len: 0,
             side_units_required: 0,
@@ -517,6 +531,8 @@ impl Captured {
         self.plane_kills.required = buffers.plane_kills_required;
         self.commanders.len = buffers.commander_inputs_len;
         self.commanders.required = buffers.commander_inputs_required;
+        self.commander_timed_traits.len = buffers.commander_timed_traits_len;
+        self.commander_timed_traits.required = buffers.commander_timed_traits_len;
         self.side_units.len = buffers.side_units_len;
         self.side_units.required = buffers.side_units_required;
         self.weapon_sources.len = buffers.weapon_lengths[0];
@@ -665,7 +681,9 @@ impl Captured {
                         commander: s.commander,
                         commander_inputs: range(&self.commanders.first, s.commander_inputs)
                             .first()
-                            .map(commander_inputs),
+                            .map(|commander| {
+                                commander_inputs(commander, &self.commander_timed_traits.first)
+                            }),
                         units: owned_vec(copy_vec(range(&self.side_units.first, s.units))),
                         engaged: s.engaged,
                         retreating: s.retreating,
@@ -963,6 +981,7 @@ impl Captured {
 /// Spool-thread commander projection, shared with retained naval results.
 pub(super) fn commander_inputs(
     c: &engine::naval_commander_inputs::Row,
+    timed: &[engine::cunit_leader::TimedTrait],
 ) -> rows::NavalCommanderInputs {
     rows::NavalCommanderInputs {
         commander: c.commander,
@@ -986,6 +1005,15 @@ pub(super) fn commander_inputs(
                 )),
             }
         }))),
+        timed_traits: rows::Recorded::Value(owned_vec(collect_vec(
+            range(timed, c.timed_traits)
+                .iter()
+                .map(|t| rows::LandCombatCommanderTimedTrait {
+                    token_id: t.token_id,
+                    definition_ordinal: t.definition_ordinal,
+                    remaining_days: t.remaining_days,
+                }),
+        ))),
         learning_traits: owned_vec(collect_vec(
             c.learning_traits[..c.learning_traits_len].iter().map(|t| {
                 rows::LandCombatCommanderLearningTrait {
@@ -1309,6 +1337,10 @@ mod tests {
         captured.hits.first.resize(11, Default::default());
         captured.weapon_sources.first.resize(7, Default::default());
         captured.weapon_terms.first.resize(21, Default::default());
+        captured
+            .commander_timed_traits
+            .first
+            .resize(5000, Default::default());
         assert!(captured.allocated_bytes() > before);
         let worker_capacities = [
             captured.ships.rows.capacity(),
@@ -1346,6 +1378,7 @@ mod tests {
         assert_eq!(captured.details.rows[0].combat, 42);
         assert_eq!(captured.ships.rows[0].member.combat, 42);
         assert_eq!(captured.plane_air.first[0].variant, 111);
+        assert!(capacity.commander_timed_traits >= 5000);
         captured.details.outcome = Outcome::Rows { len: 0 };
         captured.ships.outcome = Outcome::Unavailable {
             reason: "native ship read failed",
@@ -1355,6 +1388,59 @@ mod tests {
             captured.outcomes()[1],
             Outcome::Unavailable { .. }
         ));
+    }
+
+    #[test]
+    fn commander_projection_preserves_timed_trait_order_for_live_and_results() {
+        let timed = [
+            engine::cunit_leader::TimedTrait {
+                token_id: 9,
+                definition_ordinal: 3,
+                remaining_days: -1,
+            },
+            engine::cunit_leader::TimedTrait {
+                token_id: 9,
+                definition_ordinal: 3,
+                remaining_days: 0,
+            },
+            engine::cunit_leader::TimedTrait {
+                token_id: 7,
+                definition_ordinal: 8,
+                remaining_days: i32::MAX,
+            },
+        ];
+        let commander = engine::naval_commander_inputs::Row {
+            commander: (9 << 32) | 4713,
+            timed_traits: [1, 2],
+            ..Default::default()
+        };
+        let row = commander_inputs(&commander, &timed);
+        assert_eq!(
+            row.timed_traits
+                .require("NavalCommanderInputs.timed_traits")
+                .unwrap()
+                .iter()
+                .map(|value| (
+                    value.token_id,
+                    value.definition_ordinal,
+                    value.remaining_days
+                ))
+                .collect::<Vec<_>>(),
+            [(9, 3, 0), (7, 8, i32::MAX)]
+        );
+        let row = commander_inputs(
+            &engine::naval_commander_inputs::Row {
+                commander: commander.commander,
+                ..Default::default()
+            },
+            &[],
+        );
+        assert!(
+            row.timed_traits
+                .require("NavalCommanderInputs.timed_traits")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

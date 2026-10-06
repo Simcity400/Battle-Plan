@@ -6,7 +6,7 @@ use replay::{
     rows::{
         ArmyUpgradeDeliveryRow, ArmyUpgradeGroupRow, ArmyUpgradeProducedRow, ArmyUpgradeRequestRow,
         CountryRow, IndustrialOrganisationHistoryRow, IndustrialOrganisationRow, LexicalTokenRow,
-        TableId, TableRows, VariantDefinitionRow, VariantModuleRow, VariantStatsRow,
+        Recorded, TableId, TableRows, VariantDefinitionRow, VariantModuleRow, VariantStatsRow,
         VariantUpgradeRow,
     },
 };
@@ -1635,6 +1635,60 @@ light_tank_destroyer_chassis = { archetype = light_tank_chassis type = { armor a
     let mut report = Report::default();
     compare_variant_archetypes(&frame, &equipment, &tokens, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
+}
+
+#[test]
+fn variant_version_oracle_matches_raw_byte_zero_omission_and_old_absence() {
+    let variant = (1_u64 << 32) | 70;
+    let country = CountryRow {
+        id: 1,
+        tag: b"SYN".to_vec(),
+        ..Default::default()
+    };
+    let links = BTreeMap::from([(1, &country)]);
+    let tokens = TokenNames::from([(17, b"synthetic".as_slice())]);
+    let run = |version, saved_version: &str| {
+        let source = format!(
+            "equipments={{synthetic={{id={{id=1 type=70}} creator=SYN origin=SYN {saved_version}}}}}"
+        );
+        let saved = production::parse(&parser::parse(source.as_bytes()).unwrap().items).unwrap();
+        let mut frame = credit_frame(22, false, &[], &[]);
+        *frame.tables[TableId::VariantDefinitions.index()] =
+            TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow {
+                id: variant,
+                equipment_token: 17,
+                creator_link: 1,
+                origin_link: 1,
+                append_variant_name: 1,
+                version,
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::VariantStats.index()] =
+            TableView::Complete(TableRows::VariantStats(vec![VariantStatsRow {
+                variant,
+                ..Default::default()
+            }]));
+        let mut report = Report::default();
+        compare_variants(&frame, &saved, &links, &tokens, &mut report).unwrap();
+        report
+    };
+    for (version, saved) in [(255, "version=255"), (0, "")] {
+        let report = run(Recorded::Value(version), saved);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+    }
+    for (version, saved) in [(254, "version=255"), (0, "version=0")] {
+        let report = run(Recorded::Value(version), saved);
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(report.differences[0].contains("version"));
+    }
+    let report = run(Recorded::NotRecorded, "version=255");
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason == "VariantDefinitions.version not recorded")
+    );
 }
 
 #[test]

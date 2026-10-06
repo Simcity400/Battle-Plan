@@ -666,10 +666,10 @@ fn run(
     if let Some(demand) = crate::country_scale::observe_saved_targets(&memory, base) {
         sizing.extended.saved_event_targets.raise(demand);
     }
-    if let Some(demand) = crate::country_scale::observe_characters(&memory, base) {
+    if let Ok(Some(demand)) = crate::country_scale::observe_characters(&memory, base) {
         sizing.extended.raise_for_characters(demand);
     }
-    if let Some(demand) = crate::country_scale::observe_politics(&memory, base) {
+    if let Ok(Some(demand)) = crate::country_scale::observe_politics(&memory, base) {
         sizing.extended.raise_for_politics(demand);
     }
     sizing.extended.line_output.entries = sizing.extended.line_output.entries.max(lines);
@@ -1461,28 +1461,32 @@ impl RegistryWatch {
         &mut self,
         memory: &impl engine::Memory,
         base: usize,
-    ) -> Option<crate::country_scale::CharacterDemand> {
+    ) -> Result<Option<crate::country_scale::CharacterDemand>, &'static str> {
         if self
             .last_characters
             .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
         {
-            return None;
+            return Ok(None);
         }
         self.last_characters = Some(Instant::now());
-        let demand = crate::country_scale::observe_characters(memory, base)?;
+        let Some(demand) = crate::country_scale::observe_characters(memory, base)? else {
+            return Ok(None);
+        };
         let seen = &mut self.characters;
         let variables = seen.variables.max(demand.variables);
-        (demand.characters.rows > seen.characters.rows
+        let larger = demand.characters.rows > seen.characters.rows
             || demand.characters.bytes > seen.characters.bytes
+            || demand.unit_leader_bytes > seen.unit_leader_bytes
             || demand.flags > seen.flags
-            || variables != seen.variables)
-            .then(|| {
-                seen.characters.rows = seen.characters.rows.max(demand.characters.rows);
-                seen.characters.bytes = seen.characters.bytes.max(demand.characters.bytes);
-                seen.flags = seen.flags.max(demand.flags);
-                seen.variables = variables;
-                *seen
-            })
+            || variables != seen.variables;
+        Ok(larger.then(|| {
+            seen.characters.rows = seen.characters.rows.max(demand.characters.rows);
+            seen.characters.bytes = seen.characters.bytes.max(demand.characters.bytes);
+            seen.unit_leader_bytes = seen.unit_leader_bytes.max(demand.unit_leader_bytes);
+            seen.flags = seen.flags.max(demand.flags);
+            seen.variables = variables;
+            *seen
+        }))
     }
 
     /// Largest live saved-target row/name demand, at most once per second.
@@ -1516,19 +1520,21 @@ impl RegistryWatch {
         &mut self,
         memory: &impl engine::Memory,
         base: usize,
-    ) -> Option<crate::country_scale::PoliticsDemand> {
+    ) -> Result<Option<crate::country_scale::PoliticsDemand>, &'static str> {
         if self
             .last_politics
             .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
         {
-            return None;
+            return Ok(None);
         }
         self.last_politics = Some(Instant::now());
-        let demand = crate::country_scale::observe_politics(memory, base)?;
-        demand.exceeds(&self.politics).then(|| {
+        let Some(demand) = crate::country_scale::observe_politics(memory, base)? else {
+            return Ok(None);
+        };
+        Ok(demand.exceeds(&self.politics).then(|| {
             self.politics = self.politics.max(demand);
             self.politics
-        })
+        }))
     }
 }
 
@@ -1952,16 +1958,23 @@ fn spool_loop(
                 );
             }
         }
-        if let Some(demand) = registry.poll_characters(&live, shared.base) {
-            let before = extended_capacities;
-            extended_capacities.raise_for_characters(demand);
-            if extended_capacities != before {
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
+        match registry.poll_characters(&live, shared.base) {
+            Ok(Some(demand)) => {
+                let before = extended_capacities;
+                extended_capacities.raise_for_characters(demand);
+                if extended_capacities != before {
+                    grow_idle_frames(
+                        shared,
+                        &mut capacities,
+                        &mut map_capacities,
+                        &mut extended_capacities,
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                processor.observe_input_demand_error(reason);
+                last_warning = Some(reason);
             }
         }
         if let Some(demand) = registry.poll_saved_targets(&live, shared.base) {
@@ -1976,16 +1989,23 @@ fn spool_loop(
                 );
             }
         }
-        if let Some(demand) = registry.poll_politics(&live, shared.base) {
-            let before = extended_capacities;
-            extended_capacities.raise_for_politics(demand);
-            if extended_capacities != before {
-                grow_idle_frames(
-                    shared,
-                    &mut capacities,
-                    &mut map_capacities,
-                    &mut extended_capacities,
-                );
+        match registry.poll_politics(&live, shared.base) {
+            Ok(Some(demand)) => {
+                let before = extended_capacities;
+                extended_capacities.raise_for_politics(demand);
+                if extended_capacities != before {
+                    grow_idle_frames(
+                        shared,
+                        &mut capacities,
+                        &mut map_capacities,
+                        &mut extended_capacities,
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                processor.observe_input_demand_error(reason);
+                last_warning = Some(reason);
             }
         }
         if crate::allocation::failed() {
@@ -2353,6 +2373,33 @@ mod tests {
         memory.0.set(1 << 20);
         watch.last = None;
         assert_eq!(watch.poll(&memory, 0), None);
+    }
+
+    #[test]
+    fn demand_polling_keeps_named_failures_and_does_not_raise_seen_demand() {
+        let memory = Registry::default();
+        let mut watch = RegistryWatch::default();
+        assert_eq!(watch.poll_politics(&memory, 0), Ok(None));
+        assert_eq!(watch.poll_characters(&memory, 0), Ok(None));
+        memory.0.set(5_001);
+        watch.last_politics = None;
+        watch.last_characters = None;
+        assert_eq!(
+            watch.poll_politics(&memory, 0),
+            Err("character manager unreadable or null")
+        );
+        assert!(watch.poll_characters(&memory, 0).is_err());
+        assert_eq!(
+            watch.politics,
+            crate::country_scale::PoliticsDemand::default()
+        );
+        assert_eq!(
+            watch.characters,
+            crate::country_scale::CharacterDemand::default()
+        );
+        // The interval limits observations, without turning a failure into zero.
+        assert_eq!(watch.poll_politics(&memory, 0), Ok(None));
+        assert_eq!(watch.poll_characters(&memory, 0), Ok(None));
     }
 
     #[test]

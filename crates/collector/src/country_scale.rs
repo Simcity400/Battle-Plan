@@ -166,31 +166,55 @@ pub fn observe_raid_arenas(memory: &impl Memory, base: usize) -> Option<RaidAren
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CharacterDemand {
     pub characters: engine::ccharacter::Demand,
+    pub unit_leader_bytes: usize,
     pub flags: usize,
     pub variables: extended::intel::VariableDemand,
 }
 
-/// Live character roster and flag demand, or `None` when either census is
-/// unreadable (at the main menu, say). Header words, character views and
-/// template headers only; nothing observed is recorded.
-pub fn observe_characters(memory: &impl Memory, base: usize) -> Option<CharacterDemand> {
-    let game_state = engine::read::<u64>(memory, base.checked_add(cgame_state::SINGLETON_RVA)?)?;
-    let state = usize::try_from(game_state)
-        .ok()
-        .filter(|state| *state != 0)?;
-    Some(CharacterDemand {
-        characters: engine::ccharacter::demand(memory, base, state).ok()?,
-        flags: extended::intel::script_flag_demand(memory, base, state)?,
-        variables: extended::intel::script_variable_demand(memory, base, state)?,
-    })
+/// Live character roster and flag demand, or `None` without a loaded registry.
+/// Header words, character views and template headers only. Failures retain
+/// their name instead of claiming zero text demand.
+pub fn observe_characters(
+    memory: &impl Memory,
+    base: usize,
+) -> Result<Option<CharacterDemand>, &'static str> {
+    let Some(state) = demand_game_state(memory, base)? else {
+        return Ok(None);
+    };
+    Ok(Some(CharacterDemand {
+        characters: engine::ccharacter::demand(memory, base, state)?,
+        unit_leader_bytes: engine::cunit_leader::text_demand(memory, base, state)?,
+        flags: extended::intel::script_flag_demand(memory, base, state)
+            .ok_or("script flag demand unreadable")?,
+        variables: extended::intel::script_variable_demand(memory, base, state)
+            .ok_or("script variable demand unreadable")?,
+    }))
+}
+
+fn demand_game_state(memory: &impl Memory, base: usize) -> Result<Option<usize>, &'static str> {
+    let game_state = base
+        .checked_add(cgame_state::SINGLETON_RVA)
+        .and_then(|at| engine::read::<u64>(memory, at))
+        .ok_or("input demand game state unreadable or address overflow")?;
+    let state =
+        usize::try_from(game_state).map_err(|_| "input demand game state address overflow")?;
+    if state == 0 {
+        return Ok(None);
+    }
+    let countries = state
+        .checked_add(cgame_state::COUNTRIES)
+        .and_then(|at| engine::cpdx_array::Array::read(memory, at, 8))
+        .ok_or("input demand country array unreadable or invalid")?;
+    Ok((countries.count >= 2).then_some(state))
 }
 
 /// Live demand of the political and character tables whose per-country
 /// sizes content and play decide: CountryCharacters' active-character
 /// records, CountryRetiredCharacters' retired ones, PartyLeaders' party
-/// leaders, CountryCivilWars'
-/// entries, AdvisorTokens' keys and bytes, FactionAdvisors' occupied slots
-/// and token bytes, and the character inputs' rows and values.
+/// leaders, CountryCivilWars' entries, AvailableAdvisors' ideas,
+/// AdvisorTokens' keys and bytes, FactionAdvisors' occupied slots and token
+/// bytes, the country state/leader rosters and owned wargoals, and the
+/// character inputs' rows and values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PoliticsDemand {
     pub active_characters: usize,
@@ -202,6 +226,11 @@ pub struct PoliticsDemand {
     pub faction_advisors: usize,
     pub faction_advisor_bytes: usize,
     pub agency_name_bytes: usize,
+    pub available_advisors: usize,
+    pub available_advisor_bytes: usize,
+    pub advisor_modifiers: engine::cadvisor::ModifierDemand,
+    pub country_rosters: engine::ccountry::RosterDemand,
+    pub owned_wargoals: engine::cwar_goal::Demand,
     pub character_inputs: crate::extended::character_inputs::Demand,
 }
 
@@ -209,6 +238,14 @@ impl PoliticsDemand {
     /// Whether any field exceeds `seen`'s.
     pub fn exceeds(&self, seen: &Self) -> bool {
         self.agency_name_bytes > seen.agency_name_bytes
+            || self.available_advisors > seen.available_advisors
+            || self.available_advisor_bytes > seen.available_advisor_bytes
+            || self.advisor_modifiers.rows > seen.advisor_modifiers.rows
+            || self.advisor_modifiers.bytes > seen.advisor_modifiers.bytes
+            || self.country_rosters.states > seen.country_rosters.states
+            || self.country_rosters.leaders > seen.country_rosters.leaders
+            || self.owned_wargoals.rows > seen.owned_wargoals.rows
+            || self.owned_wargoals.states > seen.owned_wargoals.states
             || self.active_characters > seen.active_characters
             || self.retired_characters > seen.retired_characters
             || self.party_leaders > seen.party_leaders
@@ -224,6 +261,34 @@ impl PoliticsDemand {
     pub fn max(self, other: Self) -> Self {
         Self {
             agency_name_bytes: self.agency_name_bytes.max(other.agency_name_bytes),
+            available_advisors: self.available_advisors.max(other.available_advisors),
+            available_advisor_bytes: self
+                .available_advisor_bytes
+                .max(other.available_advisor_bytes),
+            advisor_modifiers: engine::cadvisor::ModifierDemand {
+                rows: self
+                    .advisor_modifiers
+                    .rows
+                    .max(other.advisor_modifiers.rows),
+                bytes: self
+                    .advisor_modifiers
+                    .bytes
+                    .max(other.advisor_modifiers.bytes),
+            },
+            country_rosters: engine::ccountry::RosterDemand {
+                states: self
+                    .country_rosters
+                    .states
+                    .max(other.country_rosters.states),
+                leaders: self
+                    .country_rosters
+                    .leaders
+                    .max(other.country_rosters.leaders),
+            },
+            owned_wargoals: engine::cwar_goal::Demand {
+                rows: self.owned_wargoals.rows.max(other.owned_wargoals.rows),
+                states: self.owned_wargoals.states.max(other.owned_wargoals.states),
+            },
             active_characters: self.active_characters.max(other.active_characters),
             retired_characters: self.retired_characters.max(other.retired_characters),
             party_leaders: self.party_leaders.max(other.party_leaders),
@@ -238,45 +303,58 @@ impl PoliticsDemand {
 }
 
 /// Live political table demand, or `None` without a game state (at the main
-/// menu, say). Each count is the table's own walk with no row storage, which
-/// reads array headers (and, for text, string headers) only; a census that
-/// is unreadable adds nothing, and its hourly walk reports it. Nothing
-/// observed is recorded.
-pub fn observe_politics(memory: &impl Memory, base: usize) -> Option<PoliticsDemand> {
-    let game_state = engine::read::<u64>(memory, base.checked_add(cgame_state::SINGLETON_RVA)?)?;
-    let state = usize::try_from(game_state)
-        .ok()
-        .filter(|state| *state != 0)?;
+/// menu, say). Each count uses its table's walk without row storage. A failed
+/// observation is propagated for named accounting, never an empty demand.
+pub fn observe_politics(
+    memory: &impl Memory,
+    base: usize,
+) -> Result<Option<PoliticsDemand>, &'static str> {
+    let Some(state) = demand_game_state(memory, base)? else {
+        return Ok(None);
+    };
     let demand = |outcome: engine::walk::Outcome| match outcome {
-        engine::walk::Outcome::Rows { len } => len,
-        engine::walk::Outcome::Truncated { len, unread_rows } => {
-            len.saturating_add(unread_rows as usize)
-        }
-        engine::walk::Outcome::Unavailable { .. } => 0,
+        engine::walk::Outcome::Rows { len } => Ok(len),
+        engine::walk::Outcome::Truncated { len, unread_rows } => len
+            .checked_add(unread_rows as usize)
+            .ok_or("politics demand row count overflow"),
+        engine::walk::Outcome::Unavailable { reason } => Err(reason),
     };
     let tokens = engine::advisor_tokens::walk(memory, base, state, &mut [], &mut []);
+    let advisor_tokens = demand(tokens.outcome)?;
     let factions = engine::cfaction::walk_advisors(memory, base, state, &mut [], &mut []);
+    let faction_advisors = demand(factions.outcome)?;
     let [active, retired] =
         engine::ccountry_characters::walk_records(memory, base, state, &mut [], &mut []);
+    let active_characters = demand(active)?;
+    let retired_characters = demand(retired)?;
     let agencies = engine::cintelligence_agency::walk(memory, base, state, &mut [], &mut []);
-    Some(PoliticsDemand {
+    demand(agencies.outcome)?;
+    let (available_advisors, available_advisor_bytes) =
+        engine::ccountry_characters::demand_available(memory, base, state)?;
+    let goals = engine::cwar_goal::walk(memory, base, state, &mut [], &mut []);
+    demand(goals.outcome)?;
+    Ok(Some(PoliticsDemand {
         agency_name_bytes: agencies.required_bytes,
-        active_characters: demand(active),
-        retired_characters: demand(retired),
-        party_leaders: engine::cpolitical_status::party_leader_demand(memory, base, state)
-            .unwrap_or(0),
+        available_advisors,
+        available_advisor_bytes,
+        advisor_modifiers: engine::cadvisor::modifier_demand(memory, base, state)?,
+        country_rosters: engine::ccountry::counter_roster_demand(memory, base, state)?,
+        owned_wargoals: goals.required,
+        active_characters,
+        retired_characters,
+        party_leaders: engine::cpolitical_status::party_leader_demand(memory, base, state)?,
         civil_wars: demand(engine::ccountry::walk_civil_wars(
             memory,
             base,
             state,
             &mut [],
-        )),
-        advisor_tokens: demand(tokens.outcome),
+        ))?,
+        advisor_tokens,
         advisor_token_bytes: tokens.required_bytes,
-        faction_advisors: demand(factions.outcome),
+        faction_advisors,
         faction_advisor_bytes: factions.required_bytes,
-        character_inputs: crate::extended::character_inputs::Demand::observe(memory, base, state),
-    })
+        character_inputs: crate::extended::character_inputs::Demand::observe(memory, base, state)?,
+    }))
 }
 
 /// Rows for `per_country` rows per slot, with a third of headroom so the
@@ -371,12 +449,15 @@ mod tests {
         assert!(sizing.extended == before);
     }
 
-    /// The political demand walks the live registry (here five thousand
-    /// countries without a character object) and raising by it never lowers.
+    /// A missing manager in a five-thousand-country registry is a named
+    /// observation failure, not an observed empty political roster.
     #[test]
     fn observed_politics_demand_reads_the_registry_and_only_raises() {
-        let demand = observe_politics(&world(), BASE).unwrap();
-        assert_eq!(demand, PoliticsDemand::default());
+        assert_eq!(
+            observe_politics(&world(), BASE),
+            Err("character manager unreadable or null")
+        );
+        let demand = PoliticsDemand::default();
         let mut sizing = Sizing::for_slots(COUNTRIES + 1);
         let before = sizing.extended;
         sizing.extended.raise_for_politics(demand);
@@ -424,6 +505,7 @@ mod tests {
             faction_advisors: 2,
             faction_advisor_bytes: 20,
             character_inputs: Default::default(),
+            ..Default::default()
         };
         let before = sizing.extended;
         sizing.extended.raise_for_politics(PoliticsDemand {
@@ -440,6 +522,42 @@ mod tests {
         });
         assert!(sizing.extended != before);
         assert!(!seen.exceeds(&seen) && seen.max(demand) == seen);
+        let modifiers = PoliticsDemand {
+            advisor_modifiers: engine::cadvisor::ModifierDemand {
+                rows: 15_000,
+                bytes: 1_000_000,
+            },
+            ..Default::default()
+        };
+        assert!(modifiers.exceeds(&seen));
+        assert_eq!(
+            seen.max(modifiers).advisor_modifiers,
+            modifiers.advisor_modifiers
+        );
+    }
+
+    #[test]
+    fn demand_observers_distinguish_a_menu_from_an_unreadable_game_state() {
+        let missing = engine::memory::SliceMemory {
+            base: 0,
+            bytes: &[],
+        };
+        assert_eq!(
+            observe_politics(&missing, 0),
+            Err("input demand game state unreadable or address overflow")
+        );
+        assert_eq!(
+            observe_characters(&missing, 0),
+            Err("input demand game state unreadable or address overflow")
+        );
+        let null = [0; 8];
+        let menu = engine::memory::SliceMemory {
+            base: cgame_state::SINGLETON_RVA,
+            bytes: &null,
+        };
+        assert_eq!(observe_politics(&menu, 0), Ok(None));
+        assert_eq!(observe_characters(&menu, 0), Ok(None));
+        assert!(observe_characters(&world(), BASE).is_err());
     }
     use crate::extended::{country_appearance, country_counters, country_tactic_unlocks};
     use engine::{

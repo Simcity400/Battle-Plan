@@ -98,6 +98,7 @@ pub(super) fn fixture() -> (Fixture, Folder) {
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
             scope_kind: 1,
             scope_id: 100,
+            seed: replay::rows::Recorded::Value(None),
             entries: vec![ScriptVariableEntry {
                 name: b"syn_support".to_vec(),
                 value_raw: 3_000_000,
@@ -467,11 +468,13 @@ fn missing_agency_facts_are_named_and_counted() {
 fn empty_agency_own_text_uses_core_projection_and_child_walk() {
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::IntelligenceAgencies.index()] =
-        TableView::Complete(TableRows::IntelligenceAgencies(vec![IntelligenceAgencyRow {
-            country: 100,
-            created: 1,
-            ..Default::default()
-        }]));
+        TableView::Complete(TableRows::IntelligenceAgencies(vec![
+            IntelligenceAgencyRow {
+                country: 100,
+                created: 1,
+                ..Default::default()
+            },
+        ]));
     // 1403B1480 keeps name/icon as own fields and forwards the effect child.
     let output = fixture.render(
         "create_intelligence_agency={name=SYN_NAME icon=SYN_ICON army_experience=2}",
@@ -534,7 +537,10 @@ fn country_targets_support_five_thousand_synthetic_countries() {
         ("remove_contested_owner", "Remove"),
     ] {
         let output = fixture.render(&format!("{key}=2"), &mut scopes, Content::default());
-        assert_eq!(output.text, format!("{action} contested BBB/Two/BBB/BBB/BBB"));
+        assert_eq!(
+            output.text,
+            format!("{action} contested BBB/Two/BBB/BBB/BBB")
+        );
         assert!(output.refusals.is_empty(), "{:?}", output.refusals);
     }
 }
@@ -591,7 +597,10 @@ fn contested_owner_uses_both_native_operand_branches_and_fresh_links() {
         ),
         (
             "remove_contested_owner=BBB",
-            EventObject::CountryState { country: 1, state: 3 },
+            EventObject::CountryState {
+                country: 1,
+                state: 3,
+            },
             "Remove contested BBB/Three/BBB/BBB/BBB",
         ),
     ] {
@@ -611,7 +620,10 @@ fn contested_owner_uses_both_native_operand_branches_and_fresh_links() {
             (selected.root, selected.from, selected.prev),
             (Link::Itself, Link::Itself, Link::Itself)
         );
-        assert_eq!((selected.random_seed, selected.random_counter), (1, 0x5ea6_ba9e));
+        assert_eq!(
+            (selected.random_seed, selected.random_counter),
+            (1, 0x5ea6_ba9e)
+        );
     }
 }
 
@@ -621,6 +633,7 @@ fn contested_owner_evaluates_scoped_operands() {
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![
             ScriptVariablesRow {
+                seed: replay::rows::Recorded::Value(None),
                 scope_kind: 1,
                 scope_id: 100,
                 entries: vec![ScriptVariableEntry {
@@ -629,6 +642,7 @@ fn contested_owner_evaluates_scoped_operands() {
                 }],
             },
             ScriptVariablesRow {
+                seed: replay::rows::Recorded::Value(None),
                 scope_kind: 2,
                 scope_id: 2,
                 entries: vec![ScriptVariableEntry {
@@ -683,18 +697,40 @@ fn absent_ideology_uses_native_null_object_without_evaluating_an_operand() {
     *fixture.frame.tables[TableId::ScriptVariables.index()] = TableView::Unavailable {
         reason: "absent ideology has no variable object".into(),
     };
-    let content = fixture.catalogue.scripted_content().unwrap().effects().unwrap();
+    let content = fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .effects()
+        .unwrap();
     for (class, key, body) in [
-        ("CAddPopularityEffect", "add_popularity", "add_popularity={popularity=0.03}"),
-        ("CSetPartyNameEffect", "set_party_name", "set_party_name={name=SYN_PARTY}"),
-        ("CSetPartyRuleEffect", "set_party_rule", "set_party_rule={can_send_volunteers=yes}"),
+        (
+            "CAddPopularityEffect",
+            "add_popularity",
+            "add_popularity={popularity=0.03}",
+        ),
+        (
+            "CSetPartyNameEffect",
+            "set_party_name",
+            "set_party_name={name=SYN_PARTY}",
+        ),
+        (
+            "CSetPartyRuleEffect",
+            "set_party_rule",
+            "set_party_rule={can_send_volunteers=yes}",
+        ),
     ] {
         let output = fixture.render(body, &mut fresh(), content.view(None));
         assert_eq!(output.text, "");
-        assert_eq!(output.refusals, BTreeMap::from([(
-            format!("synthetic effect {class}: key {key}: ideology database null-object identity (+0x78, 1402EE8E0) is unrecorded"),
-            1,
-        )]));
+        assert_eq!(
+            output.refusals,
+            BTreeMap::from([(
+                format!(
+                    "synthetic effect {class}: key {key}: ideology database null-object identity (+0x78, 1402EE8E0) is unrecorded"
+                ),
+                1,
+            )])
+        );
     }
 }
 ported!(

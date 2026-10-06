@@ -338,6 +338,21 @@ fn train_fixture() -> Vec<u8> {
     let mut bytes = fixture();
     bytes.resize(0x20000, 0);
     let companion = 0x6000 + supply_companion::STRIDE;
+    put(
+        &mut bytes,
+        0x5000 + ALLOCATED_TRUCKS,
+        &i32::MIN.to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        companion + supply_companion::REQUIRED_TRUCKS_RAW,
+        &i64::MAX.to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        companion + supply_companion::REQUIRED_TRAINS,
+        &i32::MAX.to_le_bytes(),
+    );
     header(
         &mut bytes,
         companion + supply_companion::NODES,
@@ -1003,6 +1018,18 @@ fn train_inventory_preserves_empty_countries_order_counts_access_and_whole_row_p
         (1, 3, 7, 0)
     );
     assert_eq!(entries.map(|r| r.count), [i32::MIN, i32::MAX]);
+    assert_eq!(
+        rows.map(|row| (
+            row.allocated_trucks,
+            row.required_trucks_raw,
+            row.required_trains,
+        )),
+        [
+            (Some(i32::MIN), Some(i64::MAX), Some(i32::MAX)),
+            (Some(0), Some(0), Some(0)),
+        ]
+    );
+    assert_eq!(report.vehicle_failures, [0; 3]);
     // The native array [0, 255, 1] keeps its count and its one nonzero run.
     assert_eq!((rows[0].access_count, rows[0].runs_len), (3, 1));
     assert_eq!((rows[1].access_count, rows[1].runs_len), (0, 0));
@@ -1138,6 +1165,21 @@ fn census(n: u32) -> Vec<u8> {
             system + COMPANION,
             &(companion as u64).to_le_bytes(),
         );
+        put(
+            &mut bytes,
+            system + ALLOCATED_TRUCKS,
+            &(-(slot as i32)).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            companion + supply_companion::REQUIRED_TRUCKS_RAW,
+            &(slot as i64 * 100001).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            companion + supply_companion::REQUIRED_TRAINS,
+            &(slot as i32).to_le_bytes(),
+        );
         header(
             &mut bytes,
             companion + supply_companion::RELATED_CONTROLLERS,
@@ -1177,6 +1219,15 @@ fn train_and_node_censuses_beyond_four_thousand_countries_are_read_whole() {
     let last = rows[countries - 1];
     assert_eq!((last.country, last.access_count), (N - 1, N));
     assert_eq!((last.runs_len, last.values_len), (NONZERO, NONZERO));
+    for row in &rows {
+        assert_eq!(row.allocated_trucks, Some(-(row.country as i32)));
+        assert_eq!(
+            row.required_trucks_raw,
+            Some(i64::from(row.country) * 100001)
+        );
+        assert_eq!(row.required_trains, Some(row.country as i32));
+    }
+    assert_eq!(report.vehicle_failures, [0; 3]);
     let spans = &runs[last.runs_start..last.runs_start + last.runs_len];
     assert_eq!(spans[..3], [[4, 1], [50, 1], [100, 1]]);
     assert_eq!(spans[NONZERO - 1], [4950, 1]);
@@ -1268,6 +1319,80 @@ fn train_inputs_reject_bad_identity_map_path_and_reference_without_prefix_succes
             reason: "supply controller access unreadable"
         }
     );
+}
+
+#[test]
+fn supply_vehicle_faults_keep_inventory_payloads_and_independent_scalars() {
+    let bytes = train_fixture();
+    let mut baseline = [TrainRow::default(); 2];
+    let mut baseline_entries = [crate::supply_train_entry::Row::default(); 2];
+    let mut baseline_access = [0; 3];
+    let mut baseline_runs = [[0; 2]; 2];
+    assert_eq!(
+        walk_trains(
+            &TrainMemory::new(&bytes),
+            0,
+            GAME,
+            &mut baseline,
+            &mut baseline_entries,
+            &mut baseline_access,
+            &mut baseline_runs,
+        )
+        .outcome,
+        Outcome::Rows { len: 2 }
+    );
+    let companion = 0x6000 + supply_companion::STRIDE;
+    for (field, address) in [
+        0x5000 + ALLOCATED_TRUCKS,
+        companion + supply_companion::REQUIRED_TRUCKS_RAW,
+        companion + supply_companion::REQUIRED_TRAINS,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut memory = TrainMemory::new(&bytes);
+        memory.reject = Some(address + 1);
+        let mut rows = [TrainRow::default(); 2];
+        let mut entries = [crate::supply_train_entry::Row::default(); 2];
+        let mut access = [0; 3];
+        let mut runs = [[0; 2]; 2];
+        let report = walk_trains(
+            &memory,
+            0,
+            GAME,
+            &mut rows,
+            &mut entries,
+            &mut access,
+            &mut runs,
+        );
+        assert_eq!(report.outcome, Outcome::Rows { len: 2 });
+        let mut expected = baseline;
+        match field {
+            0 => expected[0].allocated_trucks = None,
+            1 => expected[0].required_trucks_raw = None,
+            2 => expected[0].required_trains = None,
+            _ => unreachable!(),
+        }
+        assert_eq!(rows, expected);
+        assert_eq!(entries, baseline_entries);
+        assert_eq!(access, baseline_access);
+        assert_eq!(runs, baseline_runs);
+        assert_eq!(
+            report.vehicle_failures,
+            std::array::from_fn(|index| u32::from(index == field))
+        );
+        assert_eq!(
+            crate::supply_node::walk(
+                &memory,
+                0,
+                GAME,
+                &mut [crate::supply_node::Row::default(); 3],
+                &mut [0; 3],
+            )
+            .outcome,
+            Outcome::Rows { len: 3 }
+        );
+    }
 }
 
 #[test]

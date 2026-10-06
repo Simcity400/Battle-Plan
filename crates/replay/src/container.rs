@@ -664,6 +664,7 @@ impl Replay {
                     .into_iter()
                     .chain(self.format.field_gaps(table))
             })
+            .chain(self.format.nested_field_gaps())
             .collect()
     }
 

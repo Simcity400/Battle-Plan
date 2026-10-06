@@ -197,7 +197,9 @@ pub(super) struct Report {
 
 impl Report {
     pub(super) fn content_warning(&self) -> Option<String> {
-        self.content_reads.as_ref().and_then(|reads| reads.warning())
+        self.content_reads
+            .as_ref()
+            .and_then(|reads| reads.warning())
     }
 
     pub(super) fn set_load_hour(&mut self, branch: &replay::branches::BranchStart) {
@@ -346,15 +348,18 @@ impl Report {
                 && !replay::cadence::is_refresh(table, frame.hour)
         });
         self.intel_walked = frame.metrics.table_ns[TableId::CountryIntel.index()] != 0;
+        let mut field_gaps = BTreeMap::<String, usize>::new();
         for table in TableId::ALL {
             if let replay::frame::TableView::Complete(rows)
             | replay::frame::TableView::Truncated { rows, .. } = &*frame.tables[table.index()]
             {
                 for (field, count) in rows.field_gaps() {
-                    self.limitation(
-                        &format!("{table:?}.{field} not recorded"),
-                        format!("{table:?}.{field}: {count} rows not recorded"),
-                    );
+                    let name = if field.contains('.') {
+                        field.to_owned()
+                    } else {
+                        format!("{table:?}.{field}")
+                    };
+                    *field_gaps.entry(name).or_default() += count;
                 }
             }
             if table != TableId::CountryIntel
@@ -366,6 +371,12 @@ impl Report {
             {
                 self.observed_refresh.push(replay::cadence::cadence(table));
             }
+        }
+        for (name, count) in field_gaps {
+            self.limitation(
+                &format!("{name} not recorded"),
+                format!("{name}: {count} rows not recorded"),
+            );
         }
         for table in [TableId::LexicalTokens, TableId::ScriptVariables] {
             if let TableView::Unavailable { reason } = &*frame.tables[table.index()] {
@@ -589,15 +600,23 @@ impl Report {
         line
     }
 
+    pub(super) fn format_line(format: replay::format::FormatVersion) -> String {
+        let tables = TableId::ALL
+            .into_iter()
+            .filter(|table| table.last_change().present(format.version()))
+            .count();
+        format!(
+            "Replay format {}: comparison checks {} table types",
+            format.version(),
+            tables
+        )
+    }
+
     pub(super) fn print(&self, format: replay::format::FormatVersion) {
         if let Some(warning) = self.content_warning() {
             println!("Warning: {warning}");
         }
-        println!(
-            "Replay format {}: comparison covers its {} recorded tables",
-            format.version(),
-            TableId::ALL.len()
-        );
+        println!("{}", Self::format_line(format));
         println!(
             "Compared: {} provinces, {} states, {} divisions, {} war relations, {} factions, {} faction members, {} countries, {} exact field comparisons",
             self.provinces,

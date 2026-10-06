@@ -437,6 +437,7 @@ pub mod cunits_stack_map_icon_group;
 pub mod cupgrade_delivery;
 pub mod cupgrade_entry;
 pub mod cvariables;
+pub mod cwar_goal;
 pub mod cwar_relation;
 pub mod cweather_manager;
 pub mod cworld_threat;

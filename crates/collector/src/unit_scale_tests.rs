@@ -1,5 +1,5 @@
 #[path = "../../engine/tests/support/unit_world.rs"]
-mod fixture;
+pub(crate) mod fixture;
 use crate::{division_census::Census, division_detail::OwnedDetails};
 use engine::{carmy, cprovince, memory::ReadCounts, walk::Outcome};
 use fixture::Shape;

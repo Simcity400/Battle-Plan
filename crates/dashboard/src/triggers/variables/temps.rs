@@ -76,7 +76,8 @@ impl Evaluator<'_, '_> {
             // These setters return true even when their execution is optional.
             return Some(Ok(()));
         }
-        let result = self.variable_operands(name, item, false)
+        let result = self
+            .variable_operands(name, item, false)
             .and_then(|operands| self.set_temp(name, &operands, scopes, false));
         // A failed key read may name any destination. Do not retain old temps.
         if let Err(why) = &result {
@@ -145,7 +146,13 @@ impl Evaluator<'_, '_> {
                 }
             }
         }
-        Ok(Operands { var, right, min, max, if_zero })
+        Ok(Operands {
+            var,
+            right,
+            min,
+            max,
+            if_zero,
+        })
     }
 
     fn mutable_temp(
@@ -186,7 +193,13 @@ impl Evaluator<'_, '_> {
         scopes: Scopes,
         effect: bool,
     ) -> Result<(), String> {
-        let Operands { var, right, min, max, if_zero } = operands;
+        let Operands {
+            var,
+            right,
+            min,
+            max,
+            if_zero,
+        } = operands;
         let key = self.mutable_temp(var, scopes, None)?;
         // RHS evaluation can itself reach temp-writing alias conditions.
         let current = || {
@@ -276,7 +289,8 @@ impl Evaluator<'_, '_> {
     fn variable_right(&self, right: &Right<'_>, scopes: Scopes) -> Result<i64, String> {
         match right {
             Right::Scalar(operand) if !operand.parsed => Ok(0),
-            Right::Scalar(operand) => self.evaluate_operand(operand, scopes, None)
+            Right::Scalar(operand) => self
+                .evaluate_operand(operand, scopes, None)
                 .and_then(|v| self.raw(v)),
             Right::Expression(value) => self.temp_expression(value, scopes),
         }
@@ -286,10 +300,17 @@ impl Evaluator<'_, '_> {
         // 1405389B0 builds the key and evaluates the default, then looks up
         // only the supplied TLS store. It does not Evaluate a scalar literal.
         let key = self.key(operand, scopes, None)?;
-        let default = operand.default.as_deref().map(|default| {
-            self.evaluate_operand(default, scopes, None).and_then(|v| self.raw(v))
-        }).transpose()?.unwrap_or(0);
-        self.temp(&key, scopes).and_then(|v| self.raw(v.unwrap_or(Value::Raw(default))))
+        let default = operand
+            .default
+            .as_deref()
+            .map(|default| {
+                self.evaluate_operand(default, scopes, None)
+                    .and_then(|v| self.raw(v))
+            })
+            .transpose()?
+            .unwrap_or(0);
+        self.temp(&key, scopes)
+            .and_then(|v| self.raw(v.unwrap_or(Value::Raw(default))))
     }
 
     /// 140379020 executes temporary scalars before 14039A7D0 evaluates
@@ -303,7 +324,9 @@ impl Evaluator<'_, '_> {
         tooltip: bool,
     ) -> Result<Option<(i64, i64)>, String> {
         let operands = self.variable_operands(name, item, true).map_err(|why| {
-            if temporary { self.taint_temps(format!("effect {name}: {why}")); }
+            if temporary {
+                self.taint_temps(format!("effect {name}: {why}"));
+            }
             why
         })?;
         if temporary && let Err(why) = self.set_temp(name, &operands, scopes, true) {
@@ -314,7 +337,8 @@ impl Evaluator<'_, '_> {
             return Ok(None);
         }
         let right = self.variable_right(&operands.right, scopes)?;
-        let left = self.evaluate_operand(&operands.var, scopes, None)
+        let left = self
+            .evaluate_operand(&operands.var, scopes, None)
             .and_then(|v| self.raw(v))?;
         Ok(Some((left, right)))
     }
@@ -342,7 +366,9 @@ impl Evaluator<'_, '_> {
     }
 
     pub(crate) fn store_description_temp(&self, key: Vec<u8>, value: i64) {
-        self.local_temps.borrow_mut().insert(key, Ok(Value::Raw(value)));
+        self.local_temps
+            .borrow_mut()
+            .insert(key, Ok(Value::Raw(value)));
     }
 
     pub(crate) fn encode_description_scope(&self, scope: Scope) -> Result<i64, String> {
@@ -356,7 +382,11 @@ impl Evaluator<'_, '_> {
 
     /// 14047BF80 -> 14047B530 evaluates min then max and returns before
     /// destination/RNG for a reversed range. Constructor@140479C50: 0..1.
-    pub(crate) fn description_random_temp(&self, item: &Item, scopes: Scopes) -> Result<(), String> {
+    pub(crate) fn description_random_temp(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<(), String> {
         let mut min = ScopedVariable::literal(0);
         let mut max = ScopedVariable::literal(ONE);
         // Defaults are literal but unparsed, so the first authored read replaces them.
@@ -369,17 +399,25 @@ impl Evaluator<'_, '_> {
                 assign(self, &mut max, field.value.scalar().unwrap_or_default())?;
             }
         }
-        let min = self.evaluate_operand(&min, scopes, None).and_then(|v| self.raw(v))?;
-        let max = self.evaluate_operand(&max, scopes, None).and_then(|v| self.raw(v))?;
+        let min = self
+            .evaluate_operand(&min, scopes, None)
+            .and_then(|v| self.raw(v))?;
+        let max = self
+            .evaluate_operand(&max, scopes, None)
+            .and_then(|v| self.raw(v))?;
         if max < min {
             return Ok(());
         }
-        Err("set_temp_variable_to_random needs unrecorded CVariables+8 u32 scoped-variable seed (1405354A0/140537810)".into())
+        Err("set_temp_variable_to_random TLS scoped-variable RNG context (1405354A0) and NextScopedVariableRandomFraction (140537810) are not reproduced from the recorded CVariables+8 seed and scope/root hashes (140536DF0/140529EE0)".into())
     }
 
     /// 14047BEE0 -> 14047B0B0; reader@140480FD0. Only recognized bare
     /// truck/train tokens read a total; all other types store zero.
-    pub(crate) fn description_supply_temp(&self, item: &Item, scopes: Scopes) -> Result<(), String> {
+    pub(crate) fn description_supply_temp(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<(), String> {
         let mut var = zero();
         let mut kind = None;
         for field in item.value.items().unwrap_or_default() {
@@ -391,7 +429,11 @@ impl Evaluator<'_, '_> {
         }
         let destination = self.mutable_temp(&var, scopes, None)?;
         self.store_description_temp(destination, 0);
-        let need = installed_content::parser::read_bool_field(item.value.items().unwrap_or_default(), "need", false);
+        let need = installed_content::parser::read_bool_field(
+            item.value.items().unwrap_or_default(),
+            "need",
+            false,
+        );
         let offset = match (kind.as_deref(), need) {
             (Some("truck"), false) => "CCountrySupplySystem+0x138 i32 actual trucks",
             (Some("train"), false) => "CCountrySupplySystem+0x110 i32 actual trains",
@@ -399,7 +441,9 @@ impl Evaluator<'_, '_> {
             (Some("train"), true) => "CSupplyCalculationData+0x140 i32 required trains",
             _ => return Ok(()),
         };
-        Err(format!("get_supply_vehicles_temp {offset} is unrecorded (14047B0B0)"))
+        Err(format!(
+            "get_supply_vehicles_temp recorded {offset} operand evaluation is not ported (14047B0B0)"
+        ))
     }
 
     /// Core CExpression instructions@1414052C0, from the shared math reader.

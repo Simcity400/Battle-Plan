@@ -1155,5 +1155,52 @@ fn every_interrupted_append_preserves_previous_file_byte_for_byte() {
     }
 }
 
+#[test]
+fn format97_replay_opens_seeks_and_decodes_selected_and_parallel_blocks() {
+    let hours = (1..=64).collect::<Vec<_>>();
+    let current = Replay::from_records(CAMPAIGN.into(), &[records(1, &hours)]).unwrap();
+    let legacy = edited_block(&current, |raw| {
+        raw.clear();
+        raw.extend_from_slice(&64_u32.to_le_bytes());
+        for hour in 1..=64 {
+            let frame = crate::rows::format98_tests::empty_frame97(hour, hour == 1);
+            raw.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+            raw.extend(frame);
+        }
+    });
+    let mut bytes = legacy.bytes().to_vec();
+    bytes[4..6].copy_from_slice(&97_u16.to_le_bytes());
+    let legacy = Replay::open(bytes).unwrap();
+    assert_eq!(legacy.format.version(), 97);
+    assert!(
+        legacy
+            .append(&[])
+            .err()
+            .unwrap()
+            .to_string()
+            .contains(&format!("Replay append requires format {FORMAT_VERSION}"))
+    );
+    let frames = legacy.read_block(&legacy.index[0]).unwrap();
+    assert_eq!(frames.len(), 64);
+    assert_eq!(
+        legacy
+            .read_block_parallel(
+                &legacy.index[0],
+                &Parallel {
+                    workers: 4,
+                    on_worker: &|| {},
+                },
+            )
+            .unwrap(),
+        frames
+    );
+    let selected = legacy
+        .read_block_selected(&legacy.index[0], &[TableId::AvailableAdvisors])
+        .unwrap();
+    assert!(
+        matches!(&selected[0].tables[TableId::AvailableAdvisors.index()], TableUpdate::Unavailable { reason } if reason.contains("not recorded"))
+    );
+    assert!(matches!(legacy.seek(1, 64).unwrap(), SeekResult::Frame(frame) if frame.hour == 64));
+}
 #[path = "compatibility_tests.rs"]
 mod compatibility_tests;

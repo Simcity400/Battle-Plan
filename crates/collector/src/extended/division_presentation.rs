@@ -8,18 +8,18 @@ use crate::{
     sampling::qpc,
     slicing::{SliceFingerprints, SliceSelection},
     spooling::unavailable,
-    table_capture::{Arena, CaptureRows, grow_capacity},
+    table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
 use engine::allocation::{copy_vec, owned_vec};
 use engine::{
-    Memory, carmy, carmy::DivisionSeed, ccountry, corders_group_member::MembershipCapacity,
-    cprovince, walk::Outcome,
+    Memory, carmy, carmy::DivisionSeed, ccountry, cname_group_member,
+    corders_group_member::MembershipCapacity, cprovince, walk::Outcome,
 };
 use replay::{
     frame::TableInput,
     rows::{
         DivisionAcclimatization, DivisionMovementRow, DivisionRetreatBanRow, DivisionStatusRow,
-        TableId, tables,
+        NameOperands, Recorded, TableId, tables,
     },
 };
 
@@ -34,6 +34,108 @@ pub const TABLES: [TableId; N] = [
 // Both depend on the shared division census; the combined source read group in
 // extended::read_groups includes their individually measured costs.
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
+
+// One scalar projection for the unchanged-row comparison and the owned row.
+macro_rules! status_fields {
+    ($row:ident, $apply:ident, [$($args:expr),* $(,)?] $(,)?) => {
+        $apply!([$($args),*], {
+            division: $row.division,
+            maximum_hit_points: $row.maximum_hit_points,
+            maximum_organisation: $row.maximum_organisation,
+            entrenchment: $row.entrenchment,
+            entrenchment_cap: $row.entrenchment_cap,
+            supply_ratio: $row.supply_ratio,
+            attrition_value: $row.attrition_value,
+            attrition_threshold: $row.attrition_threshold,
+            attrition: $row.attrition,
+            exercising: $row.exercising,
+            has_order: $row.has_order,
+            invalid_orders: $row.invalid_orders,
+            strength_factor: $row.strength_factor,
+            model_number: $row.model_number,
+            acclimatization_maximum: $row.acclimatization_maximum,
+            move_flags: $row.move_flags,
+        })
+    };
+}
+
+macro_rules! compare_status_fields {
+    ([$previous:expr], {$first:ident: $initial:expr, $($field:ident: $value:expr),* $(,)?}) => {
+        $initial == $previous.$first $(&& $value == $previous.$field)*
+    };
+}
+
+macro_rules! project_status_fields {
+    ([$row:expr, $acclimatization:expr, $naming:expr], {$($field:ident: $value:expr),* $(,)?}) => {
+        DivisionStatusRow {
+            $($field: $value,)*
+            acclimatization: $acclimatization,
+            border_combat_stats: Recorded::Value($row.border_combat_stats),
+            supply_grace_maximum: Recorded::Value($row.supply_grace_maximum),
+            supply_grace_remaining: Recorded::Value($row.supply_grace_remaining),
+            naming: Recorded::Value($naming),
+        }
+    };
+}
+
+#[derive(Clone, Copy, Default)]
+struct NamingRead {
+    division: u64,
+    inputs: Option<cname_group_member::Inputs>,
+    failure: Option<&'static str>,
+}
+
+/// Off-thread accounting keeps every refusal's native reader reason.
+#[derive(Default)]
+pub(crate) struct NamingWork {
+    captured: u64,
+    refusals: Vec<(&'static str, u64)>,
+    required: usize,
+    capacity: usize,
+}
+
+impl NamingWork {
+    fn refuse(&mut self, reason: &'static str, count: u64) -> std::io::Result<()> {
+        let index = match self.refusals.binary_search_by_key(&reason, |entry| entry.0) {
+            Ok(index) => index,
+            Err(index) => {
+                engine::allocation::reserve(&mut self.refusals, 1)?;
+                self.refusals.insert(index, (reason, 0));
+                index
+            }
+        };
+        self.refusals[index].1 = self.refusals[index].1.saturating_add(count);
+        Ok(())
+    }
+
+    fn observe(&mut self, capture: &Captured) -> std::io::Result<()> {
+        for row in &capture.naming.first[..capture.naming.len] {
+            if let Some(reason) = row.failure {
+                self.refuse(reason, 1)?;
+            } else {
+                self.captured = self.captured.saturating_add(1);
+            }
+        }
+        let shortfall = capture.naming.required.saturating_sub(capture.naming.len);
+        if shortfall != 0 {
+            self.refuse("division naming row capacity exceeded", shortfall as u64)?;
+        }
+        self.required = capture.names.required;
+        self.capacity = capture.names.first.len();
+        Ok(())
+    }
+
+    pub(crate) fn status(&self) -> impl serde::Serialize + '_ {
+        crate::status::status!({
+            "captured": self.captured,
+            "refused": self.refusals.iter().fold(0_u64, |sum, (_, count)| sum.saturating_add(*count)),
+            "refusals": crate::status::map(self.refusals.iter().map(|&(reason, count)| (reason, count))),
+            "bytes_required": self.required,
+            "bytes_capacity": self.capacity,
+            "scope": "hourly generator inputs for admitted DivisionStatus rows; a refused naming field is absent while its status row remains available",
+        })
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CaptureContext {
@@ -55,6 +157,8 @@ pub struct Capacities {
     /// DivisionRetreatBans rows: divisions whose commander bans retreat.
     bans: usize,
     paths: usize,
+    name_bytes: usize,
+    name_groups: usize,
     geometry: cprovince::GeometryCapacities,
     /// Shared DivisionStatus membership storage prepared for pooled packets.
     /// Worker acquisition retains larger original demand in the same pass.
@@ -67,6 +171,8 @@ impl Default for Capacities {
             status: 8192,
             bans: 1024,
             paths: 128 * 1024,
+            name_bytes: 0,
+            name_groups: 0,
             geometry: cprovince::GeometryCapacities::default(),
             membership: carmy::StatusCapacities::new(8192).membership,
         }
@@ -86,6 +192,9 @@ pub struct Captured {
     /// The roster owners whose DivisionRetreatBans rows this hour replaced.
     bans_selection: SliceSelection,
     paths: Arena<u32>,
+    naming: Arena<NamingRead>,
+    names: Arena<u8>,
+    name_groups: cname_group_member::GroupKeys,
     movement_packet: carmy::MovementPacket,
     geometry: cprovince::GeometryPacket,
     status_packet: carmy::StatusPacket,
@@ -111,6 +220,7 @@ impl Captured {
             Outcome::Rows { len: seeds.len() },
             row_capacity,
         );
+        self.capture_naming(memory, 0, &seeds[..self.status.outcome.len()]);
         self.decode_pending = true;
     }
 
@@ -122,6 +232,9 @@ impl Captured {
             bans: CaptureRows::new(0),
             bans_selection: SliceSelection::new(false),
             paths: Arena::new(0),
+            naming: Arena::new(0),
+            names: Arena::new(0),
+            name_groups: cname_group_member::GroupKeys::default(),
             movement_packet: carmy::MovementPacket::vacant(),
             geometry: cprovince::GeometryPacket::vacant(),
             status_packet: carmy::StatusPacket::vacant(),
@@ -139,6 +252,14 @@ impl Captured {
             bans: CaptureRows::new(c.bans),
             bans_selection: SliceSelection::new(true),
             paths: Arena::new(c.paths),
+            naming: Arena::new(c.status),
+            names: Arena::new(c.name_bytes),
+            name_groups: cname_group_member::GroupKeys::try_with_capacity(
+                c.name_groups,
+                c.name_groups,
+            )
+            .map_err(crate::allocation::io)
+            .unwrap_or_default(),
             movement_packet: carmy::MovementPacket::try_new(c.movement, c.paths)
                 .unwrap_or_else(|_| carmy::MovementPacket::vacant()),
             geometry: cprovince::GeometryPacket::try_with_capacities(c.geometry)
@@ -156,6 +277,8 @@ impl Captured {
         self.status.reset();
         self.bans.reset();
         self.paths.reset();
+        self.naming.reset();
+        self.names.reset();
         // Engine acquisition resets each owned packet in its measured scope.
         self.decode_pending = false;
     }
@@ -165,6 +288,9 @@ impl Captured {
             + self.status.allocated_bytes()
             + self.bans.allocated_bytes()
             + self.paths.allocated_bytes()
+            + self.naming.allocated_bytes()
+            + self.names.allocated_bytes()
+            + self.name_groups.allocated_bytes()
             + self.movement_packet.allocated_bytes()
             + self.geometry.allocated_bytes()
             + self.status_packet.allocated_bytes()
@@ -184,6 +310,7 @@ impl Captured {
             .grown(self.status_packet.required_capacities().membership);
         self.membership = c.membership;
         self.paths.grow(&mut c.paths);
+        self.names.grow(&mut c.name_bytes);
         let geometry_required = self.geometry.required_capacities();
         grow_capacity(&mut c.geometry.provinces, geometry_required.provinces);
         grow_capacity(
@@ -209,6 +336,86 @@ impl Captured {
         let _ = self
             .status_packet
             .grow(self.source_capacity, self.membership);
+        grow_vec(&mut self.naming.first, self.source_capacity);
+    }
+
+    /// Reuse the hourly template icon walk's census; no extra native walk.
+    /// A full memo costs fresh reads, so an unreadable census cannot drop names.
+    pub(crate) fn grow_name_groups(&mut self, c: &mut Capacities, templates: usize) {
+        grow_capacity(&mut c.name_groups, templates);
+        let current = self.name_groups.capacities();
+        if c.name_groups != 0
+            && c.name_groups
+                .checked_next_power_of_two()
+                .is_some_and(|wanted| current.into_iter().any(|capacity| capacity < wanted))
+            && let Ok(groups) =
+                cname_group_member::GroupKeys::try_with_capacity(c.name_groups, c.name_groups)
+                    .map_err(crate::allocation::io)
+        {
+            self.name_groups = groups;
+        }
+    }
+
+    pub(crate) fn observe_naming(&self, work: &mut NamingWork) -> std::io::Result<()> {
+        work.observe(self)
+    }
+
+    /// CArmy+0x340 is the member pointer (140C72F00). RefreshCachedName
+    /// 1409B4C40 calls 1409B5640; record its language-neutral operands instead
+    /// of +0x60, with the player's +0x88 bytes where the generator shows them.
+    /// Order/bind writers are 1409BC230/1409BBC40; rename 1413529F0 reaches
+    /// 140C7F800/860/9C0, and template/load/stat paths 140C7EE00/140C7D090/
+    /// 1401D8120 -> 140C7DEB0 also refresh it. Inputs therefore read hourly.
+    fn capture_naming(&mut self, memory: &impl Memory, base: usize, seeds: &[DivisionSeed]) {
+        self.naming.reset();
+        self.names.reset();
+        self.name_groups.reset();
+        self.naming.required = seeds.len();
+        let mut names = cname_group_member::Names {
+            bytes: &mut self.names.first,
+            len: 0,
+            required: 0,
+        };
+        for (seed, row) in seeds.iter().zip(&mut self.naming.first) {
+            *row = NamingRead {
+                division: seed.division,
+                ..NamingRead::default()
+            };
+            let result = seed
+                .name_member
+                .ok_or("division name member pointer unreadable")
+                .and_then(|pointer| {
+                    if pointer == 0 {
+                        Err("division name member pointer null")
+                    } else {
+                        cname_group_member::inputs(
+                            memory,
+                            base,
+                            pointer,
+                            &mut self.name_groups,
+                            &mut names,
+                        )
+                    }
+                });
+            match result {
+                Ok(cname_group_member::Naming::Row(mut inputs)) => {
+                    names.len += inputs.custom.1;
+                    // 1409B4C40 can copy the generated legacy name into +0x88.
+                    // NameOperands retains raw overrides only for player renames.
+                    if inputs.programmatic != 0 {
+                        inputs.custom = (0, 0);
+                    }
+                    row.inputs = Some(inputs);
+                }
+                Ok(cname_group_member::Naming::DoesNotFit) => {
+                    row.failure = Some("division naming bytes do not fit arena");
+                }
+                Err(reason) => row.failure = Some(reason),
+            }
+            self.naming.len += 1;
+        }
+        self.names.len = names.len;
+        self.names.required = names.required;
     }
 
     /// Acquire on the reserved worker using the immutable source lease.
@@ -316,6 +523,8 @@ impl Captured {
         self.status.outcome = Outcome::Unavailable { reason };
         self.bans.outcome = Outcome::Unavailable { reason };
         self.paths.len = 0;
+        self.naming.len = 0;
+        self.names.len = 0;
         self.decode_pending = false;
         CaptureReport::default()
     }
@@ -361,6 +570,7 @@ impl Captured {
         self.status.outcome =
             self.status_packet
                 .capture(memory, base, state, rows, outcome, self.status.rows.len());
+        self.capture_naming(memory, base, &rows[..self.status.outcome.len()]);
         self.decode_pending = true;
         [movement_ticks, qpc().saturating_sub(start).max(0) as u64]
     }
@@ -382,6 +592,19 @@ impl Captured {
         let movement_ticks = qpc().saturating_sub(started).max(0) as u64;
         let started = qpc();
         self.status.outcome = self.status_packet.project(&mut self.status.rows);
+        let count = self.status.outcome.len();
+        for (row, naming) in self.status.rows[..count]
+            .iter_mut()
+            .zip(&self.naming.first[..self.naming.len])
+        {
+            if row.division != naming.division {
+                self.status.outcome = Outcome::Unavailable {
+                    reason: "division naming input identity invalid",
+                };
+                break;
+            }
+            row.naming = naming.inputs;
+        }
         [movement_ticks, qpc().saturating_sub(started).max(0) as u64]
     }
 
@@ -440,6 +663,10 @@ impl Captured {
             },
         );
         let acclimatization = |r: &carmy::StatusRow| self.status_packet.acclimatization(r);
+        let names = &self.names.first[..self.names.len];
+        let name_span = |(start, len): cname_group_member::Span| {
+            start.checked_add(len).and_then(|end| names.get(start..end))
+        };
         if self
             .status
             .rows
@@ -450,37 +677,83 @@ impl Captured {
                 reason: "division acclimatization spans invalid",
             };
         }
-        let status = scalar_table::<tables::DivisionStatus, _>(
+        if self.status.rows.get(..status.len()).is_none_or(|rows| {
+            rows.iter().any(|r| {
+                r.naming
+                    .is_some_and(|n| name_span(n.custom).is_none() || name_span(n.group).is_none())
+            })
+        }) {
+            status = Outcome::Unavailable {
+                reason: "division naming spans invalid",
+            };
+        }
+        let status = project_table::<tables::DivisionStatus, _>(
             projection.as_deref_mut(),
             status,
             &self.status.rows,
             |r| u128::from(r.division),
-            |r| DivisionStatusRow {
-                division: r.division,
-                maximum_hit_points: r.maximum_hit_points,
-                maximum_organisation: r.maximum_organisation,
-                entrenchment: r.entrenchment,
-                entrenchment_cap: r.entrenchment_cap,
-                supply_ratio: r.supply_ratio,
-                attrition_value: r.attrition_value,
-                attrition_threshold: r.attrition_threshold,
-                attrition: r.attrition,
-                exercising: r.exercising,
-                has_order: r.has_order,
-                invalid_orders: r.invalid_orders,
-                strength_factor: r.strength_factor,
-                model_number: r.model_number,
-                acclimatization_maximum: r.acclimatization_maximum,
-                acclimatization: owned_vec(engine::allocation::collect_vec(
-                    acclimatization(r).unwrap_or_default().iter().map(|entry| {
-                        DivisionAcclimatization {
-                            category: entry.category,
-                            weight: entry.weight,
+            |r, previous| {
+                let acclimatization = acclimatization(r).unwrap();
+                let (Ok(border), Ok(maximum), Ok(remaining), Ok(naming)) = (
+                    previous
+                        .border_combat_stats
+                        .require("DivisionStatus.border_combat_stats"),
+                    previous
+                        .supply_grace_maximum
+                        .require("DivisionStatus.supply_grace_maximum"),
+                    previous
+                        .supply_grace_remaining
+                        .require("DivisionStatus.supply_grace_remaining"),
+                    previous.naming.require("DivisionStatus.naming"),
+                ) else {
+                    return false;
+                };
+                status_fields!(r, compare_status_fields, [previous])
+                    && r.border_combat_stats == *border
+                    && r.supply_grace_maximum == *maximum
+                    && r.supply_grace_remaining == *remaining
+                    && acclimatization.len() == previous.acclimatization.len()
+                    && acclimatization
+                        .iter()
+                        .zip(&previous.acclimatization)
+                        .all(|(a, b)| a.category == b.category && a.weight == b.weight)
+                    && match (r.naming, naming) {
+                        (None, None) => true,
+                        (Some(n), Some(previous)) => {
+                            n.kind == previous.kind
+                                && n.order == previous.order
+                                && n.ordered == previous.ordered
+                                && n.programmatic == previous.programmatic
+                                && name_span(n.custom).unwrap() == previous.custom.as_slice()
+                                && name_span(n.group).unwrap() == previous.group.as_slice()
                         }
-                    }),
-                )),
-                move_flags: r.move_flags,
-                border_combat_stats: replay::rows::Recorded::Value(r.border_combat_stats),
+                        _ => false,
+                    }
+            },
+            |r| {
+                status_fields!(
+                    r,
+                    project_status_fields,
+                    [
+                        r,
+                        owned_vec(engine::allocation::collect_vec(
+                            acclimatization(r).unwrap_or_default().iter().map(|entry| {
+                                DivisionAcclimatization {
+                                    category: entry.category,
+                                    weight: entry.weight,
+                                }
+                            }),
+                        )),
+                        r.naming.map(|n| NameOperands {
+                            kind: n.kind,
+                            order: n.order,
+                            ordered: n.ordered,
+                            programmatic: n.programmatic,
+                            custom: owned_vec(copy_vec(name_span(n.custom).unwrap())),
+                            group: owned_vec(copy_vec(name_span(n.group).unwrap())),
+                        }),
+                    ],
+                )
             },
         );
         let Some(paths) = self.paths.first.get(..self.paths.len) else {
@@ -563,7 +836,688 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::unit_scale_tests::fixture as scale_fixture;
     use replay::{frame::TableView, rows::TableRows};
+
+    fn member(base: usize, name: &[u8], order: i32) -> [u8; cname_group_member::INPUT_SPAN] {
+        assert!(name.len() < 16);
+        let mut bytes = [0; cname_group_member::INPUT_SPAN];
+        bytes[..8].copy_from_slice(&((base + cname_group_member::VTABLE_RVA) as u64).to_le_bytes());
+        bytes[cname_group_member::ORDER..cname_group_member::ORDER + 4]
+            .copy_from_slice(&order.to_le_bytes());
+        let custom = cname_group_member::OVERRIDE_NAME;
+        bytes[custom..custom + name.len()].copy_from_slice(name);
+        bytes[custom + 16..custom + 24].copy_from_slice(&(name.len() as u64).to_le_bytes());
+        bytes[custom + 24..custom + 32].copy_from_slice(&15_u64.to_le_bytes());
+        bytes[cname_group_member::FLAG_A] = 255;
+        bytes
+    }
+
+    fn template_registry(
+        world: &mut scale_fixture::World,
+    ) -> (Box<[u8; 32]>, Vec<u8>, Box<[u8; 40]>) {
+        use engine::{creference_registry as registry, reference_bucket as bucket};
+        let word = |offset| u64::from_le_bytes(world.bytes[offset..offset + 8].try_into().unwrap());
+        let templates: std::collections::BTreeSet<_> = world
+            .armies
+            .iter()
+            .map(|army| word(army - world.base + carmy::STANDARD_TEMPLATE) as usize)
+            .collect();
+        let count = (templates.len() * 2).next_power_of_two().max(8);
+        let mask = count as u32 - 1;
+        let overflow = count.trailing_zeros() as usize + 2;
+        let mut slots = vec![None; count + overflow];
+        for &template in &templates {
+            let mut entry = (word(template - world.base + 8), template, 1_usize);
+            let hash = entry
+                .0
+                .rotate_left(32)
+                .wrapping_mul(registry::HASH_MULTIPLIER);
+            let mut index = (((hash >> 32) as u32 ^ hash as u32) & mask) as usize;
+            loop {
+                assert!(entry.2 <= overflow + 1);
+                match &mut slots[index] {
+                    slot @ None => {
+                        *slot = Some(entry);
+                        break;
+                    }
+                    Some(resident) if resident.2 < entry.2 => std::mem::swap(resident, &mut entry),
+                    _ => {}
+                }
+                index += 1;
+                entry.2 += 1;
+            }
+        }
+        let mut entries = vec![0; (count + overflow + 1) * bucket::STRIDE];
+        entries[(count + overflow) * bucket::STRIDE + bucket::DISTANCE] = bucket::TERMINAL_DISTANCE;
+        for (index, entry) in slots.into_iter().enumerate() {
+            if let Some((handle, pointer, distance)) = entry {
+                let at = index * bucket::STRIDE;
+                entries[at + bucket::DISTANCE] = distance as u8;
+                entries[at + 8..at + 16].copy_from_slice(&handle.to_le_bytes());
+                entries[at + 16..at + 24].copy_from_slice(&(pointer as u64).to_le_bytes());
+            }
+        }
+        let mut header = Box::new([0; 32]);
+        header[registry::ENTRIES..registry::ENTRIES + 8]
+            .copy_from_slice(&(entries.as_ptr() as u64).to_le_bytes());
+        header[registry::COUNT..registry::COUNT + 4]
+            .copy_from_slice(&(templates.len() as u32).to_le_bytes());
+        header[registry::MASK..registry::MASK + 4].copy_from_slice(&mask.to_le_bytes());
+        header[registry::OVERFLOW_DISTANCE] = overflow as u8;
+        let root = registry::LOW_ROOTS_RVA
+            + engine::creferenced_division_template::REFERENCE_TYPE as usize * 8;
+        world.bytes[root..root + 8].copy_from_slice(&(header.as_ptr() as u64).to_le_bytes());
+        let mut group = Box::new([0; 40]);
+        group[..8].copy_from_slice(
+            &((world.base + cname_group_member::GROUP_VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        group[8..13].copy_from_slice(b"GROUP");
+        group[24..32].copy_from_slice(&5_u64.to_le_bytes());
+        group[32..40].copy_from_slice(&15_u64.to_le_bytes());
+        for template in templates {
+            let offset = template - world.base + cname_group_member::TEMPLATE_NAME_GROUP;
+            world.bytes[offset..offset + 8].copy_from_slice(&(group.as_ptr() as u64).to_le_bytes());
+        }
+        (header, entries, group)
+    }
+
+    fn division_name_members(
+        world: &mut scale_fixture::World,
+    ) -> Vec<Box<[u8; cname_group_member::INPUT_SPAN]>> {
+        let members: Vec<_> = world
+            .armies
+            .iter()
+            .enumerate()
+            .map(|(index, army)| {
+                let mut member = member(world.base, b"", index as i32 + 1);
+                let offset = army - world.base + carmy::STANDARD_TEMPLATE;
+                let template =
+                    u64::from_le_bytes(world.bytes[offset..offset + 8].try_into().unwrap())
+                        as usize;
+                member[cname_group_member::TEMPLATE_REFERENCE
+                    ..cname_group_member::TEMPLATE_REFERENCE + 8]
+                    .copy_from_slice(
+                        &world.bytes[template - world.base + 8..template - world.base + 16],
+                    );
+                Box::new(member)
+            })
+            .collect();
+        for (&army, member) in world.armies.iter().zip(&members) {
+            let offset = army - world.base + engine::carmy_combat_inputs::NAME_GROUP_MEMBER;
+            world.bytes[offset..offset + 8]
+                .copy_from_slice(&(member.as_ptr() as u64).to_le_bytes());
+        }
+        members
+    }
+
+    #[test]
+    fn division_naming_shared_group_demand_and_memos_belong_to_one_pass() {
+        let mut world = scale_fixture::build(scale_fixture::Shape {
+            countries: 2,
+            divisions: 6,
+            wings: 1,
+            planes: 1,
+            ships: 0,
+        });
+        let mut registry = template_registry(&mut world);
+        let mut members = division_name_members(&mut world);
+        let memory = world.live();
+        let mut seeds: Vec<_> = world
+            .armies
+            .iter()
+            .enumerate()
+            .map(|(index, &army)| DivisionSeed {
+                pointer: army,
+                division: engine::read(&memory, army + engine::cunit::HANDLE).unwrap(),
+                name_member: Some(members[index].as_ptr() as usize),
+                ..Default::default()
+            })
+            .collect();
+        carmy::capture_division_seeds(&memory, &mut seeds);
+        let mut capacity = Capacities {
+            movement: 0,
+            status: seeds.len(),
+            bans: 0,
+            paths: 0,
+            name_groups: world.shape.countries,
+            ..Capacities::default()
+        };
+        let mut capture = Captured::with_capacities(&capacity);
+        capture.capture_naming(&memory, world.base, &seeds);
+        assert_eq!(capture.names.required, 5, "shared group demand counts once");
+        assert!(
+            capture.naming.first[..seeds.len()]
+                .iter()
+                .all(|r| r.inputs.is_none())
+        );
+        capture.grow(&mut capacity);
+        capture.capture(
+            &memory,
+            world.base,
+            world.state,
+            Sources {
+                rows: &seeds,
+                outcome: Outcome::Rows { len: seeds.len() },
+            },
+        );
+        assert_eq!(&capture.names.first[..capture.names.len], b"GROUP");
+        assert!(
+            capture.naming.first[..seeds.len()]
+                .iter()
+                .all(|r| r.inputs.unwrap().group == (0, 5))
+        );
+        registry.2[8] = b'X';
+        capture.decode_inputs();
+        let TableView::Complete(TableRows::DivisionStatus(rows)) = capture.tables()[1].clone()
+        else {
+            panic!("owned naming projects with its complete status rows");
+        };
+        assert!(rows.iter().all(|r| {
+            r.naming
+                .require("DivisionStatus.naming")
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .group
+                == b"GROUP"
+        }));
+        capture.capture_naming(&memory, world.base, &seeds);
+        assert_eq!(
+            &capture.names.first[..capture.names.len],
+            b"XROUP",
+            "a prior pass's keys are never reused"
+        );
+        members[0][0] ^= 1;
+        capture.capture_naming(&memory, world.base, &seeds);
+        assert!(capture.naming.first[0].inputs.is_none());
+        assert_eq!(
+            capture.naming.first[0].failure,
+            Some("division name vtable mismatch")
+        );
+        assert!(
+            capture.naming.first[1..seeds.len()]
+                .iter()
+                .all(|r| r.inputs.is_some())
+        );
+    }
+
+    #[test]
+    fn short_naming_row_arena_keeps_every_status_row_and_counts_missing_names() {
+        let mut world = scale_fixture::build(scale_fixture::Shape {
+            countries: 2,
+            divisions: 6,
+            wings: 1,
+            planes: 1,
+            ships: 0,
+        });
+        let _registry = template_registry(&mut world);
+        let _members = division_name_members(&mut world);
+        let memory = world.live();
+        let mut seeds: Vec<_> = world
+            .armies
+            .iter()
+            .map(|&pointer| DivisionSeed {
+                pointer,
+                division: engine::read(&memory, pointer + engine::cunit::HANDLE).unwrap(),
+                ..Default::default()
+            })
+            .collect();
+        carmy::capture_division_seeds(&memory, &mut seeds);
+        let mut capture = Captured::with_capacities(&Capacities {
+            movement: 0,
+            status: seeds.len(),
+            bans: 0,
+            paths: 0,
+            name_bytes: 5,
+            name_groups: world.shape.countries,
+            ..Capacities::default()
+        });
+        capture.naming.first.truncate(1);
+        capture.capture(
+            &memory,
+            world.base,
+            world.state,
+            Sources {
+                rows: &seeds,
+                outcome: Outcome::Rows { len: seeds.len() },
+            },
+        );
+        capture.decode_inputs();
+        let TableView::Complete(TableRows::DivisionStatus(rows)) = capture.tables()[1].clone()
+        else {
+            panic!("a short naming arena must not withhold status rows");
+        };
+        assert_eq!(rows.len(), seeds.len());
+        assert!(
+            rows[0]
+                .naming
+                .require("DivisionStatus.naming")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            rows[1..]
+                .iter()
+                .all(|row| row.naming == Recorded::Value(None))
+        );
+        let mut work = NamingWork::default();
+        capture.observe_naming(&mut work).unwrap();
+        assert_eq!(work.captured, 1);
+        assert_eq!(
+            work.refusals,
+            [("division naming row capacity exceeded", 5)]
+        );
+    }
+
+    #[test]
+    fn naming_resolves_the_members_fake_template_reference() {
+        let mut world = scale_fixture::build(scale_fixture::Shape {
+            countries: 2,
+            divisions: 6,
+            wings: 1,
+            planes: 1,
+            ships: 0,
+        });
+        let _registry = template_registry(&mut world);
+        let mut members = division_name_members(&mut world);
+        let army = world.armies[0];
+        let word = |offset| u64::from_le_bytes(world.bytes[offset..offset + 8].try_into().unwrap());
+        let ordinary = word(army - world.base + carmy::STANDARD_TEMPLATE) as usize;
+        let fake = world
+            .armies
+            .iter()
+            .map(|army| word(army - world.base + carmy::STANDARD_TEMPLATE) as usize)
+            .find(|&template| template != ordinary)
+            .unwrap();
+        let handle = word(fake - world.base + 8);
+        // SetTemplate@1409BBC40 binds the member's own +0x58 reference;
+        // ResolveNameGroup@1409B7290 does not consult DivisionRow.template.
+        members[0]
+            [cname_group_member::TEMPLATE_REFERENCE..cname_group_member::TEMPLATE_REFERENCE + 8]
+            .copy_from_slice(&handle.to_le_bytes());
+        let offset = army - world.base + carmy::FAKE_INTEL_TEMPLATE;
+        world.bytes[offset..offset + 8].copy_from_slice(&(fake as u64).to_le_bytes());
+        let offset = ordinary - world.base + cname_group_member::TEMPLATE_NAME_GROUP;
+        world.bytes[offset..offset + 8].copy_from_slice(&0_u64.to_le_bytes());
+        let mut capture = Captured::with_capacities(&Capacities {
+            movement: 0,
+            status: 1,
+            bans: 0,
+            paths: 0,
+            name_bytes: 5,
+            name_groups: 2,
+            ..Capacities::default()
+        });
+        capture.capture_naming(
+            &world.live(),
+            world.base,
+            &[DivisionSeed {
+                division: 7,
+                name_member: Some(members[0].as_ptr() as usize),
+                ..Default::default()
+            }],
+        );
+        assert_eq!(capture.naming.first[0].inputs.unwrap().group, (0, 5));
+        assert_eq!(&capture.names.first[..capture.names.len], b"GROUP");
+    }
+
+    #[test]
+    fn division_naming_keeps_player_overrides_and_omits_generated_programmatic_text() {
+        let mut bytes = Vec::new();
+        let mut generated = member(0, b"Generated", 7);
+        generated[cname_group_member::FLAG_B] = 1;
+        bytes.extend_from_slice(&generated);
+        bytes.extend_from_slice(&member(0, b"Player", 8));
+        let seeds = std::array::from_fn::<_, 2, _>(|index| DivisionSeed {
+            division: index as u64 + 1,
+            name_member: Some(0x1000 + index * cname_group_member::INPUT_SPAN),
+            ..Default::default()
+        });
+        let mut captured = Captured::with_capacities(&Capacities {
+            movement: 0,
+            status: seeds.len(),
+            bans: 0,
+            paths: 0,
+            name_bytes: 32,
+            name_groups: 0,
+            ..Capacities::default()
+        });
+        captured.capture_naming(
+            &engine::memory::SliceMemory {
+                base: 0x1000,
+                bytes: &bytes,
+            },
+            0,
+            &seeds,
+        );
+        for (row, naming) in captured.status.rows.iter_mut().zip(&captured.naming.first) {
+            row.division = naming.division;
+            row.naming = naming.inputs;
+        }
+        captured.status.outcome = Outcome::Rows { len: seeds.len() };
+        let TableView::Complete(TableRows::DivisionStatus(rows)) = captured.tables()[1].clone()
+        else {
+            panic!("programmatic naming retains the status rows");
+        };
+        let generated = rows[0]
+            .naming
+            .require("DivisionStatus.naming")
+            .unwrap()
+            .as_ref()
+            .unwrap();
+        assert_eq!(generated.programmatic, 1);
+        assert_eq!(generated.order, 7);
+        assert!(generated.custom.is_empty());
+        assert_eq!(
+            rows[1]
+                .naming
+                .require("DivisionStatus.naming")
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .custom,
+            b"Player"
+        );
+    }
+
+    #[test]
+    fn division_naming_live_demand_grows_and_refusals_preserve_5000_status_rows() {
+        const COUNTRIES: usize = 5_000;
+        let mut bytes = Vec::new();
+        let mut seeds = Vec::new();
+        for index in 0..COUNTRIES {
+            seeds.push(DivisionSeed {
+                division: index as u64 + 1,
+                roster_owner: Some(index as u32 + 1),
+                name_member: Some(0x1000 + bytes.len()),
+                ..Default::default()
+            });
+            bytes.extend_from_slice(&member(0, b"XX", i32::MIN + index as i32));
+        }
+        let mut capacity = Capacities {
+            movement: 0,
+            status: COUNTRIES,
+            bans: 0,
+            paths: 0,
+            ..Capacities::default()
+        };
+        let mut captured = Captured::with_capacities(&capacity);
+        let memory = engine::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        captured.capture_naming(&memory, 0, &seeds);
+        assert_eq!(captured.names.required, COUNTRIES * 2);
+        assert_eq!(captured.naming.len, COUNTRIES);
+        let mut work = NamingWork::default();
+        captured.observe_naming(&mut work).unwrap();
+        assert_eq!(
+            work.refusals,
+            [("division naming bytes do not fit arena", COUNTRIES as u64)]
+        );
+        captured.grow(&mut capacity);
+        captured.capture_naming(&memory, 0, &seeds);
+        assert!(
+            captured.naming.first[..COUNTRIES]
+                .iter()
+                .all(|r| r.inputs.is_some())
+        );
+        assert_eq!(captured.names.len, COUNTRIES * 2);
+        assert_eq!(captured.naming.first[0].inputs.unwrap().order, i32::MIN);
+        assert_eq!(captured.naming.first[0].inputs.unwrap().ordered, 255);
+        for (row, naming) in captured
+            .status
+            .rows
+            .iter_mut()
+            .zip(&captured.naming.first)
+            .take(COUNTRIES)
+        {
+            row.division = naming.division;
+            row.naming = naming.inputs;
+        }
+        captured.status.outcome = Outcome::Rows { len: COUNTRIES };
+        let TableView::Complete(TableRows::DivisionStatus(rows)) = captured.tables()[1].clone()
+        else {
+            panic!("naming rows retain status availability");
+        };
+        assert_eq!(rows.len(), COUNTRIES);
+        assert!(rows.iter().all(|r| {
+            r.naming
+                .require("DivisionStatus.naming")
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .custom
+                == b"XX"
+        }));
+        seeds[0].name_member = None;
+        seeds[1].name_member = Some(0);
+        seeds[2].name_member = Some(0x1000 + bytes.len());
+        captured.capture_naming(&memory, 0, &seeds);
+        for (row, naming) in captured
+            .status
+            .rows
+            .iter_mut()
+            .zip(&captured.naming.first)
+            .take(COUNTRIES)
+        {
+            row.naming = naming.inputs;
+        }
+        let mut work = NamingWork::default();
+        captured.observe_naming(&mut work).unwrap();
+        assert_eq!(work.captured, (COUNTRIES - 3) as u64);
+        assert_eq!(
+            work.refusals,
+            [
+                ("division name member pointer null", 1),
+                ("division name member pointer unreadable", 1),
+                ("division name unreadable", 1),
+            ]
+        );
+        let TableView::Complete(TableRows::DivisionStatus(rows)) = captured.tables()[1].clone()
+        else {
+            panic!("three refused names do not drop their divisions");
+        };
+        assert_eq!(rows.len(), COUNTRIES);
+        assert!(rows[..3].iter().all(|r| r.naming == Recorded::Value(None)));
+        assert!(
+            rows[3..]
+                .iter()
+                .all(|r| { r.naming.require("DivisionStatus.naming").unwrap().is_some() })
+        );
+    }
+
+    #[test]
+    fn division_naming_changes_defeat_baseline_reuse() {
+        let mut captured = Captured::with_capacities(&Capacities {
+            movement: 0,
+            status: 1,
+            bans: 0,
+            paths: 0,
+            name_bytes: 11,
+            ..Capacities::default()
+        });
+        captured.names.first.copy_from_slice(b"GROUPplayer");
+        captured.names.len = 11;
+        let naming = cname_group_member::Inputs {
+            kind: 0,
+            order: -1,
+            ordered: 255,
+            programmatic: 1,
+            custom: (0, 0),
+            group: (0, 5),
+        };
+        captured.status.rows[0] = carmy::StatusRow {
+            division: 7,
+            naming: Some(naming),
+            ..Default::default()
+        };
+        captured.status.outcome = Outcome::Rows { len: 1 };
+        let mut baseline = std::array::from_fn(|_| unavailable("outside naming fixture"));
+        baseline[TableId::DivisionStatus.index()] = captured.tables()[1].clone();
+        let mut encoder = replay::frame::FrameEncoder::new();
+        encoder
+            .encode(
+                replay::frame::DecodedFrame {
+                    branch: 1,
+                    hour: 0,
+                    tables: baseline.map(Into::into),
+                    metrics: replay::frame::Metrics::default(),
+                },
+                false,
+            )
+            .unwrap();
+        let mut scratch = crate::projection::ProjectionScratch::default();
+        let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
+        assert!(matches!(
+            captured.table_inputs(Some(&mut projection))[1],
+            TableInput::ComparedEqual(_)
+        ));
+        for changed in [
+            None,
+            Some(cname_group_member::Inputs { kind: 2, ..naming }),
+            Some(cname_group_member::Inputs { order: 0, ..naming }),
+            Some(cname_group_member::Inputs {
+                ordered: 1,
+                ..naming
+            }),
+            Some(cname_group_member::Inputs {
+                programmatic: 255,
+                ..naming
+            }),
+            Some(cname_group_member::Inputs {
+                custom: (5, 6),
+                ..naming
+            }),
+            Some(cname_group_member::Inputs {
+                group: (0, 0),
+                ..naming
+            }),
+        ] {
+            captured.status.rows[0].naming = changed;
+            let [_, TableInput::ComparedChanges { indices, rows, .. }, _] =
+                captured.table_inputs(Some(&mut projection))
+            else {
+                panic!("every naming operand must defeat reuse");
+            };
+            assert_eq!(indices, [0]);
+            assert_eq!(TableView::Complete(rows), captured.tables()[1]);
+        }
+        captured.status.rows[0].naming = Some(naming);
+        captured.names.first[0] ^= 1;
+        assert!(matches!(
+            captured.table_inputs(Some(&mut projection))[1],
+            TableInput::ComparedChanges { .. }
+        ));
+        captured.status.rows[0].naming = Some(cname_group_member::Inputs {
+            group: (usize::MAX, 5),
+            ..naming
+        });
+        assert!(matches!(
+            captured.tables()[1],
+            TableView::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    #[ignore = "release callback benchmark: 30,000 divisions with and without naming"]
+    fn division_naming_callback_scale_bench() {
+        assert!(
+            !cfg!(debug_assertions),
+            "run the naming benchmark in release"
+        );
+        assert!(
+            std::env::var_os("BATTLE_PLAN_UNIT_VALIDATE").or_else(|| std::env::var_os("HOI4_UNIT_VALIDATE")).is_none(),
+            "unset BATTLE_PLAN_UNIT_VALIDATE to measure callback time"
+        );
+        for countries in [1_500, 5_000] {
+            let shape = scale_fixture::Shape {
+                countries,
+                divisions: 30_000,
+                wings: 1,
+                planes: 1,
+                ships: 0,
+            };
+            let mut world = scale_fixture::build(shape);
+            let _registry = template_registry(&mut world);
+            let mut members = division_name_members(&mut world);
+            let memory = world.live();
+            let mut census = crate::division_census::Census::new();
+            loop {
+                census.clear();
+                census.capture(&memory, world.base, world.state, shape.divisions);
+                if !census.overflowed {
+                    break;
+                }
+                census.grow();
+            }
+            let inputs = census.unit_inputs().unwrap();
+            assert_eq!(
+                inputs.outcome(),
+                Outcome::Rows {
+                    len: shape.divisions
+                }
+            );
+            let capacity = Capacities {
+                movement: 0,
+                status: shape.divisions,
+                bans: 0,
+                paths: 0,
+                name_bytes: shape.divisions * b"Renamed".len(),
+                name_groups: shape.countries,
+                ..Capacities::default()
+            };
+            let mut capture = Captured::with_capacities(&capacity);
+            capture.reserve_sources(shape.divisions);
+            // Both timers run the same production status callback. Only the
+            // second includes the actual hourly naming reader and arena writes.
+            for form in ["generated_shared_group", "inline_player_renames"] {
+                if form == "inline_player_renames" {
+                    for (index, bytes) in members.iter_mut().enumerate() {
+                        **bytes = member(world.base, b"Renamed", index as i32);
+                    }
+                }
+                let mut callback = |naming| {
+                    assert_eq!(
+                        capture.status_packet.capture(
+                            &memory,
+                            world.base,
+                            world.state,
+                            inputs.seeds(),
+                            inputs.outcome(),
+                            shape.divisions,
+                        ),
+                        Outcome::Rows {
+                            len: shape.divisions
+                        }
+                    );
+                    if naming {
+                        capture.capture_naming(&memory, world.base, inputs.seeds());
+                    }
+                };
+                let without = scale_fixture::time(|| callback(false));
+                let with = scale_fixture::time(|| callback(true));
+                println!(
+                    "DIVISION_NAMING countries={countries} divisions={} without_p50_ms={:.6} without_p95_ms={:.6} with_p50_ms={:.6} with_p95_ms={:.6} synthetic_names={form}",
+                    shape.divisions, without.0, without.1, with.0, with.1
+                );
+                assert_eq!(
+                    capture.names.len,
+                    if form == "generated_shared_group" {
+                        5
+                    } else {
+                        shape.divisions * b"Renamed".len()
+                    }
+                );
+                assert!(
+                    capture.naming.first[..shape.divisions]
+                        .iter()
+                        .all(|r| r.inputs.is_some())
+                );
+            }
+        }
+    }
 
     fn presentation_fixture() -> (DivisionSeed, Vec<u8>) {
         let seed = DivisionSeed {
@@ -648,6 +1602,8 @@ mod tests {
                 status: 1,
                 bans: 1,
                 paths: 0,
+                name_bytes: 0,
+                name_groups: 0,
                 geometry: cprovince::GeometryCapacities {
                     provinces: 1,
                     neighbour_entries: 0,
@@ -711,6 +1667,8 @@ mod tests {
             status: 0,
             bans: 0,
             paths: 0,
+            name_bytes: 0,
+            name_groups: 0,
             geometry: cprovince::GeometryCapacities {
                 provinces: 1,
                 neighbour_entries: 0,
@@ -799,6 +1757,8 @@ mod tests {
             maximum_hit_points: i64::MAX,
             has_order: 0,
             strength_factor: 57_038,
+            supply_grace_maximum: i64::MAX,
+            supply_grace_remaining: i64::MIN,
             ..Default::default()
         };
         let [
@@ -826,6 +1786,9 @@ mod tests {
             ),
             (i64::MIN, i64::MAX, 0, 57_038)
         );
+        assert_eq!(s[0].supply_grace_maximum, Recorded::Value(i64::MAX));
+        assert_eq!(s[0].supply_grace_remaining, Recorded::Value(i64::MIN));
+        assert_eq!(s[0].naming, Recorded::Value(None));
         let mut baseline = std::array::from_fn(|_| unavailable("outside presentation fixture"));
         for (id, view) in TABLES.into_iter().zip(capture.tables()) {
             baseline[id.index()] = view;

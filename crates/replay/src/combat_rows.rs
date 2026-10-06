@@ -128,8 +128,11 @@ pub struct NavalCommanderInputs {
     pub modifier_feature_flags: u32,
     pub modifier_callback_kind: u8,
     pub tooltips: Vec<LandCombatCommanderPortraitTooltip>,
+    /// CUnitLeader+0xDE0, AddTrait@140BFF6F0 / DailyUpdate@140C03B60.
+    /// NotRecorded in recordings predating this input.
+    pub timed_traits: Recorded<Vec<LandCombatCommanderTimedTrait>>,
 }
-value_struct!(NavalCommanderInputs { commander: u64, country: u32, category: i32, experience: i64, skills: [i32; 5], skill_definitions: [CombatCommanderSkillDefinition;5], next_skill: CombatCommanderSkillDefinition, name: Vec<u8>, description: Vec<u8>, presentation: CombatCommanderPresentation, traits: Vec<LandCombatCommanderTrait>, learning_traits: Vec<LandCombatCommanderLearningTrait>, learning_threshold: i64, modifiers: Vec<LandCombatCommanderPortraitModifier>, modifier_feature_flags: u32, modifier_callback_kind: u8, tooltips: Vec<LandCombatCommanderPortraitTooltip> });
+value_struct!(NavalCommanderInputs { commander: u64, country: u32, category: i32, experience: i64, skills: [i32; 5], skill_definitions: [CombatCommanderSkillDefinition;5], next_skill: CombatCommanderSkillDefinition, name: Vec<u8>, description: Vec<u8>, presentation: CombatCommanderPresentation, traits: Vec<LandCombatCommanderTrait>, learning_traits: Vec<LandCombatCommanderLearningTrait>, learning_threshold: i64, modifiers: Vec<LandCombatCommanderPortraitModifier>, modifier_feature_flags: u32, modifier_callback_kind: u8, tooltips: Vec<LandCombatCommanderPortraitTooltip> } appended NavalCommanderInputs { timed_traits: Recorded<Vec<LandCombatCommanderTimedTrait>> });
 
 /// A division's own commander; its identity is the row's `commander`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -662,10 +665,14 @@ pub struct LandBorderWarInputs {
     /// CLandBorderWarCombat+0xF0, exact byte; any nonzero transfers the state.
     pub transfer_state: u8,
     pub sides: [LandBorderWarSide; 2],
+    /// CLandBorderWarCombat+0xD8, fixed5 base width (1413D6800).
+    pub combat_width: Recorded<i64>,
 }
 value_struct!(LandBorderWarInputs {
     transfer_state: u8,
     sides: [LandBorderWarSide; 2]
+} appended LandBorderWarInputs {
+    combat_width: Recorded<i64>
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

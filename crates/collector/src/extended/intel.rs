@@ -83,6 +83,25 @@ pub const STATE_SCOPE: u8 = 2;
 /// id).
 pub const CHARACTER_SCOPE: u8 = 3;
 
+#[derive(Default)]
+pub(crate) struct SeedWork {
+    captured: u64,
+    refused: u64,
+}
+
+impl SeedWork {
+    pub(crate) fn status(&self) -> impl serde::Serialize + '_ {
+        crate::status::status!({
+            "captured": self.captured,
+            "refused": self.refused,
+            "refusals": crate::status::map(std::iter::once((
+                "script variable random seed unreadable", self.refused,
+            )).filter(|(_, count)| *count != 0)),
+            "scope": "hourly CVariables+8 for admitted ScriptVariables rows; unread seeds remain absent while the entries and scope rows stand",
+        })
+    }
+}
+
 /// Spool-owned membership scratch, not another captured-frame lease. Bits are
 /// cleared for each comparison, and contain no pointers, names or prior values.
 #[derive(Default)]
@@ -1091,6 +1110,7 @@ impl Captured {
                     capturer_country: r.capturer_country,
                     captured_hour: r.captured_hour,
                     action_variant: r.action_variant,
+                    ordinal: rows::Recorded::Value(r.ordinal),
                 },
             )),
             sample(table::<tables::Cryptology, _>(
@@ -1305,6 +1325,12 @@ impl Captured {
             if !first_seen(&mut scratch.scopes, index) {
                 return false;
             }
+            let Ok(seed) = previous[index].seed.require("ScriptVariables.seed") else {
+                return false;
+            };
+            if *seed != scope.seed {
+                return false;
+            }
             let old = &previous[index].entries;
             if scope.entries_len != old.len()
                 || old.windows(2).any(|pair| pair[0].name >= pair[1].name)
@@ -1330,6 +1356,22 @@ impl Captured {
             }
         }
         true
+    }
+
+    pub(crate) fn observe_seeds(&self, work: &mut SeedWork) {
+        let len = match self.variables.outcome {
+            Outcome::Rows { len } | Outcome::Truncated { len, .. } => len,
+            Outcome::Unavailable { .. } => return,
+        };
+        if let Some(rows) = self.variables.rows.get(..len) {
+            for row in rows {
+                if row.seed.is_some() {
+                    work.captured = work.captured.saturating_add(1);
+                } else {
+                    work.refused = work.refused.saturating_add(1);
+                }
+            }
+        }
     }
 
     fn variables_table(&self, outcome: Outcome) -> TableView {
@@ -1358,6 +1400,7 @@ impl Captured {
                 scope_kind,
                 scope_id,
                 entries,
+                seed: rows::Recorded::Value(r.seed),
             }
         });
         let values = match &view {
@@ -3251,6 +3294,7 @@ mod tests {
             scope: cvariables::Scope::Country(u32::MAX),
             entries_start: 0,
             entries_len: 2,
+            seed: Some(u32::MAX),
         };
         entries[0] = cvariables::Row {
             name_start: 0,
@@ -3362,6 +3406,7 @@ mod tests {
             owner_country: u32::MAX,
             roster_country: u32::MAX - 1,
             roster_kind: u8::MAX,
+            ordinal: u32::MAX,
             detected: 0xfe,
             assignment: u32::MAX,
             experience_raw: i64::MIN,
@@ -3426,6 +3471,7 @@ mod tests {
             scope: cvariables::Scope::Country(u32::MAX),
             entries_start: 0,
             entries_len: 2,
+            seed: Some(u32::MAX),
         };
         capture.variable_entries.first[0] = cvariables::Row {
             name_start: 0,
@@ -3474,6 +3520,13 @@ mod tests {
             (u32::MAX, 0xfe, i64::MIN)
         );
         let operative = &complete::<tables::OperativeMemberships>(&views[4])[0];
+        assert_eq!(
+            operative
+                .ordinal
+                .require("OperativeMemberships.ordinal")
+                .unwrap(),
+            &u32::MAX
+        );
         assert_eq!(
             (
                 operative.id,
@@ -3550,16 +3603,19 @@ mod tests {
                 scope: cvariables::Scope::State(4),
                 entries_start: 3,
                 entries_len: 1,
+                seed: Some(0),
             },
             cvariables::ScopeRow {
                 scope: cvariables::Scope::Country(9),
                 entries_start: 0,
                 entries_len: 3,
+                seed: Some(u32::MAX),
             },
             cvariables::ScopeRow {
                 scope: cvariables::Scope::Global,
                 entries_start: 4,
                 entries_len: 0,
+                seed: Some(1),
             },
         ]);
         capture.variable_entries.first[..4].copy_from_slice(&[
@@ -3648,14 +3704,15 @@ mod tests {
 
     #[test]
     fn variable_precomparison_preserves_changed_values_names_and_scope_identity() {
-        for change in 0..4 {
+        for change in 0..5 {
             let (mut capture, previous) = variable_comparison_fixture();
             let encoder = variable_baseline(previous);
             match change {
                 0 => capture.variable_entries.first[0].value_raw += 1,
                 1 => capture.variable_names.first[2] = b'A',
                 2 => capture.variables.rows[0].scope = cvariables::Scope::State(5),
-                _ => capture.variable_entries.first[2].name_len = 1,
+                3 => capture.variable_entries.first[2].name_len = 1,
+                _ => capture.variables.rows[0].seed = Some(u32::MAX),
             }
             let views = capture.table_inputs(
                 encoder.comparison_baseline::<tables::ScriptVariables>(1, 1, false),
@@ -3670,6 +3727,86 @@ mod tests {
     }
 
     #[test]
+    fn variable_precomparison_distinguishes_unrecorded_seed_from_captured_absence() {
+        let (mut capture, _) = variable_comparison_fixture();
+        capture.variables.rows[0].seed = None;
+        let view = capture.variables_table(capture.outcomes()[8]);
+        let mut previous = complete::<tables::ScriptVariables>(&view).to_vec();
+        let index = previous
+            .iter()
+            .position(|row| (row.scope_kind, row.scope_id) == (STATE_SCOPE, 4))
+            .unwrap();
+        assert_eq!(previous[index].seed, rows::Recorded::Value(None));
+        let mut scratch = ScriptVariableComparison::default();
+        assert!(capture.variables_equal(capture.outcomes()[8], &previous, &mut scratch));
+        previous[index].seed = rows::Recorded::NotRecorded;
+        assert_eq!(
+            previous[index].seed.require("ScriptVariables.seed"),
+            Err("ScriptVariables.seed not recorded".into())
+        );
+        assert!(!capture.variables_equal(capture.outcomes()[8], &previous, &mut scratch));
+    }
+
+    #[test]
+    fn variable_seeds_use_live_scope_capacity_and_detect_seed_only_changes_at_5000_countries() {
+        let (mut capacities, mut capture) = small();
+        const COUNTRIES: usize = 5_000;
+        let count = COUNTRIES + 1;
+        capacities.raise_for_script_variables(VariableDemand {
+            scopes: count,
+            entries: 0,
+            bytes: 0,
+        });
+        capture.grow(&mut capacities);
+        assert!(capture.variables.rows.len() >= count);
+        capture.variables.outcome = Outcome::Rows { len: count };
+        for (index, scope) in capture.variables.rows[..count].iter_mut().enumerate() {
+            *scope = cvariables::ScopeRow {
+                scope: if index == 0 {
+                    cvariables::Scope::Global
+                } else {
+                    cvariables::Scope::Country(index as u32)
+                },
+                entries_start: 0,
+                entries_len: 0,
+                seed: Some(u32::MAX - index as u32),
+            };
+        }
+        let view = capture.variables_table(capture.outcomes()[8]);
+        let previous = complete::<tables::ScriptVariables>(&view);
+        assert_eq!(previous.len(), count);
+        assert_eq!(previous[0].seed, rows::Recorded::Value(Some(u32::MAX)));
+        assert_eq!(
+            previous[COUNTRIES].seed,
+            rows::Recorded::Value(Some(u32::MAX - COUNTRIES as u32))
+        );
+        let mut scratch = ScriptVariableComparison::default();
+        assert!(capture.variables_equal(capture.outcomes()[8], previous, &mut scratch));
+        capture.variables.rows[COUNTRIES].seed = Some(0);
+        assert!(!capture.variables_equal(capture.outcomes()[8], previous, &mut scratch));
+        let changed = capture.variables_table(capture.outcomes()[8]);
+        assert_eq!(
+            complete::<tables::ScriptVariables>(&changed)[COUNTRIES].seed,
+            rows::Recorded::Value(Some(0))
+        );
+        capture.variables.rows[COUNTRIES].seed = None;
+        let mut work = SeedWork::default();
+        capture.observe_seeds(&mut work);
+        assert_eq!((work.captured, work.refused), (COUNTRIES as u64, 1));
+        let status = serde_json::to_value(work.status()).unwrap();
+        assert_eq!(
+            status["refusals"]["script variable random seed unreadable"],
+            1
+        );
+        assert!(!capture.variables_equal(capture.outcomes()[8], previous, &mut scratch));
+        let unknown = capture.variables_table(capture.outcomes()[8]);
+        assert_eq!(
+            complete::<tables::ScriptVariables>(&unknown)[COUNTRIES].seed,
+            rows::Recorded::Value(None)
+        );
+    }
+
+    #[test]
     fn variable_precomparison_scope_hint_accepts_ordered_and_reordered_country_and_state_ids() {
         let (mut capture, _) = variable_comparison_fixture();
         capture.variables.rows.extend_from_slice(&[
@@ -3677,11 +3814,13 @@ mod tests {
                 scope: cvariables::Scope::Country(2),
                 entries_start: 4,
                 entries_len: 0,
+                seed: Some(2),
             },
             cvariables::ScopeRow {
                 scope: cvariables::Scope::State(1),
                 entries_start: 4,
                 entries_len: 0,
+                seed: Some(1),
             },
         ]);
         capture.variables.outcome = Outcome::Rows { len: 5 };

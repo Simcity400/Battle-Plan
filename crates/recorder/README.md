@@ -4,6 +4,14 @@ The passive command-line controller for recording. It finds and verifies HOI4, i
 
 Older playback rows distinguish an appended field that was not recorded from a native empty or zero value. Dependent features report named, counted refusals; unchanged fields remain available. See [replay compatibility](../replay/README.md#compatibility-and-recovery).
 
+The oracle reads appended inputs through `Recorded::require`. Historical
+absence is a named field limitation; a captured `None` remains a separate
+native absence or read refusal. Whole-frame reports count each field once,
+including nested commander inputs in both live combats and retained results,
+and preserve comparisons of the row's unchanged fields. Inspection attributes
+bytes using the recording's source format, so tables introduced later consume
+no recorded bytes.
+
 ## Record a campaign
 
 Use the shared [build commands](../../AGENTS.md#build-commands):
@@ -127,6 +135,16 @@ Each process session starts a branch. In-process load signals and unexplained ho
 
 The ETA oracle validates the moving-division census, each row's `sample_hour` and its spans against the save's route at every compared hour, and counts rows carried from an earlier read separately. A carried row's route is witnessed unchanged, so its spans still bound; the save has no comparator for operand values. The [five-hour operand limitation](../viewer/README.md#fidelity-limits) is owner-approved and does not establish parity with the native map-counter cache. Include all five stagger slots, a reroute, stop/start, and a load when validating this capture path.
 
+DivisionStatus supply grace compares exactly with `max_supply` and
+`army_current_supply_ratio`. `CArmy::Serialize@140C80E00` writes both signed
+fixed5 fields unconditionally, including zero; a missing saved field is a
+difference when the recording contains that operand. Older recordings retain
+an absent operand and the oracle states that limitation. Division naming uses
+the combat oracle's shared operand comparison against `division_name` and the
+selected template's `division_names_group`; the save does not certify a stale
+localized name cache. Fresh-save agreement and smoke remain coordinated live
+checks.
+
 Invasion path costs read runtime diplomacy state that text saves omit: the route unit owner's slot-zero war operands and co-belligerent targets in InvasionPreparations. The oracle lists these as runtime-only; it compares the invasion census and preparation, and the roster fallback unit as CountryCounterInputs.first_division. A passing fresh-save oracle therefore needs the coordinated movement oracle and matched invasion screenshots to establish route fidelity.
 
 The oracle compares LocalPlayer's viewing choice (the playing reference when positive, else the observer's) with the save's `player` tag, which the saving client writes from the same two references. The save holds only that choice, so the unchosen reference is a named limitation. A save made by another client cannot certify the recording client; make the fresh save on the recording client.
@@ -161,3 +179,32 @@ CountryAppearance has no save counterpart: `CDiplomacyStatus::Serialize@140D32BD
 does not save its `+0x170` array. Saved relations cannot certify that array's
 order, repeats or raw reference words. Fresh-save agreement, smoke and live
 border-effect text remain unverified until the coordinated game run.
+
+The [country roster oracle](src/oracle/country_rosters.rs) compares owned wargoals
+in diplomacy's saved `available_wargoals` reference order, joining dynamically
+keyed children of `diplomacy.wargoals` for recipient, payload type and claimed
+states. The child key and payload type are separate native fields; a save's
+payload reader can change the declared type independently of that key.
+A null reference slot and a nonnull reference whose payload the save omits are
+separate named limitations. CountryCounterInputs compares the
+owned and controlled state lists and active army/navy leader lists as sets, and
+the core state list in its saved native order. Leader membership comes from
+saved active character status and military roles,
+independently of the character's owner. Missing recording operands remain absent,
+and null slots and unrepresented save payloads are named limitations. Synthetic
+coverage does not certify live agreement: fresh-save oracle and smoke checks
+remain coordinated live work.
+
+The available-advisor oracle checks saved status and role ideas. Native
+insertion deduplicates comparator-equal idea keys, so a shared idea's selected
+character, vector order and multiplicity are named save limitations. Advisor
+modifier entries are read fresh hourly outside definition reuse;
+`CAdvisor::Serialize@1412902F0` saves traits and the own block but omits that
+cache, which remains a named oracle limitation.
+
+ScriptVariables compares the store seed with the second unsigned word of saved
+`random` metadata. The serializer omits that metadata when the seed is one;
+missing metadata and missing captured seeds remain named limitations.
+TrainInventory's allocated trucks and required truck/train caches have no save
+counterpart. The saved truck roster cannot certify the stored allocated total,
+and hourly caches do not establish the operands of a daily logistics balance.

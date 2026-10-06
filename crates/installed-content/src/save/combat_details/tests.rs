@@ -133,3 +133,32 @@ fn border_war_save_keeps_raw_event_identifiers_country_and_state() {
     let ordinary = land(&fields(b"attacker={} defender={}"), false).unwrap();
     assert!(ordinary.transfer_state.is_none());
 }
+
+#[test]
+fn border_war_width_keeps_signed_fixed5_zero_and_absence() {
+    for (text, expected) in [
+        ("combat_width=80", Some(8_000_000)),
+        ("combat_width=-0.00001", Some(-1)),
+        ("combat_width=0", Some(0)),
+        ("", None),
+    ] {
+        let items = fields(format!("{text} attacker={{}} defender={{}}").as_bytes());
+        let border = land(&items, true).unwrap();
+        assert_eq!(border.combat_width.map(|width| width.raw), expected);
+        assert!(land(&items, false).unwrap().combat_width.is_none());
+    }
+    for text in [
+        "combat_width=0.000001",
+        "combat_width={}",
+        "combat_width=1 combat_width=2",
+    ] {
+        assert!(
+            land(
+                &fields(format!("{text} attacker={{}} defender={{}}").as_bytes()),
+                true
+            )
+            .is_err(),
+            "{text}"
+        );
+    }
+}

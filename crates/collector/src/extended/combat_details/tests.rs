@@ -1,6 +1,48 @@
 use super::*;
 
 #[test]
+fn border_width_projection_preserves_signed_zero_and_ordinary_absence() {
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    captured.details.outcome = Outcome::Rows { len: 1 };
+    captured.details.rows[0].row.id = 62;
+    for combat_width in [i64::MIN, -1, 0, 8_000_000, i64::MAX] {
+        captured.details.rows[0].row.border_war = Some(cland_combat::BorderWarInputs {
+            combat_width,
+            ..Default::default()
+        });
+        let views = captured.tables();
+        let TableView::Complete(replay::rows::TableRows::LandCombatDetails(rows)) = &views[0]
+        else {
+            panic!("border details withheld");
+        };
+        assert_eq!(
+            rows[0]
+                .border_war
+                .require("LandCombatDetails.border_war")
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .combat_width
+                .require("LandCombatDetails.border_war.combat_width")
+                .unwrap(),
+            &combat_width
+        );
+    }
+    captured.details.rows[0].row.border_war = None;
+    let views = captured.tables();
+    let TableView::Complete(replay::rows::TableRows::LandCombatDetails(rows)) = &views[0] else {
+        panic!("ordinary details withheld");
+    };
+    assert!(
+        rows[0]
+            .border_war
+            .require("LandCombatDetails.border_war")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
 fn modifier_capacity_and_division_growth_keep_independent_failures() {
     let mut image = vec![0_u8; 0x4000];
     for (address, value) in [

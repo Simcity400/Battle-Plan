@@ -42,13 +42,7 @@ pub struct CommanderTrait {
     pub token_len: usize,
 }
 
-/// One timed trait: its definition identity and the signed days left.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct CommanderTimedTrait {
-    pub token_id: i32,
-    pub definition_ordinal: i32,
-    pub remaining_days: i32,
-}
+pub use crate::cunit_leader::TimedTrait as CommanderTimedTrait;
 
 /// Entries of each detail arena.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -221,6 +215,7 @@ pub struct BorderWarSide {
 pub struct BorderWarInputs {
     pub transfer_state: u8,
     pub sides: [BorderWarSide; 2],
+    pub combat_width: i64,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -246,6 +241,7 @@ pub(super) fn read_border_war(
     use crate::{cland_border_war_combat as combat, cland_border_war_combatant as side};
     let mut row = BorderWarInputs {
         transfer_state: reader.field(source.pointer, combat::TRANSFER_STATE)?,
+        combat_width: reader.field(source.pointer, combat::COMBAT_WIDTH)?,
         ..Default::default()
     };
     for (index, offset) in [ATTACKER, DEFENDER].into_iter().enumerate() {
@@ -643,36 +639,14 @@ impl<M: Memory> Reader<'_, M> {
         )?;
         row.timed_traits_start = arenas.used.timed;
         row.timed_traits_len = timed.count as usize;
-        // The (trait, days) entries in 64-entry guarded batches, then each
-        // trait's identity and fields.
-        const STRIDE: usize = cunit_leader::TIMED_TRAIT_STRIDE;
-        let mut batch = [0_u8; 64 * STRIDE];
-        for first in (0..timed.count).step_by(64) {
-            let count = (timed.count - first).min(64) as usize;
-            let entries = &mut batch[..count * STRIDE];
-            let address = timed
-                .element(first, STRIDE)
-                .ok_or("land timed trait address overflow")?;
-            if !crate::read_slice(self.memory, address, entries) {
-                return Err("land combat field unreadable or address overflow");
-            }
-            for entry in entries.chunks_exact(STRIDE) {
-                let pointer = usize::try_from(u64::from_le_bytes(entry[..8].try_into().unwrap()))
-                    .map_err(|_| "land combat pointer overflow")?;
-                self.vtable(pointer, 0, cunit_leader_trait::VTABLE_RVA)?;
-                let value = CommanderTimedTrait {
-                    token_id: self.field(pointer, cunit_leader_trait::TOKEN_ID)?,
-                    definition_ordinal: self.field(pointer, cunit_leader_trait::ORDINAL)?,
-                    remaining_days: i32::from_le_bytes(entry[8..12].try_into().unwrap()),
-                };
-                push(
-                    arenas.timed,
-                    &mut arenas.used.timed,
-                    &mut arenas.required.timed,
-                    value,
-                );
-            }
-        }
+        cunit_leader::read_timed_traits(self.memory, self.base, timed, |value| {
+            push(
+                arenas.timed,
+                &mut arenas.used.timed,
+                &mut arenas.required.timed,
+                value,
+            );
+        })?;
         let learning = self.array(selected, cunit_leader::TRAIT_EXPERIENCE_DATA, 16)?;
         row.learning_traits = Span {
             start: arenas.used.learning,

@@ -45,7 +45,6 @@ fn diplomacy_native_output_branches() {
                 " ADD_FACTION_INITIATIVE_EFFECT_NO_FACTION:0 \"InitiativeOutside $AMOUNT|2$\"\n",
                 " FACTION_ACCESS_TAB_MILITARY:0 \"Military\"\n",
                 " FACTION_ACCESS_TAB_UNLOCK:0 \"Unlock $NAME$\"\n FACTION_ACCESS_TAB_LOCK:0 \"Lock $NAME$\"\n",
-
                 " EFFECT_ADD_CIVIL_WAR_TARGET:0 \"Civil $COUNTRY$\"\n",
                 " EFFECT_REMOVE_CIVIL_WAR_TARGET:0 \"Uncivil $COUNTRY$\"\n",
                 " EFFECT_GIVE_GUARANTEE:0 \"Guarantee $COUNTRY$\"\n",
@@ -136,13 +135,15 @@ fn diplomacy_native_output_branches() {
                 .collect(),
         ));
     *fixture.frame.tables[TableId::CharacterOperatives.index()] =
-        TableView::Complete(TableRows::CharacterOperatives(vec![CharacterOperativeRow {
-            character: 14,
-            reference: (20_u64 << 32) | u64::from(leader_type),
-            resolved: true,
-            category: 3,
-            ..Default::default()
-        }]));
+        TableView::Complete(TableRows::CharacterOperatives(vec![
+            CharacterOperativeRow {
+                character: 14,
+                reference: (20_u64 << 32) | u64::from(leader_type),
+                resolved: true,
+                category: 3,
+                ..Default::default()
+            },
+        ]));
     let leader = EventObject::UnitLeader((7_u64 << 32) | u64::from(leader_type));
     *fixture.frame.tables[TableId::Factions.index()] =
         TableView::Complete(TableRows::Factions(vec![FactionRow {
@@ -165,6 +166,7 @@ fn diplomacy_native_output_branches() {
         ]));
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
+            seed: replay::rows::Recorded::Value(None),
             scope_kind: 1,
             scope_id: 100,
             entries: vec![
@@ -184,8 +186,20 @@ fn diplomacy_native_output_branches() {
         }]));
     // Synthetic cases cover all 44 assigned vtables and native own-text branches.
     for (body, object, mask, expected, refusal) in [
-        ("add_autonomy_score={value=9}", EventObject::Country(1), 0, "", None),
-        ("add_autonomy_score={value=9}", EventObject::Country(1), 1, "", None),
+        (
+            "add_autonomy_score={value=9}",
+            EventObject::Country(1),
+            0,
+            "",
+            None,
+        ),
+        (
+            "add_autonomy_score={value=9}",
+            EventObject::Country(1),
+            1,
+            "",
+            None,
+        ),
         (
             "add_autonomy_score={value=-2 localization=unused}",
             EventObject::Country(1),
@@ -193,23 +207,125 @@ fn diplomacy_native_output_branches() {
             "score -2/1\n",
             None,
         ),
-        ("add_autonomy_score={value=3}", EventObject::Country(1), 4, "score 3/1\n", None),
-        ("add_autonomy_score={}", EventObject::Country(1), 8, "score 0/1\n", None),
-        ("add_autonomy_score={value=4}", EventObject::Country(0), 2, "detailed 4\n", None),
-        ("add_autonomy_score={value=4}", EventObject::State(1), 2, "detailed 4\n", None),
-        ("add_autonomy_score={value=4}", EventObject::Character(11), 2, "detailed 4\n", None),
-        ("add_autonomy_score={value=4}", leader, 2, "detailed 4\n", None),
-        ("add_autonomy_score={value=var:ratio}", EventObject::Country(1), 2, "score 0/1\n", None),
-        ("add_autonomy_score={value=3 value=var:ratio}", C(1), 2, "score 3/1\n", None),
-        ("add_autonomy_score={value=var:ratio value=-2}", C(1), 2, "score -2/1\n", None),
-        ("add_autonomy_ratio={value=var:missing}", EventObject::Country(1), 0, "", None),
-        ("add_autonomy_ratio={value=var:ratio}", EventObject::Country(1), 2, "score 4/1\n", None),
-        ("add_autonomy_ratio={value=-0.5}", EventObject::Country(1), 2, "score -4/1\n", None),
-        ("add_autonomy_ratio={}", EventObject::Country(1), 2, "score 0/1\n", None),
-        ("add_autonomy_ratio={value=0.5}", EventObject::Country(2), 2, "score 0/1\n", None),
-        ("add_autonomy_ratio={value=var:missing}", EventObject::Country(3), 2, "", None),
-        ("add_autonomy_ratio={value=var:missing}", EventObject::State(1), 2, "", None),
-        ("add_autonomy_ratio={value=var:missing}", EventObject::Character(11), 2, "", None),
+        (
+            "add_autonomy_score={value=3}",
+            EventObject::Country(1),
+            4,
+            "score 3/1\n",
+            None,
+        ),
+        (
+            "add_autonomy_score={}",
+            EventObject::Country(1),
+            8,
+            "score 0/1\n",
+            None,
+        ),
+        (
+            "add_autonomy_score={value=4}",
+            EventObject::Country(0),
+            2,
+            "detailed 4\n",
+            None,
+        ),
+        (
+            "add_autonomy_score={value=4}",
+            EventObject::State(1),
+            2,
+            "detailed 4\n",
+            None,
+        ),
+        (
+            "add_autonomy_score={value=4}",
+            EventObject::Character(11),
+            2,
+            "detailed 4\n",
+            None,
+        ),
+        (
+            "add_autonomy_score={value=4}",
+            leader,
+            2,
+            "detailed 4\n",
+            None,
+        ),
+        (
+            "add_autonomy_score={value=var:ratio}",
+            EventObject::Country(1),
+            2,
+            "score 0/1\n",
+            None,
+        ),
+        (
+            "add_autonomy_score={value=3 value=var:ratio}",
+            C(1),
+            2,
+            "score 3/1\n",
+            None,
+        ),
+        (
+            "add_autonomy_score={value=var:ratio value=-2}",
+            C(1),
+            2,
+            "score -2/1\n",
+            None,
+        ),
+        (
+            "add_autonomy_ratio={value=var:missing}",
+            EventObject::Country(1),
+            0,
+            "",
+            None,
+        ),
+        (
+            "add_autonomy_ratio={value=var:ratio}",
+            EventObject::Country(1),
+            2,
+            "score 4/1\n",
+            None,
+        ),
+        (
+            "add_autonomy_ratio={value=-0.5}",
+            EventObject::Country(1),
+            2,
+            "score -4/1\n",
+            None,
+        ),
+        (
+            "add_autonomy_ratio={}",
+            EventObject::Country(1),
+            2,
+            "score 0/1\n",
+            None,
+        ),
+        (
+            "add_autonomy_ratio={value=0.5}",
+            EventObject::Country(2),
+            2,
+            "score 0/1\n",
+            None,
+        ),
+        (
+            "add_autonomy_ratio={value=var:missing}",
+            EventObject::Country(3),
+            2,
+            "",
+            None,
+        ),
+        (
+            "add_autonomy_ratio={value=var:missing}",
+            EventObject::State(1),
+            2,
+            "",
+            None,
+        ),
+        (
+            "add_autonomy_ratio={value=var:missing}",
+            EventObject::Character(11),
+            2,
+            "",
+            None,
+        ),
         (
             "become_exiled_in={target=BBB legitimacy=var:missing}",
             EventObject::Country(1),
@@ -217,13 +333,55 @@ fn diplomacy_native_output_branches() {
             "host beta AAA\n",
             None,
         ),
-        ("become_exiled_in={target=event_target:absent}", EventObject::Country(1), 2, "", None),
-        ("end_exile=BBB", EventObject::Country(1), 2, "return Beta", None),
-        ("end_exile=CCC", EventObject::Country(1), 2, "return éclair", None),
-        ("end_exile=event_target:absent", EventObject::Country(1), 2, "", None),
-        ("end_puppet=BBB", EventObject::Country(1), 2, "free Alpha/Beta\n", None),
-        ("end_puppet=event_target:absent", EventObject::Country(1), 2, "", None),
-        ("puppet=BBB", EventObject::Country(1), 2, "subject Alpha/Beta\n", None),
+        (
+            "become_exiled_in={target=event_target:absent}",
+            EventObject::Country(1),
+            2,
+            "",
+            None,
+        ),
+        (
+            "end_exile=BBB",
+            EventObject::Country(1),
+            2,
+            "return Beta",
+            None,
+        ),
+        (
+            "end_exile=CCC",
+            EventObject::Country(1),
+            2,
+            "return éclair",
+            None,
+        ),
+        (
+            "end_exile=event_target:absent",
+            EventObject::Country(1),
+            2,
+            "",
+            None,
+        ),
+        (
+            "end_puppet=BBB",
+            EventObject::Country(1),
+            2,
+            "free Alpha/Beta\n",
+            None,
+        ),
+        (
+            "end_puppet=event_target:absent",
+            EventObject::Country(1),
+            2,
+            "",
+            None,
+        ),
+        (
+            "puppet=BBB",
+            EventObject::Country(1),
+            2,
+            "subject Alpha/Beta\n",
+            None,
+        ),
         (
             "puppet={target=BBB end_wars=no end_civil_wars=yes}",
             EventObject::Country(1),
@@ -231,8 +389,20 @@ fn diplomacy_native_output_branches() {
             "subject Alpha/Beta\n",
             None,
         ),
-        ("puppet={target=event_target:absent}", EventObject::Country(1), 2, "", None),
-        ("release_autonomy={target=BBB}", EventObject::Country(1), 2, "", None),
+        (
+            "puppet={target=event_target:absent}",
+            EventObject::Country(1),
+            2,
+            "",
+            None,
+        ),
+        (
+            "release_autonomy={target=BBB}",
+            EventObject::Country(1),
+            2,
+            "",
+            None,
+        ),
         (
             "release_autonomy={target=event_target:absent autonomy_state=synthetic}",
             EventObject::Country(1),
@@ -303,7 +473,13 @@ fn diplomacy_native_output_branches() {
             "",
             Some("not defined"),
         ),
-        ("release_autonomy={target=BBB autonomy_state=\"\"}", C(1), 2, "", None),
+        (
+            "release_autonomy={target=BBB autonomy_state=\"\"}",
+            C(1),
+            2,
+            "",
+            None,
+        ),
         (
             "set_autonomy={target=BBB autonomous_state=synthetic_other autonomy_state=synthetic}",
             C(1),
@@ -318,9 +494,27 @@ fn diplomacy_native_output_branches() {
             "Set Alpha/Beta/Other\n",
             None,
         ),
-        ("set_autonomy={target=BBB autonomy_state=missing}", C(1), 2, "", Some("not defined")),
-        ("set_autonomy={target=event_target:absent autonomy_state=missing}", C(1), 2, "", None),
-        ("set_autonomy={target=BBB}", C(1), 2, "Set Alpha/Beta/\n", None),
+        (
+            "set_autonomy={target=BBB autonomy_state=missing}",
+            C(1),
+            2,
+            "",
+            Some("not defined"),
+        ),
+        (
+            "set_autonomy={target=event_target:absent autonomy_state=missing}",
+            C(1),
+            2,
+            "",
+            None,
+        ),
+        (
+            "set_autonomy={target=BBB}",
+            C(1),
+            2,
+            "Set Alpha/Beta/\n",
+            None,
+        ),
         (
             "set_autonomy={target=BBB autonomy_state=autonomy_free freedom_level=var:missing}",
             C(1),
@@ -328,18 +522,90 @@ fn diplomacy_native_output_branches() {
             "Free beta\n",
             None,
         ),
-        ("release_puppet=BBB", EventObject::Country(1), 2, "release Beta\n", None),
-        ("release_puppet=event_target:absent", EventObject::Country(1), 2, "", None),
-        ("release_puppet_on_controlled=BBB", EventObject::Country(1), 2, "release Beta\n", None),
-        ("release_puppet_on_controlled=event_target:absent", EventObject::Country(1), 2, "", None),
-        ("remove_exile_tag=no", EventObject::Character(11), 2, "exile [This.GetName]", None),
-        ("remove_exile_tag=yes", leader, 2, "exile [This.GetName]", None),
-        ("remove_exile_tag=yes", EventObject::Character(12), 2, "", None),
-        ("remove_exile_tag=yes", EventObject::Character(13), 2, "", None),
-        ("remove_exile_tag=yes", EventObject::Character(15), 2, "", None),
-        ("remove_exile_tag=yes", EventObject::Character(14), 2, "", Some("+0xED4")),
-        ("create_faction=SYN_NAME", C(1), 2, "Create Charter AAA\n", None),
-        ("create_faction=ROOT", C(1), 2, "Create Root literal\n", None), // No selector read by vf6.
+        (
+            "release_puppet=BBB",
+            EventObject::Country(1),
+            2,
+            "release Beta\n",
+            None,
+        ),
+        (
+            "release_puppet=event_target:absent",
+            EventObject::Country(1),
+            2,
+            "",
+            None,
+        ),
+        (
+            "release_puppet_on_controlled=BBB",
+            EventObject::Country(1),
+            2,
+            "release Beta\n",
+            None,
+        ),
+        (
+            "release_puppet_on_controlled=event_target:absent",
+            EventObject::Country(1),
+            2,
+            "",
+            None,
+        ),
+        (
+            "remove_exile_tag=no",
+            EventObject::Character(11),
+            2,
+            "exile [This.GetName]",
+            None,
+        ),
+        (
+            "remove_exile_tag=yes",
+            leader,
+            2,
+            "exile [This.GetName]",
+            None,
+        ),
+        (
+            "remove_exile_tag=yes",
+            EventObject::Character(12),
+            2,
+            "",
+            None,
+        ),
+        (
+            "remove_exile_tag=yes",
+            EventObject::Character(13),
+            2,
+            "",
+            None,
+        ),
+        (
+            "remove_exile_tag=yes",
+            EventObject::Character(15),
+            2,
+            "",
+            None,
+        ),
+        (
+            "remove_exile_tag=yes",
+            EventObject::Character(14),
+            2,
+            "",
+            Some("+0xED4"),
+        ),
+        (
+            "create_faction=SYN_NAME",
+            C(1),
+            2,
+            "Create Charter AAA\n",
+            None,
+        ),
+        (
+            "create_faction=ROOT",
+            C(1),
+            2,
+            "Create Root literal\n",
+            None,
+        ), // No selector read by vf6.
         ("create_faction=\"\"", C(1), 2, "", None),
         ("create_faction=SYN_NAME", S(0), 2, "", None),
         ("dismantle_faction=no", C(1), 2, "Dismantle Union\n", None), // Boolean ignored by vf7.
@@ -348,12 +614,30 @@ fn diplomacy_native_output_branches() {
         ("leave_faction=ROOT", C(1), 2, "Remove alpha/Union\n", None), // Definite current name.
         ("leave_faction=yes", C(3), 2, "", None),
         ("leave_faction=yes", S(1), 2, "", None),
-        ("remove_from_faction=CCC", C(1), 2, "Remove Gamma/Union\n", None), // No target-membership gate.
+        (
+            "remove_from_faction=CCC",
+            C(1),
+            2,
+            "Remove Gamma/Union\n",
+            None,
+        ), // No target-membership gate.
         ("remove_from_faction=AAA", C(3), 2, "Remove Alpha\n", None),
-        ("remove_from_faction=AAA", S(1), 2, "", Some("current scope has no country")),
+        (
+            "remove_from_faction=AAA",
+            S(1),
+            2,
+            "",
+            Some("current scope has no country"),
+        ),
         ("remove_from_faction=CCC", C(2), 2, "", None),
         ("remove_from_faction=0", C(1), 2, "", None),
-        ("set_faction_name=SYN_NAME", C(1), 2, "Rename Union/Charter AAA\n", None),
+        (
+            "set_faction_name=SYN_NAME",
+            C(1),
+            2,
+            "Rename Union/Charter AAA\n",
+            None,
+        ),
         ("set_faction_name=ROOT", C(1), 2, "Rename Union/\n", None), // vf6 selector clears new name.
         ("set_faction_name=SYN_NAME", C(3), 2, "", None),
         ("set_faction_spymaster=no", C(2), 2, "Spy Union\n", None), // Nonleader is allowed; boolean ignored.
@@ -393,7 +677,13 @@ fn diplomacy_native_output_branches() {
             "Slots Union//4\n",
             None,
         ),
-        ("add_faction_goal_slot={}", S(0), 2, "SlotsOutside /0\n", None),
+        (
+            "add_faction_goal_slot={}",
+            S(0),
+            2,
+            "SlotsOutside /0\n",
+            None,
+        ),
         (
             "add_faction_goal_slot={category=short_term value=2 give_guarantee=BBB}",
             C(1),
@@ -401,13 +691,55 @@ fn diplomacy_native_output_branches() {
             "Slots Union/Short/2\nGuarantee Beta\n",
             None,
         ),
-        ("add_faction_initiative=syn_initiative", C(1), 2, "Initiative Union/1.25", None),
-        ("add_faction_initiative=-2.5", C(3), 2, "InitiativeOutside -2.50", None),
-        ("add_faction_initiative=ROOT", C(1), 2, "Initiative Union/0.00", None),
-        ("set_faction_military_unlocked=yes", S(0), 2, "Unlock Military", None), // No country/faction gate or LF.
-        ("set_faction_military_unlocked=no", C(1), 2, "Lock Military", None),
-        ("set_faction_military_unlocked=YES", C(1), 2, "Lock Military", None),
-        ("set_faction_military_unlocked=\"yes\"", C(1), 2, "Unlock Military", None),
+        (
+            "add_faction_initiative=syn_initiative",
+            C(1),
+            2,
+            "Initiative Union/1.25",
+            None,
+        ),
+        (
+            "add_faction_initiative=-2.5",
+            C(3),
+            2,
+            "InitiativeOutside -2.50",
+            None,
+        ),
+        (
+            "add_faction_initiative=ROOT",
+            C(1),
+            2,
+            "Initiative Union/0.00",
+            None,
+        ),
+        (
+            "set_faction_military_unlocked=yes",
+            S(0),
+            2,
+            "Unlock Military",
+            None,
+        ), // No country/faction gate or LF.
+        (
+            "set_faction_military_unlocked=no",
+            C(1),
+            2,
+            "Lock Military",
+            None,
+        ),
+        (
+            "set_faction_military_unlocked=YES",
+            C(1),
+            2,
+            "Lock Military",
+            None,
+        ),
+        (
+            "set_faction_military_unlocked=\"yes\"",
+            C(1),
+            2,
+            "Unlock Military",
+            None,
+        ),
         (
             "add_faction_initiative=2 set_faction_military_unlocked=yes",
             C(1),
@@ -415,16 +747,45 @@ fn diplomacy_native_output_branches() {
             "Initiative Union/2.00\nUnlock Military",
             None,
         ),
-
         ("add_civil_war_target=BBB", C(1), 2, "Civil Beta\n", None),
-        ("remove_civil_war_target=CCC", C(1), 2, "Uncivil Gamma\n", None),
+        (
+            "remove_civil_war_target=CCC",
+            C(1),
+            2,
+            "Uncivil Gamma\n",
+            None,
+        ),
         ("give_guarantee=BBB", C(1), 2, "Guarantee Beta\n", None),
         ("give_military_access=BBB", C(1), 2, "Access Beta\n", None),
         ("give_market_access=BBB", C(1), 2, "Market beta\n", None),
-        ("remove_wargoal={target=BBB type=all}", C(1), 2, "Goal Alpha/Beta\n", None),
-        ("remove_wargoal={target=event_target:absent type=all}", C(1), 2, "", None),
-        ("remove_wargoal={target=ROOT target=BBB}", C(1), 2, "", Some("+0x24")),
-        ("add_to_war={enemy=BBB targeted_alliance=CCC}", C(1), 2, "War Beta/Gamma\n", None),
+        (
+            "remove_wargoal={target=BBB type=all}",
+            C(1),
+            2,
+            "Goal Alpha/Beta\n",
+            None,
+        ),
+        (
+            "remove_wargoal={target=event_target:absent type=all}",
+            C(1),
+            2,
+            "",
+            None,
+        ),
+        (
+            "remove_wargoal={target=ROOT target=BBB}",
+            C(1),
+            2,
+            "",
+            Some("+0x24"),
+        ),
+        (
+            "add_to_war={enemy=BBB targeted_alliance=CCC}",
+            C(1),
+            2,
+            "War Beta/Gamma\n",
+            None,
+        ),
         (
             "add_to_war={enemy=ROOT.FROM targeted_alliance=PREV.ROOT}",
             C(1),
@@ -461,7 +822,13 @@ fn diplomacy_native_output_branches() {
             Some("country specifier"),
         ),
         ("set_war_support=0.25", C(1), 2, "Support 0\n", None),
-        ("set_border_war=yes", S(1), 2, "Border One [This.GetName]\n", None),
+        (
+            "set_border_war=yes",
+            S(1),
+            2,
+            "Border One [This.GetName]\n",
+            None,
+        ),
         ("set_border_war=ROOT", S(1), 2, "End One\n", None),
         ("set_border_war=yes", C(1), 2, "", None),
         (
@@ -471,8 +838,20 @@ fn diplomacy_native_output_branches() {
             "Cancel One(\u{12}AAA)/Two(\u{12}AAA)\n",
             None,
         ),
-        ("cancel_border_war={attacker=0 defender=2}", C(1), 2, "", None),
-        ("finalize_border_war={attacker=1 defender=2}", C(1), 2, "", None),
+        (
+            "cancel_border_war={attacker=0 defender=2}",
+            C(1),
+            2,
+            "",
+            None,
+        ),
+        (
+            "finalize_border_war={attacker=1 defender=2}",
+            C(1),
+            2,
+            "",
+            None,
+        ),
         (
             "finalize_border_war={attacker=1 defender=2 attacker_win=yes defender_win=yes}",
             C(1),
@@ -501,7 +880,13 @@ fn diplomacy_native_output_branches() {
             "Update One/Two\nWidth 2.50\nChange yes AAA\n\t\u{11}HOne\u{11}!:\nUnits 3\nModifier -0.25\n\t\u{11}HTwo\u{11}!:\nUnits 4\n",
             None,
         ),
-        ("set_border_war_data={attacker=0 defender=2 combat_width=var:missing}", C(1), 2, "", None),
+        (
+            "set_border_war_data={attacker=0 defender=2 combat_width=var:missing}",
+            C(1),
+            2,
+            "",
+            None,
+        ),
         (
             "diplomatic_relation={country=BBB relation=military_access active=no}",
             C(1),
@@ -530,9 +915,27 @@ fn diplomacy_native_output_branches() {
             "Cancel Access/beta\n",
             None,
         ),
-        ("add_to_war={enemy=\"BBB\" targeted_alliance=CCC}", C(1), 2, "War Beta/Gamma\n", None),
-        ("diplomatic_relation={country=event_target:absent relation=guarantee}", C(1), 2, "", None),
-        ("diplomatic_relation={country=BBB relation=guarantee}", S(1), 2, "", None),
+        (
+            "add_to_war={enemy=\"BBB\" targeted_alliance=CCC}",
+            C(1),
+            2,
+            "War Beta/Gamma\n",
+            None,
+        ),
+        (
+            "diplomatic_relation={country=event_target:absent relation=guarantee}",
+            C(1),
+            2,
+            "",
+            None,
+        ),
+        (
+            "diplomatic_relation={country=BBB relation=guarantee}",
+            S(1),
+            2,
+            "",
+            None,
+        ),
         (
             "diplomatic_relation={country=BBB relation=\"guarantee\"}",
             C(1),
@@ -561,8 +964,20 @@ fn diplomacy_native_output_branches() {
             "",
             Some("140D0F6E0"),
         ),
-        ("create_wargoal={target=BBB type=synthetic}", C(1), 2, "", Some("claimed-state set")),
-        ("start_civil_war={ideology=synthetic size=0.5}", C(1), 2, "", Some("1403A0010")),
+        (
+            "create_wargoal={target=BBB type=synthetic}",
+            C(1),
+            2,
+            "",
+            Some("claimed-state set"),
+        ),
+        (
+            "start_civil_war={ideology=synthetic size=0.5}",
+            C(1),
+            2,
+            "",
+            Some("1403A0010"),
+        ),
         (
             "create_purchase_contract={seller=AAA buyer=BBB civilian_factories=2}",
             C(1),
@@ -570,8 +985,20 @@ fn diplomacy_native_output_branches() {
             "",
             Some("140BA59E0"),
         ),
-        ("set_country_flag=synthetic_empty give_guarantee=BBB", C(1), 2, "Guarantee Beta\n", None),
-        ("end_exile=BBB give_guarantee=CCC", C(1), 2, "return Beta\nGuarantee Gamma\n", None),
+        (
+            "set_country_flag=synthetic_empty give_guarantee=BBB",
+            C(1),
+            2,
+            "Guarantee Beta\n",
+            None,
+        ),
+        (
+            "end_exile=BBB give_guarantee=CCC",
+            C(1),
+            2,
+            "return Beta\nGuarantee Gamma\n",
+            None,
+        ),
         (
             "diplomatic_relation={country=BBB relation=naval_blockade}",
             C(1),
@@ -677,8 +1104,20 @@ fn diplomacy_native_output_branches() {
             "Enact Licence/beta\n",
             None,
         ),
-        ("diplomatic_relation={country=BBB relation=puppet}", C(1), 2, "Enact /beta\n", None),
-        ("diplomatic_relation={country=BBB relation=lend_lease}", C(1), 2, "Enact /beta\n", None),
+        (
+            "diplomatic_relation={country=BBB relation=puppet}",
+            C(1),
+            2,
+            "Enact /beta\n",
+            None,
+        ),
+        (
+            "diplomatic_relation={country=BBB relation=lend_lease}",
+            C(1),
+            2,
+            "Enact /beta\n",
+            None,
+        ),
         (
             "diplomatic_relation={country=BBB relation=equipment_purchase_contract_relation}",
             C(1),
@@ -686,11 +1125,29 @@ fn diplomacy_native_output_branches() {
             "Enact /beta\n",
             None,
         ),
-        ("add_faction_goal=SYN_GOAL", C(1), 2, "", Some("faction goal content")),
+        (
+            "add_faction_goal=SYN_GOAL",
+            C(1),
+            2,
+            "",
+            Some("faction goal content"),
+        ),
         ("add_faction_goal=SYN_GOAL", C(3), 2, "", None),
-        ("remove_faction_goal=SYN_GOAL", C(1), 2, "", Some("faction goal content")),
+        (
+            "remove_faction_goal=SYN_GOAL",
+            C(1),
+            2,
+            "",
+            Some("faction goal content"),
+        ),
         ("remove_faction_goal=SYN_GOAL", C(3), 2, "", None),
-        ("set_faction_manifest=SYN_GOAL", C(1), 2, "", Some("faction goal content")),
+        (
+            "set_faction_manifest=SYN_GOAL",
+            C(1),
+            2,
+            "",
+            Some("faction goal content"),
+        ),
         ("set_faction_manifest=SYN_GOAL", C(3), 2, "", None),
         (
             "create_faction_from_template=SYN_TEMPLATE",
@@ -713,13 +1170,49 @@ fn diplomacy_native_output_branches() {
             "",
             Some("faction upgrade content"),
         ),
-        ("set_faction_member_upgrade_min={upgrade=SYN_UPGRADE}", C(3), 2, "", None),
-        ("set_faction_rule=SYN_RULE", C(1), 2, "", Some("faction rule content")),
+        (
+            "set_faction_member_upgrade_min={upgrade=SYN_UPGRADE}",
+            C(3),
+            2,
+            "",
+            None,
+        ),
+        (
+            "set_faction_rule=SYN_RULE",
+            C(1),
+            2,
+            "",
+            Some("faction rule content"),
+        ),
         ("set_faction_rule=SYN_RULE", C(3), 2, "", None),
-        ("add_faction_influence_ratio=0.1", C(1), 2, "", Some("1410CF4A0")),
-        ("add_faction_influence_ratio=0.1", C(3), 2, "", Some("1410CF4A0")),
-        ("add_faction_influence_score=1", C(1), 2, "", Some("1410CF4A0")),
-        ("add_faction_influence_score=1", C(3), 2, "", Some("1410CF4A0")),
+        (
+            "add_faction_influence_ratio=0.1",
+            C(1),
+            2,
+            "",
+            Some("1410CF4A0"),
+        ),
+        (
+            "add_faction_influence_ratio=0.1",
+            C(3),
+            2,
+            "",
+            Some("1410CF4A0"),
+        ),
+        (
+            "add_faction_influence_score=1",
+            C(1),
+            2,
+            "",
+            Some("1410CF4A0"),
+        ),
+        (
+            "add_faction_influence_score=1",
+            C(3),
+            2,
+            "",
+            Some("1410CF4A0"),
+        ),
     ] {
         *fixture.frame.tables[TableId::SimulationFeatures.index()] =
             TableView::Complete(TableRows::SimulationFeatures(vec![SimulationFeatureRow {
@@ -764,7 +1257,10 @@ fn diplomacy_native_output_branches() {
             min_freedom_level: None,
         });
     for (body, expected) in [
-        ("set_autonomy={target=BBB autonomy_state=autonomy_free}", "Set Alpha/Beta/Defined free\n"),
+        (
+            "set_autonomy={target=BBB autonomy_state=autonomy_free}",
+            "Set Alpha/Beta/Defined free\n",
+        ),
         (
             "release_autonomy={target=BBB autonomy_state=autonomy_free}",
             "Autonomy Beta/Defined free\n",
@@ -784,9 +1280,18 @@ fn diplomacy_native_output_branches() {
     }
     for (body, refused) in [
         ("release_autonomy={target=BBB}", false),
-        ("set_autonomy={target=event_target:absent autonomy_state=synthetic}", false),
-        ("release_autonomy={target=BBB autonomy_state=synthetic}", true),
-        ("set_autonomy={target=BBB autonomy_state=autonomy_free}", true),
+        (
+            "set_autonomy={target=event_target:absent autonomy_state=synthetic}",
+            false,
+        ),
+        (
+            "release_autonomy={target=BBB autonomy_state=synthetic}",
+            true,
+        ),
+        (
+            "set_autonomy={target=BBB autonomy_state=autonomy_free}",
+            true,
+        ),
     ] {
         let mut scopes = EventScopes::new(vec![EventScope::of(C(1))]);
         let out = fixture.render(body, &mut scopes, Content::default());
@@ -799,8 +1304,16 @@ fn diplomacy_native_output_branches() {
         );
     }
     for (body, expected, refusal) in [
-        ("add_to_war={enemy=ROOT.FROM targeted_alliance=FROM.ROOT}", "War Alpha/Beta\n", None),
-        ("add_to_war={enemy=ROOT.ROOT targeted_alliance=BBB}", "", Some("origin_country fallback")),
+        (
+            "add_to_war={enemy=ROOT.FROM targeted_alliance=FROM.ROOT}",
+            "War Alpha/Beta\n",
+            None,
+        ),
+        (
+            "add_to_war={enemy=ROOT.ROOT targeted_alliance=BBB}",
+            "",
+            Some("origin_country fallback"),
+        ),
     ] {
         let mut graph = EventScopes::new(vec![
             EventScope {
@@ -904,16 +1417,15 @@ fn diplomacy_ordered_subjects_at_5000_countries() {
                 })
                 .collect(),
         ));
-    *fixture.frame.tables[TableId::Politics.index()] =
-        TableView::Complete(TableRows::Politics(
-            countries
-                .iter()
-                .map(|row| PoliticsRow {
-                    country: row.id,
-                    ..Default::default()
-                })
-                .collect(),
-        ));
+    *fixture.frame.tables[TableId::Politics.index()] = TableView::Complete(TableRows::Politics(
+        countries
+            .iter()
+            .map(|row| PoliticsRow {
+                country: row.id,
+                ..Default::default()
+            })
+            .collect(),
+    ));
     let target = String::from_utf8(countries[1].tag.clone()).unwrap();
     let last = String::from_utf8(countries.last().unwrap().tag.clone()).unwrap();
     *fixture.frame.tables[TableId::Countries.index()] =
@@ -927,5 +1439,8 @@ fn diplomacy_ordered_subjects_at_5000_countries() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     assert_eq!(out.text.lines().count(), 5_000);
     assert!(out.text.starts_with(&format!("Join {target}\n")));
-    assert!(out.text.ends_with(&format!("Join {last}\nGuarantee {last}\n")));
+    assert!(
+        out.text
+            .ends_with(&format!("Join {last}\nGuarantee {last}\n"))
+    );
 }

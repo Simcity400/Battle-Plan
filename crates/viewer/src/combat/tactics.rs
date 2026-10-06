@@ -3790,6 +3790,8 @@ mod tests {
                     owner: 100,
                     skill_level: Some(2),
                     trait_definitions: vec![2],
+                    codename: replay::rows::Recorded::Value(None),
+                    name: replay::rows::Recorded::Value(Some(Vec::new())),
                 },
                 CharacterOperativeRow {
                     character: 7,
@@ -4007,6 +4009,7 @@ mod tests {
                     .map(|(scope_kind, scope_id)| replay::rows::ScriptVariablesRow {
                         scope_kind,
                         scope_id,
+                        seed: replay::rows::Recorded::Value(None),
                         entries: if scope_id == 100 {
                             vec![replay::rows::ScriptVariableEntry {
                                 name: b"x".to_vec(),

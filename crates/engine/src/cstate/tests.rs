@@ -1,6 +1,119 @@
 use super::*;
 use crate::{cpdx_array, memory::SliceMemory};
 
+struct IdMemory<'a> {
+    memory: SliceMemory<'a>,
+    failures: &'a [usize],
+    gathers: std::cell::Cell<usize>,
+}
+
+impl Memory for IdMemory<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        !self
+            .failures
+            .iter()
+            .any(|fault| (address..address + output.len()).contains(fault))
+            && self.memory.copy(address, output)
+    }
+
+    fn copy_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        self.gathers.set(self.gathers.get() + 1);
+        for (index, (address, output)) in addresses.into_iter().zip(destinations).enumerate() {
+            if !output.is_empty() && (address == 0 || !self.copy(address, output)) {
+                return index;
+            }
+        }
+        N
+    }
+}
+
+#[test]
+fn ordered_state_ids_batch_nulls_duplicates_and_the_final_short_batch() {
+    let mut world = crate::ccountry::synthetic::World::new(0x4000_0000, 1, 0x1100);
+    let state = world.alloc(ID + 4);
+    world.u32(state + ID, 77);
+    let list = world.alloc(130 * 8);
+    for index in 0..130 {
+        world.u64(
+            list + index * 8,
+            if index % 3 == 0 { 0 } else { state as u64 },
+        );
+    }
+    let memory = IdMemory {
+        memory: world.memory(),
+        failures: &[],
+        gathers: Default::default(),
+    };
+    let mut ids = [u32::MAX; 130];
+    assert_eq!(
+        copy_ids(
+            &memory,
+            Array {
+                data: list,
+                count: 130,
+            },
+            &mut ids,
+            "pointer fault",
+            "id fault",
+        ),
+        Ok(())
+    );
+    assert_eq!(memory.gathers.get(), 6);
+    for (index, id) in ids.into_iter().enumerate() {
+        assert_eq!(id, if index % 3 == 0 { 0 } else { 77 });
+    }
+    assert_eq!(
+        copy_ids(
+            &memory,
+            Array::default(),
+            &mut [],
+            "pointer fault",
+            "id fault",
+        ),
+        Ok(())
+    );
+    assert_eq!(memory.gathers.get(), 6);
+}
+
+#[test]
+fn an_earlier_state_id_failure_precedes_a_later_pointer_failure() {
+    let mut world = crate::ccountry::synthetic::World::new(0x4000_0000, 1, 0x1100);
+    let state = world.alloc(ID + 4);
+    world.u32(state + ID, 77);
+    let list = world.alloc(24);
+    world.u64(list, state as u64);
+    world.u64(list + 8, 0);
+    world.u64(list + 16, state as u64);
+    let source = Array {
+        data: list,
+        count: 3,
+    };
+    let faults = [state + ID, list + 16];
+    let memory = IdMemory {
+        memory: world.memory(),
+        failures: &faults,
+        gathers: Default::default(),
+    };
+    assert_eq!(
+        copy_ids(&memory, source, &mut [9; 3], "pointer fault", "id fault"),
+        Err("id fault")
+    );
+    let memory = IdMemory {
+        failures: &faults[1..],
+        ..memory
+    };
+    let mut output = [9; 3];
+    assert_eq!(
+        copy_ids(&memory, source, &mut output, "pointer fault", "id fault"),
+        Err("pointer fault")
+    );
+    assert_eq!(output, [77, 0, 9]);
+}
+
 fn put(bytes: &mut [u8], offset: usize, data: &[u8]) {
     bytes[offset..offset + data.len()].copy_from_slice(data);
 }

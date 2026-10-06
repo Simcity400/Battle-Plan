@@ -420,6 +420,7 @@ fn variable_source(branch: BranchId, hour: Hour, value: i64) -> DecodedFrame {
         TableView::Complete(TableRows::ScriptVariables(vec![rows::ScriptVariablesRow {
             scope_kind: 1,
             scope_id: 7,
+            seed: crate::rows::Recorded::Value(None),
             entries: vec![rows::ScriptVariableEntry {
                 name: vec![0, 0xff],
                 value_raw: value,
@@ -2055,6 +2056,7 @@ fn invalid_delta_operations_do_not_damage_other_tables_or_retain_partial_rows() 
         (vec![], vec![1, 999], "absent key"),
         (
             vec![DeltaRow {
+                format: crate::FORMAT_VERSION,
                 recorded_fields: TableId::Provinces.field_count(),
                 key: 3,
                 mask: 4,
@@ -2212,6 +2214,7 @@ fn singleton_invariants_apply_after_deltas_and_unchanged_updates() {
             TableUpdate::Delta {
                 baseline: 0,
                 changed: vec![DeltaRow {
+                    format: crate::FORMAT_VERSION,
                     recorded_fields: TableId::Clock.field_count(),
                     key: 0,
                     mask: 1,

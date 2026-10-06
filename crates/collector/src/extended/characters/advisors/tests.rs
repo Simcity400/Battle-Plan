@@ -50,6 +50,10 @@ fn context() -> CharactersCopyContext {
         trait_bytes: [0; 2],
     }
 }
+fn cache_for(bytes: &[u8]) -> Cache {
+    let demand = cadvisor::modifier_demand(&kit::memory(bytes), IMAGE, ADDRESS).unwrap();
+    Cache::with_modifier_demand(demand)
+}
 fn assert_fresh(cache: &Section, bytes: &[u8]) {
     let mut captured = Captured::with_capacities(&Capacities::default());
     let direct = walk_family(
@@ -63,9 +67,22 @@ fn assert_fresh(cache: &Section, bytes: &[u8]) {
     assert_eq!(cache.result.outcome, direct.outcome);
     assert_eq!(cache.result.bytes_len, direct.bytes_len);
     assert_eq!(cache.result.required_bytes, direct.required_bytes);
+    let definition = |row: &cadvisor::Row| cadvisor::Row {
+        modifier_start: 0,
+        modifier_len: 0,
+        modifier_recorded: false,
+        modifier_failure: None,
+        ..*row
+    };
     assert_eq!(
-        cache.current.rows[..direct.outcome.len()],
+        cache.current.rows[..direct.outcome.len()]
+            .iter()
+            .map(definition)
+            .collect::<Vec<_>>(),
         captured.advisors.rows.rows[..direct.outcome.len()]
+            .iter()
+            .map(definition)
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         cache.current.bytes[..direct.bytes_len],
@@ -86,22 +103,14 @@ fn assert_outer_fresh(cache: &Cache, bytes: &[u8]) {
         None,
     )[2];
     assert_eq!(cache.result.outcome, expected.outcome);
-    assert_eq!(cache.result.required_bytes, expected.required_bytes);
-    let len = expected.outcome.len();
-    assert_eq!(
-        captured.advisors.rows.rows[..len],
-        direct.advisors.rows.rows[..len]
-    );
-    assert_eq!(
-        captured.advisors.bytes.first[..expected.bytes_len],
-        direct.advisors.bytes.first[..expected.bytes_len]
-    );
+    direct.advisors.primary(expected);
+    assert_eq!(captured.advisors_table(), direct.advisors_table());
 }
 #[test]
 fn first_capture_prepares_controls_without_a_second_roster_discovery() {
     let bytes = super::super::tests::section_fixture();
     let mut observer = Observer::new();
-    let mut cache = Cache::new();
+    let mut cache = cache_for(&bytes);
     cache.capture(&kit::memory(&bytes), context(), &observer, None);
     assert_eq!(cache.counts.read, 2);
     cache.prepare();
@@ -131,7 +140,7 @@ fn unregistered_maps_cannot_use_a_control_only_certificate() {
         }
     }
     let mut bytes = super::super::tests::section_fixture();
-    let mut cache = Cache::new();
+    let mut cache = cache_for(&bytes);
     for idea in [b"first".as_slice(), b"second", b"third"] {
         literal(&mut bytes, kit::ADV_ROLE + cadvisor::IDEA_TOKEN, idea);
         cache.capture(&kit::memory(&bytes), context(), &Unwatched, None);
@@ -149,12 +158,244 @@ fn warm(cache: &mut Cache, bytes: &[u8], observer: &Observer) {
     }
     assert_eq!(cache.counts.planned, 2);
 }
+
+#[test]
+fn fresh_modifier_cache_changes_without_an_advisor_mutation_hook() {
+    use super::super::tests::array;
+    let mut bytes = super::super::tests::section_fixture();
+    let data = 0x8a00;
+    array(
+        &mut bytes,
+        kit::ADV_ROLE + cadvisor::MODIFIER_ENTRIES,
+        data,
+        2,
+    );
+    put(&mut bytes, data, 7_u32.to_le_bytes());
+    put(&mut bytes, data + 8, i64::MIN.to_le_bytes());
+    put(&mut bytes, data + 16, 7_u32.to_le_bytes());
+    put(&mut bytes, data + 24, i64::MAX.to_le_bytes());
+    let observer = Observer::new();
+    let mut cache = cache_for(&bytes);
+    warm(&mut cache, &bytes, &observer);
+    put(&mut bytes, data + 8, (-1_i64).to_le_bytes());
+    cache.capture(&kit::memory(&bytes), context(), &observer, None);
+    assert_eq!(cache.counts.planned, 2);
+    assert_outer_fresh(&cache, &bytes);
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    // Projection consumes owned bytes after the native objects disappear.
+    bytes.fill(0);
+    cache.decode(&mut captured);
+    let TableView::Complete(TableRows::AdvisorRoles(rows)) = captured.advisors_table() else {
+        panic!("complete advisor roles");
+    };
+    let cache = rows[0]
+        .modifier_cache
+        .require("AdvisorRoles.modifier_cache")
+        .unwrap()
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        cache.entries,
+        [
+            replay::rows::CachedModifier {
+                definition: 7,
+                value: -1,
+            },
+            replay::rows::CachedModifier {
+                definition: 7,
+                value: i64::MAX,
+            },
+        ]
+    );
+}
+
+#[test]
+fn fresh_cache_spans_survive_definition_relocation_and_faults() {
+    use super::super::tests::{WaveMemory, array};
+    let mut bytes = super::super::tests::section_fixture();
+    add_second_role(&mut bytes);
+    for (role, data, key, value) in [
+        (kit::ADV_ROLE, 0x8a00, 11_u32, i64::MIN),
+        (0x8580, 0x8b00, 12_u32, i64::MAX),
+    ] {
+        array(&mut bytes, role + cadvisor::MODIFIER_ENTRIES, data, 1);
+        put(&mut bytes, data, key.to_le_bytes());
+        put(&mut bytes, data + 8, value.to_le_bytes());
+    }
+    let mut observer = Observer::new();
+    let mut cache = cache_for(&bytes);
+    warm(&mut cache, &bytes, &observer);
+    literal(
+        &mut bytes,
+        kit::ADV_ROLE + cadvisor::IDEA_TOKEN,
+        b"longer_idea",
+    );
+    observer.change(CHARACTERS[0]);
+    cache.capture(&kit::memory(&bytes), context(), &observer, None);
+    assert_eq!(cache.sections[1].counts.planned, 1);
+    assert_outer_fresh(&cache, &bytes);
+    warm(&mut cache, &bytes, &observer);
+    let fault = ADDRESS + 0x8b08;
+    let source = WaveMemory::new(&bytes, Some(fault));
+    cache.capture(&source, context(), &observer, None);
+    assert_eq!(
+        cache.result.outcome,
+        Outcome::Unavailable {
+            reason: "advisor modifier cache entries unreadable",
+        }
+    );
+    assert_eq!(
+        source
+            .reads
+            .borrow()
+            .iter()
+            .filter(|&&(address, len)| (address..address + len).contains(&fault))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn modifier_header_sums_grow_for_5000_countries_without_a_cap() {
+    use super::super::tests::array;
+    let mut bytes = kit::mapped_fixture();
+    let data = 0x8a00;
+    array(
+        &mut bytes,
+        kit::ADV_ROLE + cadvisor::MODIFIER_ENTRIES,
+        data,
+        2,
+    );
+    put(&mut bytes, data, 1_u32.to_le_bytes());
+    put(&mut bytes, data + 8, (-17_i64).to_le_bytes());
+    put(&mut bytes, data + 16, 2_u32.to_le_bytes());
+    put(&mut bytes, data + 24, 19_i64.to_le_bytes());
+    let rows: Vec<_> = (1..=5_000)
+        .map(|country| cadvisor::Row {
+            pointer: ADDRESS + kit::ADV_ROLE,
+            country,
+            ..Default::default()
+        })
+        .collect();
+    let mut modifiers = Modifiers::with_demand(cadvisor::ModifierDemand::default());
+    modifiers.capture(&kit::memory(&bytes), rows.iter());
+    assert_eq!(modifiers.required_rows, 5_000);
+    assert_eq!(modifiers.required_bytes, 5_000 * 32);
+    assert_eq!(modifiers.failure, None);
+    assert_eq!(modifiers.shortfall, 5_000);
+    assert!(modifiers.needs_growth());
+    modifiers.grow();
+    modifiers.capture(&kit::memory(&bytes), rows.iter());
+    assert_eq!(modifiers.failure, None);
+    assert_eq!(modifiers.shortfall, 0);
+    assert_eq!(modifiers.len, 5_000 * 32);
+    assert_eq!(modifiers.spans[4_999].start, 4_999 * 32);
+    assert_eq!(modifiers.spans[4_999].len, 32);
+    assert_eq!(
+        &modifiers.bytes[4_999 * 32 + 8..4_999 * 32 + 16],
+        &(-17_i64).to_le_bytes()
+    );
+    // An observed empty cache is still an input, distinct from absence.
+    array(
+        &mut bytes,
+        kit::ADV_ROLE + cadvisor::MODIFIER_ENTRIES,
+        data,
+        0,
+    );
+    modifiers.capture(&kit::memory(&bytes), rows.iter());
+    assert_eq!(modifiers.failure, None);
+    assert_eq!(modifiers.required_rows, 5_000);
+    assert_eq!(modifiers.len, 0);
+    assert_eq!(modifiers.spans[4_999].len, 0);
+    assert!(modifiers.spans[..5_000].iter().all(|span| span.recorded));
+
+    array(
+        &mut bytes,
+        kit::ADV_ROLE + cadvisor::MODIFIER_ENTRIES,
+        data,
+        2,
+    );
+    let mut presized = Modifiers::with_demand(cadvisor::ModifierDemand {
+        rows: 5_000,
+        bytes: 5_000 * 32,
+    });
+    presized.capture(&kit::memory(&bytes), rows.iter());
+    assert_eq!(presized.failure, None);
+    assert_eq!(presized.shortfall, 0);
+    assert_eq!(presized.len, 5_000 * 32);
+}
+
+#[test]
+fn optional_cache_capacity_shortfall_keeps_roles_and_definition_certificates() {
+    use super::super::tests::array;
+    let mut bytes = super::super::tests::section_fixture();
+    array(
+        &mut bytes,
+        kit::ADV_ROLE + cadvisor::MODIFIER_ENTRIES,
+        0x8a00,
+        2,
+    );
+    let observer = Observer::new();
+    let mut cache = cache_for(&bytes);
+    warm(&mut cache, &bytes, &observer);
+    cache.modifiers.spans.clear();
+    cache.modifiers.bytes.clear();
+    cache.capture(&kit::memory(&bytes), context(), &observer, None);
+    assert_eq!(cache.result.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(cache.modifiers.shortfall, 1);
+    assert_eq!(cache.modifiers.failure, None);
+    assert!(cache.sections.iter().all(|section| section.valid));
+    assert_eq!(cache.counts.planned, 2);
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    cache.decode(&mut captured);
+    let TableView::Complete(TableRows::AdvisorRoles(rows)) = captured.advisors_table() else {
+        panic!("capacity shortfall keeps advisor roles");
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].idea, b"idea");
+    assert_eq!(rows[0].modifier_cache, replay::rows::Recorded::Value(None));
+    assert_eq!(
+        captured.advisors.rows.rows[0].modifier_failure,
+        Some(cadvisor::MODIFIER_CAPACITY_REASON)
+    );
+    cache.prepare();
+    cache.grow();
+    cache.capture(&kit::memory(&bytes), context(), &observer, None);
+    assert_eq!(cache.counts.planned, 2);
+    assert_outer_fresh(&cache, &bytes);
+}
+
+#[test]
+fn advisor_raw_bytes_charge_current_reads_once_even_after_a_root_fault() {
+    use super::super::tests::WaveMemory;
+    let bytes = super::super::tests::section_fixture();
+    let observer = Observer::new();
+    let mut cache = cache_for(&bytes);
+    warm(&mut cache, &bytes, &observer);
+    let source = WaveMemory::new(&bytes, None);
+    cache.capture(&source, context(), &observer, None);
+    assert_eq!(
+        cache.raw_bytes,
+        source
+            .reads
+            .borrow()
+            .iter()
+            .map(|&(_, len)| len as u64)
+            .sum::<u64>()
+    );
+    let fault = ADDRESS + cgame_state::CHARACTER_MANAGER;
+    let source = WaveMemory::new(&bytes, Some(fault));
+    cache.capture(&source, context(), &observer, None);
+    assert!(matches!(cache.result.outcome, Outcome::Unavailable { .. }));
+    assert_eq!(cache.raw_bytes, 0);
+    assert!(cache.sections.iter().all(|section| section.raw_bytes == 0));
+}
 #[test]
 fn independent_plans_refresh_country_mutations_aliases_and_roster_growth() {
     use super::super::tests::{MANAGER, array};
     let mut bytes = super::super::tests::section_fixture();
     let mut observer = Observer::new();
-    let mut cache = Cache::new();
+    let mut cache = cache_for(&bytes);
     warm(&mut cache, &bytes, &observer);
     array(
         &mut bytes,
@@ -198,7 +439,7 @@ fn planned_control_failures_keep_first_fault_and_recover_with_fresh_data() {
     use super::super::tests::WaveMemory;
     let bytes = super::super::tests::section_fixture();
     let observer = Observer::new();
-    let mut cache = Cache::new();
+    let mut cache = cache_for(&bytes);
     warm(&mut cache, &bytes, &observer);
     let trace = WaveMemory::new(&bytes, None);
     cache.capture(&trace, context(), &observer, None);
@@ -241,7 +482,7 @@ fn planned_country_prefix_survives_later_control_change_and_fault() {
     let country = ADDRESS + CHARACTERS[0] + ccharacter::COUNTRY;
     let observer = Observer::new();
     for fault in [false, true] {
-        let mut cache = Cache::new();
+        let mut cache = cache_for(&original);
         warm(&mut cache, &original, &observer);
         let baseline = WaveMemory::new(&original, None);
         cache.capture(&baseline, context(), &observer, None);
@@ -332,7 +573,7 @@ fn planned_duplicate_characters_keep_each_country_observation() {
     pointer(&mut bytes, ROSTER + 8, CHARACTERS[0]);
     pointer(&mut bytes, ROSTER + 16, CHARACTERS[0]);
     let observer = Observer::new();
-    let mut cache = Cache::new();
+    let mut cache = cache_for(&bytes);
     warm(&mut cache, &bytes, &observer);
     let baseline = WaveMemory::new(&bytes, None);
     cache.capture(&baseline, context(), &observer, None);
@@ -373,10 +614,8 @@ fn planned_duplicate_characters_keep_each_country_observation() {
         assert_eq!(cache.result.required_bytes, expected.required_bytes);
         let mut captured = Captured::with_capacities(&Capacities::default());
         cache.decode(&mut captured);
-        assert_eq!(
-            captured.advisors.rows.rows[..3],
-            direct.advisors.rows.rows[..3]
-        );
+        direct.advisors.primary(expected);
+        assert_eq!(captured.advisors_table(), direct.advisors_table());
         assert_eq!(
             [0, 1, 2].map(|index| captured.advisors.rows.rows[index].country),
             countries
@@ -394,7 +633,7 @@ fn earlier_truncation_suppresses_later_rows_and_retains_missing_demand() {
     let mut bytes = super::super::tests::section_fixture();
     add_second_role(&mut bytes);
     let observer = Observer::new();
-    let mut cache = Cache::new();
+    let mut cache = cache_for(&bytes);
     cache.sections[0] = Section::with_capacity(0, 0, 8);
     cache.capture(&kit::memory(&bytes), context(), &observer, None);
     assert!(matches!(

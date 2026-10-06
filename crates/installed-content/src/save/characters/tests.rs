@@ -25,6 +25,23 @@ const SCIENTIST: &[u8] = br#"character_manager={ historical={
     }} countries={}"#;
 
 #[test]
+fn shared_character_status_retains_unit_leader_truth_and_absence() {
+    let pack = fixture(
+        br"countries={AAA={characters={
+            character_status={character={id=7 type=73} advisor=yes unit_leader=yes}
+            character_status={character={id=8 type=73} unit_leader=no}
+            character_status={character={id=9 type=73}}
+        }}}",
+    )
+    .unwrap();
+    let statuses = &pack.character_status[b"AAA".as_slice()];
+    assert_eq!(statuses[0].advisor, Some(true));
+    assert_eq!(statuses[0].unit_leader, Some(true));
+    assert_eq!(statuses[1].unit_leader, Some(false));
+    assert_eq!(statuses[2].unit_leader, None);
+}
+
+#[test]
 fn operative_references_and_portrait_categories_do_not_invent_leader_records() {
     let pack=fixture(br#"countries={GER={operative={id={id=8 type=4713} portrait_path="a.dds"}}} character_manager={historical={character={id={id=7 type=73} token=x operative={id=8 type=4713} portraits={operative={large="GFX_a"}}}}}"#).unwrap();
     assert_eq!(pack.portraits.len(), 1);
@@ -288,14 +305,16 @@ fn appointed_advisors_keep_written_order_and_omissions_mean_empty() {
         pack.character_status[b"GER".as_slice()],
         [CharacterStatus {
             character: (1 << 32) | 73,
-            advisor: Some(true)
+            advisor: Some(true),
+            unit_leader: None,
         }]
     );
     assert_eq!(
         pack.character_status[b"ENG".as_slice()],
         [CharacterStatus {
             character: (2 << 32) | 73,
-            advisor: None
+            advisor: None,
+            unit_leader: None,
         }]
     );
     assert!(pack.character_status[b"ITA".as_slice()].is_empty());
@@ -303,7 +322,8 @@ fn appointed_advisors_keep_written_order_and_omissions_mean_empty() {
         pack.retired_character_status[b"ENG".as_slice()],
         [CharacterStatus {
             character: (3 << 32) | 73,
-            advisor: None
+            advisor: None,
+            unit_leader: None,
         }]
     );
     assert!(pack.retired_character_status[b"GER".as_slice()].is_empty());

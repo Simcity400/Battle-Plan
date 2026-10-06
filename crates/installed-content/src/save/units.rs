@@ -83,6 +83,10 @@ pub struct DivisionPresentation {
     pub movement_progress: Option<Decimal>,
     pub dig_in: Option<Decimal>,
     pub dig_in_cap: Option<Decimal>,
+    /// 140C80EA0/AF writes secondary+0x5F0 (primary+0x600) unconditionally.
+    pub max_supply: Option<Decimal>,
+    /// 140C810BB/CA writes secondary+0x600 (primary+0x610) unconditionally.
+    pub army_current_supply_ratio: Option<Decimal>,
     pub strategic_redeployment: bool,
     /// CArmy C80E00 writes its +0x340 CNameGroupMember under token 0x3904
     /// (`division_name`) through serializer 1409BCC70.
@@ -441,6 +445,8 @@ pub(super) fn parse_division(roster_owner: &[u8], items: &[Item]) -> io::Result<
             movement_progress: decimal(items, b"movement_progress")?,
             dig_in: decimal(items, b"dig_in")?,
             dig_in_cap: decimal(items, b"dig_in_cap")?,
+            max_supply: decimal(items, b"max_supply")?,
+            army_current_supply_ratio: decimal(items, b"army_current_supply_ratio")?,
             strategic_redeployment: field(items, b"strategic_redeployment")?
                 .map(boolean)
                 .transpose()?
@@ -453,7 +459,7 @@ pub(super) fn parse_division(roster_owner: &[u8], items: &[Item]) -> io::Result<
     })
 }
 
-fn division_name(items: &[Item]) -> io::Result<DivisionName> {
+pub(super) fn division_name(items: &[Item]) -> io::Result<DivisionName> {
     let flag = |key: &[u8]| field(items, key)?.map(boolean).transpose();
     Ok(DivisionName {
         kind: integer(&required_bytes(items, b"type")?)?,

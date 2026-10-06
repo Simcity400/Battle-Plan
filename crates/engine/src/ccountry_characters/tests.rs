@@ -102,6 +102,121 @@ fn run(bytes: &[u8], rows: usize, text: usize) -> (NameWalk, Vec<Row>, Vec<u8>) 
 }
 
 #[test]
+fn available_advisors_keep_their_own_order_without_reading_slot_bytes() {
+    let mut bytes = fixture();
+    vector(&mut bytes, OBJ1 + AVAILABLE_ADVISORS, ARRAY1, 2);
+    vector(&mut bytes, OBJ2 + AVAILABLE_ADVISORS, ARRAY2, 1);
+    p64(&mut bytes, ARRAY1, ADVISORS[1] as u64);
+    p64(&mut bytes, ARRAY1 + 8, ADVISORS[0] as u64);
+    for advisor in ADVISORS {
+        p64(&mut bytes, advisor + cadvisor::SLOT + 16, u64::MAX);
+    }
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let mut rows = [Row::default(); 3];
+    let mut arena = [0; 128];
+    let result = walk_available(&memory, 0, GS, &mut rows, &mut arena);
+    assert_eq!(result.outcome, Outcome::Rows { len: 3 });
+    assert_eq!(
+        rows.map(|row| (row.country, row.ordinal, row.character)),
+        [(1, 0, 1451), (1, 1, 1482), (2, 0, 4365)]
+    );
+    assert!(rows.iter().all(|row| row.slot_len == 0));
+    let demand = demand_available(&memory, 0, GS).unwrap();
+    assert_eq!(demand, (3, result.bytes_len));
+    assert_eq!(
+        walk_available(&memory, 0, GS, &mut rows[..1], &mut arena).outcome,
+        Outcome::Truncated {
+            len: 1,
+            unread_rows: 2,
+        }
+    );
+    p64(&mut bytes, ARRAY1, 0);
+    assert!(matches!(
+        walk_available(
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            0,
+            GS,
+            &mut rows,
+            &mut arena,
+        )
+        .outcome,
+        Outcome::Unavailable {
+            reason: "available advisor pointer null",
+        }
+    ));
+}
+
+#[test]
+fn available_advisor_walk_and_header_demand_follow_5000_countries() {
+    const COUNT: usize = 5_000;
+    const COUNTRY_ARRAY: usize = 0x1_0000;
+    const LINK_ARRAY: usize = 0x2_0000;
+    const OBJECTS: usize = 0x3_0000;
+    const STRIDE: usize = 0x1800;
+    let mut bytes = vec![0; OBJECTS + COUNT * STRIDE];
+    vector(
+        &mut bytes,
+        GS + cgame_state::COUNTRIES,
+        COUNTRY_ARRAY,
+        COUNT as u32 + 1,
+    );
+    vector(
+        &mut bytes,
+        GS + cgame_state::COUNTRY_LINKS,
+        LINK_ARRAY,
+        COUNT as u32 + 1,
+    );
+    for index in 0..COUNT {
+        let country = OBJECTS + index * STRIDE;
+        let object = country + 0x1000;
+        let array = country + 0x1100;
+        let advisor = country + 0x1200;
+        let character = country + 0x1400;
+        let id = index as u32 + 1;
+        p64(&mut bytes, COUNTRY_ARRAY + (index + 1) * 8, country as u64);
+        p32(&mut bytes, LINK_ARRAY + (index + 1) * 4, id);
+        p64(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+        p32(&mut bytes, country + ccountry::ID, id);
+        p64(&mut bytes, country + ccountry::CHARACTERS, object as u64);
+        p64(&mut bytes, object, VTABLE_RVA as u64);
+        p64(&mut bytes, object + OWNER, country as u64);
+        vector(&mut bytes, object + AVAILABLE_ADVISORS, array, 1);
+        p64(&mut bytes, array, advisor as u64);
+        p64(&mut bytes, advisor, cadvisor::VTABLE_RVA as u64);
+        p64(&mut bytes, advisor + cadvisor::CHARACTER, character as u64);
+        string(&mut bytes, advisor + cadvisor::IDEA_TOKEN, b"idea", 0);
+        p64(&mut bytes, character, ccharacter::VTABLE_RVA as u64);
+        p32(
+            &mut bytes,
+            character + ccharacter::TYPE,
+            ccharacter::REFERENCE_TYPE,
+        );
+        p32(&mut bytes, character + ccharacter::ID, id + COUNT as u32);
+    }
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    assert_eq!(
+        demand_available(&memory, 0, GS).unwrap(),
+        (COUNT, COUNT * 4)
+    );
+    let mut rows = vec![Row::default(); COUNT];
+    let mut arena = vec![0; COUNT * 4];
+    let result = walk_available(&memory, 0, GS, &mut rows, &mut arena);
+    assert_eq!(result.outcome, Outcome::Rows { len: COUNT });
+    assert_eq!(rows[COUNT - 1].country, COUNT as u32);
+    assert_eq!(rows[COUNT - 1].character, COUNT as u32 * 2);
+    assert_eq!(result.bytes_len, COUNT * 4);
+}
+
+#[test]
 fn appointed_order_identities_and_exact_strings_survive() {
     let bytes = fixture();
     let (result, rows, arena) = run(&bytes, 4, 256);

@@ -272,6 +272,10 @@ macro_rules! packs {
                 $(self.$pack.grow(&mut capacity.$pack);)+
                 self.divisions.grow(&mut capacity.division_sources);
                 self.division_presentation.reserve_sources(capacity.division_sources);
+                self.division_presentation.grow_name_groups(
+                    &mut capacity.division_presentation,
+                    self.division_templates.naming_demand(),
+                );
                 self.registry.grow(&mut capacity.variant_registry);
             }
             /// Spool-thread conversion only. Existing core slots survive.
@@ -547,6 +551,10 @@ impl Capacities {
     /// (`country_scale::observe_characters`).
     pub fn raise_for_characters(&mut self, demand: crate::country_scale::CharacterDemand) {
         self.characters.raise_for_characters(demand.characters);
+        crate::country_scale::raise(
+            &mut self.characters.bytes[3],
+            crate::country_scale::rows(demand.unit_leader_bytes, 1),
+        );
         self.intel.raise_for_script_flags(demand.flags);
         self.intel.raise_for_script_variables(demand.variables);
     }
@@ -568,6 +576,7 @@ impl Capacities {
     /// Presize the political tables from their live demand
     /// (`country_scale::observe_politics`).
     pub fn raise_for_politics(&mut self, demand: crate::country_scale::PoliticsDemand) {
+        characters::advisors::note_modifier_demand(demand.advisor_modifiers);
         crate::country_scale::raise(&mut self.intel.agency_names, demand.agency_name_bytes);
         self.hired_advisors
             .raise_for_character_records(demand.active_characters, demand.retired_characters);
@@ -577,8 +586,14 @@ impl Capacities {
             .raise_for_party_leaders(demand.party_leaders);
         self.country_counters
             .raise_for_civil_wars(demand.civil_wars);
+        self.country_counters
+            .raise_for_rosters(demand.country_rosters, demand.owned_wargoals);
         self.hired_advisors
             .raise_for_advisor_tokens(demand.advisor_tokens, demand.advisor_token_bytes);
+        self.hired_advisors.raise_for_available_advisors(
+            demand.available_advisors,
+            demand.available_advisor_bytes,
+        );
         self.faction_theatres
             .raise_for_faction_advisors(demand.faction_advisors, demand.faction_advisor_bytes);
     }
@@ -666,6 +681,36 @@ impl Captured {
     /// Project owned operands after their single live acquisition has finished.
     pub(crate) fn decode_division_presentation_inputs(&mut self) -> [u64; 2] {
         self.division_presentation.decode_inputs()
+    }
+
+    pub(crate) fn observe_division_naming(
+        &self,
+        work: &mut division_presentation::NamingWork,
+    ) -> std::io::Result<()> {
+        self.division_presentation.observe_naming(work)
+    }
+
+    pub(crate) fn observe_country_rosters(
+        &self,
+        work: &mut country_counters::RosterWork,
+    ) -> std::io::Result<()> {
+        self.country_counters.observe_rosters(work)
+    }
+
+    pub(crate) fn observe_character_naming(
+        &self,
+        work: &mut character_inputs::NamingWork,
+    ) -> std::io::Result<()> {
+        self.character_inputs.observe_naming(work)?;
+        self.characters.observe_naming(work)
+    }
+
+    pub(crate) fn observe_supply_vehicles(&self, work: &mut supply_trains::VehicleWork) {
+        self.supply_trains.observe_vehicles(work);
+    }
+
+    pub(crate) fn observe_variable_seeds(&self, work: &mut intel::SeedWork) {
+        self.intel.observe_seeds(work);
     }
 
     /// Final scoped scalar acquisition, after the existing States, Provinces,

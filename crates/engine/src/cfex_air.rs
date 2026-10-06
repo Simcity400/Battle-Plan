@@ -294,6 +294,8 @@ mod presentation_cache_tests {
             commander_inputs: &mut [],
             commander_inputs_len: 0,
             commander_inputs_required: 0,
+            commander_timed_traits: &mut Vec::new(),
+            commander_timed_traits_len: 0,
             side_units: &mut [],
             side_units_len: 0,
             side_units_required: 0,

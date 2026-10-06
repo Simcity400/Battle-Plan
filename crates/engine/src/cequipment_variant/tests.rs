@@ -406,6 +406,7 @@ fn definition_preserves_native_handles_links_and_bytes() {
     bytes[DISPLAY_NAME + 16..DISPLAY_NAME + 24].copy_from_slice(&3_u64.to_le_bytes());
     bytes[APPEND_VARIANT_NAME] = 0xfe;
     bytes[OBSOLETE] = 0x7f;
+    bytes[VERSION] = u8::MAX;
     let memory = SliceMemory {
         base: 0x1000,
         bytes: &bytes,
@@ -430,6 +431,51 @@ fn definition_preserves_native_handles_links_and_bytes() {
     assert_eq!(rows[0].variant_name.len, 0);
     assert_eq!((rows[0].icon_active, rows[0].icon_kind), (0, 1));
     assert_eq!(rows[0].icon.len, 0);
+    assert_eq!(rows[0].version, u8::MAX);
+}
+
+#[test]
+fn version_bytes_keep_zero_and_high_bits_at_5000_variant_scale_and_refuse_faults() {
+    const COUNT: usize = 5_000;
+    let one = fixture();
+    let mut bytes = vec![0; COUNT * one.len()];
+    for (index, object) in bytes.chunks_exact_mut(one.len()).enumerate() {
+        object.copy_from_slice(&one);
+        object[ID..ID + 4].copy_from_slice(&(index as u32).to_le_bytes());
+        object[VERSION] = index as u8;
+    }
+    let source_memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    let variants = (0..COUNT)
+        .map(|index| RegistryRow::read(&source_memory, 0, 0x1000 + index * one.len()).unwrap())
+        .collect::<Vec<_>>();
+    let memory = CountedFields {
+        memory: source_memory,
+        guards: Cell::new(0),
+        blocked: None,
+    };
+    let mut rows = Vec::new();
+    let mut names = Vec::new();
+    assert_eq!(
+        walk_definitions(&memory, 0, &variants, &mut rows, &mut names).outcome,
+        Outcome::Rows { len: COUNT }
+    );
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(row.version, index as u8);
+    }
+    assert_eq!(memory.guards.get(), COUNT.div_ceil(64) * 3);
+    let memory = CountedFields {
+        blocked: Some(variants[64].pointer() + VERSION),
+        ..memory
+    };
+    assert_eq!(
+        walk_definitions(&memory, 0, &variants, &mut rows, &mut names).outcome,
+        Outcome::Unavailable {
+            reason: "variant version byte unreadable",
+        }
+    );
 }
 
 #[test]

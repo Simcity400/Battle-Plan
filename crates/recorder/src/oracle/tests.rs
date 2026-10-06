@@ -2,8 +2,8 @@ use super::*;
 use replay::{
     frame::Metrics,
     rows::{
-        CampaignRow, ClockRow, CountryLinkRow, DivisionRow, FactionMemberRow, FactionRow,
-        ProvinceRow, StateRow, WarRelationRow,
+        CampaignRow, ClockRow, CountryLinkRow, DivisionRow, DivisionStatusRow, FactionMemberRow,
+        FactionRow, ProvinceRow, Recorded, StateRow, WarRelationRow,
     },
 };
 
@@ -493,7 +493,11 @@ fn division_fixture() -> (
             hit_points: Decimal::parse(b"90071992547.40993").unwrap(),
             organisation: Decimal::parse(b"53.45454").unwrap(),
             country_intel: Vec::new(),
-            presentation: Default::default(),
+            presentation: save::DivisionPresentation {
+                max_supply: Some(Decimal::parse(b"0").unwrap()),
+                army_current_supply_ratio: Some(Decimal::parse(b"0").unwrap()),
+                ..Default::default()
+            },
         },
     );
     *frame.tables[TableId::Divisions.index()] =
@@ -696,6 +700,8 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
         movement_progress: Some(Decimal::parse(b"90071992547.40993").unwrap()),
         dig_in: Some(Decimal::parse(b"0.00001").unwrap()),
         dig_in_cap: None,
+        max_supply: Some(Decimal::parse(b"0").unwrap()),
+        army_current_supply_ratio: Some(Decimal::parse(b"0").unwrap()),
         strategic_redeployment: true,
         division_name: None,
         acclimatization: Some(save::Acclimatization {
@@ -715,7 +721,7 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
         strategic_redeployment: 255,
         ..Default::default()
     };
-    let status = replay::rows::DivisionStatusRow {
+    let status = DivisionStatusRow {
         division: id,
         entrenchment: 1,
         entrenchment_cap: -100,
@@ -747,7 +753,7 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
             .keys()
             .any(|s| s.contains("the replayer derives them from this route"))
     );
-    assert_eq!(report.scalar_checks, 11);
+    assert_eq!(report.scalar_checks, 13);
     for full_path in [vec![9, 9, 8], vec![]] {
         let mut changed = saved.clone();
         let presentation = &mut changed.divisions.get_mut(&id).unwrap().presentation;
@@ -767,12 +773,10 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
     compare_division_movement(&frame, &saved, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
     *frame.tables[TableId::DivisionStatus.index()] =
-        TableView::Complete(TableRows::DivisionStatus(vec![
-            replay::rows::DivisionStatusRow {
-                entrenchment_cap: 1,
-                ..status.clone()
-            },
-        ]));
+        TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
+            entrenchment_cap: 1,
+            ..status.clone()
+        }]));
     let mut report = Report::default();
     compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
@@ -847,6 +851,182 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
         missing: 1,
     };
     assert!(compare_division_status(&frame, &saved, &tokens, &mut Report::default()).is_err());
+}
+
+#[test]
+fn division_supply_grace_oracle_requires_unconditional_save_fields_and_keeps_old_absence() {
+    let (mut frame, mut saved, _, _) = division_fixture();
+    let id = *saved.divisions.keys().next().unwrap();
+    let presentation = &mut saved.divisions.get_mut(&id).unwrap().presentation;
+    presentation.max_supply = Some(Decimal::parse(b"90071992547.40993").unwrap());
+    presentation.army_current_supply_ratio = Some(Decimal::parse(b"-12.34567").unwrap());
+    let row = DivisionStatusRow {
+        division: id,
+        supply_grace_maximum: Recorded::Value(9_007_199_254_740_993),
+        supply_grace_remaining: Recorded::Value(-1_234_567),
+        ..Default::default()
+    };
+    *frame.tables[TableId::DivisionStatus.index()] =
+        TableView::Complete(TableRows::DivisionStatus(vec![row.clone()]));
+    let tokens = BTreeMap::new();
+    let mut report = Report::default();
+    compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    for field in 0..2 {
+        let mut wrong = saved.clone();
+        let p = &mut wrong.divisions.get_mut(&id).unwrap().presentation;
+        if field == 0 {
+            p.max_supply = None;
+        } else {
+            p.army_current_supply_ratio = Some(Decimal::parse(b"-12.34566").unwrap());
+        }
+        let mut report = Report::default();
+        compare_division_status(&frame, &wrong, &tokens, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    }
+    // Zero is also unconditionally serialized: absence cannot prove zero.
+    *frame.tables[TableId::DivisionStatus.index()] =
+        TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
+            supply_grace_maximum: Recorded::Value(0),
+            supply_grace_remaining: Recorded::Value(0),
+            ..row.clone()
+        }]));
+    let p = &mut saved.divisions.get_mut(&id).unwrap().presentation;
+    p.max_supply = None;
+    p.army_current_supply_ratio = None;
+    let mut report = Report::default();
+    compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 2);
+    *frame.tables[TableId::DivisionStatus.index()] =
+        TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
+            supply_grace_maximum: Recorded::NotRecorded,
+            supply_grace_remaining: Recorded::NotRecorded,
+            ..row
+        }]));
+    let mut report = Report::default();
+    compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
+    assert!(report.differences.is_empty());
+    for field in ["supply_grace_maximum", "supply_grace_remaining"] {
+        assert!(
+            report
+                .limitations
+                .contains_key(&format!("DivisionStatus.{field} not recorded"))
+        );
+    }
+}
+
+#[test]
+fn division_status_naming_oracle_checks_generator_operands_and_absence() {
+    let (mut frame, mut saved, _, _) = division_fixture();
+    let id = *saved.divisions.keys().next().unwrap();
+    let template = saved.divisions[&id].template.unwrap();
+    saved.division_templates.insert(
+        template,
+        save::DivisionTemplate {
+            template,
+            country: b"GER".to_vec(),
+            name: Vec::new(),
+            name_key: Vec::new(),
+            custom_icon: 0,
+            custom_icon_nato: false,
+            foreign_template_tag: None,
+            composition: BTreeMap::new(),
+            names_group: Some(b"GROUP".to_vec()),
+        },
+    );
+    saved
+        .divisions
+        .get_mut(&id)
+        .unwrap()
+        .presentation
+        .division_name = Some(save::DivisionName::default());
+    let naming = replay::rows::NameOperands {
+        ordered: 255,
+        group: b"GROUP".to_vec(),
+        ..Default::default()
+    };
+    let set = |frame: &mut DecodedFrame, naming| {
+        *frame.tables[TableId::DivisionStatus.index()] =
+            TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
+                division: id,
+                naming,
+                ..Default::default()
+            }]));
+    };
+    let tokens = BTreeMap::new();
+    set(&mut frame, Recorded::Value(Some(naming.clone())));
+    let mut report = Report::default();
+    compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    for changed in [
+        replay::rows::NameOperands {
+            kind: 1,
+            ..naming.clone()
+        },
+        replay::rows::NameOperands {
+            order: -1,
+            ..naming.clone()
+        },
+        replay::rows::NameOperands {
+            ordered: 0,
+            ..naming.clone()
+        },
+        replay::rows::NameOperands {
+            programmatic: 1,
+            ..naming.clone()
+        },
+        replay::rows::NameOperands {
+            custom: b"Renamed".to_vec(),
+            ..naming.clone()
+        },
+        replay::rows::NameOperands {
+            group: b"OTHER".to_vec(),
+            ..naming.clone()
+        },
+    ] {
+        set(&mut frame, Recorded::Value(Some(changed)));
+        let mut report = Report::default();
+        compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    }
+    set(&mut frame, Recorded::Value(Some(naming)));
+    saved
+        .divisions
+        .get_mut(&id)
+        .unwrap()
+        .presentation
+        .division_name = None;
+    let mut report = Report::default();
+    compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1);
+    set(&mut frame, Recorded::Value(None));
+    let mut report = Report::default();
+    compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
+    assert!(report.differences.is_empty());
+    assert!(
+        report
+            .limitations
+            .contains_key("division naming operands unreadable at capture")
+    );
+    assert!(
+        !report
+            .limitations
+            .contains_key("DivisionStatus.naming not recorded")
+    );
+    set(&mut frame, Recorded::NotRecorded);
+    let mut report = Report::default();
+    compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
+    assert!(report.differences.is_empty());
+    assert!(
+        report
+            .limitations
+            .contains_key("DivisionStatus.naming not recorded")
+    );
+    assert!(
+        !report
+            .limitations
+            .contains_key("division naming operands unreadable at capture")
+    );
 }
 
 #[test]

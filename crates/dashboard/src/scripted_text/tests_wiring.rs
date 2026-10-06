@@ -357,15 +357,24 @@ fn random_lists_use_raw_fixed5_seed_scope_identity_and_native_fast_paths() {
         text.expand_in("[Default]", &missing),
         Err("[Default]: scripted localisation Default: decision random-count is unrecorded".into())
     );
-    assert_eq!(text.expand_in("[Seeded]|[Single]|[Zero]|[Empty]|[Ordinary]", &missing).as_deref(),
-        Ok("C|A|||A"));
+    assert_eq!(
+        text.expand_in("[Seeded]|[Single]|[Zero]|[Empty]|[Ordinary]", &missing)
+            .as_deref(),
+        Ok("C|A|||A")
+    );
     // An event-scoped invocation preserves its lanes (1410CDDF0 cases 0-2),
     // while an object promotion constructs a known seed from 424242.
     assert_eq!(
         text.expand_in("[Promoted]", &missing),
-        Err("[Promoted]: scripted localisation Promoted: decision random-count is unrecorded".into())
+        Err(
+            "[Promoted]: scripted localisation Promoted: decision random-count is unrecorded"
+                .into()
+        )
     );
-    assert_eq!(text.expand_in("[SOV.Promoted]", &missing).as_deref(), Ok("B"));
+    assert_eq!(
+        text.expand_in("[SOV.Promoted]", &missing).as_deref(),
+        Ok("B")
+    );
 }
 
 #[test]
@@ -1155,6 +1164,7 @@ fn raid_frame() -> DecodedFrame {
             .map(|(scope_kind, scope_id)| ScriptVariablesRow {
                 scope_kind,
                 scope_id,
+                seed: replay::rows::Recorded::Value(None),
                 entries: Vec::new(),
             })
             .collect(),

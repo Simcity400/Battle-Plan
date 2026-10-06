@@ -19,6 +19,7 @@ fn localisation() -> Localisation {
 fn border_marker_tail_keeps_transfer_and_unbracketed_enemy_markers_in_native_order() {
     let border = LandBorderWarInputs {
         transfer_state: 128,
+        combat_width: replay::rows::Recorded::Value(0),
         sides: [
             LandBorderWarSide {
                 country: 7,
@@ -126,9 +127,8 @@ fn border_marker_multi_option_enemy_event_appears_only_under_win() {
         .map(|(key, text)| (key.into(), text.into()))
         .chain([(EFFECT_COUNTRY_EVENT.into(), "Event $EVENT$\n".into())])
         .collect();
-    let describe = |_: &[Item], _: &mut EventScopes| -> effect_description::Description {
-        unreachable!()
-    };
+    let describe =
+        |_: &[Item], _: &mut EventScopes| -> effect_description::Description { unreachable!() };
     let render = |key: &[u8], _: &EventScopes| Ok(String::from_utf8_lossy(key).into_owned());
     for (mine, win, lose) in [(0, "VICTORY", "DEFEAT"), (1, "DEFEAT", "VICTORY")] {
         let mut body = "Marker".into();
@@ -339,7 +339,9 @@ fn border_marker_event_native_effects_or_title_follow_option_count() {
         let render =
             |key: &[u8], _: &EventScopes| Ok(format!("Text {}", String::from_utf8_lossy(key)));
         let mut graph = scopes(7, 11, 9, 13);
-        let text = event_description(&event, false, &describe, &mut graph, &render, &NoIcons, &loc);
+        let text = event_description(
+            &event, false, &describe, &mut graph, &render, &NoIcons, &loc,
+        );
         assert!(text.refused.is_empty(), "{:?}", text.refused);
         assert_eq!(text.body, "Text FIRST\nPP \u{11}G+2\u{11}!\nText SECOND\n");
         assert_eq!(calls.get(), 2);
@@ -358,12 +360,17 @@ fn border_marker_event_native_effects_or_title_follow_option_count() {
             &NoIcons,
             &loc,
         );
-        assert_eq!(text.body, "Text FIRST\nPP \u{11}G+2\u{11}!\nEvent Text TITLE");
+        assert_eq!(
+            text.body,
+            "Text FIRST\nPP \u{11}G+2\u{11}!\nEvent Text TITLE"
+        );
         assert!(text.refused.is_empty());
         assert_eq!(calls.get(), 5);
         event.options.push(Vec::new());
         // Native accepts the sole title before its trigger and skips effect bodies.
-        let text = event_description(&event, false, &describe, &mut graph, &render, &NoIcons, &loc);
+        let text = event_description(
+            &event, false, &describe, &mut graph, &render, &NoIcons, &loc,
+        );
         assert_eq!(text.body, "Event Text TITLE");
         assert!(text.refused.is_empty());
         assert_eq!(calls.get(), 5);
@@ -380,7 +387,9 @@ fn border_marker_event_native_effects_or_title_follow_option_count() {
         assert!(text.refused.is_empty());
         assert_eq!(calls.get(), 5);
         event.titles.push(event.titles[0].clone());
-        let text = event_description(&event, false, &describe, &mut graph, &render, &NoIcons, &loc);
+        let text = event_description(
+            &event, false, &describe, &mut graph, &render, &NoIcons, &loc,
+        );
         assert!(text.body.is_empty());
         assert!(
             text.refused

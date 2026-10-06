@@ -5659,6 +5659,67 @@ fn status_packet_preserves_raw_maxima_and_its_independent_source_prefix() {
 }
 
 #[test]
+fn division_status_supply_grace_preserves_signed_words_and_owned_seed_failures() {
+    let mut memory = presentation_fixture();
+    let source = presentation_source()[0];
+    let maximum = 9_007_199_254_740_993_i64;
+    let remaining = -1_234_567_i64;
+    p64(
+        &mut memory.bytes,
+        A1 + carmy::MAXIMUM_SUPPLY_GRACE,
+        maximum as u64,
+    );
+    p64(
+        &mut memory.bytes,
+        A1 + carmy::REMAINING_SUPPLY_GRACE,
+        remaining as u64,
+    );
+    p64(
+        &mut memory.bytes,
+        A1 + crate::carmy_combat_inputs::NAME_GROUP_MEMBER,
+        0x12345,
+    );
+    let mut seeds = [super::DivisionSeed {
+        pointer: source.pointer,
+        division: source.division,
+        ..Default::default()
+    }];
+    super::capture_division_seeds(&memory, &mut seeds);
+    assert_eq!(seeds[0].name_member, Some(0x12345));
+    assert_eq!(seeds[0].supply_grace_maximum, Some(maximum));
+    assert_eq!(seeds[0].supply_grace_remaining, Some(remaining));
+    // Projection uses the captured words even when live memory changes.
+    p64(&mut memory.bytes, A1 + carmy::MAXIMUM_SUPPLY_GRACE, 0);
+    p64(&mut memory.bytes, A1 + carmy::REMAINING_SUPPLY_GRACE, 0);
+    let mut packet = super::StatusPacket::new(1).unwrap();
+    let mut rows = [super::StatusRow::default(); 1];
+    assert_eq!(
+        packet.capture(&memory, 0, GS, &seeds, Outcome::Rows { len: 1 }, 1),
+        Outcome::Rows { len: 1 }
+    );
+    assert_eq!(packet.project(&mut rows), Outcome::Rows { len: 1 });
+    assert_eq!(
+        (rows[0].supply_grace_maximum, rows[0].supply_grace_remaining),
+        (maximum, remaining)
+    );
+    for (maximum_failed, reason) in [
+        (true, "division maximum supply grace unreadable"),
+        (false, "division remaining supply grace unreadable"),
+    ] {
+        let mut failed = seeds;
+        if maximum_failed {
+            failed[0].supply_grace_maximum = None;
+        } else {
+            failed[0].supply_grace_remaining = None;
+        }
+        assert_eq!(
+            packet.capture(&memory, 0, GS, &failed, Outcome::Rows { len: 1 }, 1),
+            Outcome::Unavailable { reason }
+        );
+    }
+}
+
+#[test]
 fn exercise_level_gates_honor_ai_stop_at_maximum_and_wrapping_manpower() {
     let mut memory = presentation_fixture();
     memory.bytes[G1 + corders_group::TRAINING] = 1;
@@ -5852,9 +5913,9 @@ fn movement_rejects_a_null_next_province() {
 }
 
 #[test]
-fn division_seed_descriptors_match_original_layout() {
+fn division_seed_descriptors_preserve_original_prefix_and_append_names_and_grace() {
     use super::*;
-    assert_eq!(DIVISION_SEED_STRIDE, 288);
+    assert_eq!(DIVISION_SEED_STRIDE, 312);
     assert_eq!(
         DIVISION_SEED_FIELDS.map(|field| (
             field.source_offset,
@@ -5894,6 +5955,9 @@ fn division_seed_descriptors_match_original_layout() {
             (ACCLIMATIZATION, 215, 0x40),
             (cunit::MAP_ENTITY, 279, 8),
             (EXILED, 287, 1),
+            (crate::carmy_combat_inputs::NAME_GROUP_MEMBER, 288, 8),
+            (MAXIMUM_SUPPLY_GRACE, 296, 8),
+            (REMAINING_SUPPLY_GRACE, 304, 8),
         ]
     );
 }

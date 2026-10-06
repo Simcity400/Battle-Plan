@@ -334,6 +334,7 @@ fn naval_commander_values(
     label: &str,
     a: &replay::rows::NavalCommanderInputs,
     save: &Save,
+    tokens: &TokenNames<'_>,
 ) -> io::Result<()> {
     commander_values(
         r,
@@ -360,6 +361,13 @@ fn naval_commander_values(
             &a.skills[1..],
             b.components.as_slice(),
         );
+    }
+    if let Some(traits) = r.recorded(
+        &a.timed_traits,
+        "NavalCommanderInputs.timed_traits",
+        format!("{label} timed traits"),
+    ) {
+        timed_traits(r, label, a.commander, a.category, traits, save, tokens);
     }
     Ok(())
 }
@@ -409,62 +417,65 @@ fn formation(
     }
 }
 
-/// The side commander's timed traits (+0xDE0) against `traits_to_remove`
+/// Land and naval commanders' timed traits (+0xDE0) against `traits_to_remove`
 /// (0x3969), which C0D920 writes in vector order as each trait's +8 token and
 /// signed remaining days, omitting an empty vector. The saved leader's
 /// presence is `commander_values`' comparison.
 fn timed_traits(
     r: &mut Report,
     label: &str,
-    side: &replay::rows::LandCombatSideDetails,
+    commander: u64,
+    category: i32,
+    actual: &[replay::rows::LandCombatCommanderTimedTrait],
     save: &Save,
     tokens: &TokenNames<'_>,
 ) {
-    if side.commander == 0 {
-        equal(
-            r,
-            format!("{label} timed traits"),
-            side.timed_traits.len(),
-            0,
-        );
+    if commander == 0 {
+        equal(r, format!("{label} timed traits"), actual.len(), 0);
         return;
     }
-    if !(0..=2).contains(&side.commander_category) {
+    if !(0..=2).contains(&category) {
         return;
     }
     let Some(saved) = save
         .characters
         .manager
         .as_ref()
-        .and_then(|manager| manager.unit_leaders.get(&side.commander))
+        .and_then(|manager| manager.unit_leaders.get(&commander))
     else {
         return;
     };
     equal(
         r,
         format!("{label} timed trait count"),
-        side.timed_traits.len(),
+        actual.len(),
         saved.timed_traits.len(),
     );
-    for (index, (a, b)) in side
-        .timed_traits
-        .iter()
-        .zip(&saved.timed_traits)
-        .enumerate()
-    {
+    for (index, (a, b)) in actual.iter().zip(&saved.timed_traits).enumerate() {
         let label = format!("{label} timed trait {index}");
         equal(r, format!("{label} days"), a.remaining_days, b.days);
         match u32::try_from(a.token_id).ok().and_then(|id| tokens.get(&id)) {
-            Some(literal) if a.token_id != 0x167 && !literal.contains(&0) => equal(
-                r,
-                format!("{label} token"),
-                *literal,
-                b.token.as_slice(),
-            ),
+            Some(literal) if a.token_id != 0x167 && !literal.contains(&0) => {
+                equal(r, format!("{label} token"), *literal, b.token.as_slice())
+            }
             _ => r.limitation(
                 "timed trait token has no recorded lexical spelling or is the reserved numeric formatter token; only its days are compared",
                 label,
             ),
+        }
+    }
+}
+
+fn timed_trait_tokens<'a>(frame: &'a DecodedFrame, r: &mut Report, needed: bool) -> TokenNames<'a> {
+    match needed.then(|| lexical_tokens(frame, r)) {
+        None => TokenNames::new(),
+        Some(Ok(tokens)) => tokens,
+        Some(Err(error)) => {
+            r.limitation(
+                "recorded lexical dictionary is incomplete; timed trait tokens are not compared",
+                error.to_string(),
+            );
+            TokenNames::new()
         }
     }
 }
@@ -476,17 +487,7 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let timed = rows
         .iter()
         .any(|row| row.sides.iter().any(|side| !side.timed_traits.is_empty()));
-    let tokens = match timed.then(|| lexical_tokens(frame, r)) {
-        None => TokenNames::new(),
-        Some(Ok(tokens)) => tokens,
-        Some(Err(error)) => {
-            r.limitation(
-                "recorded lexical dictionary is incomplete; timed trait tokens are not compared",
-                error.to_string(),
-            );
-            TokenNames::new()
-        }
-    };
+    let tokens = timed_trait_tokens(frame, r, timed);
     let mut seen = BTreeSet::new();
     for row in rows {
         if !seen.insert(row.combat) {
@@ -516,6 +517,19 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                 let countries = country_context(frame)?;
                 if border.transfer_state > 1 {
                     r.limitation("1413DAC80 saves change_state_after_war as boolean; the magnitude of an unusual nonzero byte is unsaved", format!("{label} border transfer byte"));
+                }
+                // 1413DAC80 writes primary +0xD8 unconditionally, even at zero.
+                if let Some(width) = r.recorded(
+                    &border.combat_width,
+                    "LandBorderWarInputs.combat_width",
+                    format!("{label} combat_width"),
+                ) {
+                    r.scalar(
+                        &label,
+                        "combat_width",
+                        Some(*width),
+                        saved.details.combat_width.as_ref(),
+                    );
                 }
                 equal(
                     r,
@@ -576,7 +590,15 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                 },
                 save,
             )?;
-            timed_traits(r, &format!("{label} commander"), actual, save, &tokens);
+            timed_traits(
+                r,
+                &format!("{label} commander"),
+                actual.commander,
+                actual.commander_category,
+                &actual.timed_traits,
+                save,
+                &tokens,
+            );
             equal(
                 r,
                 format!("{label} committed"),
@@ -745,39 +767,76 @@ fn divisions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
     Ok(())
 }
 
+/// Borrowed naming operands shared by combat and whole-roster comparisons.
+pub(super) struct Naming<'a> {
+    pub(super) kind: i32,
+    pub(super) order: i32,
+    pub(super) ordered: u8,
+    pub(super) programmatic: u8,
+    pub(super) custom: &'a [u8],
+    pub(super) group: &'a [u8],
+}
+
+impl<'a> From<&'a replay::rows::LandCombatDivisionRow> for Naming<'a> {
+    fn from(row: &'a replay::rows::LandCombatDivisionRow) -> Self {
+        Self {
+            kind: row.name_type,
+            order: row.name_order,
+            ordered: row.name_ordered,
+            programmatic: row.name_programmatic,
+            custom: &row.name_custom,
+            group: &row.name_group,
+        }
+    }
+}
+
+impl<'a> From<&'a replay::rows::NameOperands> for Naming<'a> {
+    fn from(row: &'a replay::rows::NameOperands) -> Self {
+        Self {
+            kind: row.kind,
+            order: row.order,
+            ordered: row.ordered,
+            programmatic: row.programmatic,
+            custom: &row.custom,
+            group: &row.group,
+        }
+    }
+}
+
 /// CArmy C80E00 saves the +0x340 CNameGroupMember as `division_name` through
 /// 1409BCC70, whose emission rules fix what each omitted key proves: `type` is
 /// always written, `name_order` only when nonzero, `is_name_ordered` (as `no`)
 /// only when +0xA8 is clear, `override` only for a nonempty +0x88 string and
 /// `override_set_programmatically` only when +0xA9 is set.
-fn naming(
+pub(super) fn naming<'a>(
     r: &mut Report,
     label: &str,
-    row: &replay::rows::LandCombatDivisionRow,
+    row: impl Into<Naming<'a>>,
     unit: &save::Division,
     templates: &BTreeMap<u64, save::DivisionTemplate>,
 ) {
+    let row = row.into();
     let Some(saved) = &unit.presentation.division_name else {
         r.difference(format!("{label} division_name"), "present", "absent");
         return;
     };
-    equal(r, format!("{label} name type"), row.name_type, saved.kind);
+    equal(r, format!("{label} name type"), row.kind, saved.kind);
     equal(
         r,
         format!("{label} name_order"),
-        row.name_order,
+        row.order,
         saved.order.unwrap_or(0),
     );
     equal(
         r,
         format!("{label} is_name_ordered"),
-        row.name_ordered != 0,
+        row.ordered != 0,
         saved.ordered.unwrap_or(true),
     );
     equal(
         r,
         format!("{label} override_set_programmatically"),
-        row.name_programmatic != 0,
+        row.programmatic != 0,
         saved.programmatic.unwrap_or(false),
     );
     // SetTemplate 140C7EE00 and SelectFakeIntelDivisionTemplate 140C7E8C0
@@ -792,22 +851,19 @@ fn naming(
             .map(|saved| saved.names_group.as_deref()),
     };
     // 1409B5640 shows the stored +0x88 name with +0xA9 clear, or with it set
-    // for a type-zero member whose group is null; the capture records it
-    // exactly there.
-    if row.name_programmatic == 0 || (row.name_type == 0 && group == Some(None)) {
+    // for a type-zero member whose group is null.
+    if row.programmatic == 0
+        || (row.kind == 0 && group == Some(None))
+        || (row.kind == 2 && !row.custom.is_empty())
+    {
         optional_text_value(
             r,
             &format!("{label} override"),
-            &row.name_custom,
+            row.custom,
             saved.custom.as_deref(),
         );
-    } else if row.name_type != 0 {
-        equal(
-            r,
-            format!("{label} override"),
-            row.name_custom.as_slice(),
-            b"".as_slice(),
-        );
+    } else if row.kind != 0 {
+        equal(r, format!("{label} override"), row.custom, b"".as_slice());
         r.limitation(
             "a programmatic override of a nonzero name type is shown only when its ship, operative or railway-gun group is null (1409B7290), which the capture does not read, so it is not recorded; only its flag is compared",
             label,
@@ -820,20 +876,15 @@ fn naming(
         return;
     } else {
         // The group is set: 1409B5640 shows its entry, not the stored text.
-        equal(
-            r,
-            format!("{label} override"),
-            row.name_custom.as_slice(),
-            b"".as_slice(),
-        );
+        equal(r, format!("{label} override"), row.custom, b"".as_slice());
     }
     // The capture reads the group of a type-zero member whose stored name
     // is not shown.
-    if row.name_type != 0 || !row.name_custom.is_empty() {
+    if row.kind != 0 || !row.custom.is_empty() {
         return;
     }
     match group {
-        Some(group) => optional_text_value(r, &format!("{label} name group"), &row.name_group, group),
+        Some(group) => optional_text_value(r, &format!("{label} name group"), row.group, group),
         None => r.limitation(
             "the name member's template has no saved division_templates entry; its group key is not comparable",
             label,
@@ -899,7 +950,20 @@ fn naval(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     {
         lexical_tokens(frame, r)?
     } else {
-        TokenNames::new()
+        timed_trait_tokens(
+            frame,
+            r,
+            rows.iter().any(|row| {
+                row.sides.iter().any(|side| {
+                    side.commander_inputs.as_ref().is_some_and(|commander| {
+                        commander
+                            .timed_traits
+                            .require("NavalCommanderInputs.timed_traits")
+                            .is_ok_and(|traits| !traits.is_empty())
+                    })
+                })
+            }),
+        )
     };
     let countries = country_context(frame)?;
     let actual: BTreeSet<_> = rows.iter().map(|x| x.combat).collect();
@@ -1031,7 +1095,7 @@ fn naval(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                 ));
             }
             if let Some(commander) = &actual.commander_inputs {
-                naval_commander_values(r, &format!("{label} commander"), commander, save)?;
+                naval_commander_values(r, &format!("{label} commander"), commander, save, &tokens)?;
             }
             // 14160FF40 writes every entry of the side's +0x20 unit array, in order.
             equal(
@@ -1632,6 +1696,23 @@ fn result_ship_values(
 }
 fn results(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::NavalCombatResultDetails>()?;
+    let tokens = timed_trait_tokens(
+        frame,
+        r,
+        rows.iter().any(|row| {
+            row.sides.iter().any(|side| {
+                [&side.commander_context, &side.hq_commander_context]
+                    .into_iter()
+                    .flatten()
+                    .any(|commander| {
+                        commander
+                            .timed_traits
+                            .require("NavalCommanderInputs.timed_traits")
+                            .is_ok_and(|traits| !traits.is_empty())
+                    })
+            })
+        }),
+    );
     let countries = country_context(frame)?;
     let actual: BTreeSet<_> = rows.iter().map(|x| x.result).collect();
     if actual.len() != rows.len() {
@@ -1654,7 +1735,13 @@ fn results(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> 
                 ("HQ commander", &a.hq_commander_context),
             ] {
                 if let Some(commander) = commander {
-                    naval_commander_values(r, &format!("{label} {name}"), commander, save)?;
+                    naval_commander_values(
+                        r,
+                        &format!("{label} {name}"),
+                        commander,
+                        save,
+                        &tokens,
+                    )?;
                 }
             }
             if let Some(leader) = b.details.leader {

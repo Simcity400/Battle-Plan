@@ -166,6 +166,19 @@ fn compare_variant_definitions(
             actual.obsolete != 0,
             expected.obsolete.unwrap_or(false),
         );
+        if let Some(&version) = report.recorded(
+            &actual.version,
+            "VariantDefinitions.version",
+            format!("{label}.version"),
+        ) {
+            // 140BD4770 omits precisely zero and zero-extends every other byte.
+            equal(
+                report,
+                format!("{label}.version"),
+                (version != 0).then_some(version),
+                expected.version,
+            );
+        }
         // The writer omits an unset explicit model; presence compares too.
         name_field(
             report,

@@ -166,7 +166,20 @@ fn empty_shared_storage_needs_no_node_memory() {
 
 #[test]
 fn scoped_walk_keeps_alias_identity_literal_keys_and_authenticated_empty_scopes() {
-    let bytes = scope_fixture();
+    let mut bytes = scope_fixture();
+    let seeds = [0, u32::MAX, 1, 0x8000_0000, 9];
+    for (container, seed) in [
+        0xa000,
+        0xb000,
+        0xc000,
+        0x8000 + ccharacter::VARIABLES,
+        0x9000 + ccharacter::VARIABLES,
+    ]
+    .into_iter()
+    .zip(seeds)
+    {
+        put32(&mut bytes, container + SEED, seed);
+    }
     let mut scopes = [ScopeRow::default(); 5];
     let mut entries = [Row::default(); 4];
     let mut names = [0; 6];
@@ -204,6 +217,7 @@ fn scoped_walk_keeps_alias_identity_literal_keys_and_authenticated_empty_scopes(
     );
     assert_eq!(scopes[2].entries_len, 0);
     assert_eq!(scopes[4].entries_len, 0);
+    assert_eq!(scopes.map(|row| row.seed), seeds.map(Some));
     assert_eq!(
         entries.map(|row| row.value_raw),
         [i64::MIN, i64::MAX, -100001, 300_000]
@@ -411,6 +425,96 @@ fn bad_names_and_faults_do_not_publish_a_partial_scope() {
     ));
 }
 
+#[test]
+fn scoped_seed_failure_preserves_entries_and_distinguishes_unknown_from_zero() {
+    struct SeedFault<'a>(SliceMemory<'a>);
+    impl Memory for SeedFault<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            if address == BASE + 0xb000 + SEED && destination.len() == 4 {
+                false
+            } else {
+                self.0.copy(address, destination)
+            }
+        }
+    }
+    let bytes = scope_fixture();
+    let mut scopes = [ScopeRow::default(); 5];
+    let mut entries = [Row::default(); 4];
+    let mut names = [0; 6];
+    let captured = walk_scopes(
+        &SeedFault(SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        }),
+        BASE,
+        BASE + 0x1000,
+        &mut scopes,
+        &mut entries,
+        &mut names,
+    );
+    assert_eq!(captured.outcome, Outcome::Rows { len: 5 });
+    assert_eq!(captured.entries_len, 4);
+    assert_eq!(scopes[0].seed, Some(0));
+    assert_eq!(scopes[1].seed, None);
+    assert_eq!(scopes[1].entries_len, 2);
+    assert_eq!(entries[1].value_raw, i64::MAX);
+    assert_eq!(names, [b'g', b'g', 0xff, 0, b'x', b'c']);
+}
+
+#[test]
+fn scoped_seeds_include_all_5000_country_stores_without_entry_demand() {
+    use crate::ccountry::synthetic::World;
+    const MODULE: usize = 0x4000_0000;
+    const COUNTRIES: u32 = 5_000;
+    let mut world = World::new(MODULE, COUNTRIES, ccountry::VARIABLES + 8);
+    let game = world.game_state();
+    let empty_store = |world: &mut World, seed| {
+        let container = world.alloc(0x40);
+        world.u64(container, (MODULE + VTABLE_RVA) as u64);
+        world.u32(container + SEED, seed);
+        world.u64(container + STORAGE, (MODULE + EMPTY_STORAGE_RVA) as u64);
+        container
+    };
+    let global = empty_store(&mut world, u32::MAX);
+    world.u64(game + cgame_state::GLOBAL_VARIABLES, global as u64);
+    for slot in 1..=COUNTRIES {
+        let container = empty_store(&mut world, slot);
+        let country = world.object(slot);
+        world.u64(country + ccountry::VARIABLES, container as u64);
+    }
+    let pointers = world.alloc(16);
+    let state = world.alloc(cstate::VARIABLES + 8);
+    world.u64(state, (MODULE + cstate::VTABLE_RVA) as u64);
+    world.u32(state + cstate::ID, 1);
+    let container = empty_store(&mut world, 0);
+    world.u64(state + cstate::VARIABLES, container as u64);
+    world.u64(pointers + 8, state as u64);
+    world.array(game + cgame_state::STATES, pointers, 2);
+    let manager = world.alloc(0x80);
+    world.u64(manager, (MODULE + ccharacter_manager::VTABLE_RVA) as u64);
+    world.u64(game + cgame_state::CHARACTER_MANAGER, manager as u64);
+    let memory = world.memory();
+    let expected = COUNTRIES as usize + 2;
+    let mut scopes = vec![ScopeRow::default(); expected];
+    let captured = walk_scopes(&memory, MODULE, game, &mut scopes, &mut [], &mut []);
+    assert_eq!(captured.outcome, Outcome::Rows { len: expected });
+    assert_eq!((captured.required_entries, captured.required_bytes), (0, 0));
+    assert_eq!(scopes[0].seed, Some(u32::MAX));
+    for slot in 1..=COUNTRIES {
+        assert_eq!(scopes[slot as usize].scope, Scope::Country(slot));
+        assert_eq!(scopes[slot as usize].seed, Some(slot));
+    }
+    assert_eq!(scopes[expected - 1].seed, Some(0));
+    let demand = walk_scopes(&memory, MODULE, game, &mut [], &mut [], &mut []);
+    assert_eq!(
+        demand.outcome,
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: expected as u32,
+        }
+    );
+}
+
 /// Capture cost at scale (run with `--ignored --nocapture`): every
 /// country with ten variables, 1,000 states with two each, and no or ten
 /// characters per country, one in ten holding a variable, the rest the
@@ -424,6 +528,7 @@ fn bench_script_variable_scopes() {
     // One store of `count` short keys, two buckets per key.
     fn store(world: &mut World, container: usize, count: u32, seed: u32) {
         world.u64(container, (MODULE + VTABLE_RVA) as u64);
+        world.u32(container + SEED, seed);
         if count == 0 {
             world.u64(container + STORAGE, (MODULE + EMPTY_STORAGE_RVA) as u64);
             return;

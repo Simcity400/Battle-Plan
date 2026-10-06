@@ -1394,6 +1394,47 @@ pub(super) fn copy_advisors(
             dead.advisors = true;
             return true;
         }
+        let Some(cache_header) = take_or_kill(
+            job,
+            memory,
+            role.checked_add(cadvisor::MODIFIER_ENTRIES),
+            16,
+            MASK_ADVISORS,
+            &mut dead.advisors,
+        ) else {
+            return !job.log.overflowed;
+        };
+        let header = job.log.bytes[cache_header..cache_header + 16]
+            .try_into()
+            .unwrap();
+        let Some(array) = Array::from_header(header, engine::modifier_entry::STRIDE) else {
+            dead.advisors = true;
+            return true;
+        };
+        let required = (array.count as usize)
+            .checked_mul(engine::modifier_entry::STRIDE)
+            .and_then(|bytes| job.advisor_demand.bytes.checked_add(bytes));
+        match required {
+            Some(bytes) => job.advisor_demand.bytes = bytes,
+            None => job.advisor_demand.overflowed = true,
+        }
+        let mut first = 0;
+        while first < array.count {
+            let count = (array.count - first).min(64) as usize;
+            if take_or_kill(
+                job,
+                memory,
+                array.element(first, engine::modifier_entry::STRIDE),
+                count * engine::modifier_entry::STRIDE,
+                MASK_ADVISORS,
+                &mut dead.advisors,
+            )
+            .is_none()
+            {
+                return !job.log.overflowed;
+            }
+            first += count as u32;
+        }
     }
     true
 }
@@ -1516,6 +1557,12 @@ pub(super) fn copy_unit(
         }
         if !dead.units {
             copy_unit_text(job, memory, unit, dead);
+            if job.log.overflowed {
+                return false;
+            }
+        }
+        if !dead.units && kind.is_some_and(cunit_leader::has_codename) {
+            copy_unit_codename(job, memory, base, unit);
             if job.log.overflowed {
                 return false;
             }
@@ -1717,6 +1764,109 @@ pub(super) fn copy_unit_text(
     let token = copy_unit_literal(job, memory, &header, MASK_UNITS);
     if name.is_none() || token.is_none() {
         dead.units = true;
+    }
+}
+
+/// Own read_codename's member span, then copy_string's heap first byte,
+/// tail/terminator and payload, retaining its exact fault precedence.
+struct CodenameCopy<'a, M> {
+    job: std::cell::RefCell<&'a mut CharactersJob>,
+    memory: &'a M,
+}
+
+impl<M: Memory> Memory for CodenameCopy<'_, M> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        let mut job = self.job.borrow_mut();
+        let Some(start) = job.log.take(self.memory, address, output.len(), MASK_UNITS) else {
+            return false;
+        };
+        output.copy_from_slice(&job.log.bytes[start..start + output.len()]);
+        true
+    }
+}
+
+fn copy_unit_codename(job: &mut CharactersJob, memory: &impl Memory, base: usize, unit: usize) {
+    use engine::cname_group_member as naming;
+    // Appended naming faults are replayed as a local refusal by read_unit;
+    // they do not kill the existing unit fields or the other leader rows.
+    let member = unit
+        .checked_add(coperative_leader::CODENAME)
+        .and_then(|member| job.log.take(memory, member, naming::INPUT_SPAN, MASK_UNITS));
+    let Some(start) = member else { return };
+    let mut bytes = [0_u8; naming::INPUT_SPAN];
+    bytes.copy_from_slice(&job.log.bytes[start..start + naming::INPUT_SPAN]);
+    if Some(u64::from_le_bytes(bytes[..8].try_into().unwrap()))
+        != base
+            .checked_add(naming::VTABLE_RVA)
+            .map(|address| address as u64)
+        || i32::from_le_bytes(bytes[naming::TYPE..naming::TYPE + 4].try_into().unwrap()) != 2
+    {
+        return;
+    }
+    let mut override_shown = bytes[naming::FLAG_B] == 0;
+    for offset in [naming::FIRST_NAME_TEXT, naming::OVERRIDE_NAME] {
+        if offset == naming::OVERRIDE_NAME && !override_shown {
+            let length = u64::from_le_bytes(bytes[0x98..0xa0].try_into().unwrap());
+            if length == 0 {
+                continue;
+            }
+            let source = CodenameCopy {
+                job: std::cell::RefCell::new(&mut *job),
+                memory,
+            };
+            override_shown = match unit.checked_add(coperative_leader::CODENAME) {
+                Some(member) => {
+                    match naming::operative_group_is_null(&source, base, member, &bytes) {
+                        Ok(null) => null,
+                        Err(_) => return,
+                    }
+                }
+                None => return,
+            };
+            if !override_shown {
+                continue;
+            }
+        }
+        let header = &bytes[offset..offset + 32];
+        let word = |at: usize| u64::from_le_bytes(header[at..at + 8].try_into().unwrap());
+        let (len, capacity) = (word(msvc_string::LENGTH), word(msvc_string::CAPACITY));
+        if len > capacity || capacity < msvc_string::INLINE_CAPACITY {
+            return;
+        }
+        let Ok(len) = usize::try_from(len) else {
+            return;
+        };
+        if capacity == msvc_string::INLINE_CAPACITY {
+            if len != 0 && header[len] != 0 {
+                return;
+            }
+        } else {
+            let Some(source) = usize::try_from(word(0)).ok().filter(|&source| source != 0) else {
+                return;
+            };
+            if len != 0 {
+                let Some(last) = source
+                    .checked_add(len - 1)
+                    .filter(|_| source.checked_add(len).is_some())
+                else {
+                    return;
+                };
+                let validation = job.log.take_scattered_prefetched(
+                    memory,
+                    [source, last],
+                    [1, 2],
+                    [MASK_UNITS; 2],
+                );
+                let Some((starts, 2)) = validation else {
+                    return;
+                };
+                if job.log.bytes[starts[1] + 1] != 0
+                    || job.log.take(memory, source, len, MASK_UNITS).is_none()
+                {
+                    return;
+                }
+            }
+        }
     }
 }
 
@@ -2467,6 +2617,7 @@ pub(super) fn walk_advisor_section(
                     relocate(&mut row.key_start, offset)
                         && relocate(&mut row.idea_start, offset)
                         && relocate(&mut row.slot_start, offset)
+                        && relocate(&mut row.modifier_start, offset)
                 },
             );
         }
