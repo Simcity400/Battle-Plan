@@ -115,6 +115,7 @@ impl Description {
 
 fn event_description(
     event: &Event,
+    enemy_win: bool,
     describe: &impl Fn(&[Item], &mut EventScopes) -> effect_description::Description,
     scopes: &mut EventScopes,
     render: &impl Fn(&[u8], &EventScopes) -> Result<String, String>,
@@ -124,6 +125,11 @@ fn event_description(
     let mut out = Description::default();
     if let Some(why) = &event.refused {
         out.refuse(why.clone());
+        return out;
+    }
+    // 1413D7FC3/1413D7FCA: Lose skips enemy win text at CEvent+0x374 > 1;
+    // Win instead emits the enemy lose-event title (1413D74B0).
+    if enemy_win && event.options.len() >= 2 {
         return out;
     }
     if event.options.len() < 2 {
@@ -137,7 +143,10 @@ fn event_description(
                 .push_str(effect_description::trim_description(&description.text));
             newline(&mut out.body);
         }
-    } else {
+    }
+    // 1413D8085/1413D8141: a zero-option enemy win appends its title after
+    // the immediate body; a single option describes only the effect bodies.
+    if event.options.len() >= 2 || (enemy_win && event.options.is_empty()) {
         // 14116B3B0/14116C180 choose a scoped title, not any effect body.
         let title = event.sole_title_key().and_then(|key| match key {
             Some(key) => render(key, scopes),
@@ -151,7 +160,7 @@ fn event_description(
                 &[("EVENT", Argument::Text(&title))],
             )
         }) {
-            Ok(body) => out.body = body,
+            Ok(body) => out.body.push_str(&body),
             Err(why) => out.refuse(why),
         }
     }
@@ -167,7 +176,7 @@ fn build(
     body: &mut String,
     country: &impl Fn(i32, bool) -> Result<String, String>,
     state: &impl Fn(i32) -> Result<String, String>,
-    event: &impl Fn(&[u8], usize) -> Description,
+    event: &impl Fn(&[u8], usize, bool) -> Description,
     refused: &mut BTreeMap<String, usize>,
 ) -> Result<(), String> {
     let own = &border.sides[mine];
@@ -218,7 +227,7 @@ fn build(
             if id.is_empty() {
                 continue;
             }
-            let text = event(id, side);
+            let text = event(id, side, !win && side != mine);
             for (why, count) in text.refused {
                 *refused.entry(why).or_default() += count;
             }
@@ -290,7 +299,7 @@ pub(super) fn append(
         .scripted
         .as_ref()
         .map(|content| ScriptedText::new(frame, loc, content, viewer));
-    let event = |id: &[u8], index: usize| {
+    let event = |id: &[u8], index: usize, enemy_win: bool| {
         let result = (|| {
             let event = icons.border_events.get(id)?;
             let content = document.scripted.as_ref().map_err(Clone::clone)?;
@@ -326,6 +335,7 @@ pub(super) fn append(
             };
             Ok::<_, String>(event_description(
                 &event,
+                enemy_win,
                 &describe,
                 &mut scopes,
                 &render,

@@ -50,7 +50,7 @@ fn border_marker_tail_keeps_transfer_and_unbracketed_enemy_markers_in_native_ord
             ))
         },
         &|id| Ok(format!("S{id}")),
-        &|id, _| Description {
+        &|id, _, _| Description {
             body: format!("{}\n", String::from_utf8_lossy(id)),
             ..Default::default()
         },
@@ -73,7 +73,7 @@ fn border_marker_tail_keeps_transfer_and_unbracketed_enemy_markers_in_native_ord
         &mut body,
         &|_, _| unreachable!(),
         &|_| unreachable!(),
-        &|_, _| unreachable!(),
+        &|_, _, _| unreachable!(),
         &mut refused,
     )
     .unwrap();
@@ -94,6 +94,81 @@ fn border_marker_membership_and_event_scopes_use_native_alias_and_copy_links() {
     assert_eq!(values[3].from, Link::Scope(5));
     assert_eq!(values[5].from, Link::Itself);
     assert_eq!(values[0].prev, Link::Itself);
+}
+
+#[test]
+fn border_marker_multi_option_enemy_event_appears_only_under_win() {
+    let events = installed_content::events::parse(
+        b"add_namespace=s country_event={id=s.5 title=VICTORY option={name=A} option={name=B}} country_event={id=s.6 title=DEFEAT option={name=A} option={name=B}}",
+        "events/synthetic.txt",
+        &installed_content::key_names::KeyNames::default(),
+    );
+    let border = LandBorderWarInputs {
+        sides: [
+            LandBorderWarSide {
+                country: 7,
+                state: 763,
+                win_event: b"s.5".to_vec(),
+                lose_event: b"s.6".to_vec(),
+            },
+            LandBorderWarSide {
+                country: 9,
+                state: 814,
+                win_event: b"s.6".to_vec(),
+                lose_event: b"s.5".to_vec(),
+            },
+        ],
+        ..Default::default()
+    };
+    let base = localisation();
+    let loc = base
+        .iter()
+        .map(|(key, text)| (key.into(), text.into()))
+        .chain([(EFFECT_COUNTRY_EVENT.into(), "Event $EVENT$\n".into())])
+        .collect();
+    let describe = |_: &[Item], _: &mut EventScopes| -> effect_description::Description {
+        unreachable!()
+    };
+    let render = |key: &[u8], _: &EventScopes| Ok(String::from_utf8_lossy(key).into_owned());
+    for (mine, win, lose) in [(0, "VICTORY", "DEFEAT"), (1, "DEFEAT", "VICTORY")] {
+        let mut body = "Marker".into();
+        let mut refused = BTreeMap::new();
+        let event = |id: &[u8], side: usize, enemy_win: bool| {
+            let own = &border.sides[side];
+            let enemy = &border.sides[1 - side];
+            event_description(
+                events.get(id).unwrap(),
+                enemy_win,
+                &describe,
+                &mut scopes(
+                    own.country as u32,
+                    own.state as u32,
+                    enemy.country as u32,
+                    enemy.state as u32,
+                ),
+                &render,
+                &NoIcons,
+                &loc,
+            )
+        };
+        build(
+            &NoIcons,
+            &loc,
+            &border,
+            mine,
+            &mut body,
+            &|_, _| Ok("Enemy".into()),
+            &|_| unreachable!(),
+            &event,
+            &mut refused,
+        )
+        .unwrap();
+        assert_eq!(
+            body,
+            format!("Marker\n\nWin\nEvent {win}\nFor Enemy\nEvent {win}\n\nLose\nEvent {lose}\n")
+        );
+        assert!(refused.is_empty(), "{refused:?}");
+    }
 }
 
 #[test]
@@ -133,7 +208,7 @@ fn hookless_tail_needs_no_country_links_and_outcomes_keep_native_presence_gates(
                 &mut body,
                 &|_, _| Ok("Enemy".into()),
                 &|_| unreachable!(),
-                &|_, _| Description {
+                &|_, _, _| Description {
                     body: "Event\n".into(),
                     ..Default::default()
                 },
@@ -264,18 +339,48 @@ fn border_marker_event_native_effects_or_title_follow_option_count() {
         let render =
             |key: &[u8], _: &EventScopes| Ok(format!("Text {}", String::from_utf8_lossy(key)));
         let mut graph = scopes(7, 11, 9, 13);
-        let text = event_description(&event, &describe, &mut graph, &render, &NoIcons, &loc);
+        let text = event_description(&event, false, &describe, &mut graph, &render, &NoIcons, &loc);
         assert!(text.refused.is_empty(), "{:?}", text.refused);
         assert_eq!(text.body, "Text FIRST\nPP \u{11}G+2\u{11}!\nText SECOND\n");
         assert_eq!(calls.get(), 2);
+        let text = event_description(&event, true, &describe, &mut graph, &render, &NoIcons, &loc);
+        assert_eq!(text.body, "Text FIRST\nPP \u{11}G+2\u{11}!\nText SECOND\n");
+        assert!(text.refused.is_empty());
+        assert_eq!(calls.get(), 4);
+        let mut zero_options = event.clone();
+        zero_options.options.clear();
+        let text = event_description(
+            &zero_options,
+            true,
+            &describe,
+            &mut graph,
+            &render,
+            &NoIcons,
+            &loc,
+        );
+        assert_eq!(text.body, "Text FIRST\nPP \u{11}G+2\u{11}!\nEvent Text TITLE");
+        assert!(text.refused.is_empty());
+        assert_eq!(calls.get(), 5);
         event.options.push(Vec::new());
         // Native accepts the sole title before its trigger and skips effect bodies.
-        let text = event_description(&event, &describe, &mut graph, &render, &NoIcons, &loc);
+        let text = event_description(&event, false, &describe, &mut graph, &render, &NoIcons, &loc);
         assert_eq!(text.body, "Event Text TITLE");
         assert!(text.refused.is_empty());
-        assert_eq!(calls.get(), 2);
+        assert_eq!(calls.get(), 5);
+        let text = event_description(
+            &event,
+            true,
+            &describe,
+            &mut graph,
+            &|_, _| unreachable!(),
+            &NoIcons,
+            &loc,
+        );
+        assert!(text.body.is_empty());
+        assert!(text.refused.is_empty());
+        assert_eq!(calls.get(), 5);
         event.titles.push(event.titles[0].clone());
-        let text = event_description(&event, &describe, &mut graph, &render, &NoIcons, &loc);
+        let text = event_description(&event, false, &describe, &mut graph, &render, &NoIcons, &loc);
         assert!(text.body.is_empty());
         assert!(
             text.refused
@@ -309,7 +414,7 @@ fn border_marker_empty_enemy_description_has_no_enemy_heading_and_counts_failure
         &mut body,
         &|_, _| unreachable!(),
         &|_| unreachable!(),
-        &|_, _| Description {
+        &|_, _, _| Description {
             refused: [("synthetic refusal".into(), 3)].into_iter().collect(),
             ..Default::default()
         },
@@ -345,6 +450,7 @@ fn covered_event_keeps_text_and_operative_reader_refusal_still_suppresses_it() {
         let mut graph = scopes(7, 11, 9, 13);
         let text = event_description(
             &events.get(b"s.1").unwrap(),
+            false,
             &describe,
             &mut graph,
             &render,
@@ -355,6 +461,7 @@ fn covered_event_keeps_text_and_operative_reader_refusal_still_suppresses_it() {
         assert!(text.refused.is_empty());
         let text = event_description(
             &events.get(b"s.2").unwrap(),
+            false,
             &describe,
             &mut graph,
             &render,
