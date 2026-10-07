@@ -636,7 +636,9 @@ fn roman(mut number: u32) -> String {
 pub fn read<N: crate::DiagnosticMessage>(
     layers: &ResolvedLayers,
 ) -> io::Result<(Database, Vec<N>)> {
-    read_directories(layers, &DIRECTORIES[..1])
+    // Later directories can re-read a group already retained in the army
+    // table, even when the declaration changes its type (1409B4370).
+    read_directories(layers, &DIRECTORIES)
 }
 
 /// The directories CBuildingDatabase::load (140191044..140191083) hands

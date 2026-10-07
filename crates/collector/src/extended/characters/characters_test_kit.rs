@@ -21,7 +21,7 @@ pub(crate) const SKILL0: usize = 0x7900;
 const LEAD_ROLE: usize = 0x8140;
 pub(crate) const ADV_ROLE: usize = 0x8260;
 const CHAR2: usize = 0x2300;
-const UNIT2: usize = 0x5200;
+pub(crate) const UNIT2: usize = 0x5200;
 const HEAD2L: usize = 0x2500;
 const HEAD2A: usize = 0x2530;
 
@@ -302,19 +302,10 @@ pub(crate) fn split(
     (captured, report, first)
 }
 
-fn assert_buffer<R: PartialEq + std::fmt::Debug>(
-    name: &str,
-    split: &Buffer<R>,
-    direct: &Buffer<R>,
-) {
+fn assert_buffer_payload<R>(name: &str, split: &Buffer<R>, direct: &Buffer<R>) -> usize {
     assert_eq!(split.rows.outcome, direct.rows.outcome, "{name} outcome");
     let len = split.rows.outcome.len();
     assert_eq!(direct.rows.outcome.len(), len, "{name} length");
-    assert_eq!(
-        &split.rows.rows[..len],
-        &direct.rows.rows[..len],
-        "{name} rows"
-    );
     assert_eq!(
         &split.bytes.first[..split.bytes.len],
         &direct.bytes.first[..direct.bytes.len],
@@ -324,12 +315,49 @@ fn assert_buffer<R: PartialEq + std::fmt::Debug>(
         split.bytes.required, direct.bytes.required,
         "{name} required bytes"
     );
+    len
+}
+
+fn assert_buffer<R: PartialEq + std::fmt::Debug>(
+    name: &str,
+    split: &Buffer<R>,
+    direct: &Buffer<R>,
+) {
+    let len = assert_buffer_payload(name, split, direct);
+    assert_eq!(
+        &split.rows.rows[..len],
+        &direct.rows.rows[..len],
+        "{name} rows"
+    );
 }
 
 pub(crate) fn assert_matches_direct(split: &Captured, direct: &Captured) {
     assert_buffer("characters", &split.characters, &direct.characters);
     assert_buffer("leaders", &split.leaders, &direct.leaders);
-    assert_buffer("advisors", &split.advisors, &direct.advisors);
+    let len = assert_buffer_payload("advisors", &split.advisors, &direct.advisors);
+    // The mutation-certified cache packs definitions before fresh numeric
+    // caches. Empty spans may therefore point at different arena tails;
+    // they address no byte. Preserve every flag, failure and nonempty span.
+    let empty_cache = |row: &cadvisor::Row| cadvisor::Row {
+        modifier_start: if row.modifier_len == 0 {
+            0
+        } else {
+            row.modifier_start
+        },
+        ..*row
+    };
+    assert_eq!(
+        split.advisors.rows.rows[..len]
+            .iter()
+            .map(empty_cache)
+            .collect::<Vec<_>>(),
+        direct.advisors.rows.rows[..len]
+            .iter()
+            .map(empty_cache)
+            .collect::<Vec<_>>(),
+        "advisors rows"
+    );
+    assert_eq!(split.advisors_table(), direct.advisors_table());
     assert_buffer("units", &split.units, &direct.units);
     assert_buffer("traits", &split.traits, &direct.traits);
     assert_buffer(

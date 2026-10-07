@@ -15,11 +15,25 @@ fn fixture() -> (Fixture, Folder) {
         ),
         (
             "common/technologies/synthetic.txt",
-            "technology_categories={mod_category mod_other} technologies={mod_tech={parent=mod_parent enable_equipments={mod_equipment}} mod_small={parent=mod_parent force_use_small_tech_layout=yes enable_equipments={mod_equipment}}}",
+            // 140AC3C70 leaves a leading limit's last value in the shared slot.
+            // Empty inline limits keep `{`; external limits supply the gate.
+            concat!(
+                "technology_folders={ignored_folder={}} technology_categories={mod_category mod_other} technologies={",
+                "mod_tech={parent=mod_parent enable_equipments={mod_equipment}} mod_small={parent=mod_parent force_use_small_tech_layout=yes enable_equipments={mod_equipment}} ",
+                "mod_callback={mod_unit={soft_attack=0.1} enable_equipments={missing_equipment mod_equipment} enable_equipment_modules={mod_module mod_module mod_second_module mod_denied_module} max_level=3 enable_building={building=mod_lab} enable_subunits={limit={always=yes} mod_unit} enable_tactic=mod_tactic enable_tactic=MOD_TACTIC on_research_complete_limit={always=yes} on_research_complete={limit={} custom_effect_tooltip=TECH_COMPLETE} modifier={custom_modifier_tooltip=TECH_MODIFIER}} ",
+                "mod_conditional={on_research_complete_limit={always=no} on_research_complete={limit={} custom_effect_tooltip=TECH_COMPLETE} enable_subunits={limit={always=no} mod_unit} enable_subunits={limit={always=yes} mod_unit}} ",
+                "mod_repeated={enable_building={building=mod_lab} enable_building={building=mod_lab level=2} enable_building={building=mod_store level=3} enable_building={building=MOD_LAB level=4} enable_tactic=mod_tactic enable_tactic=mod_tactic enable_tactic=mod_other_tactic enable_tactic=mod_tactic}}"
+            ),
+        ),
+        ("common/units/synthetic.txt", "sub_units={mod_unit={}}"),
+        (
+            "common/combat_tactics.txt",
+            "mod_tactic={} mod_other_tactic={}",
         ),
         (
             "common/units/equipment/synthetic.txt",
-            "equipments={mod_equipment={is_archetype=yes type=infantry}}",
+            // 1409E5170 attaches a block's limit to every module in that block.
+            "equipments={mod_equipment={is_archetype=yes type=infantry}} equipment_modules={limit={always=yes} mod_module={allowed={tag=AAA}} mod_second_module={allowed={always=yes}}} equipment_modules={limit={always=no} mod_denied_module={allowed={always=yes}}}",
         ),
         (
             "common/doctrines/folders/synthetic.txt",
@@ -47,7 +61,7 @@ fn fixture() -> (Fixture, Folder) {
         ),
         (
             "common/buildings/synthetic.txt",
-            "buildings={mod_lab={specialization={mod_science} level_cap={province_max=1}}}",
+            "buildings={mod_lab={specialization={mod_science} level_cap={province_max=1}} mod_store={level_cap={province_max=1}}}",
         ),
         (
             "localisation/test_l_english.yml",
@@ -69,6 +83,13 @@ fn fixture() -> (Fixture, Folder) {
                 " mod_science:0 \"Science\"\n AAA_mod_science:0 \"Alpha science [Root.GetTag]\"\n mod_other_science:0 \"Other science\"\n",
                 " ADD_BREAKTHROUGH_POINTS_EFFECT_DESC:0 \"Points:\"\n ADD_BREAKTHROUGH_PROGRESS_EFFECT_DESC:0 \"Progress:\"\n ADD_BREAKTHROUGH_POINTS_EFFECT_SPECIALIZATION:0 \"$SPECIALIZATION$:$AMOUNT|0$\"\n ADD_BREAKTHROUGH_PROGRESS_EFFECT_SPECIALIZATION:0 \"$SPECIALIZATION$:$AMOUNT|2$\"\n",
                 " ADD_FACTION_POWER_PROJECTION_EFFECT_NO_FACTION:0 \"Projection $VAL|0$ [Root.GetTag]\"\n",
+                " ADD_FACTION_POWER_PROJECTION_EFFECT:0 \"Projection $VAL|0$/$FACTION$ [Root.GetTag]\"\n",
+                " mod_unit:0 \"Unit\"\n AAA_mod_unit:0 \"Alpha unit\"\n mod_module:0 \"Module\"\n AAA_mod_module:0 \"Alpha module\"\n mod_tactic:0 \"Tactic\"\n AAA_mod_tactic:0 \"Alpha tactic\"\n mod_lab:0 \"Lab\"\n",
+                " ZERO_mod_module:0 \"Zero module\"\n mod_second_module:0 \"Second module\"\n ZERO_mod_second_module:0 \"Zero second\"\n mod_denied_module:0 \"Denied module\"\n",
+                " mod_store:0 \"Store\"\n mod_other_tactic:0 \"Other tactic\"\n AAA_mod_other_tactic:0 \"Alpha other tactic\"\n",
+                " SUBUNIT_BONUS_HEADER:0 \"$ICON$$NAME$\"\n STAT_ARMY_SOFT_ATTACK:0 \"Soft:\"\n STAT_MODIFIER_VALUE:0 \"$VALUE|2$\"\n BUILDING_LEVEL:0 \"Level $LEVEL|0$\"\n",
+                " RESEARCH_UNLOCKS_EQUIPMENT_HEADER:0 \"Equipment:$EQUIPMENTS$\"\n RESEARCH_UNLOCKS_EQUIPMENT_MODULES_HEADER:0 \"Modules:$MODULES$\"\n RESEARCH_UNLOCKS_BUILDINGS_HEADER:0 \"Buildings:$BUILDINGS$\"\n RESEARCH_UNLOCKS_SUBUNITS_HEADER:0 \"Subunits:$SUBUNITS$\"\n RESEARCH_UNLOCKS_TACTICS_HEADER:0 \"Tactics:$TACTICS$\"\n",
+                " TECH_COMPLETE:0 \"Complete [Root.GetTag]/[Prev.GetTag]\"\n TECH_MODIFIER:0 \"Modifier [Root.GetTag]\"\n",
                 " mod_project:0 \"Project [Root.GetTag]\"\n AAA_mod_project:0 \"Alpha project [Root.GetTag]\"\n",
                 " EFFECT_ADD_SPECIAL_PROJECT_PROGRESS:0 \"Progress $PROJECT$ $PROGRESS|2$\"\n EFFECT_COMPLETE_SPECIAL_PROJECT:0 \"Complete $PROJECT$\"\n SPECIAL_PROJECT_RESEARCH_OUTPUT:0 \"Output\"\n",
                 " EFFECT_REDUCE_SPECIAL_PROJECT_PROGRESS:0 \"Delay $PROJECT$ $PROGRESS|2$/$DAYS|0$ days\"\n"
@@ -80,11 +101,6 @@ fn fixture() -> (Fixture, Folder) {
         .unwrap()
         .set_synthetic_environment(Default::default());
     fixture.catalogue = catalogue;
-    *fixture.frame.tables[TableId::CountryAppearance.index()] =
-        TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
-            country: 100,
-            ..Default::default()
-        }]));
     *fixture.frame.tables[TableId::FactionMembers.index()] =
         TableView::Complete(TableRows::FactionMembers(Vec::new()));
     *fixture.frame.tables[TableId::LexicalTokens.index()] =
@@ -129,6 +145,54 @@ fn fixture() -> (Fixture, Folder) {
                 id: b"mod_tech".to_vec(),
                 ..Default::default()
             },
+            TechnologyDefinitionRow {
+                technology_handle: 53,
+                database_index: 42,
+                id: b"mod_callback".to_vec(),
+                ..Default::default()
+            },
+            TechnologyDefinitionRow {
+                technology_handle: 54,
+                database_index: 53,
+                id: b"mod_conditional".to_vec(),
+                ..Default::default()
+            },
+            TechnologyDefinitionRow {
+                technology_handle: 55,
+                database_index: 54,
+                id: b"mod_repeated".to_vec(),
+                ..Default::default()
+            },
+        ]));
+    *fixture.frame.tables[TableId::ResearchTechnologies.index()] =
+        TableView::Complete(TableRows::ResearchTechnologies(vec![
+            ResearchTechnologyRow {
+                country: 100,
+                technology_handle: 53,
+                ..Default::default()
+            },
+            ResearchTechnologyRow {
+                country: 100,
+                technology_handle: 54,
+                ..Default::default()
+            },
+            ResearchTechnologyRow {
+                country: 200,
+                technology_handle: 53,
+                ..Default::default()
+            },
+            ResearchTechnologyRow {
+                country: 100,
+                technology_handle: 55,
+                ..Default::default()
+            },
+        ]));
+    *fixture.frame.tables[TableId::ReservedCountryNaming.index()] =
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            ReservedCountryNamingRow {
+                tag: b"ZERO".to_vec(),
+                ..Default::default()
+            },
         ]));
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
@@ -161,8 +225,8 @@ macro_rules! ported {
                 .effects()
                 .unwrap();
             let output = fixture.render_native($body, &mut fresh(), content.view(None));
-            assert_eq!(output.text, $expected);
             assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+            assert_eq!(output.text, $expected);
         }
     };
 }
@@ -242,6 +306,16 @@ ported!(
     set_faction_research_unlocked,
     "set_faction_research_unlocked=yes",
     "Unlock Research AAA"
+);
+ported!(
+    faction_research_quoted_yes_uses_raw_token_text,
+    "set_faction_research_unlocked=\"yes\"",
+    "Unlock Research AAA"
+);
+ported!(
+    faction_research_uppercase_yes_stays_locked,
+    "set_faction_research_unlocked=YES",
+    "Lock Research AAA"
 );
 
 // Reached authored forms: national_focus/italy.txt:4407 and decisions/sia.txt:1736.
@@ -476,5 +550,262 @@ fn technology_catalogue_is_cached_once_per_stack() {
         content.view(None),
     );
     assert_eq!(output.text, "Give Alpha parent\n");
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+}
+
+// Reached tech_effect|... in naval_projects.txt:3441 and philippines.txt:8846.
+// Callback flags 0,1,1 omit prose, time, prerequisites and debug-only AI detail.
+#[test]
+fn bound_technology_effect_keeps_native_body_order_and_fresh_completion_scope() {
+    let (fixture, _folder) = fixture();
+    let content = fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .effects()
+        .unwrap();
+    let mut scopes = EventScopes::new(vec![
+        EventScope {
+            root: Link::Scope(1),
+            prev: Link::Scope(1),
+            ..EventScope::of(EventObject::Country(1))
+        },
+        EventScope::of(EventObject::Country(2)),
+    ]);
+    let output = fixture.render_native(
+        "custom_effect_tooltip={localization_key=tech_effect|MOD_CALLBACK IGNORED=mod_parent}",
+        &mut scopes,
+        content.view(None),
+    );
+    assert_eq!(
+        output.text,
+        concat!(
+            "\u{13}GFX_mod_unit_icon_small|1 Alpha unit\n   Soft:0.10\n",
+            "Equipment:\u{11}HAlpha equipment\u{11}!\n",
+            "Modules:\u{11}HZero module\u{11}!, \u{11}HZero second\u{11}!\n",
+            "Buildings:\u{11}HLab\u{11}! (Level 3)\n",
+            "Subunits:\u{11}HAlpha unit\u{11}!\n",
+            // 140EC5F90 appends the CEffect body verbatim, then one LF.
+            "Complete AAA/AAA\n",
+            "Tactics:\u{11}HAlpha tactic\u{11}!\n",
+            "Modifier [Root.GetTag]\n"
+        )
+    );
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+}
+
+#[test]
+fn bound_technology_effect_combines_limits_and_accepts_unresearched_status() {
+    let (fixture, _folder) = fixture();
+    let content = fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .effects()
+        .unwrap();
+    let output = fixture.render_native(
+        "custom_effect_tooltip=tech_effect|mod_conditional",
+        &mut fresh(),
+        content.view(None),
+    );
+    assert_eq!(output.text, "");
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+}
+
+#[test]
+fn bound_technology_module_gate_uses_caller_country_and_names_use_reserved_zero_tag() {
+    let (fixture, _folder) = fixture();
+    let content = fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .effects()
+        .unwrap();
+    let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(2))]);
+    let output = fixture.render_native(
+        "custom_effect_tooltip=tech_effect|mod_callback",
+        &mut scopes,
+        content.view(None),
+    );
+    assert!(
+        output.text.contains("Modules:\u{11}HZero second\u{11}!\n"),
+        "{}",
+        output.text
+    );
+    assert!(!output.text.contains("Zero module"));
+    assert!(!output.text.contains("Denied module"));
+    assert!(
+        output
+            .text
+            .contains("Equipment:\u{11}HAlpha equipment\u{11}!\n")
+    );
+    assert!(output.text.contains("Complete BBB/BBB\n"));
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+}
+
+#[test]
+fn bound_technology_effect_missing_identity_is_empty_but_missing_recording_refuses() {
+    let (mut fixture, _folder) = fixture();
+    *fixture.frame.tables[TableId::ResearchTechnologies.index()] =
+        TableView::Complete(TableRows::ResearchTechnologies(Vec::new()));
+    let content = fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .effects()
+        .unwrap();
+    for scope in [
+        Scopes::of(Scope::State(1)),
+        Scopes::of(Scope::Character(7)),
+        Scopes::of(Scope::Country(0)),
+    ] {
+        let text = fixture
+            .with_renderer(&mut fresh(), content.view(None), |renderer| {
+                renderer.bound_technology_effect("mod_callback", scope)
+            })
+            .unwrap();
+        assert_eq!(text, "");
+    }
+    let output = fixture.render_native(
+        "custom_effect_tooltip=tech_effect|missing_technology",
+        &mut fresh(),
+        content.view(None),
+    );
+    assert_eq!(output.text, "");
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+    let output = fixture.render_native(
+        "custom_effect_tooltip=tech_effect|mod_callback",
+        &mut fresh(),
+        content.view(None),
+    );
+    assert_eq!(output.text, "");
+    assert!(output.refusals.keys().any(|why| why.contains("ResearchTechnologies lacks bound country's technology status")), "{:?}", output.refusals);
+}
+
+#[test]
+fn faction_power_projection_expands_with_recorded_membership() {
+    let (mut fixture, _folder) = fixture();
+    *fixture.frame.tables[TableId::Factions.index()] =
+        TableView::Complete(TableRows::Factions(vec![FactionRow {
+            id: 5,
+            name: b"Recorded faction".to_vec(),
+            ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::FactionMembers.index()] =
+        TableView::Complete(TableRows::FactionMembers(vec![FactionMemberRow {
+            country: 100,
+            faction: 5,
+            ordinal: 0,
+        }]));
+    let content = fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .effects()
+        .unwrap();
+    let output = fixture.render_native(
+        "add_faction_power_projection=100",
+        &mut fresh(),
+        content.view(None),
+    );
+    assert_eq!(output.text, "Projection 100/Recorded faction AAA");
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+}
+
+#[test]
+fn bound_technology_modifier_recording_failure_preserves_other_native_fragments() {
+    let (mut fixture, _folder) = fixture();
+    *fixture.frame.tables[TableId::ModifierDefinitions.index()] = TableView::Unavailable {
+        reason: "synthetic fault".into(),
+    };
+    let content = fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .effects()
+        .unwrap();
+    let output = fixture.render_native(
+        "custom_effect_tooltip=tech_effect|mod_callback",
+        &mut fresh(),
+        content.view(None),
+    );
+    assert!(
+        output
+            .text
+            .starts_with("\u{13}GFX_mod_unit_icon_small|1 Alpha unit\n")
+    );
+    assert!(output.text.contains("Complete AAA/AAA\n"));
+    assert!(
+        output
+            .text
+            .ends_with("Tactics:\u{11}HAlpha tactic\u{11}!\n")
+    );
+    assert_eq!(output.refusals.values().sum::<usize>(), 1);
+    assert!(
+        output
+            .refusals
+            .keys()
+            .any(|why| why.contains("technology modifiers")),
+        "{:?}",
+        output.refusals
+    );
+}
+
+#[test]
+fn bound_technology_unavailable_building_content_preserves_later_unlocks() {
+    let (fixture, _folder) = fixture();
+    let content = fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .effects()
+        .unwrap();
+    let mut view = content.view(None);
+    view.buildings = None;
+    let output = fixture.render_native(
+        "custom_effect_tooltip=tech_effect|mod_callback",
+        &mut fresh(),
+        view,
+    );
+    assert!(
+        output
+            .text
+            .contains("Modules:\u{11}HZero module\u{11}!, \u{11}HZero second\u{11}!\n")
+    );
+    assert!(!output.text.contains("Buildings:"));
+    assert!(output.text.contains("Subunits:\u{11}HAlpha unit\u{11}!\n"));
+    assert!(output.text.ends_with("Modifier [Root.GetTag]\n"));
+    assert_eq!(output.refusals.values().sum::<usize>(), 1);
+    assert!(
+        output
+            .refusals
+            .keys()
+            .any(|why| why.contains("technology building unlocks")),
+        "{:?}",
+        output.refusals
+    );
+}
+
+#[test]
+fn bound_technology_repeated_building_and_tactic_compare_final_definition_pointer() {
+    let (fixture, _folder) = fixture();
+    let content = fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .effects()
+        .unwrap();
+    let output = fixture.render_native(
+        "custom_effect_tooltip=tech_effect|mod_repeated",
+        &mut fresh(),
+        content.view(None),
+    );
+    assert_eq!(
+        output.text,
+        concat!(
+            "Buildings:\u{11}HLab\u{11}! (Level 1) and \u{11}HLab\u{11}! (Level 2), \u{11}HStore\u{11}! (Level 3) and \u{11}HLab\u{11}! (Level 4)\n",
+            "Tactics:\u{11}HAlpha tactic\u{11}! and \u{11}HAlpha tactic\u{11}!, \u{11}HAlpha other tactic\u{11}! and \u{11}HAlpha tactic\u{11}!\n"
+        )
+    );
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }

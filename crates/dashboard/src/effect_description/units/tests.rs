@@ -104,6 +104,29 @@ fn fixture() -> Fixture {
                 ("STAT_AIR_RANGE_MOD_DIFF", "Custom $VALUE|2$"),
                 ("STAT_MODIFIER_DIFF_NEG", "Bad $VALUE|2$"),
                 ("STAT_MODIFIER_DIFF", "Good $VALUE|2$"),
+                ("Syn_Category", "Category"),
+                ("AAA_Syn_Category", "Perspective category"),
+                ("SUBUNIT_BONUS_HEADER", "$ICON$$NAME$"),
+                ("STAT_ARMY_COMBAT_WIDTH", "Width"),
+                ("STAT_ARMY_COMBAT_WIDTH_DIFF", " $VALUE|2$"),
+                ("STAT_ARMY_DEFENSE", "Defense"),
+                ("STAT_ARMY_SOFT_ATTACK_MOD_VALUE", " custom $VALUE|2$"),
+                ("STAT_MODIFIER_VALUE", " value $VALUE|2$"),
+                ("STAT_ADJUSTER_MOVEMENT", "Move"),
+                ("STAT_ADJUSTER_MOVEMENT_DIFF", " $VALUE|2$"),
+                ("STAT_ADJUSTER_ATTACK", "Attack"),
+                ("STAT_ADJUSTER_ATTACK_DIFF", " $VALUE|2$"),
+                ("STAT_ADJUSTER_DEFENCE", "Defence"),
+                ("STAT_ADJUSTER_DEFENCE_DIFF", " $VALUE|2$"),
+                ("night", "Night"),
+                ("zeta", "Zeta"),
+                ("alpha", "Alpha"),
+                ("SUBUNIT_BONUS_CATEGORY_ADD", "Support $CATEGORY$"),
+                ("SUBUNIT_CATEGORY_ADD_STAT", "Add $NAME$ $VALUE|2$"),
+                ("SUBUNIT_CATEGORY_MULT_STAT", "Mult $NAME$ $VALUE|2$"),
+                ("SUBUNIT_CATEGORY_NEG_ADD_STAT", "BadAdd $NAME$ $VALUE|2$"),
+                ("SUBUNIT_CATEGORY_NEG_MULT_STAT", "BadMult $NAME$ $VALUE|2$"),
+                ("STAT_ARMY_SUPPLY_CONSUMPTION", "Supply"),
                 ("ZZZ", "Many"),
             ]
             .into_iter()
@@ -144,6 +167,17 @@ fn render(
     content: Content<'_>,
     impassable: &[u32],
 ) -> Description {
+    render_with_nato(fixture, body, object, content, impassable, false)
+}
+
+fn render_with_nato(
+    fixture: &Fixture,
+    body: &str,
+    object: EventObject,
+    content: Content<'_>,
+    impassable: &[u32],
+    nato: bool,
+) -> Description {
     let dlcs = BTreeSet::new();
     let triggers = Default::default();
     let aliases = Arc::default();
@@ -159,7 +193,8 @@ fn render(
     facts.state_provinces = &provinces;
     facts.impassable = &blocked;
     let scripted = fixture.catalogue.scripted_content().unwrap();
-    let text = ScriptedText::new(&fixture.frame, &fixture.catalogue.localisation, scripted, 1);
+    let text = ScriptedText::new(&fixture.frame, &fixture.catalogue.localisation, scripted, 1)
+        .with_nato_counters(nato);
     text.set_synthetic_world(World::read(&fixture.frame, facts).with_template_names(
         &scripted.template_names,
         &scripted.layers.layers,
@@ -181,6 +216,109 @@ fn render(
 
 const UNIT: u64 = (7_u64 << 32) | 0x1269;
 
+fn bonus_names() -> installed_content::key_names::KeyNames {
+    let mut units = installed_content::unit_leader::SubUnits::default();
+    units.read(
+        b"sub_units={syn_unit={}} sub_unit_categories={Syn_Category syn_category}",
+        "synthetic",
+    );
+    let mut names = installed_content::key_names::KeyNames::default();
+    names.sub_units = Some(units);
+    names
+}
+
+#[test]
+fn unit_bonus_preserves_native_rosters_stat_and_terrain_order_and_nato_frame() {
+    let mut fixture = fixture();
+    let (mut catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/test.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NSupply={MIN_TRAIN_REQUIREMENT=2}}",
+        ),
+        ("common/terrain/test.txt", "categories={zeta={} alpha={}}"),
+    ]);
+    catalogue.localisation = fixture.catalogue.localisation.clone();
+    fixture.catalogue = catalogue;
+    let names = bonus_names();
+    let body = "add_unit_bonus={name=ignored syn_category={soft_attack=8 combat_width=99 night={attack=99}} syn_unit={soft_attack=2 defense=3 soft_attack=bad combat_width=-0.5 night={defence=3 attack=2 movement=1 attack=bad} alpha={attack=5} zeta={attack=4}} syn_category={defense=9} missing_unit={soft_attack=99}}";
+    for nato in [false, true] {
+        let out = render_with_nato(
+            &fixture,
+            body,
+            C(1),
+            Content {
+                key_names: Some(&names),
+                ..Default::default()
+            },
+            &[],
+            nato,
+        );
+        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+        let frame = if nato { 2 } else { 1 };
+        assert_eq!(
+            out.text,
+            format!(
+                "\u{13}GFX_syn_unit_icon_small|{frame} Perspective unit\nWidth -0.50\n   Defense value 3.00\n   Attack custom 2.00\n\u{11}HNight\u{11}!\n   Move 1.00\n   Attack 2.00\n   Defence 3.00\n\u{11}HZeta\u{11}!\n   Attack 4.00\n\u{11}HAlpha\u{11}!\n   Attack 5.00\n\u{13}GFX_Syn_Category_icon_small Perspective category\n  Attack custom 8.00\n\u{13}GFX_Syn_Category_icon_small Perspective category\n  Defense value 9.00\n"
+            )
+        );
+    }
+}
+
+#[test]
+fn unit_bonus_battalion_mult_keeps_authored_stats_flags_and_adjacent_category_header() {
+    let fixture = fixture();
+    let names = bonus_names();
+    let out = render(
+        &fixture,
+        "add_unit_bonus={syn_unit={battalion_mult={category=syn_category display_as_percentage=yes soft_attack=0.5 defense=1 soft_attack=0.25 soft_attack=0 soft_attack=bad supply_consumption=-0.2} battalion_mult={category=Syn_Category display_as_percentage=yes add=yes soft_attack=0.1 supply_consumption=0.2}}}",
+        C(1),
+        Content {
+            key_names: Some(&names),
+            ..Default::default()
+        },
+        &[],
+    );
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    assert_eq!(
+        out.text,
+        "\u{13}GFX_syn_unit_icon_small|1 Perspective unit\nSupport Perspective category\n    Add Attack 0.50\n    Add Defense 1.00\n    Add Attack 0.25\n    BadAdd Supply -0.20\n    Mult Attack 0.10\n    BadMult Supply 0.20\n"
+    );
+}
+
+#[test]
+fn unit_bonus_refused_adjuster_keeps_known_stats_and_later_selectors() {
+    let mut fixture = fixture();
+    fixture.catalogue.localisation = fixture
+        .catalogue
+        .localisation
+        .iter()
+        .filter(|(key, _)| *key != "STAT_ADJUSTER_ATTACK_DIFF")
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect::<Localisation>()
+        .into();
+    let names = bonus_names();
+    let out = render(
+        &fixture,
+        "add_unit_bonus={syn_unit={soft_attack=2 night={attack=1}} syn_category={defense=3}}",
+        C(1),
+        Content {
+            key_names: Some(&names),
+            ..Default::default()
+        },
+        &[],
+    );
+    assert_eq!(
+        out.text,
+        "\u{13}GFX_syn_unit_icon_small|1 Perspective unit\n   Attack custom 2.00\n\u{13}GFX_Syn_Category_icon_small Perspective category\n  Defense value 3.00\n"
+    );
+    assert_eq!(out.refusals.values().sum::<usize>(), 1);
+    assert!(
+        out.refusals
+            .keys()
+            .all(|why| why.contains("STAT_ADJUSTER_ATTACK_DIFF"))
+    );
+}
+
 fn unit_fixture() -> Fixture {
     let mut fixture = fixture();
     *fixture.frame.tables[TableId::Divisions.index()] =
@@ -190,6 +328,16 @@ fn unit_fixture() -> Fixture {
             logical_owner: 200,
             expeditionary_owner: 300,
             organisation: 9_000_000,
+            ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::DivisionStatus.index()] =
+        TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
+            division: UNIT,
+            name: Recorded::NotRecorded, // Historical generator operands.
+            naming: Recorded::Value(Some(NameOperands {
+                custom: b"Selected [This.GetName]".to_vec(),
+                ..Default::default()
+            })),
             ..Default::default()
         }]));
     *fixture.frame.tables[TableId::DivisionTemplates.index()] =
@@ -305,6 +453,31 @@ fn unit_carrier_native_empty_and_organization_table() {
 #[test]
 fn unit_carrier_shared_name_and_recording_gap_table() {
     let mut fixture = unit_fixture();
+    for (body, expected) in [
+        (
+            "change_division_template={division_template=\"Raw [This.GetName]\"}",
+            "Template Raw [This.GetName]/Selected [This.GetName] [Root.GetName]",
+        ),
+        (
+            "change_division_template={division_template=missing division_template=alpha}",
+            "Template alpha/Selected [This.GetName] [Root.GetName]",
+        ),
+        ("destroy_unit=yes", "Destroy Selected NULL NULL\n"),
+        ("destroy_unit=THIS", "Destroy Selected NULL NULL\n"),
+        (
+            "destroy_unit=var:unrecorded^random",
+            "Destroy Selected NULL NULL\n",
+        ),
+    ] {
+        let out = render(&fixture, body, U(UNIT), Content::default(), &[]);
+        assert_eq!(out.text, expected, "{body}: {:?}", out.refusals);
+        assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals);
+    }
+    if let TableView::Complete(TableRows::DivisionStatus(rows)) =
+        &mut *fixture.frame.tables[TableId::DivisionStatus.index()]
+    {
+        rows[0].naming = Recorded::NotRecorded;
+    }
     for (body, class) in [
         (
             "change_division_template={division_template=\"Raw [This.GetName]\"}",
@@ -327,7 +500,7 @@ fn unit_carrier_shared_name_and_recording_gap_table() {
         );
         assert!(out.text.is_empty(), "{body}: {}", out.text);
         let expected = format!(
-            "synthetic effect {class}: key {}: UNIT {UNIT:#x} name: CArmy+0x340 -> CNameGroupMember+0x60 cached MSVC string is not recorded (140C72F00; writer 1409B4C40)",
+            "synthetic effect {class}: key {}: DivisionStatus.naming not recorded",
             if class == "CDestroyUnitEffect" {
                 "destroy_unit"
             } else {
@@ -452,6 +625,273 @@ fn unit_carrier_graph_links_keep_operand_scope() {
 }
 
 #[test]
+fn unit_carrier_format98_naming_table() {
+    let names = installed_content::division_names::parse(
+        br#"SYN_G={prefix="P " ordered={12={"%s/%d %s"}}
+            unordered={a={"Literal %d"}} fallback_name="Fallback %d"}
+            EMPTY={} SHIP={type=ship unique={"Ship"}}"#,
+        &Default::default(),
+    )
+    .unwrap();
+    let content = Content {
+        division_names: Some(&names),
+        ..Default::default()
+    };
+    for (group, order, ordered, programmatic, custom, kind, expected) in [
+        ("missing", 0, 1, 0, "Player %d", 3, Ok("Player %d")),
+        ("SyN_G", 12, 255, 0, "", 0, Ok("P XII/%d XII")),
+        ("SYN_G", 0, 0, 0, "", 0, Ok("P Literal %d")),
+        ("SYN_G", 5, 1, 0, "", 0, Ok("Fallback 5")),
+        ("SYN_G", 2, 0, 0, "", 0, Ok("Fallback 3")),
+        ("SYN_G", -1, 0, 0, "", 0, Ok("Fallback 1")),
+        ("SYN_G", i32::MAX, 0, 0, "", 0, Ok("Fallback 1")),
+        ("SYN_G", 12, 1, 255, "Ignored", 0, Ok("P XII/%d XII")),
+        (
+            "",
+            7,
+            1,
+            1,
+            "Stored %d [Root.GetTag]",
+            0,
+            Ok("Stored %d [Root.GetTag]"),
+        ),
+        (
+            "SYN_G",
+            0,
+            1,
+            0,
+            "",
+            0,
+            Err("ordered name is not yet assigned"),
+        ),
+        (
+            "missing",
+            1,
+            1,
+            0,
+            "",
+            0,
+            Err("no name file that was read declares"),
+        ),
+        ("SHIP", 0, 0, 0, "", 0, Err("not in the army table")),
+        ("SYN_G", 1, 1, 0, "", 1, Err("name type 1")),
+        (
+            "",
+            7,
+            1,
+            1,
+            "",
+            0,
+            Err("legacy name allocation inputs are not recorded"),
+        ),
+        (
+            "EMPTY",
+            7,
+            1,
+            0,
+            "",
+            0,
+            Err("legacy name allocation inputs are not recorded"),
+        ),
+    ] {
+        let mut fixture = unit_fixture();
+        if let TableView::Complete(TableRows::DivisionStatus(rows)) =
+            &mut *fixture.frame.tables[TableId::DivisionStatus.index()]
+        {
+            rows[0].naming = Recorded::Value(Some(NameOperands {
+                kind,
+                order,
+                ordered,
+                programmatic,
+                custom: custom.as_bytes().to_vec(),
+                group: group.as_bytes().to_vec(),
+            }));
+        }
+        let body = "change_division_template={division_template=\"Raw [This.GetName]\"}";
+        let out = render(&fixture, body, U(UNIT), content, &[]);
+        match expected {
+            Ok(name) => {
+                assert_eq!(
+                    out.text,
+                    format!("Template Raw [This.GetName]/{name} [Root.GetName]")
+                );
+                assert!(
+                    out.refusals.is_empty(),
+                    "{group}/{order}: {:?}",
+                    out.refusals
+                );
+            }
+            Err(reason) => {
+                assert!(out.text.is_empty());
+                assert_eq!(out.refusals.values().sum::<usize>(), 1);
+                assert!(
+                    out.refusals.keys().all(|why| why.contains(reason)),
+                    "{group}/{order}: {:?}",
+                    out.refusals
+                );
+            }
+        }
+    }
+    for (naming, reason) in [
+        (Recorded::NotRecorded, "DivisionStatus.naming not recorded"),
+        (Recorded::Value(None), "guarded read or arena shortage"),
+        (
+            Recorded::Value(Some(NameOperands {
+                custom: vec![0xff],
+                ..Default::default()
+            })),
+            "custom division name is not UTF-8",
+        ),
+    ] {
+        let mut fixture = unit_fixture();
+        if let TableView::Complete(TableRows::DivisionStatus(rows)) =
+            &mut *fixture.frame.tables[TableId::DivisionStatus.index()]
+        {
+            rows[0].naming = naming;
+        }
+        let out = render(
+            &fixture,
+            "destroy_unit=yes destroy_unit=yes",
+            U(UNIT),
+            content,
+            &[],
+        );
+        assert!(out.text.is_empty());
+        assert_eq!(out.refusals.values().sum::<usize>(), 2);
+        assert!(
+            out.refusals.keys().all(|why| why.contains(reason)),
+            "{:?}",
+            out.refusals
+        );
+        let out = render(
+            &fixture,
+            "set_unit_organization=0.25",
+            U(UNIT),
+            content,
+            &[],
+        );
+        assert_eq!(out.text, "SetOrg 0.25 [This.GetName]");
+        assert!(out.refusals.is_empty()); // 14045E6D0 reads no name.
+    }
+}
+
+#[test]
+fn unit_carrier_name_groups_use_recorded_layers_and_one_cache() {
+    use crate::catalogue::tests::{folder_catalogue, layers_catalogue};
+    let (_, base) = folder_catalogue(&[
+        (
+            "common/defines/test.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+        ),
+        (
+            "common/units/names_divisions/a.txt",
+            "G={ordered={9={\"Base %d\"}}}",
+        ),
+        (
+            "localisation/test_l_english.yml",
+            "\u{feff}l_english:\n EFFECT_UNIT_DESTROY_UNIT:0 \"Destroy $NAME$ [Root.GetName]\"\n",
+        ),
+    ]);
+    let (_, later) = folder_catalogue(&[(
+        "common/units/names_divisions/a.txt",
+        "G={ordered={9={\"Mod %d\"}}}",
+    )]);
+    let layers =
+        installed_content::ResolvedLayers::from_folders(&[(&base.0, &[][..]), (&later.0, &[][..])])
+            .unwrap();
+    let mut fixture = unit_fixture();
+    fixture.catalogue = layers_catalogue(layers);
+    if let TableView::Complete(TableRows::DivisionStatus(rows)) =
+        &mut *fixture.frame.tables[TableId::DivisionStatus.index()]
+    {
+        rows[0].naming = Recorded::Value(Some(NameOperands {
+            group: b"G".to_vec(),
+            order: 9,
+            ordered: 1,
+            ..Default::default()
+        }));
+    }
+    let cached = fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .effects()
+        .unwrap();
+    assert_eq!(
+        cached
+            .view(None)
+            .division_names
+            .unwrap()
+            .resolve("G", 9, true)
+            .as_deref(),
+        Ok("Mod 9")
+    );
+    std::fs::write(later.0.join("common/units/names_divisions/a.txt"), "G={}").unwrap();
+    let out = render(
+        &fixture,
+        "destroy_unit=yes",
+        U(UNIT),
+        Content::default(),
+        &[],
+    );
+    assert_eq!(out.text, "Destroy Mod 9 NULL\n");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+#[test]
+fn unit_carrier_naming_has_no_country_or_division_cap() {
+    let mut fixture = unit_fixture();
+    let countries = crate::effect_description::tests::synthetic_countries(5_000);
+    *fixture.frame.tables[TableId::CountryLinks.index()] =
+        TableView::Complete(TableRows::CountryLinks(
+            countries
+                .iter()
+                .map(|row| CountryLinkRow {
+                    id: row.id,
+                    canonical_slot: row.canonical_slot,
+                })
+                .collect(),
+        ));
+    *fixture.frame.tables[TableId::Countries.index()] =
+        TableView::Complete(TableRows::Countries(countries));
+    let ids: Vec<_> = (1..=5_000_u64).map(|id| id << 32 | 55).collect();
+    *fixture.frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(
+        ids.iter()
+            .enumerate()
+            .map(|(at, &id)| DivisionRow {
+                id,
+                logical_owner: (at as u32 + 1) * 100,
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *fixture.frame.tables[TableId::DivisionStatus.index()] =
+        TableView::Complete(TableRows::DivisionStatus(
+            ids.iter()
+                .enumerate()
+                .map(|(at, &division)| DivisionStatusRow {
+                    division,
+                    name: Recorded::NotRecorded, // Historical generator operands.
+                    naming: Recorded::Value(Some(NameOperands {
+                        custom: format!("Unit {}", at + 1).into_bytes(),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    let out = render(
+        &fixture,
+        "destroy_unit=yes",
+        U(*ids.last().unwrap()),
+        Content::default(),
+        &[],
+    );
+    assert_eq!(out.text, "Destroy Unit 5000 NULL\n");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+#[test]
 fn native_units_output_branches() {
     let fixture = fixture();
     let equipment = equipment();
@@ -498,7 +938,8 @@ fn native_units_output_branches() {
         (
             "delete_unit_template_and_units={division_template=Raw air_experience=1}",
             C(1),
-            "Delete Raw\nAir 1.00\n",
+            // 1403B2220 reports unknown own fields instead of loading child effects.
+            "Delete Raw\n",
         ),
         (
             "set_division_template_lock={division_template=Raw is_locked=yes}",
@@ -685,7 +1126,8 @@ fn native_units_output_branches() {
         (
             "BBB={transfer_units_fraction={target=AAA} set_equipment_fraction=2}",
             C(1),
-            "@BBBBeta:\n   UnitsTo alpha\n   Adjust 1.00\n",
+            // 140398970 adds no LF; context builder 141381200 concatenates children.
+            "\u{12}BBBBeta:\n   UnitsTo alpha   Adjust 1.00\n",
         ),
     ] {
         let out = render(&fixture, body, object, content, &[]);
@@ -718,6 +1160,41 @@ fn native_units_output_branches() {
             "{:?}",
             out.refusals,
         );
+    }
+}
+
+#[test]
+fn native_navy_unknown_target_uses_reserved_country_name() {
+    let mut fixture = fixture();
+    fixture.catalogue.localisation = fixture
+        .catalogue
+        .localisation
+        .iter()
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .chain([("SYN_ZERO_DEF".into(), "reserved navy target".into())])
+        .collect::<Localisation>()
+        .into();
+    Arc::make_mut(&mut fixture.catalogue.localisation).language = "english".into();
+    // 1403983B0 calls the definite-name getter even when vf25 selects slot zero.
+    // Its recorded cache witness decides whether to rebuild or retain empty text.
+    for (built, expected) in [(2, "NavyTo reserved navy target\n"), (0, "NavyTo \n")] {
+        *fixture.frame.tables[TableId::ReservedCountryNaming.index()] =
+            TableView::Complete(TableRows::ReservedCountryNaming(vec![
+                ReservedCountryNamingRow {
+                    tag: b"SYN_ZERO".to_vec(),
+                    built,
+                    ..Default::default()
+                },
+            ]));
+        let out = render(
+            &fixture,
+            "transfer_navy={target=ZZZ}",
+            C(1),
+            Content::default(),
+            &[],
+        );
+        assert_eq!(out.text, expected, "built={built}");
+        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     }
 }
 
@@ -907,11 +1384,6 @@ fn native_units_admission_and_named_refusals() {
             "equipment content unavailable",
         ),
         (
-            "add_unit_bonus={syn_unit={}}",
-            "CAddUnitBonusEffect",
-            "template_counter",
-        ),
-        (
             "unlock_subunit=undefined",
             "CUnlockSubUnitEffect",
             "content unavailable",
@@ -919,7 +1391,7 @@ fn native_units_admission_and_named_refusals() {
         (
             "transfer_navy={target=ZZZ}",
             "CTransferNavyEffect",
-            "country",
+            "ReservedCountryNaming",
         ),
         (
             "create_unit={}",
@@ -1558,7 +2030,7 @@ fn native_units_equipment_branches() {
         (
             "BBB={send_equipment={type=syn_arch target=AAA amount=1} destroy_ships={type=syn_arch count=1}}",
             C(1),
-            "@BBBBeta:\n   SendOld 1/Alpha gear Beta/Alpha Beta\n   DestroyOne 1/Alpha gear Beta\n",
+            "\u{12}BBBBeta:\n   SendOld 1/Alpha gear Beta/Alpha Beta\n   DestroyOne 1/Alpha gear Beta\n",
         ),
     ] {
         let out = render(&fixture, body, object, content, &[]);
@@ -1653,10 +2125,9 @@ fn native_units_equipment_named_refusals() {
     if let TableView::Complete(TableRows::VariantDefinitions(rows)) =
         &mut *fixture.frame.tables[TableId::VariantDefinitions.index()]
     {
-        rows.iter_mut()
-            .find(|row| row.id == 60)
-            .unwrap()
-            .creator_link = 100;
+        let variant = rows.iter_mut().find(|row| row.id == 60).unwrap();
+        variant.creator_link = 100;
+        variant.version = Recorded::NotRecorded;
     }
     let out = render(
         &fixture,
@@ -1703,6 +2174,232 @@ fn native_units_equipment_named_refusals() {
     );
     assert_eq!(out.text, "Store 1/First Alpha Mark\n");
     assert!(out.refusals.is_empty());
+}
+
+#[test]
+fn native_units_recorded_variant_no_tech_probe() {
+    let equipment = equipment();
+    let content = Content {
+        equipment: Some(&equipment),
+        ..Default::default()
+    };
+    for (version, creator, origin, expected) in [
+        (0, 100, 0, "LegacyTechUnnamed Model short"),
+        (0, 101, 0, "LegacyTechUnnamed Model short"),
+        (0, 100, u32::MAX, "LegacyTechUnnamed Model short"),
+        (1, 100, 0, "LegacyNoTechUnnamed Model short"),
+        (255, 100, 0, "LegacyNoTechUnnamed Model short"),
+        (0, 200, 0, "LegacyNoTechUnnamed Model short"),
+        (0, 0, 0, "LegacyNoTechUnnamed Model short"),
+        (0, 100, 200, "LegacyNoTechUnnamed Model short"),
+    ] {
+        let mut fixture = equipment_fixture();
+        if let TableView::Complete(TableRows::CountryLinks(rows)) =
+            &mut *fixture.frame.tables[TableId::CountryLinks.index()]
+        {
+            rows.push(CountryLinkRow {
+                id: 101,
+                canonical_slot: 1,
+            });
+        }
+        if let TableView::Complete(TableRows::VariantDefinitions(rows)) =
+            &mut *fixture.frame.tables[TableId::VariantDefinitions.index()]
+        {
+            let variant = rows.iter_mut().find(|row| row.id == 60).unwrap();
+            variant.version = Recorded::Value(version);
+            variant.creator_link = creator;
+            variant.origin_link = origin;
+            if expected.contains("LegacyTechUnnamed") {
+                // A native first match hides the later unavailable version.
+                let mut later = variant.clone();
+                later.id = 70;
+                later.version = Recorded::NotRecorded;
+                rows.push(later);
+            }
+        }
+        if expected.contains("LegacyTechUnnamed")
+            && let TableView::Complete(TableRows::AvailableEquipmentVariants(rows)) =
+                &mut *fixture.frame.tables[TableId::AvailableEquipmentVariants.index()]
+        {
+            rows.push(AvailableEquipmentVariantRow {
+                country: 100,
+                roster_kind: 0,
+                ordinal: 99,
+                variant: 70,
+            });
+        }
+        let out = render(
+            &fixture,
+            "create_equipment_variant={type=syn_concrete}",
+            C(1),
+            content,
+            &[],
+        );
+        assert!(
+            out.refusals.is_empty(),
+            "{version}/{creator}/{origin}: {:?}",
+            out.refusals,
+        );
+        assert_eq!(out.text, expected, "{version}/{creator}/{origin}");
+    }
+    let mut fixture = equipment_fixture();
+    if let TableView::Complete(TableRows::VariantDefinitions(rows)) =
+        &mut *fixture.frame.tables[TableId::VariantDefinitions.index()]
+    {
+        rows.iter_mut().find(|row| row.id == 60).unwrap().version = Recorded::NotRecorded;
+    }
+    // Native tests the version before a matching family's foreign creator.
+    let out = render(
+        &fixture,
+        "create_equipment_variant={type=syn_concrete} create_equipment_variant={type=syn_concrete}",
+        C(1),
+        content,
+        &[],
+    );
+    assert!(out.text.is_empty());
+    assert_eq!(out.refusals.values().sum::<usize>(), 2);
+    assert!(
+        out.refusals
+            .keys()
+            .all(|why| why.contains("VariantDefinitions.version") && why.contains("not recorded"))
+    );
+    if let TableView::Complete(TableRows::VariantDefinitions(rows)) =
+        &mut *fixture.frame.tables[TableId::VariantDefinitions.index()]
+    {
+        rows.iter_mut()
+            .find(|row| row.id == 60)
+            .unwrap()
+            .equipment_token = 500;
+    }
+    let out = render(
+        &fixture,
+        "create_equipment_variant={type=syn_concrete}",
+        C(1),
+        content,
+        &[],
+    );
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    assert_eq!(out.text, "LegacyNoTechUnnamed Model short");
+}
+
+#[test]
+fn native_units_recorded_variant_pool_order_and_equality() {
+    let equipment = equipment();
+    let content = Content {
+        equipment: Some(&equipment),
+        ..Default::default()
+    };
+    for (
+        left_version,
+        right_version,
+        right_type,
+        left_creator,
+        right_creator,
+        left_origin,
+        right_origin,
+        expected,
+    ) in [
+        (2, 1, "syn_concrete", 100, 100, 0, 0, "3 Right, 2 Left\n"),
+        (0, 255, "syn_concrete", 100, 100, 0, 0, "2 Left, 3 Right\n"),
+        (0, 0, "syn_arch", 0, 0, 0, 0, "3 Right, 2 Left\n"),
+        (0, 0, "syn_concrete", 200, 100, 0, 0, "3 Right, 2 Left\n"),
+        (0, 0, "syn_concrete", 100, 100, 200, 0, "3 Right, 2 Left\n"),
+        (0, 0, "syn_concrete", 100, 101, 0, 0, "5 Left\n"),
+        (0, 0, "syn_concrete", 100, 100, 200, 201, "5 Left\n"),
+    ] {
+        let mut fixture = equipment_fixture();
+        fixture.catalogue.localisation = fixture
+            .catalogue
+            .localisation
+            .iter()
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .chain([
+                (
+                    "INTERNATIONAL_MARKET_EQUIPMENT_AMOUNT".into(),
+                    "$AMOUNT$ $EQUIPMENT$".into(),
+                ),
+                (
+                    "EFFECT_MARKET_CREATE_PURCHASE_CONTRACT".into(),
+                    "$EQUIPMENT$".into(),
+                ),
+            ])
+            .collect::<Localisation>()
+            .into();
+        Arc::make_mut(&mut fixture.catalogue.localisation).language = "english".into();
+        if let TableView::Complete(TableRows::CountryLinks(rows)) =
+            &mut *fixture.frame.tables[TableId::CountryLinks.index()]
+        {
+            rows.extend([
+                CountryLinkRow {
+                    id: 101,
+                    canonical_slot: 1,
+                },
+                CountryLinkRow {
+                    id: 201,
+                    canonical_slot: 2,
+                },
+            ]);
+        }
+        *fixture.frame.tables[TableId::VariantDefinitions.index()] =
+            TableView::Complete(TableRows::VariantDefinitions(vec![
+                VariantDefinitionRow {
+                    id: 10,
+                    equipment_token: 500,
+                    creator_link: left_creator,
+                    origin_link: left_origin,
+                    display_name: b"Left".to_vec(),
+                    version: Recorded::Value(left_version),
+                    ..Default::default()
+                },
+                VariantDefinitionRow {
+                    id: 20,
+                    equipment_token: if right_type == "syn_arch" { 502 } else { 500 },
+                    creator_link: right_creator,
+                    origin_link: right_origin,
+                    display_name: b"Right".to_vec(),
+                    version: Recorded::Value(right_version),
+                    ..Default::default()
+                },
+            ]));
+        *fixture.frame.tables[TableId::AvailableEquipmentVariants.index()] =
+            TableView::Complete(TableRows::AvailableEquipmentVariants(vec![
+                AvailableEquipmentVariantRow {
+                    country: 100,
+                    variant: 10,
+                    ..Default::default()
+                },
+                AvailableEquipmentVariantRow {
+                    country: 200,
+                    variant: 20,
+                    ..Default::default()
+                },
+            ]));
+        let body = format!(
+            "create_purchase_contract={{seller=AAA buyer=BBB equipment={{type=syn_concrete producer=AAA amount=2}} equipment={{type={right_type} producer=BBB amount=3}}}}"
+        );
+        let out = render(&fixture, &body, C(1), content, &[]);
+        assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals);
+        assert_eq!(
+            out.text, expected,
+            "{left_version}/{right_version}/{left_creator}/{right_creator}/{left_origin}/{right_origin}"
+        );
+        if let TableView::Complete(TableRows::VariantDefinitions(rows)) =
+            &mut *fixture.frame.tables[TableId::VariantDefinitions.index()]
+        {
+            rows[1].version = Recorded::NotRecorded;
+        }
+        let out = render(&fixture, &format!("{body} {body}"), C(1), content, &[]);
+        assert!(out.text.is_empty());
+        assert_eq!(out.refusals.values().sum::<usize>(), 2);
+        assert!(
+            out.refusals
+                .keys()
+                .all(|why| why.contains("VariantDefinitions.version")
+                    && why.contains("not recorded")),
+            "{:?}",
+            out.refusals,
+        );
+    }
 }
 
 #[test]

@@ -26,6 +26,7 @@ mod aliases;
 mod carriers;
 mod coded;
 mod collections;
+pub mod description;
 mod eval;
 pub(crate) mod event_scopes;
 pub use event_scopes::EventGraphGuard;
@@ -152,19 +153,29 @@ pub enum Scope {
     Province(u32),
     /// A full unit leader reference, whose character the scope carries.
     Leader(u64),
+    /// The active ability tooltip's country and leader character together
+    /// (1418BFCE0 -> SetCountry(1), SetUnitLeader(0)). Getter priorities are
+    /// native-specific; entering a fresh country/leader still clears the other.
+    CountryLeader {
+        country: u32,
+        leader: u64,
+    },
     /// A character by its recorded id.
     Character(u32),
     /// Full industrial-organisation reference (CEventScope+0x78, 14052E720).
     IndustrialOrganisation(u64),
     /// Project reference (+0x90, SetProject 14052EBE0), disambiguated by
     /// its recorded pool owner because Projects keys local ids per country.
-    Project { owner: u32, id: u32 },
+    Project {
+        owner: u32,
+        id: u32,
+    },
     /// Full raid-instance reference (+0x88, SetRaidInstance 14052E960).
     Raid(u64),
     /// Full CUnit reference (+0x70, SetUnit 14052EDA0), not a unit leader.
     Unit(u64),
-    /// A combat side's scope: its first primary country with the combat
-    /// ([`Combat`]).
+    /// A combat side's scope ([`Combat`]); SetCombat with clearing leaves
+    /// country+8 zero (1412A7824 -> 14052DC80 -> 14052F3F0).
     Combat,
 }
 

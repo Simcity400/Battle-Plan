@@ -1,6 +1,94 @@
 use super::*;
 use crate::memory::SliceMemory;
 
+#[test]
+fn timed_ideas_keep_stored_days_order_and_live_demand_at_5000_countries() {
+    let mut world = ccountry::synthetic::World::new(BASE, 5_000, 0x1000);
+    for country in 1..=5_000 {
+        let owner = world.object(country);
+        let status = world.alloc(COUNTRY + 8);
+        let ideas = world.alloc(TIMED_IDEA_STRIDE * 2);
+        let idea = world.alloc(cidea::TOKEN + msvc_string::STRIDE);
+        world.u64(owner + ccountry::POLITICAL_STATUS, status as u64);
+        world.u64(status, (BASE + VTABLE_RVA) as u64);
+        world.u64(status + COUNTRY, owner as u64);
+        world.array(status + TIMED_IDEAS, ideas, 2);
+        world.u64(idea, (BASE + cidea::VTABLE_RVA) as u64);
+        world.put(idea + cidea::TOKEN, b"idea\xff");
+        world.u64(idea + cidea::TOKEN + 16, 5);
+        world.u64(idea + cidea::TOKEN + 24, 15);
+        for (ordinal, days) in [i32::MIN, 17].into_iter().enumerate() {
+            let entry = ideas + ordinal * TIMED_IDEA_STRIDE;
+            world.u64(entry, (BASE + TIMED_IDEA_VTABLE_RVA) as u64);
+            world.u64(entry + 8, idea as u64);
+            world.put(entry + 16, &days.to_le_bytes());
+        }
+    }
+    assert_eq!(
+        timed_idea_demand(&world.memory(), BASE, world.game_state()),
+        Ok(IdeaDemand {
+            rows: 10_000,
+            bytes: 50_000
+        })
+    );
+    let mut rows = vec![TimedIdeaRow::default(); 10_000];
+    let mut tokens = vec![0; 50_000];
+    let walk = walk_timed_ideas(
+        &world.memory(),
+        BASE,
+        world.game_state(),
+        &mut rows,
+        &mut tokens,
+    );
+    assert_eq!(walk.outcome, Outcome::Rows { len: 10_000 });
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(
+            (row.country, row.ordinal),
+            (index as u32 / 2 + 1, index as u32 % 2)
+        );
+        assert_eq!(row.days, [i32::MIN, 17][index % 2]);
+        assert_eq!(
+            &tokens[row.token_start..row.token_start + row.token_len],
+            b"idea\xff"
+        );
+    }
+    let short = walk_timed_ideas(
+        &world.memory(),
+        BASE,
+        world.game_state(),
+        &mut rows[..1],
+        &mut tokens[..5],
+    );
+    assert_eq!(
+        short.outcome,
+        Outcome::Truncated {
+            len: 1,
+            unread_rows: 9_999
+        }
+    );
+    assert_eq!(short.required_bytes, 50_000);
+    let status = crate::read::<u64>(
+        &world.memory(),
+        world.object(1) + ccountry::POLITICAL_STATUS,
+    )
+    .unwrap() as usize;
+    let array = crate::read::<u64>(&world.memory(), status + TIMED_IDEAS).unwrap() as usize;
+    world.u64(array, 0);
+    assert_eq!(
+        walk_timed_ideas(
+            &world.memory(),
+            BASE,
+            world.game_state(),
+            &mut rows,
+            &mut tokens
+        )
+        .outcome,
+        Outcome::Unavailable {
+            reason: "timed idea entry vtable mismatch"
+        }
+    );
+}
+
 const BASE: usize = 0x140000000;
 const COUNTRY_POINTER: usize = 0x1000;
 const STATUS: usize = 0x3000;

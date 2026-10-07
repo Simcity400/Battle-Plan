@@ -5,6 +5,10 @@ pub(crate) const WING_PACK_N: usize = 2;
 
 #[derive(Debug)]
 pub(crate) struct AirWingJob {
+    pub(crate) names: Vec<u8>,
+    pub(crate) names_len: usize,
+    pub(crate) names_required: usize,
+    pub(crate) name_failures: usize,
     pub(crate) map_rows: Vec<cair_wing::Row>,
     pub(super) sources: Vec<cair_wing::Source>,
     pub(super) equipment: Vec<rows::WingEquipmentRow>,
@@ -30,6 +34,10 @@ pub(crate) struct AirWingJob {
 impl Default for AirWingJob {
     fn default() -> Self {
         Self {
+            names: Vec::new(),
+            names_len: 0,
+            names_required: 0,
+            name_failures: 0,
             map_rows: Vec::new(),
             sources: Vec::new(),
             equipment: Vec::new(),
@@ -57,6 +65,9 @@ impl Default for AirWingJob {
 impl AirWingJob {
     pub fn new() -> Self {
         let mut job = Self {
+            names: allocation::owned_vec(allocation::default_vec(
+                crate::country_scale::air_wing_name_bytes(),
+            )),
             map_rows: allocation::owned_vec(allocation::default_vec(8192)),
             sources: allocation::owned_vec(allocation::default_vec(8192)),
             equipment: allocation::owned_vec(allocation::default_vec(8192)),
@@ -73,7 +84,8 @@ impl AirWingJob {
             payload_vectors: vector_bytes(&self.map_rows)
                 + vector_bytes(&self.equipment)
                 + vector_bytes(&self.cumulative)
-                + vector_bytes(&self.memberships),
+                + vector_bytes(&self.memberships)
+                + vector_bytes(&self.names),
             auxiliary_vectors: vector_bytes(&self.sources),
             ..Default::default()
         });
@@ -82,6 +94,9 @@ impl AirWingJob {
         !self.sources.is_empty()
     }
     pub fn clear(&mut self) {
+        self.names_len = 0;
+        self.names_required = 0;
+        self.name_failures = 0;
         self.source_len = 0;
         self.map_outcome = NO_WING_SOURCE;
         self.source_outcome = NO_WING_SOURCE;
@@ -98,18 +113,27 @@ impl AirWingJob {
         self.raw_bytes = [0; 2];
     }
     pub fn grow_for_next(&self) -> bool {
-        self.required
-            .iter()
-            .zip([
-                self.map_rows.len(),
-                self.equipment.len(),
-                self.cumulative.len(),
-            ])
-            .any(|(&required, present)| required > present)
+        self.names_required
+            .max(crate::country_scale::air_wing_name_bytes())
+            > self.names.len()
+            || self
+                .required
+                .iter()
+                .zip([
+                    self.map_rows.len(),
+                    self.equipment.len(),
+                    self.cumulative.len(),
+                ])
+                .any(|(&required, present)| required > present)
             || matches!(self.source_outcome, Outcome::Truncated { .. })
             || self.required_memberships > self.memberships.len()
     }
     pub fn grow(&mut self) {
+        crate::table_capture::grow_vec(
+            &mut self.names,
+            self.names_required
+                .max(crate::country_scale::air_wing_name_bytes()),
+        );
         crate::table_capture::grow_vec(&mut self.map_rows, self.required[0]);
         crate::table_capture::grow_vec(&mut self.equipment, self.required[1]);
         crate::table_capture::grow_vec(&mut self.cumulative, self.required[2]);
@@ -265,13 +289,20 @@ fn copy_air_pass(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
     let mut source_len = 0;
     let mut membership_len = 0;
     let mut membership_ticks = 0;
-    let walked = cair_wing::walk_shared(
+    let mut names = cair_wing::NameArena {
+        bytes: &mut job.names,
+        used: 0,
+        required: 0,
+        failures: 0,
+    };
+    let walked = cair_wing::walk_shared_names(
         &source,
         ctx.base,
         ctx.game_state,
         &mut job.map_rows[..ctx.limits[0]],
         &mut job.sources,
         naval_limit,
+        &mut names,
         |pointer, pool, row, admitted| {
             let wing = WingSource { pointer, pool, row };
             if admitted.sources && !matches!(equipment, Outcome::Unavailable { .. }) {
@@ -325,6 +356,10 @@ fn copy_air_pass(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
             reads.select(TableId::WingEquipment);
         },
     );
+    job.names_len = names.used;
+    job.names_required = names.required;
+    job.name_failures = names.failures;
+    crate::map_capture::observe_air_wing_name_refusals(names.failures);
     job.map_outcome = walked.map;
     job.source_outcome = walked.sources;
     job.naval_outcome = if job.theatres_active {

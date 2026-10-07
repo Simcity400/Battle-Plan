@@ -8,12 +8,12 @@ use crate::{
     ResolvedLayers, combat_tactics,
     coverage::Coverage,
     effect_keys,
-    gui::native::{BoundArgument, BoundLocalization, BoundNode, BoundValue, FormattedLocalization},
+    gui::native::BoundLocalization,
     ideas,
     key_names::KeyNames,
     modifiers,
     parser::{
-        Item, Value, c_string,
+        Item,
         native::{self, Shape},
     },
     script_files,
@@ -154,45 +154,6 @@ fn parse(bytes: &[u8], names: &KeyNames) -> native::Read {
     )
 }
 
-fn formatted(value: &Value) -> FormattedLocalization {
-    FormattedLocalization::parse(c_string(value.read_string().unwrap_or(b"{")))
-}
-
-/// Projection of the shared native bound reader (142390E40/1423912A0),
-/// not a second text parser. A new `name` clears the previous node array.
-fn bound(value: &Value) -> BoundLocalization {
-    fn node(value: &Value, result: &mut BoundLocalization) -> usize {
-        let at = result.nodes.len();
-        result.nodes.push(BoundNode::default());
-        if let Some(fields) = value.items() {
-            for field in fields {
-                if field.keyword_is("localization_key") {
-                    result.nodes[at].key = formatted(&field.value);
-                } else {
-                    let value = if field.value.items().is_some() {
-                        BoundValue::Node(node(&field.value, result))
-                    } else {
-                        BoundValue::Localization(formatted(&field.value))
-                    };
-                    result.nodes[at].arguments.push(BoundArgument {
-                        name: c_string(field.key.as_deref().unwrap_or_default()).to_vec(),
-                        value,
-                    });
-                }
-            }
-        } else {
-            result.nodes[at].key = formatted(value);
-        }
-        at
-    }
-    let mut result = BoundLocalization::default();
-    node(value, &mut result);
-    if value.items().is_some() && result.nodes[0].key.is_empty_key() {
-        result.nodes.clear(); // 142390E40: root lacks a localization key.
-    }
-    result
-}
-
 fn apply(catalogue: &mut Catalog, items: &[Item]) {
     for item in items {
         let Some(fields) = item.value.items() else {
@@ -203,7 +164,7 @@ fn apply(catalogue: &mut Catalog, items: &[Item]) {
         let found = catalogue.definitions.entry(token.clone()).or_default();
         for field in fields {
             if field.keyword_is("name") {
-                *found = bound(&field.value);
+                *found = BoundLocalization::from_value(&field.value);
                 catalogue.coverage.replace(&identity(&token));
             }
         }
@@ -234,6 +195,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gui::native::{BoundArgument, BoundNode, BoundValue, FormattedLocalization};
     use crate::mod_layers_tests::Stack;
 
     fn catalog(bytes: &[u8]) -> Catalog {

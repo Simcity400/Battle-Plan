@@ -893,6 +893,7 @@ fn timed_days(
 
 struct AssignedCommander<'a> {
     traits: &'a [LandCombatCommanderTrait],
+    context: i32,
     timed_traits: Result<&'a [LandCombatCommanderTimedTrait], String>,
     country_tag: Result<&'a str, &'a str>,
     advisor_feature: Option<bool>,
@@ -991,6 +992,16 @@ fn assigned(
                 text.push_str(&token(icons, loc, key.as_bytes())?);
                 text.push('\n');
             }
+            // 141C5F730 tests item+18 against 0/4 and definition+8AC against 1.
+            if commander.context != 0 && commander.context != 4 && definition.army_only {
+                text.push_str(&builtin(
+                    icons,
+                    loc,
+                    "TRAIT_NOT_ACTIVE_WHEN_COMMANDING_AN_ARMY",
+                    &[],
+                )?);
+                text.push('\n');
+            }
             if definition.advisor_slot.is_some() && commander.advisor_feature != Some(false) {
                 match (
                     commander.advisor_feature,
@@ -1038,8 +1049,6 @@ fn assigned(
                     }
                 }
             }
-            // Combat passes assignment context 4, so the generic trait item's
-            // army-commanding inactivity warning is inapplicable (1415C8950).
             let description_key = format!("{trait_token}_desc");
             let mut description =
                 country_localized(icons, loc, commander.country_tag, &description_key)?;
@@ -1251,6 +1260,7 @@ pub(super) fn bind(
             key,
             AssignedCommander {
                 traits: &commander.traits,
+                context: 2, // 1417DCE40/1417C8060 -> RefreshUnitLeaderTraitGrid@141C60E40
                 timed_traits: commander
                     .timed_traits
                     .require("NavalCommanderInputs.timed_traits")
@@ -1393,6 +1403,7 @@ pub(super) fn bind(
             &format!("{prefix}_traits_grid"),
             AssignedCommander {
                 traits: &side.traits,
+                context: 4, // 1415C8950 -> RefreshUnitLeaderTraitGrid@141C60E40
                 timed_traits: Ok(&side.timed_traits),
                 country_tag: country_tag(countries, side.commander_country),
                 advisor_feature,
@@ -1540,18 +1551,18 @@ pub(super) fn bind_naval(
     for (side, label) in detail.sides.iter().zip(["attacker", "defender"]) {
         // 1417D81B0 binds header_container/{attacker,defender}_stats.
         let prefix = format!("header_container/{label}_stats");
-        if let Some(commander) = &side.commander_inputs {
-            if commander.commander != 0 {
-                naval_skills(
-                    out,
-                    &document.icons.combat,
-                    &document.names.localisation,
-                    &read.skills,
-                    definitions.as_ref(),
-                    commander,
-                    &prefix,
-                );
-            }
+        if let Some(commander) = &side.commander_inputs
+            && commander.commander != 0
+        {
+            naval_skills(
+                out,
+                &document.icons.combat,
+                &document.names.localisation,
+                &read.skills,
+                definitions.as_ref(),
+                commander,
+                &prefix,
+            );
         }
     }
     Ok(())

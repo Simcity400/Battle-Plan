@@ -167,6 +167,7 @@ fn fixture_country() -> IdeaCountry<'static> {
         slot: 0,
         look: Some(CountryLook {
             name_tag: "",
+            original_or_own_tag: Ok("MOD"),
             cosmetic_tag: "",
             civil_war: Ok(false),
         }),
@@ -902,6 +903,11 @@ fn content_check_exercises_every_product_and_names_exact_mod_fallbacks() {
     );
     stack.write(
         &addon,
+        "map/strategicregions/mod.txt",
+        "strategic_region = { id = 920 name = MOD_REGION provinces = {} }",
+    );
+    stack.write(
+        &addon,
         "common/special_projects/specialization/mod.txt",
         "mod_specialization = {} ",
     );
@@ -953,7 +959,7 @@ fn content_check_exercises_every_product_and_names_exact_mod_fallbacks() {
         " spirits:0 \"Mod spirits\"\n mod_group:0 \"Mod government\"\n mod_type:0 \"Mod type\"\n",
         " PRODUCTION_MATERIALS_MOD_CRYSTAL:0 \"Mod crystal\"\n YES:0 \"Yes\"\n NO:0 \"No\"\n",
         " mod_tag:0 \"Mod country\"\n mod_works:0 \"Mod works\"\n mod_archetype:0 \"Mod equipment\"\n",
-        " mod_level:0 \"Mod level\"\n MOD_STATE:0 \"Mod state\"\n mod_specialization:0 \"Mod specialization\"\n mod_project:0 \"Mod project\"\n")
+        " mod_level:0 \"Mod level\"\n MOD_STATE:0 \"Mod state\"\n MOD_REGION:0 \"\"\n mod_specialization:0 \"Mod specialization\"\n mod_project:0 \"Mod project\"\n")
     );
     stack.write(&addon, "localisation/intelligence_l_english.yml",
         "l_english:\n MOD_COVERT:0 \"Mod covert operation\"\n AGENCY_NAME:0 \"Mod agency\"\n AGENCY_DEFENSE_LEVEL:0 \"$LEVEL|.1$ mod defense\"\n");
@@ -1002,6 +1008,23 @@ fn content_check_exercises_every_product_and_names_exact_mod_fallbacks() {
             .findings
             .clone()
     };
+    assert_eq!(
+        findings(products::place_names::PlaceNames::KEY),
+        vec![Finding::new(
+            Kind::Refused,
+            "strategic region 920",
+            "native region display name is empty",
+        )]
+    );
+    for key in [
+        products::land_battles::LandBattles::KEY,
+        products::land_battles::LandBattlesManifest::KEY,
+        products::land_battles::LandBattlesRanking::KEY,
+    ] {
+        let checked = checks.iter().find(|check| check.key == key).unwrap();
+        assert!(checked.findings.is_empty(), "{checked:?}");
+        assert!(checked.note.contains("No content dependency"));
+    }
     assert_eq!(
         findings(products::national_focus::NationalFocus::KEY),
         vec![Finding::new(

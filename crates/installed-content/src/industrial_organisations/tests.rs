@@ -5,10 +5,22 @@ fn display_projection_keeps_native_name_initial_trait_and_include_overrides() {
     let mut database = Database::default();
     database.read_file(b"Base={name=BASE_NAME initial_trait={name=BASE_TRAIT}} Child={include=Base initial_trait={}} Local={include=Base name=LOCAL_NAME initial_trait={name=LOCAL_TRAIT}} Deleted={include=Base delete_included_values={name initial_trait}} TraitDeleted={include=Base initial_trait={delete_included_values={name}}}", &KeyNames::default()).unwrap();
     assert_eq!(database.template(b"BASE").unwrap().token, b"Base");
-    assert_eq!(database.display_fields(b"Child").unwrap(), (b"BASE_NAME".to_vec(), Some(b"BASE_TRAIT".to_vec())));
-    assert_eq!(database.display_fields(b"Local").unwrap(), (b"LOCAL_NAME".to_vec(), Some(b"LOCAL_TRAIT".to_vec())));
-    assert_eq!(database.display_fields(b"Deleted").unwrap(), (Vec::new(), None));
-    assert_eq!(database.display_fields(b"TraitDeleted").unwrap(), (b"BASE_NAME".to_vec(), Some(Vec::new())));
+    assert_eq!(
+        database.display_fields(b"Child").unwrap(),
+        (b"BASE_NAME".to_vec(), Some(b"BASE_TRAIT".to_vec()))
+    );
+    assert_eq!(
+        database.display_fields(b"Local").unwrap(),
+        (b"LOCAL_NAME".to_vec(), Some(b"LOCAL_TRAIT".to_vec()))
+    );
+    assert_eq!(
+        database.display_fields(b"Deleted").unwrap(),
+        (Vec::new(), None)
+    );
+    assert_eq!(
+        database.display_fields(b"TraitDeleted").unwrap(),
+        (b"BASE_NAME".to_vec(), Some(Vec::new()))
+    );
     assert!(database.notes.is_empty(), "{:?}", database.notes);
 }
 
@@ -40,8 +52,19 @@ fn a_misread_template_does_not_drop_the_database() {
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(directory.join("a_good.txt"), b"good={visible={always=yes}}").unwrap();
     std::fs::write(directory.join("b_bad.txt"), b"bad={include={base}}").unwrap();
+    let policies = root.join("common/military_industrial_organization/policies");
+    std::fs::create_dir_all(&policies).unwrap();
+    std::fs::write(
+        policies.join("synthetic.txt"),
+        b"synthetic_policy={name=POLICY}",
+    )
+    .unwrap();
     let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
     let db = read(&layers, &KeyNames::default()).unwrap();
+    assert_eq!(
+        db.policies.policy(b"synthetic_policy").unwrap().name,
+        b"POLICY"
+    );
     assert_eq!(db.template(b"good").unwrap().visible.len(), 1);
     assert!(
         db.template(b"bad")

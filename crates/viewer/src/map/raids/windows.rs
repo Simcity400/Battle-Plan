@@ -609,6 +609,7 @@ mod tests {
     fn raid_tooltip_regression_overlapping_buildings_keep_the_hovered_targets_native_state() {
         use super::super::tests::{frame, put, registered_command_power};
         use installed_content::localisation::Localisation;
+        use replay::rows::Recorded;
 
         let resources = draw_resources();
         let windows = native_gui::tests::windows(DRAW_GUI);
@@ -651,6 +652,8 @@ mod tests {
             [10, 11]
                 .map(|country| replay::rows::CountryAppearanceRow {
                     country,
+                    original_tag_reference: Recorded::Value(Some(0)),
+                    original_tag: Recorded::Value(Some(Vec::new())),
                     ..Default::default()
                 })
                 .into(),
@@ -660,6 +663,20 @@ mod tests {
             [10, 11]
                 .map(|country| replay::rows::PoliticsRow {
                     country,
+                    ruling_party: Some(1),
+                    ..Default::default()
+                })
+                .into(),
+        );
+        put::<tables::PoliticalParties>(
+            &mut frame,
+            [10, 11]
+                .map(|country| replay::rows::PoliticalPartyRow {
+                    country,
+                    id: 1,
+                    is_ruling: 1,
+                    token: b"fixture_group".to_vec(),
+                    tag: country,
                     ..Default::default()
                 })
                 .into(),
@@ -754,6 +771,33 @@ mod tests {
                 "{point:?}: {tooltip:?}",
             );
         }
+        // A null ruling-party pointer cannot skip the earlier native
+        // group-qualified flag rung, even with plain artwork available.
+        let mut politics = frame.complete::<tables::Politics>().unwrap().to_vec();
+        politics[0].ruling_party = None;
+        put::<tables::Politics>(&mut frame, politics);
+        let mut parties = frame
+            .complete::<tables::PoliticalParties>()
+            .unwrap()
+            .to_vec();
+        parties[0].is_ruling = 0;
+        put::<tables::PoliticalParties>(&mut frame, parties);
+        let tooltip = tooltips::build_from(tooltips::Inputs {
+            assets: &assets,
+            frame: &frame,
+            ours: 1,
+            key: &key(1),
+            loc: &loc,
+            recorded_language: &loc.language,
+            scripted_content: &Err("no scripted substitutions in this fixture".into()),
+            flag_exists: &|_| true,
+        });
+        assert_eq!(
+            tooltip.refused.get(
+                "TOOLTIP_POTENTIAL_TARGET_ENTRY: country 10 flag has a null ruling-party pointer"
+            ),
+            Some(&1),
+        );
     }
 
     #[test]

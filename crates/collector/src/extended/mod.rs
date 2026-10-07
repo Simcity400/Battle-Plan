@@ -27,8 +27,10 @@ use std::sync::Arc;
 pub(crate) mod bench_world;
 pub(crate) mod daily_intel;
 
+mod attrition_inputs;
 mod border_inputs;
 mod packs;
+mod supply_inputs;
 pub(crate) use packs::{
     GatedPacks, LatePacks, OrdinaryPacks, RaidLaunchPacks, RaidStatePacks, RaidStateStores,
     RaidTargetPacks, SlowPacks, SlowStores,
@@ -37,7 +39,7 @@ pub(crate) use packs::{
 const MISSING: Outcome = Outcome::Unavailable {
     reason: "acquisition source not supplied",
 };
-const DIVISION_SOURCE_TABLES: [TableId; 10] = [
+const DIVISION_SOURCE_TABLES: [TableId; 11] = [
     TableId::DivisionCensus,
     TableId::DivisionEquipment,
     TableId::ArmyUpgradeGroups,
@@ -46,6 +48,7 @@ const DIVISION_SOURCE_TABLES: [TableId; 10] = [
     TableId::ArmyUpgradeProduced,
     TableId::DivisionMovement,
     TableId::DivisionStatus,
+    TableId::AttritionModifierBreakdowns,
     TableId::DivisionEtaInputs,
     TableId::ArmyIconInputs,
 ];
@@ -344,7 +347,7 @@ macro_rules! packs {
                 group += 1;
             })+
             let extra: [(&str, TableId, &[TableId]); 5] = [
-                ("divisions, coverage counts, equipment, upgrades, movement, counter status and ETA inputs", TableId::Divisions,
+                ("divisions, coverage counts, equipment, upgrades, movement, counter status, attrition and ETA inputs", TableId::Divisions,
                     &DIVISION_GROUP_MEMBERS),
                 ("country census, appearance and supply trains", TableId::Countries,
                     &[TableId::Countries, TableId::CountryAppearance, TableId::SupplyNodes, TableId::TrainInventory]),
@@ -584,6 +587,20 @@ impl Capacities {
             .raise_for_demand(demand.character_inputs);
         self.governance
             .raise_for_party_leaders(demand.party_leaders);
+        self.governance
+            .raise_for_effect_inputs(demand.timed_ideas, demand.decision_random_items);
+        self.country_counters
+            .raise_for_effect_rosters(demand.effect_rosters);
+        self.intel
+            .raise_for_captured_operatives(demand.captured_operatives);
+        self.construction
+            .raise_for_occupied(demand.occupied_countries);
+        self.country_appearance
+            .raise_reserved_naming(demand.reserved_naming_bytes);
+        self.country_appearance
+            .raise_original_tag_lists(demand.original_tag_lists);
+        self.country_appearance
+            .raise_country_array(demand.country_array);
         self.country_counters
             .raise_for_civil_wars(demand.civil_wars);
         self.country_counters
@@ -711,11 +728,22 @@ impl Captured {
         self.division_presentation.observe_naming(work)
     }
 
+    pub(crate) fn observe_counter_tooltip_inputs(
+        &self,
+        work: &mut division_presentation::CounterWork,
+    ) -> std::io::Result<()> {
+        self.division_presentation.observe_counter_inputs(work)?;
+        self.group_counters.observe_counter_inputs(work);
+        self.railway_guns.observe_supply(&mut work.supply);
+        Ok(())
+    }
+
     pub(crate) fn observe_country_rosters(
         &self,
         work: &mut country_counters::RosterWork,
     ) -> std::io::Result<()> {
-        self.country_counters.observe_rosters(work)
+        self.country_counters.observe_rosters(work)?;
+        self.construction.observe_occupied(work)
     }
 
     pub(crate) fn observe_character_naming(

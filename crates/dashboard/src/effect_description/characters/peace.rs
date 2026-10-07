@@ -23,7 +23,9 @@ impl Renderer<'_, '_, '_> {
         let country = match operand {
             Some(operand) => self.evaluator()?.scoped_country(operand, scopes)?,
             None => match scopes.this {
-                Scope::Country(country) if country > 0 => Some(country),
+                Scope::Country(country) | Scope::CountryLeader { country, .. } if country > 0 => {
+                    Some(country)
+                }
                 _ => None,
             },
         };

@@ -599,10 +599,19 @@ struct ModifierSpan {
     start: usize,
     len: usize,
     recorded: bool,
+    tooltip_start: usize,
+    tooltip_len: usize,
+    tooltip_recorded: bool,
+    tooltip_failure: Option<&'static str>,
 }
 
 static LIVE_MODIFIER_ROWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static LIVE_MODIFIER_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static LIVE_TOOLTIP_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static TOOLTIP_CAPTURED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TOOLTIP_REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TOOLTIP_FAILURES: std::sync::Mutex<Vec<(&'static str, u64)>> =
+    std::sync::Mutex::new(Vec::new());
 static MODIFIER_CAPTURED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static MODIFIER_REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -610,6 +619,7 @@ pub(crate) fn note_modifier_demand(demand: cadvisor::ModifierDemand) {
     use std::sync::atomic::Ordering::Relaxed;
     LIVE_MODIFIER_ROWS.fetch_max(demand.rows, Relaxed);
     LIVE_MODIFIER_BYTES.fetch_max(demand.bytes, Relaxed);
+    LIVE_TOOLTIP_BYTES.fetch_max(demand.tooltip_bytes, Relaxed);
 }
 
 fn live_modifier_demand() -> cadvisor::ModifierDemand {
@@ -617,12 +627,21 @@ fn live_modifier_demand() -> cadvisor::ModifierDemand {
     cadvisor::ModifierDemand {
         rows: LIVE_MODIFIER_ROWS.load(Relaxed),
         bytes: LIVE_MODIFIER_BYTES.load(Relaxed),
+        tooltip_bytes: LIVE_TOOLTIP_BYTES.load(Relaxed),
     }
 }
 
 pub(super) fn modifier_status() -> impl serde::Serialize {
     use std::sync::atomic::Ordering::Relaxed;
+    let failures = owned_vec(engine::allocation::copy_vec(
+        &TOOLTIP_FAILURES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    ));
     crate::status::status!({
+        "tooltip_captured": TOOLTIP_CAPTURED.load(Relaxed),
+        "tooltip_refused": TOOLTIP_REFUSED.load(Relaxed),
+        "tooltip_refusals": crate::status::map(failures.into_iter()),
         "captured": MODIFIER_CAPTURED.load(Relaxed),
         "refused": MODIFIER_REFUSED.load(Relaxed),
         "refusals": {
@@ -634,6 +653,32 @@ pub(super) fn modifier_status() -> impl serde::Serialize {
 
 pub(super) fn record_modifiers(rows: &[cadvisor::Row]) {
     use std::sync::atomic::Ordering::Relaxed;
+    TOOLTIP_CAPTURED.fetch_add(
+        rows.iter().filter(|row| row.tooltip_recorded).count() as u64,
+        Relaxed,
+    );
+    TOOLTIP_REFUSED.fetch_add(
+        rows.iter()
+            .filter(|row| row.tooltip_failure.is_some())
+            .count() as u64,
+        Relaxed,
+    );
+    let mut failures = TOOLTIP_FAILURES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for reason in rows.iter().filter_map(|row| row.tooltip_failure) {
+        let index = match failures.binary_search_by_key(&reason, |entry| entry.0) {
+            Ok(index) => index,
+            Err(index) => {
+                if reserve(&mut failures, 1).is_err() {
+                    return;
+                }
+                failures.insert(index, (reason, 0));
+                index
+            }
+        };
+        failures[index].1 = failures[index].1.saturating_add(1);
+    }
     MODIFIER_CAPTURED.fetch_add(
         rows.iter().filter(|row| row.modifier_recorded).count() as u64,
         Relaxed,
@@ -664,7 +709,10 @@ impl Modifiers {
     fn with_demand(demand: cadvisor::ModifierDemand) -> Self {
         let mut value = Self {
             spans: owned_vec(default_vec(crate::country_scale::rows(demand.rows, 1))),
-            bytes: owned_vec(default_vec(crate::country_scale::rows(demand.bytes, 1))),
+            bytes: owned_vec(default_vec(crate::country_scale::rows(
+                demand.bytes.saturating_add(demand.tooltip_bytes),
+                1,
+            ))),
             len: 0,
             required_rows: 0,
             required_bytes: 0,
@@ -688,7 +736,10 @@ impl Modifiers {
         let live = live_modifier_demand();
         self.shortfall != 0
             || self.required_rows.max(live.rows) > self.spans.len()
-            || self.required_bytes.max(live.bytes) > self.bytes.len()
+            || self
+                .required_bytes
+                .max(live.bytes.saturating_add(live.tooltip_bytes))
+                > self.bytes.len()
     }
 
     fn grow(&mut self) {
@@ -698,7 +749,8 @@ impl Modifiers {
             1,
         ));
         let bytes = self.bytes.len().max(crate::country_scale::rows(
-            self.required_bytes.max(live.bytes),
+            self.required_bytes
+                .max(live.bytes.saturating_add(live.tooltip_bytes)),
             1,
         ));
         if resize(&mut self.spans, rows, ModifierSpan::default()).is_err()
@@ -709,7 +761,11 @@ impl Modifiers {
         self.update_charge();
     }
 
-    fn capture<'a>(&mut self, memory: &impl Memory, rows: impl Iterator<Item = &'a cadvisor::Row>) {
+    fn capture<'a>(
+        &mut self,
+        memory: &impl Memory,
+        rows: impl Iterator<Item = &'a cadvisor::Row> + Clone,
+    ) {
         self.len = 0;
         self.required_rows = 0;
         self.required_bytes = 0;
@@ -717,7 +773,9 @@ impl Modifiers {
         self.failure = None;
         self.spans.fill(ModifierSpan::default());
         let result = (|| {
-            for row in rows {
+            // Acquire every pre-existing numeric cache before appended keys
+            // can use the remaining byte arena.
+            for row in rows.clone() {
                 let array = cadvisor::modifier_entries(memory, row.pointer)?;
                 let len = (array.count as usize)
                     .checked_mul(engine::modifier_entry::STRIDE)
@@ -728,23 +786,56 @@ impl Modifiers {
                     .ok_or("advisor byte count overflow")?;
                 let index = self.required_rows;
                 self.required_rows = index.checked_add(1).ok_or("advisor row count overflow")?;
+                let mut span = ModifierSpan::default();
                 if index >= self.spans.len() || len > self.bytes.len() - self.len {
                     self.shortfall += 1;
-                    // The guarded header sizes the next off-thread arena.
-                    continue;
+                } else {
+                    span.start = self.len;
+                    span.len = len;
+                    span.recorded = true;
+                    cadvisor::copy_modifier_entries(
+                        memory,
+                        array,
+                        &mut self.bytes[self.len..self.len + len],
+                    )?;
+                    self.len += len;
                 }
-                let start = self.len;
-                cadvisor::copy_modifier_entries(
-                    memory,
-                    array,
-                    &mut self.bytes[start..start + len],
-                )?;
-                self.spans[index] = ModifierSpan {
-                    start,
-                    len,
-                    recorded: true,
+                if let Some(target) = self.spans.get_mut(index) {
+                    *target = span;
+                }
+            }
+            for (index, row) in rows.enumerate() {
+                let mut span = self.spans.get(index).copied().unwrap_or_default();
+                let destination = if index < self.spans.len() {
+                    &mut self.bytes[self.len..]
+                } else {
+                    &mut []
                 };
-                self.len += len;
+                match cadvisor::copy_tooltip_keys(memory, row.pointer, destination) {
+                    Ok(read) => {
+                        let required = self.required_bytes.checked_add(read.required);
+                        if let Some(required) = required {
+                            self.required_bytes = required;
+                        }
+                        if required.is_none() {
+                            span.tooltip_failure = Some("advisor tooltip byte count overflow");
+                        } else if read.recorded && index < self.spans.len() {
+                            span.tooltip_start = self.len;
+                            span.tooltip_len = read.len;
+                            span.tooltip_recorded = true;
+                            self.len += read.len;
+                        } else {
+                            span.tooltip_failure = Some(cadvisor::TOOLTIP_CAPACITY_REASON);
+                            if span.recorded {
+                                self.shortfall += 1;
+                            }
+                        }
+                    }
+                    Err(reason) => span.tooltip_failure = Some(reason),
+                }
+                if let Some(target) = self.spans.get_mut(index) {
+                    *target = span;
+                }
             }
             Ok(())
         })();
@@ -987,6 +1078,13 @@ impl Cache {
                 } else {
                     0
                 };
+                target.tooltip_start = modifier_start + modifier.tooltip_start;
+                target.tooltip_len = modifier.tooltip_len;
+                target.tooltip_recorded = modifier.tooltip_recorded;
+                target.tooltip_failure = modifier.tooltip_failure.or_else(|| {
+                    (row_start >= self.modifiers.spans.len())
+                        .then_some(cadvisor::TOOLTIP_CAPACITY_REASON)
+                });
                 target.modifier_len = modifier.len;
                 target.modifier_recorded = modifier.recorded;
                 target.modifier_failure =

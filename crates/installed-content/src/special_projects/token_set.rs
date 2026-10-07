@@ -1,10 +1,18 @@
 //! The breakthrough specialization token set (14048F600/1404951A0).
 
 #[derive(Clone, Copy, Default)]
-struct Slot { token: u32, distance: u8 }
+struct Slot {
+    token: u32,
+    distance: u8,
+}
 
 #[derive(Default)]
-struct Set { slots: Vec<Slot>, count: usize, mask: usize, maximum: u8 }
+struct Set {
+    slots: Vec<Slot>,
+    count: usize,
+    mask: usize,
+    maximum: u8,
+}
 
 fn hash(mut token: u32) -> u32 {
     token = (token ^ (token >> 16)).wrapping_mul(0x045d_9f3b);
@@ -16,23 +24,38 @@ impl Set {
     fn grow(&mut self) {
         // 1404951A0: eight initial buckets, then double, with log2+2
         // overflow slots. Reinsert old entries in physical slot order.
-        let buckets = if self.mask <= 3 { 8 } else { (self.mask + 1) * 2 };
-        let old = std::mem::replace(&mut self.slots, vec![Slot::default(); buckets + buckets.trailing_zeros() as usize + 3]);
+        let buckets = if self.mask <= 3 {
+            8
+        } else {
+            (self.mask + 1) * 2
+        };
+        let old = std::mem::replace(
+            &mut self.slots,
+            vec![Slot::default(); buckets + buckets.trailing_zeros() as usize + 3],
+        );
         self.mask = buckets - 1;
         self.maximum = buckets.trailing_zeros() as u8 + 2;
         self.count = 0;
-        for slot in old.into_iter().filter(|slot| slot.distance != 0) { self.insert(slot.token); }
+        for slot in old.into_iter().filter(|slot| slot.distance != 0) {
+            self.insert(slot.token);
+        }
     }
 
     fn insert(&mut self, token: u32) {
-        if self.slots.is_empty() { self.slots = vec![Slot::default()]; }
+        if self.slots.is_empty() {
+            self.slots = vec![Slot::default()];
+        }
         let mut position = hash(token) as usize & self.mask;
         let mut distance = 1;
         while self.slots[position].distance != 0 {
-            if self.slots[position].token == token { return; }
+            if self.slots[position].token == token {
+                return;
+            }
             position += 1;
             distance += 1;
-            if distance > self.slots[position].distance { break; }
+            if distance > self.slots[position].distance {
+                break;
+            }
         }
         // Native constructors 140490CF0/140490D50 keep 0.9f, and the
         // denominator is the mask, not the number of buckets.
@@ -73,8 +96,14 @@ impl Set {
 /// 140492790/140492DF0 walk occupied physical slots, not authored order.
 pub fn order(tokens: &[u32]) -> Vec<u32> {
     let mut set = Set::default();
-    for token in tokens { set.insert(*token); }
-    set.slots.into_iter().filter(|slot| slot.distance != 0).map(|slot| slot.token).collect()
+    for token in tokens {
+        set.insert(*token);
+    }
+    set.slots
+        .into_iter()
+        .filter(|slot| slot.distance != 0)
+        .map(|slot| slot.token)
+        .collect()
 }
 
 #[cfg(test)]
@@ -85,10 +114,17 @@ mod tests {
         let result = order(&[1, 2, 1, 3]);
         assert_eq!(result.len(), 3);
         assert_eq!(result, order(&[1, 2, 3]));
-        assert!(result.windows(2).all(|pair| (hash(pair[0]) & 7) <= (hash(pair[1]) & 7)));
+        assert!(
+            result
+                .windows(2)
+                .all(|pair| (hash(pair[0]) & 7) <= (hash(pair[1]) & 7))
+        );
         // Growth has no country/content cap and retains every registered token.
         let many = order(&(1..=5_000).collect::<Vec<_>>());
         assert_eq!(many.len(), 5_000);
-        assert_eq!(many.into_iter().collect::<std::collections::BTreeSet<_>>(), (1..=5_000).collect());
+        assert_eq!(
+            many.into_iter().collect::<std::collections::BTreeSet<_>>(),
+            (1..=5_000).collect()
+        );
     }
 }

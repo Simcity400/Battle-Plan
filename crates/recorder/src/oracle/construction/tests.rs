@@ -396,6 +396,7 @@ fn occupation_template_id_retains_full_handle_and_null_omission() {
             garrison_template: Some((u64::from(u32::MAX) << 32) | 52),
             default_law_present: 1,
             law: Vec::new(),
+            ..Default::default()
         },
         replay::rows::OccupationSettingsRow {
             country: 22,
@@ -417,6 +418,43 @@ fn occupation_template_id_retains_full_handle_and_null_omission() {
     occupation_settings(&rows, &saved, &links, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
     assert!(report.differences[0].contains("FRA.garrison_template"));
+}
+
+#[test]
+fn occupied_country_roster_oracle_checks_order_and_appended_availability() {
+    let saved = saved_pack(
+        b"countries={AAA={occupation_status={occupation={CCC={} BBB={}}}}} states={} provinces={}",
+    );
+    let countries = [b"AAA", b"BBB", b"CCC"].map(|tag| CountryRow {
+        tag: tag.to_vec(),
+        ..Default::default()
+    });
+    let links = countries
+        .iter()
+        .enumerate()
+        .map(|(ordinal, country)| (ordinal as u32 + 1, country))
+        .collect();
+    let mut row = replay::rows::OccupationSettingsRow {
+        country: 1,
+        occupied: replay::rows::Recorded::Value(Some(vec![3, 2])),
+        ..Default::default()
+    };
+    let mut report = Report::default();
+    occupation_settings(&[row.clone()], &saved, &links, &mut report).unwrap();
+    assert!(report.differences.is_empty());
+    row.occupied = replay::rows::Recorded::Value(Some(vec![2, 3]));
+    occupation_settings(&[row.clone()], &saved, &links, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1);
+    row.occupied = replay::rows::Recorded::NotRecorded;
+    let mut report = Report::default();
+    occupation_settings(&[row], &saved, &links, &mut report).unwrap();
+    assert!(report.differences.is_empty());
+    assert_eq!(report.compared_tables["OccupationSettings"], 1);
+    assert!(
+        report
+            .limitations
+            .contains_key("OccupationSettings.occupied not recorded")
+    );
 }
 
 #[test]

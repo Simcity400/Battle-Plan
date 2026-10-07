@@ -17,8 +17,8 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
-mod units;
 mod descriptions;
+mod units;
 pub use descriptions::{Catalog, Definition};
 pub(crate) use units::{StatKey, equipment_pool_roster, equipment_pool_shape, stat_key};
 

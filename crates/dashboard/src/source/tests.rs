@@ -46,9 +46,9 @@ fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products
         .identity(
             "test".into(),
             [
-                0x9f, 0x86, 0xd0, 0x81, 0x88, 0x4c, 0x7d, 0x65, 0x9a, 0x2f, 0xea, 0xa0, 0xc5,
-                0x5a, 0xd0, 0x15, 0xa3, 0xbf, 0x4f, 0x1b, 0x2b, 0x0b, 0x82, 0x2c, 0xd1, 0x5d,
-                0x6c, 0x15, 0xb0, 0xf0, 0x0a, 0x08,
+                0x9f, 0x86, 0xd0, 0x81, 0x88, 0x4c, 0x7d, 0x65, 0x9a, 0x2f, 0xea, 0xa0, 0xc5, 0x5a,
+                0xd0, 0x15, 0xa3, 0xbf, 0x4f, 0x1b, 0x2b, 0x0b, 0x82, 0x2c, 0xd1, 0x5d, 0x6c, 0x15,
+                0xb0, 0xf0, 0x0a, 0x08,
             ],
             4,
             "test".into(),
@@ -84,7 +84,11 @@ fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products
     .unwrap();
     let catalogue = crate::catalogue::catalogue(&source, &options).unwrap();
     assert!(
-        source.metadata().warnings.iter().all(|note| !note.starts_with("Content: "))
+        source
+            .metadata()
+            .warnings
+            .iter()
+            .all(|note| !note.starts_with("Content: "))
     );
     let layers = &catalogue.content.layers;
     // The event reader loads headers/body lazily, after the catalogue was built.
@@ -92,7 +96,9 @@ fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products
     assert!(events.get(b"s.1").unwrap().refused.is_none());
     let expected = layers.read_warnings().warning().unwrap();
     assert!(expected.contains("Content: 1 file(s)"));
-    assert!(expected.contains("coverage policy 2; these bytes are not hash-verified: events/a.txt"));
+    assert!(
+        expected.contains("coverage policy 2; these bytes are not hash-verified: events/a.txt")
+    );
     assert!(catalogue.refusal_lines().contains(&expected));
     assert!(source.metadata().warnings.contains(&expected));
     let context = LoadContext {
@@ -110,7 +116,10 @@ fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products
         serde_json::from_str::<serde_json::Value>(&json).unwrap()
     };
     assert!(
-        reply()["data"]["warnings"].as_array().unwrap().contains(&serde_json::json!(expected))
+        reply()["data"]["warnings"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(expected))
     );
     layers.read("gfx/texticons/late.dds").unwrap();
     let updated = layers.read_warnings().warning().unwrap();
@@ -119,8 +128,13 @@ fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products
     assert!(source.metadata().warnings.contains(&updated));
     let cached = reply();
     let notes: Vec<_> = cached["data"]["warnings"]
-        .as_array().unwrap().iter()
-        .filter(|note| note.as_str().is_some_and(|note| note.starts_with("Content: ")))
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|note| {
+            note.as_str()
+                .is_some_and(|note| note.starts_with("Content: "))
+        })
         .collect();
     assert_eq!(notes.len(), 1);
     assert_eq!(notes[0].as_str(), Some(updated.as_str()));

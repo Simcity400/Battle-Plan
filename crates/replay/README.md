@@ -38,11 +38,11 @@ Field contracts, native representations, census rules and save joins live beside
 | Characters, roles, advisors and agencies | [characters_intelligence.rs](src/extended_rows/characters_intelligence.rs) |
 | Fuel, factories, logistics, production, construction, variants, industrial organisations, Combat Log equipment and lend-lease | [economy_construction.rs](src/extended_rows/economy_construction.rs) |
 | Country and state manpower, and faction identity | [rows.rs](src/rows.rs) |
-| Division census, ETA, invasion preparation and volunteers | [movement.rs](src/extended_rows/movement.rs) |
+| Division census, counter status, supply/attrition, ETA, invasion preparation and volunteers | [movement.rs](src/extended_rows/movement.rs) |
 | Raids and equipment pools | [raids_projects.rs](src/extended_rows/raids_projects.rs) |
 | Task-force motion, regions and combat/transfer vectors | [naval_weather.rs](src/extended_rows/naval_weather.rs) |
 | Naval combat sides and air-base wing occurrences | [combat_rows.rs](src/combat_rows.rs) |
-| Live naval modifier child trees | [modifier_breakdown_rows.rs](src/modifier_breakdown_rows.rs) |
+| Live naval and attrition modifier child trees | [modifier_breakdown_rows.rs](src/modifier_breakdown_rows.rs) |
 | Naval mission range, ledgers and held modifier slices | [naval_mission_rows.rs](src/naval_mission_rows.rs) |
 
 NavalCombatDetails is hourly and live-combat-only. Each plane records the sub-unit indices of its ordered all-wing handles; the viewer derives the distinct short names in its own language. The air-base name comes from the recorded state display inputs or the host combat ship's stored name. A historical wing that no longer resolves is refused by handle. Each side carries persistent weapon damage history and baseline health from CNavalCombatant. The optional `custom_sea` bytes are ordered little-endian signed words, one per effective strategic-template modifier. `custom_sea_error` is 0 for a complete vector and 1 for a guarded read failure, in which case `custom_sea` is absent; an empty present vector means the template declared no custom modifiers. The custom grid is sampled only for a live combat's region and at that combat's hourly cadence. The viewer resolves modifier names and descriptions from the effective content stack. The UI-idler paused bit is a viewer decision and has no replay field. NavalCombatShips adds the state-8 speed base and terrain movement operands; the nested NavalShipModifierSource layout also occurs in NavalCombatResultDetails.
@@ -136,7 +136,7 @@ The replay stores content identity, ordered layer hashes and the coverage policy
 
 [fixed_layout.rs](src/fixed_layout.rs) lists which recorded tables and playback calculations use each fixed modifier key and static token, and checks playback keys against complete ModifierDefinitions and LexicalTokens. A missing row or dictionary, a registered gap or a different script spelling produces a named refusal. Expected names live only in engine; collector refusals use the existing unavailable-table encoding, so the format is unchanged.
 
-Use existing round-trip, delta/baseline, malformed-input, version-rejection, provenance, branch and recovery tests. Follow the shared [change and validation rules](../../AGENTS.md#keep-these-guarantees) and [build commands](../../AGENTS.md#build-commands).
+Use existing round-trip, delta/baseline, malformed-input, version-rejection, provenance, branch and recovery tests. Follow the shared [change, validation and build rules](../../AGENTS.md#keep-these-guarantees).
 
 Province-hover border fields stay in existing hourly rows: StateFlags carries the raw active byte plus ordered attacker/defender country pairs only for active states; DivisionStatus carries optional defense/soft/hard attack caches for their class0 armies; Countries carries optional stored land-doctrine level for their province controllers. None denotes outside the current demand, never a failed selected read. Zero active states produces no new conflict pairs or optional scalar payloads. Standard field deltas clear and reintroduce these scoped values. Native layouts and validation live beside [StateFlagRow](src/extended_rows/politics_research.rs), [DivisionStatusRow](src/extended_rows/movement.rs) and [CountryRow](src/rows.rs).
 

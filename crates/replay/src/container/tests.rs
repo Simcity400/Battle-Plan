@@ -164,6 +164,8 @@ fn source(branch: u64, hour: i32) -> DecodedFrame {
         TableView::Complete(TableRows::AirSortieModifierMetadata(vec![
             crate::rows::AirSortieModifierMetadataRow::default(),
         ]));
+    tables[TableId::ReservedCountryNaming.index()] =
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![Default::default()]));
     DecodedFrame {
         branch,
         hour,

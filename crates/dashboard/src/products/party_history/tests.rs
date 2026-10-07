@@ -1,4 +1,6 @@
-use super::{PartyNaming, RecordedPortrait, leader_portrait, party_key};
+use super::{
+    PartyNaming, RecordedPortrait, leader_portrait, party_key, party_key_with_selected_tag,
+};
 use crate::test_fixtures::{CAMPAIGN, ownership_frame, records};
 use replay::{
     container::Replay,
@@ -85,6 +87,28 @@ fn a_party_is_named_as_the_game_names_it() {
         [
             "1 party names are not shown: localisation gap_party holds the control byte 0x14 (an authored `¤`), which plain text cannot show; gap_party",
         ]
+    );
+}
+
+#[test]
+fn exact_selected_empty_party_tag_keeps_the_legacy_absence_contract() {
+    let naming = PartyNaming {
+        token: "mod_group".into(),
+        tag: Some("MOD_own".into()),
+        original_tag: Some(String::new()),
+        key: None,
+    };
+    let defines = |key: &str| key == "_mod_group_party";
+    // Legacy consumers' empty original still means known absence.
+    assert_eq!(party_key(&naming, defines).as_deref(), Some("mod_group"));
+    // The exact native getter's empty selection is a real prefix.
+    assert_eq!(
+        party_key_with_selected_tag(&naming, "", defines).as_deref(),
+        Some("_mod_group_party")
+    );
+    assert_eq!(
+        party_key_with_selected_tag(&naming, "MOD_original", defines).as_deref(),
+        Some("mod_group")
     );
 }
 

@@ -558,6 +558,7 @@ fn a_live_database_with_an_unreadable_entry_fails_only_the_model() {
 fn a_bad_exclusion_or_model_string_fails_only_that_row_s_model() {
     for fault in 0..2 {
         let mut memory = model_fixture();
+        memory.put(0x5000 + FORMATION_DIVISION_COUNT, &i32::MIN.to_le_bytes());
         match fault {
             // An excluded pointer that names no variant.
             0 => memory.word(0x8100, 0x7000),
@@ -572,9 +573,35 @@ fn a_bad_exclusion_or_model_string_fails_only_that_row_s_model() {
         assert_eq!(walk.outcome, Outcome::Rows { len: 1 }, "fault {fault}");
         assert!(row.model_failure.is_some(), "fault {fault}");
         assert_eq!(row.priority_unit, 777);
+        assert_eq!(row.formation_division_count, Some(i32::MIN));
         // The partial model reads are rolled back.
         assert_eq!(bytes, b"infantry");
         assert!(counts.is_empty() && variants.is_empty());
+    }
+}
+
+#[test]
+fn formation_count_reuses_the_authenticated_hourly_span_and_keeps_signed_words() {
+    let mut memory = fixture();
+    let mut rows = [IconRow::default(); 1];
+    for count in [i32::MIN, -7, -1, 0, 1, i32::MAX] {
+        memory.put(0x5000 + FORMATION_DIVISION_COUNT, &count.to_le_bytes());
+        memory.1.borrow_mut().clear();
+        assert_eq!(
+            icons_all(&memory, &mut rows).0.outcome,
+            Outcome::Rows { len: 1 }
+        );
+        assert_eq!(rows[0].formation_division_count, Some(count));
+        let reads = memory.1.borrow();
+        assert!(
+            !reads
+                .iter()
+                .any(|(at, _)| *at == 0x5000 + FORMATION_DIVISION_COUNT)
+        );
+        assert!(reads.iter().any(|&(at, len)| {
+            at <= 0x5000 + FORMATION_DIVISION_COUNT
+                && at + len >= 0x5000 + FORMATION_DIVISION_COUNT + 4
+        }));
     }
 }
 

@@ -172,14 +172,19 @@ impl NameLists {
         }
     }
 
+    /// The cosmetic entry 140A5BF90 probes before reading the original tag.
+    pub fn for_cosmetic(&self, cosmetic_tag: &str) -> Option<&CountryNames> {
+        (!cosmetic_tag.is_empty())
+            .then(|| self.countries.get(cosmetic_tag.as_bytes()))
+            .flatten()
+    }
+
     /// The entry 140A5BF90 finds for a country: its cosmetic tag's
     /// (CCountry+0x1488) when set and listed, else its original tag's
     /// (+0x130C, CCountry::GetOriginalTagOrTag 1406DF830) or its own; the
     /// default names when that is not listed either.
     pub fn for_country(&self, cosmetic_tag: &str, tag: &str) -> &CountryNames {
-        (!cosmetic_tag.is_empty())
-            .then(|| self.countries.get(cosmetic_tag.as_bytes()))
-            .flatten()
+        self.for_cosmetic(cosmetic_tag)
             .or_else(|| self.countries.get(tag.as_bytes()))
             .unwrap_or(&self.default)
     }

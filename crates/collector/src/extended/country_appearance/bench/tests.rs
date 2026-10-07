@@ -149,6 +149,8 @@ impl World {
         Capacities {
             rows: self.countries,
             subjects: self.countries * SUBJECTS_PER_COUNTRY,
+            naming_bytes: 0,
+            ..Default::default()
         }
     }
 
@@ -167,7 +169,10 @@ impl World {
 }
 
 fn rows(captured: &Captured) -> Vec<CountryAppearanceRow> {
-    let [TableView::Complete(replay::rows::TableRows::CountryAppearance(rows))] = captured.tables()
+    let [
+        TableView::Complete(replay::rows::TableRows::CountryAppearance(rows)),
+        _,
+    ] = captured.tables()
     else {
         panic!("complete appearance");
     };

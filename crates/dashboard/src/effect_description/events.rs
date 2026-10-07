@@ -8,11 +8,12 @@ use crate::{
 use installed_content::decisions::Decision;
 use replay::rows::{DecisionRow, tables};
 
-const DECISION_RANDOM_COUNT_GAP: &str = "CDecisionStatus random-count item +0x10 for this definition/target is not recorded outside a demanded active decision (140721170/1407290D0)";
+const DECISION_RANDOM_COUNT_GAP: &str =
+    "DecisionRandomItems is not complete for this decision-description seed (140721170/1407290D0)";
 
+mod descriptions;
 #[cfg(test)]
 mod tests;
-mod descriptions;
 
 /// 14071C730 compares both native target slots and ignores lifecycle/ignore.
 fn matching<'a>(
@@ -155,19 +156,14 @@ impl Renderer<'_, '_, '_> {
         self.localised(label_key.as_bytes(), &[], scopes, true)
     }
 
-    pub(super) fn custom_tooltip(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
-        // 1413832B0
-        let key = item
-            .value
-            .read_string()
-            .ok_or("custom_effect_tooltip bound localisation block is not ported (1413832B0)")?;
-        if key.contains(&b'|') {
-            return Err(format!(
-                "custom_effect_tooltip {} bound formatter is not ported (1413832B0)",
-                String::from_utf8_lossy(key)
-            ));
-        }
-        self.localised(key, &[], scopes, true)
+    pub(super) fn custom_tooltip(&mut self, item: &Item, scopes: Scopes) -> Result<String, String> {
+        // 1413832B0 -> 1402F19A0 evaluates the shared bound reader's tree
+        // with empty supplied arguments and the caller's SScopeLocalizer.
+        self.bound_localisation(
+            &installed_content::gui::native::BoundLocalization::from_value(&item.value),
+            scopes,
+            true,
+        )
     }
 
     // 14037BDC0: fresh seeded title scope; FROM is the caller's ROOT.
@@ -244,7 +240,7 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         };
         let owner = match scopes.this {
-            Scope::Country(country) => country,
+            Scope::Country(country) | Scope::CountryLeader { country, .. } => country,
             _ => return Err("remove_targeted_decision scope has no country (14038BF60)".into()),
         };
         let (country, state) = self.decision_target(field(fields, "target"), scopes)?;
@@ -306,7 +302,9 @@ impl Renderer<'_, '_, '_> {
                         .enter_scope(&parsed, scopes)?
                         .map(|selected| selected.this)
                     {
-                        Some(Scope::Country(country)) => (Some(country), 0),
+                        Some(Scope::Country(country) | Scope::CountryLeader { country, .. }) => {
+                            (Some(country), 0)
+                        }
                         Some(Scope::State(state)) if state != NULL_STATE => (None, state),
                         _ => (None, 0),
                     },
@@ -323,7 +321,7 @@ impl Renderer<'_, '_, '_> {
         // 14036C6E0: invalid scoped value falls back to the selected state,
         // then selected country. A recognised missing selector stays invalid.
         Ok(match scopes.this {
-            Scope::Country(country) => (Some(country), 0),
+            Scope::Country(country) | Scope::CountryLeader { country, .. } => (Some(country), 0),
             Scope::State(state) if state != NULL_STATE => (None, state),
             _ => (None, 0),
         })
@@ -387,11 +385,15 @@ impl Renderer<'_, '_, '_> {
             )
         };
         let target = country_target.unwrap_or(row.numeric_target) as i32;
-        let seed = self.decision_description_seed(definition, Some(row), target);
-        let (at, from) = self.seeded_decision_graph(owner, Some(match country_target {
+        let seed = self.decision_description_seed(definition, Some(row), owner, target);
+        let (at, from) = self.seeded_decision_graph(
+            owner,
+            Some(match country_target {
                 Some(country) => EventObject::Country(country),
                 None => EventObject::State(row.numeric_target),
-            }), seed);
+            }),
+            seed,
+        );
         let scopes = self.evaluator()?.event_scopes(at)?;
         let highlighted = definition.has_state_targets
             || self
@@ -410,6 +412,7 @@ impl Renderer<'_, '_, '_> {
         &self,
         definition: &Decision,
         row: Option<&DecisionRow>,
+        owner: u32,
         target: i32,
     ) -> Result<u32, &'static str> {
         let game_seed = self
@@ -424,11 +427,30 @@ impl Renderer<'_, '_, '_> {
             .seed;
         let additive = if definition.fixed_random_seed {
             None
-        } else {
-            *row.ok_or(DECISION_RANDOM_COUNT_GAP)?
-                .description_seed
-                .require("Decisions.description_seed")
+        } else if let Some(row) = row {
+            *row.description_seed.require("Decisions.description_seed")
                 .map_err(|_| "Decisions.description_seed not recorded (CDecisionStatus random-count item +0x10; 1407290D0)")?
+        } else {
+            let world = self
+                .context
+                .world()
+                .map_err(|_| DECISION_RANDOM_COUNT_GAP)?;
+            let rows = world
+                .frame()
+                .complete::<tables::DecisionRandomItems>()
+                .map_err(|_| DECISION_RANDOM_COUNT_GAP)?;
+            // 140721170 returns the first matching definition/target; a
+            // complete roster without a match contributes stored zero.
+            Some(
+                rows.iter()
+                    .filter(|row| {
+                        world.slot(row.country) == Some(owner)
+                            && row.token.eq_ignore_ascii_case(&definition.id)
+                            && row.target == target as u32
+                    })
+                    .min_by_key(|row| row.ordinal)
+                    .map(|row| row.count),
+            )
         };
         decision_seed(game_seed, definition, additive, target)
             .map_err(|_| "Decisions description_seed is unread (1407290D0)")
@@ -514,7 +536,7 @@ impl Renderer<'_, '_, '_> {
             .complete::<tables::States>()
             .map_err(|why| why.to_string())?;
         let owner = match scopes.this {
-            Scope::Country(owner) => owner,
+            Scope::Country(owner) | Scope::CountryLeader { country: owner, .. } => owner,
             _ => return Ok(None),
         };
         let mut candidates = std::collections::BTreeSet::new();

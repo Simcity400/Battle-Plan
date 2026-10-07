@@ -15,7 +15,7 @@ use replay::{
 use std::{collections::BTreeMap, sync::Arc};
 
 mod original_tags;
-pub use original_tags::{Group, OriginalTagLists};
+pub use original_tags::OriginalTagLists;
 
 /// A resolved scope target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,6 +94,7 @@ pub struct RecordedScopes {
     links: BTreeMap<u32, u32>,
     /// Canonical slot to tag, and back (`Countries`).
     tags: BTreeMap<u32, String>,
+    raw_ids: BTreeMap<u32, u32>,
     /// Whether `Countries` is complete, so `tags` is every country.
     countries_complete: bool,
     slots: BTreeMap<String, u32>,
@@ -117,7 +118,7 @@ pub struct RecordedScopes {
     /// Canonical slot to owned state count (CCountry+0x484,
     /// `CountryCounterInputs.owned_state_count`).
     owned: BTreeMap<u32, i32>,
-    /// `_CountriesForOriginalTags` (CGameState+0x988) as derived.
+    /// Exact native country-list snapshots (CGameState+0x988 and +0x310).
     original_tags: OriginalTagLists,
     /// The content's tag alias database (143316AA8).
     aliases: Arc<TagAliases>,
@@ -151,17 +152,12 @@ pub(crate) fn valid_saved_target(r: &replay::rows::GlobalSavedEventTargetRow) ->
 }
 
 impl RecordedScopes {
-    /// Reads the hour's scope facts; a table the hour lacks leaves its
-    /// scopes refused with the table's state. The original-tag lists are
-    /// this frame's alone, their order unknown ([`OriginalTagLists::unordered`]);
-    /// [`Self::read_with`] takes them derived from the branch. `aliases`
-    /// is the content's tag alias database (143316AA8).
+    /// Reads scope facts and native country-list snapshots at this hour.
     pub fn read(frame: &DecodedFrame, aliases: Arc<TagAliases>) -> Self {
-        Self::read_with(frame, OriginalTagLists::unordered(frame), aliases)
+        Self::read_with(frame, OriginalTagLists::read(frame), aliases)
     }
 
-    /// [`Self::read`] with the original-tag lists derived for this hour
-    /// ([`OriginalTagLists::derive`]).
+    /// Uses a selectively read native-list snapshot for this same hour.
     pub fn read_with(
         frame: &DecodedFrame,
         original_tags: OriginalTagLists,
@@ -184,6 +180,10 @@ impl RecordedScopes {
         );
         let (countries, gap) = table::<tables::Countries>(frame);
         gaps.insert("Countries", gap);
+        let raw_ids = countries
+            .iter()
+            .map(|row| (row.canonical_slot, row.id))
+            .collect();
         let tags: BTreeMap<u32, String> = countries
             .iter()
             .map(|country| {
@@ -258,6 +258,7 @@ impl RecordedScopes {
             saved_targets_complete,
             links,
             tags,
+            raw_ids,
             countries_complete,
             slots,
             states,
@@ -317,67 +318,76 @@ impl RecordedScopes {
         })
     }
 
-    /// The country a tag scope names, as ResolveScriptCountryTag
-    /// (140BA5D10) resolves it: the tag's own country when it owns a state
-    /// (CCountry+0x484); otherwise the first country of
-    /// `_CountriesForOriginalTags` (CGameState+0x988, 1401DA520) for that
-    /// tag that owns one, else the tag's own country. The list is derived
-    /// ([`OriginalTagLists`]); where its order is unknown and two
-    /// state-owning candidates share the first such group, it is refused
-    /// by name with the tag, the interval and the candidates.
+    /// ResolveScriptCountryTag@140BA5D10: an owning own country wins;
+    /// otherwise 1401DA520 takes the first owning bucket member, or the first
+    /// member when none owns a state. The caller accepts only an owning result,
+    /// so a nonowning member or an empty bucket keeps the own country.
     pub fn resolve_tag(&self, tag: &str) -> Result<u32, String> {
         if let Some(refusal) = self.alias(tag) {
             return Err(refusal);
         }
-        let gap = |table: &str| self.gaps.get(table).cloned().unwrap_or_default();
-        let slot = self.country(tag).ok_or_else(|| {
-            format!(
-                "country {tag} has no recorded Countries row: {}",
-                gap("Countries")
-            )
-        })?;
-        let owned = |slot: u32| {
-            self.owned.get(&slot).copied().ok_or_else(|| {
-                format!(
-                    "the owned state count (CountryCounterInputs.owned_state_count, CCountry+0x484) of {} is not recorded: {}",
-                    self.describe(Target::Country(slot)),
-                    gap("CountryCounterInputs")
-                )
-            })
-        };
-        if owned(slot)? >= 1 {
+        let slot = self
+            .country(tag)
+            .ok_or_else(|| format!("country {tag} has no recorded Countries row"))?;
+        if self.owned_states(slot)? >= 1 {
             return Ok(slot);
         }
-        if let Some(since) = self.original_tags.pending() {
-            return Err(format!(
-                "{tag} owns no state, and the countries with it as original tag are unknown: CountryAppearance is incomplete since hour {since}"
-            ));
-        }
-        for group in self.original_tags.list(tag) {
-            let mut owning = Vec::new();
-            for member in &group.members {
-                if owned(*member)? >= 1 {
-                    owning.push(*member);
-                }
-            }
-            match owning.as_slice() {
-                [] => continue,
-                [only] => return Ok(*only),
-                several => {
-                    return Err(format!(
-                        "{tag} owns no state, and {} countries with it as original tag that own states were added to _CountriesForOriginalTags (CGameState+0x988) in one recorded interval, {}, so which one 1401DA520 takes first is not known: {}",
-                        several.len(),
-                        group.when,
-                        several
-                            .iter()
-                            .map(|slot| self.describe(Target::Country(*slot)))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                }
+        let raw = *self
+            .raw_ids
+            .get(&slot)
+            .ok_or_else(|| format!("country slot {slot} has no own raw tag"))?;
+        let canonical = self.raw_slot(raw)?;
+        for &member in self.original_tags.bucket(canonical)? {
+            let member = self.raw_slot(member)?;
+            if self.owned_states(member)? >= 1 {
+                // 1401DA520 stops at this owning pointer; 140BA5D10 accepts
+                // only a positive returned own word, otherwise keeps its own.
+                let raw = if member == 0 {
+                    0
+                } else {
+                    *self
+                        .raw_ids
+                        .get(&member)
+                        .ok_or_else(|| format!("country slot {member} has no own raw tag"))?
+                        as i32
+                };
+                return Ok(if raw > 0 { member } else { slot });
             }
         }
         Ok(slot)
+    }
+
+    /// A known zero reference resolves to the separately authenticated reserved
+    /// country. Missing positive links cannot be inferred to map to zero.
+    pub(crate) fn raw_slot(&self, raw: u32) -> Result<u32, String> {
+        if raw == 0 {
+            return Ok(0);
+        }
+        self.slot(raw)
+            .ok_or_else(|| format!("country raw reference {raw} is not in CountryLinks"))
+    }
+
+    /// Iterators that resolve a pointer then test CCountry+8 retain only
+    /// signed-positive own tag words (14043B6A0, 1407141F0).
+    pub(crate) fn positive_country(&self, raw: u32) -> Result<Option<u32>, String> {
+        let slot = self.raw_slot(raw)?;
+        let own = if slot == 0 {
+            0
+        } else {
+            *self.raw_ids.get(&slot).ok_or_else(|| {
+                format!("country slot {slot} has no Countries row for its own raw tag")
+            })?
+        };
+        Ok(((own as i32) > 0).then_some(slot))
+    }
+
+    /// Native bucket selected by a positive tag word, before appending that
+    /// selected word (1413AA900). Nonpositive words do not demand the snapshot.
+    pub(crate) fn original_bucket(&self, selected: i32) -> Result<&[u32], String> {
+        if selected <= 0 {
+            return Ok(&[]);
+        }
+        self.original_tags.bucket(self.raw_slot(selected as u32)?)
     }
 
     /// Why a three-byte name that is no recorded country tag is refused
@@ -412,9 +422,8 @@ impl RecordedScopes {
         self.aliases.get(tag)
     }
 
-    /// Every country's canonical slot, in slot order (the game state's
-    /// country array, CGameState+0x310), or why the recording does not hold
-    /// them all.
+    /// Every captured canonical country, in slot order. This canonical
+    /// roster is distinct from the physical native array with alias occurrences.
     pub fn roster(&self) -> Result<impl Iterator<Item = u32> + '_, String> {
         if !self.countries_complete {
             return Err(format!(
@@ -428,6 +437,9 @@ impl RecordedScopes {
     /// A country's owned state count (CCountry+0x484), or why it is not
     /// recorded.
     pub fn owned_states(&self, slot: u32) -> Result<i32, String> {
+        if slot == 0 {
+            return self.original_tags.reserved_owned_states();
+        }
         self.owned.get(&slot).copied().ok_or_else(|| {
             format!(
                 "the owned state count (CountryCounterInputs.owned_state_count, CCountry+0x484) of {} is not recorded: {}",
@@ -437,7 +449,7 @@ impl RecordedScopes {
         })
     }
 
-    /// `_CountriesForOriginalTags` (CGameState+0x988) as derived.
+    /// Exact native country-list snapshots (CGameState+0x988 and +0x310).
     pub fn original_tags(&self) -> &OriginalTagLists {
         &self.original_tags
     }
@@ -767,7 +779,7 @@ pub(crate) mod tests {
         frame::Metrics,
         rows::{
             CharacterRow, CountryAppearanceRow, CountryCounterInputRow, CountryLinkRow, CountryRow,
-            LexicalTokenRow, PoliticsRow, StateRow, TableId, TableRows,
+            LexicalTokenRow, PoliticsRow, Recorded, StateRow, TableId, TableRows,
         },
     };
 
@@ -834,10 +846,14 @@ pub(crate) mod tests {
             TableRows::CountryAppearance(vec![
                 CountryAppearanceRow {
                     country: 100,
+                    original_tag_reference: Recorded::Value(Some(0)),
+                    original_tag: Recorded::Value(Some(Vec::new())),
                     ..Default::default()
                 },
                 CountryAppearanceRow {
                     country: 200,
+                    original_tag_reference: Recorded::Value(Some(0)),
+                    original_tag: Recorded::Value(Some(Vec::new())),
                     overlord: 100,
                     ..Default::default()
                 },
@@ -878,12 +894,51 @@ pub(crate) mod tests {
         frame
     }
 
+    /// The current collector's positive-only country roster. Native slot
+    /// zero is a separate ReservedCountryNaming singleton, not GER's link.
+    pub(crate) fn positive_frame() -> DecodedFrame {
+        let mut frame = frame();
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        {
+            for row in rows {
+                row.canonical_slot += 1;
+            }
+        }
+        if let TableView::Complete(TableRows::CountryLinks(rows)) =
+            &mut *frame.tables[TableId::CountryLinks.index()]
+        {
+            for row in rows {
+                row.canonical_slot += 1;
+            }
+        }
+        frame
+    }
+
+    /// Original-list fixtures also know the separately authenticated zero
+    /// object's original word is nonpositive. Ordinary fixtures keep it absent.
+    fn original_frame() -> DecodedFrame {
+        let mut frame = positive_frame();
+        *frame.tables[TableId::ReservedCountryNaming.index()] =
+            TableView::Complete(TableRows::ReservedCountryNaming(vec![
+                replay::rows::ReservedCountryNamingRow {
+                    tag: b"ZZ0".to_vec(),
+                    original_tag_reference: Recorded::Value(Some(0)),
+                    original_tag: Recorded::Value(Some(Vec::new())),
+                    original_tag_buckets: Recorded::Value(Some(vec![vec![], vec![200], vec![]])),
+                    country_array: Recorded::Value(Some(vec![0, 100, 200])),
+                    ..Default::default()
+                },
+            ]));
+        frame
+    }
+
     /// ResolveScriptCountryTag (140BA5D10): a tag owning no state stands
     /// for the first country of its original-tag list that owns one.
     #[test]
     fn a_tag_without_states_resolves_as_the_game_substitutes_it() {
         let counts = |ger: i32, sov: i32| {
-            let mut frame = frame();
+            let mut frame = original_frame();
             *frame.tables[TableId::CountryCounterInputs.index()] =
                 TableView::Complete(TableRows::CountryCounterInputs(vec![
                     CountryCounterInputRow {
@@ -902,14 +957,16 @@ pub(crate) mod tests {
             {
                 // SOV is a dynamic country named after GER.
                 rows[1].name_tag = b"GER".to_vec();
+                rows[1].original_tag_reference = Recorded::Value(Some(100));
+                rows[1].original_tag = Recorded::Value(Some(b"GER".to_vec()));
             }
             RecordedScopes::read(&frame, Arc::default())
         };
-        assert_eq!(counts(1, 3).resolve_tag("GER"), Ok(0));
-        assert_eq!(counts(0, 3).resolve_tag("GER"), Ok(1));
+        assert_eq!(counts(1, 3).resolve_tag("GER"), Ok(1));
+        assert_eq!(counts(0, 3).resolve_tag("GER"), Ok(2));
         // No candidate owns a state: the tag's own country.
-        assert_eq!(counts(0, 0).resolve_tag("GER"), Ok(0));
-        let mut frame = frame();
+        assert_eq!(counts(0, 0).resolve_tag("GER"), Ok(1));
+        let mut frame = positive_frame();
         *frame.tables[TableId::CountryCounterInputs.index()] = TableView::Unavailable {
             reason: "not sampled".into(),
         };
@@ -921,13 +978,13 @@ pub(crate) mod tests {
         );
     }
 
-    /// GER (link 100, slot 0) and three dynamic countries D01..D03 (links
-    /// 201..203, slots 1..3), with each dynamic country's `name_tag` and
+    /// GER (link 100, slot 1) and three dynamic countries D01..D03 (links
+    /// 201..203, slots 2..4), with each country's exact original presence and
     /// every country's owned state count.
     pub(crate) fn dynamic_frame(hour: i32, names: [&str; 3], owned: [i32; 4]) -> DecodedFrame {
-        let mut frame = frame();
+        let mut frame = original_frame();
         frame.hour = hour;
-        let links = [(100, 0), (201, 1), (202, 2), (203, 3)];
+        let links = [(100, 1), (201, 2), (202, 3), (203, 4)];
         *frame.tables[TableId::CountryLinks.index()] =
             TableView::Complete(TableRows::CountryLinks(
                 links
@@ -936,10 +993,10 @@ pub(crate) mod tests {
             ));
         *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
             [
-                (100, 0, "GER"),
-                (201, 1, "D01"),
-                (202, 2, "D02"),
-                (203, 3, "D03"),
+                (100, 1, "GER"),
+                (201, 2, "D01"),
+                (202, 3, "D02"),
+                (203, 4, "D03"),
             ]
             .map(|(id, canonical_slot, tag)| CountryRow {
                 id,
@@ -951,12 +1008,20 @@ pub(crate) mod tests {
         ));
         let mut appearance = vec![CountryAppearanceRow {
             country: 100,
+            original_tag_reference: Recorded::Value(Some(0)),
+            original_tag: Recorded::Value(Some(Vec::new())),
             ..Default::default()
         }];
         for (index, name) in names.iter().enumerate() {
             appearance.push(CountryAppearanceRow {
                 country: 201 + index as u32,
                 name_tag: name.as_bytes().to_vec(),
+                original_tag_reference: Recorded::Value(Some(if name.is_empty() {
+                    0
+                } else {
+                    100
+                })),
+                original_tag: Recorded::Value(Some(name.as_bytes().to_vec())),
                 ..Default::default()
             });
         }
@@ -974,65 +1039,124 @@ pub(crate) mod tests {
                     })
                     .collect(),
             ));
+        let members = names
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| **name == "GER")
+            .map(|(i, _)| 201 + i as u32)
+            .collect();
+        if let TableView::Complete(TableRows::ReservedCountryNaming(rows)) =
+            &mut *frame.tables[TableId::ReservedCountryNaming.index()]
+        {
+            rows[0].original_tag_buckets =
+                Recorded::Value(Some(vec![vec![], members, vec![], vec![], vec![]]));
+            rows[0].country_array = Recorded::Value(Some(vec![0, 100, 201, 202, 203]));
+        }
         frame
     }
 
-    /// _CountriesForOriginalTags derived: slot order at a load (1401DA010),
-    /// then appends in hour order (1401EE1C0) with removals keeping order
-    /// (1401D1BC0); one interval's appends are unordered, which matters
-    /// only when two of them own states.
     #[test]
-    fn the_original_tag_list_is_derived_from_the_load_and_the_appends() {
-        let resolve = |lists: &OriginalTagLists, frame: &DecodedFrame| {
-            RecordedScopes::read_with(frame, lists.clone(), Arc::default()).resolve_tag("GER")
-        };
-        // A load: slot order, D01 before D02.
-        let load = dynamic_frame(10, ["GER", "GER", ""], [0, 1, 1, 1]);
-        let mut lists = OriginalTagLists::start(&load, true);
-        assert_eq!(resolve(&lists, &load), Ok(1));
-        // Appends across hours: D01 leaves, D03 joins after D02.
-        let hour = dynamic_frame(11, ["", "GER", ""], [0, 1, 1, 1]);
-        lists.advance(&hour);
-        let hour = dynamic_frame(12, ["", "GER", "GER"], [0, 0, 0, 1]);
-        lists.advance(&hour);
-        assert_eq!(resolve(&lists, &hour), Ok(3));
-        let hour = dynamic_frame(13, ["GER", "GER", "GER"], [0, 1, 1, 1]);
-        lists.advance(&hour);
-        // D02 (load), D03 (hour 12), D01 (hour 13).
-        assert_eq!(resolve(&lists, &hour), Ok(2));
-        let owners: Vec<Vec<u32>> = lists
-            .list("GER")
-            .iter()
-            .map(|g| g.members.clone())
-            .collect();
-        assert_eq!(owners, [vec![2], vec![3], vec![1]]);
-
-        // One hour's appends are unordered: harmless with one state owner.
-        let start = dynamic_frame(20, ["", "", ""], [0, 0, 0, 0]);
-        let mut lists = OriginalTagLists::start(&start, true);
-        let both = dynamic_frame(21, ["GER", "GER", ""], [0, 0, 1, 0]);
-        lists.advance(&both);
-        assert_eq!(resolve(&lists, &both), Ok(2));
-        // ... and refused, naming the tag, the hour and the candidates,
-        // when two of them own states.
-        let owning = dynamic_frame(21, ["GER", "GER", ""], [0, 1, 1, 0]);
+    fn original_tag_resolution_uses_the_captured_bucket_order() {
+        let mut frame = dynamic_frame(10, ["GER", "GER", ""], [0, 1, 1, 0]);
         assert_eq!(
-            resolve(&lists, &owning),
-            Err("GER owns no state, and 2 countries with it as original tag that own states were added to _CountriesForOriginalTags (CGameState+0x988) in one recorded interval, hour 21, so which one 1401DA520 takes first is not known: country D01, country D02".into())
+            RecordedScopes::read(&frame, Arc::default()).resolve_tag("GER"),
+            Ok(2)
         );
-        // Without the branch's history one frame's members are unordered.
+        // SetOriginalTag can remove/reappend D01 between samples while every
+        // final original operand remains identical. The stored order wins.
+        if let TableView::Complete(TableRows::ReservedCountryNaming(rows)) =
+            &mut *frame.tables[TableId::ReservedCountryNaming.index()]
+        {
+            rows[0].original_tag_buckets = Recorded::Value(Some(vec![
+                vec![],
+                vec![202, 201, 202],
+                vec![],
+                vec![],
+                vec![],
+            ]));
+        }
+        assert_eq!(
+            RecordedScopes::read(&frame, Arc::default()).resolve_tag("GER"),
+            Ok(3)
+        );
+        if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+            &mut *frame.tables[TableId::CountryCounterInputs.index()]
+        {
+            rows[1].owned_state_count = 0;
+            rows[2].owned_state_count = 0;
+        }
+        // 1401DA520 returns its first nonowning member; 140BA5D10 rejects
+        // that result's zero state count and keeps the own country.
+        assert_eq!(
+            RecordedScopes::read(&frame, Arc::default()).resolve_tag("GER"),
+            Ok(1)
+        );
+        if let TableView::Complete(TableRows::ReservedCountryNaming(rows)) =
+            &mut *frame.tables[TableId::ReservedCountryNaming.index()]
+        {
+            rows[0].original_tag_buckets = Recorded::NotRecorded;
+        }
         assert!(
-            RecordedScopes::read(&owning, Arc::default())
+            RecordedScopes::read(&frame, Arc::default())
                 .resolve_tag("GER")
                 .unwrap_err()
-                .contains("at hour 21, read without the branch's earlier hours")
+                .contains("original_tag_buckets not recorded")
         );
-        // A branch that does not start at a load starts unordered.
-        let lists = OriginalTagLists::start(&load, false);
-        assert!(
-            resolve(&lists, &load)
-                .unwrap_err()
-                .contains("before hour 10, where the branch starts without a load")
+        if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+            &mut *frame.tables[TableId::CountryCounterInputs.index()]
+        {
+            rows[0].owned_state_count = 1;
+        }
+        assert_eq!(
+            RecordedScopes::read(&frame, Arc::default()).resolve_tag("GER"),
+            Ok(1)
+        );
+    }
+
+    #[test]
+    fn reserved_owned_count_is_lazy_and_controls_native_substitution() {
+        let mut frame = dynamic_frame(10, ["GER", "", ""], [0, 1, 0, 0]);
+        let counts = [
+            Recorded::Value(Some(4)),
+            Recorded::Value(Some(0)),
+            Recorded::Value(Some(-7)),
+            Recorded::Value(None),
+            Recorded::NotRecorded,
+        ];
+        for count in counts {
+            if let TableView::Complete(TableRows::ReservedCountryNaming(rows)) =
+                &mut *frame.tables[TableId::ReservedCountryNaming.index()]
+            {
+                rows[0].original_tag_reference = Recorded::Value(Some(100));
+                rows[0].original_tag_buckets =
+                    Recorded::Value(Some(vec![vec![], vec![0, 201], vec![], vec![], vec![]]));
+                rows[0].owned_state_count = count;
+            }
+            let scopes = RecordedScopes::read(&frame, Arc::default());
+            let result = scopes.resolve_tag("GER");
+            match count {
+                Recorded::Value(Some(raw)) => {
+                    assert_eq!(scopes.owned_states(0), Ok(raw));
+                    // Reserved owns states: native helper stops and returns0;
+                    // public caller rejects that zero result and keeps GER.
+                    assert_eq!(result, Ok(if raw > 0 { 1 } else { 2 }));
+                }
+                _ => assert!(
+                    result
+                        .unwrap_err()
+                        .contains("ReservedCountryNaming.owned_state_count")
+                ),
+            }
+        }
+        // Unknown zero count is irrelevant when the own country already owns.
+        if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+            &mut *frame.tables[TableId::CountryCounterInputs.index()]
+        {
+            rows[0].owned_state_count = 1;
+        }
+        assert_eq!(
+            RecordedScopes::read(&frame, Arc::default()).resolve_tag("GER"),
+            Ok(1)
         );
     }
 
@@ -1047,17 +1171,17 @@ pub(crate) mod tests {
 
     #[test]
     fn scopes_resolve_through_the_recorded_tables_and_refuse_the_rest() {
-        let scopes = RecordedScopes::read(&frame(), Arc::default());
-        let sov = Context::country(1);
+        let scopes = RecordedScopes::read(&positive_frame(), Arc::default());
+        let sov = Context::country(2);
         let resolve = |text: &str, context: &Context| {
             scopes
                 .resolve_text(text, false, context)
                 .map_err(|unresolved| unresolved.to_string())
         };
-        assert_eq!(resolve("ROOT", &sov), Ok(Target::Country(1)));
-        assert_eq!(resolve("GER", &sov), Ok(Target::Country(0)));
+        assert_eq!(resolve("ROOT", &sov), Ok(Target::Country(2)));
+        assert_eq!(resolve("GER", &sov), Ok(Target::Country(1)));
         assert_eq!(resolve("64", &sov), Ok(Target::State(64)));
-        assert_eq!(resolve("overlord", &sov), Ok(Target::Country(0)));
+        assert_eq!(resolve("overlord", &sov), Ok(Target::Country(1)));
         assert_eq!(
             resolve("ROOT.overlord.capital_scope", &sov),
             Ok(Target::State(64))
@@ -1066,7 +1190,7 @@ pub(crate) mod tests {
         // token, so without case; another country's names nothing there.
         for token in ["GER_erwin_rommel", "ger_ERWIN_rommel"] {
             assert_eq!(
-                resolve(token, &Context::country(0)),
+                resolve(token, &Context::country(1)),
                 Ok(Target::Character(7))
             );
         }
@@ -1081,10 +1205,10 @@ pub(crate) mod tests {
         assert!(resolve("ROOT.capital_scope", &sov).is_err());
         assert_eq!(
             resolve("ROOT.overlord.capital_scope.controller", &sov),
-            Ok(Target::Country(1))
+            Ok(Target::Country(2))
         );
         // PREV inside a chain is the scope before the step.
-        assert_eq!(resolve("overlord.PREV", &sov), Ok(Target::Country(1)));
+        assert_eq!(resolve("overlord.PREV", &sov), Ok(Target::Country(2)));
         for (text, reason) in [
             ("FROM", "from is not set in this context"),
             ("var:x", "var:x: runtime script variables are not recorded"),
@@ -1111,13 +1235,13 @@ pub(crate) mod tests {
             assert!(error.starts_with(reason), "{text}: {error}");
         }
         // A table the hour lacks is named with its state.
-        let mut frame = frame();
+        let mut frame = positive_frame();
         *frame.tables[TableId::Politics.index()] = TableView::Unavailable {
             reason: "not sampled".into(),
         };
         let scopes = RecordedScopes::read(&frame, Arc::default());
         assert_eq!(
-            scopes.resolve_text("capital_scope", false, &Context::country(0)),
+            scopes.resolve_text("capital_scope", false, &Context::country(1)),
             Err(Unresolved::Missing("capital_scope: country GER has no recorded Politics row: the table is unavailable: not sampled".into()))
         );
     }
@@ -1172,8 +1296,8 @@ pub(crate) mod tests {
             &[("a.txt", b"SPA = { }")],
             &installed_content::key_names::KeyNames::default(),
         );
-        let scopes = RecordedScopes::read(&frame(), Arc::new(aliases));
-        let sov = Context::country(1);
+        let scopes = RecordedScopes::read(&positive_frame(), Arc::new(aliases));
+        let sov = Context::country(2);
         assert_eq!(
             scopes.resolve_text("SPA", false, &sov),
             Err(Unresolved::Missing(
@@ -1183,13 +1307,13 @@ pub(crate) mod tests {
         );
         assert_eq!(
             scopes.resolve_text("GER", false, &sov),
-            Ok(Target::Country(0))
+            Ok(Target::Country(1))
         );
         let short = TagAliases {
             unknown: vec!["common/country_tag_aliases/a.txt: line 2: x".into()],
             ..Default::default()
         };
-        let scopes = RecordedScopes::read(&frame(), Arc::new(short));
+        let scopes = RecordedScopes::read(&positive_frame(), Arc::new(short));
         assert!(matches!(
             scopes.resolve_text("XYZ", false, &sov),
             Err(Unresolved::Missing(reason)) if reason.contains("whether it is a tag alias")

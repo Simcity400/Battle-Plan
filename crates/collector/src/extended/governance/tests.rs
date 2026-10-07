@@ -2,6 +2,65 @@ use super::*;
 use engine::cnational_focus;
 
 #[test]
+fn recorded_effect_inputs_project_exact_bytes_and_keep_decision_cadence() {
+    let mut capacity = Capacities::default();
+    capacity.raise_for_effect_inputs(
+        cpolitical_status::IdeaDemand { rows: 1, bytes: 3 },
+        cdecision_status::RandomItemDemand { rows: 1, bytes: 3 },
+    );
+    let mut captured = Captured::with_capacities(&capacity);
+    captured.timed_ideas.rows[0] = cpolitical_status::TimedIdeaRow {
+        country: 5_000,
+        ordinal: 7,
+        token_start: 0,
+        token_len: 3,
+        days: i32::MIN,
+    };
+    captured.timed_ideas.outcome = Outcome::Rows { len: 1 };
+    captured.random_items.rows[0] = cdecision_status::RandomItemRow {
+        country: 5_000,
+        ordinal: 3,
+        token_start: 0,
+        token_len: 3,
+        count: i32::MAX,
+        target: -1,
+    };
+    captured.random_items.outcome = Outcome::Rows { len: 1 };
+    for text in [
+        &mut captured.timed_idea_text,
+        &mut captured.random_item_text,
+    ] {
+        text.first[..3].copy_from_slice(&[b'x', 0, 255]);
+        text.len = 3;
+    }
+    let tables = captured.tables();
+    let TableView::Complete(rows::TableRows::TimedIdeas(timed)) = &tables[23] else {
+        panic!("timed ideas unavailable");
+    };
+    assert_eq!(timed[0].token, [b'x', 0, 255]);
+    assert_eq!(
+        (timed[0].country, timed[0].ordinal, timed[0].days),
+        (5_000, 7, i32::MIN)
+    );
+    let TableView::Complete(rows::TableRows::DecisionRandomItems(random)) = &tables[24] else {
+        panic!("random items unavailable");
+    };
+    assert_eq!(random[0].token, [b'x', 0, 255]);
+    assert_eq!((random[0].count, random[0].target), (i32::MAX, u32::MAX));
+    for hour in 0..24 {
+        assert!(replay::cadence::should_walk(
+            TableId::TimedIdeas,
+            hour,
+            false
+        ));
+        assert_eq!(
+            replay::cadence::should_walk(TableId::DecisionRandomItems, hour, false),
+            replay::cadence::should_walk(TableId::Decisions, hour, false)
+        );
+    }
+}
+
+#[test]
 fn breakdown_capture_keeps_the_original_push_capacity_trace() {
     use engine::memory::SliceMemory;
     const STATE: usize = 0x100;

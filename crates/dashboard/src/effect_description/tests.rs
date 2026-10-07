@@ -144,7 +144,7 @@ pub(super) struct Fixture {
     pub catalogue: Catalogue,
     _folder: Folder,
     dlcs: BTreeSet<String>,
-    triggers: installed_content::trigger_keys::TriggerNames,
+    pub(super) triggers: installed_content::trigger_keys::TriggerNames,
     pub(super) aliases: Arc<installed_content::tag_aliases::TagAliases>,
     pub neighbors: Option<BTreeMap<u32, Vec<u32>>>,
 }
@@ -154,7 +154,7 @@ impl Fixture {
         let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
             (
                 "common/defines/test.lua",
-                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NSupply={MIN_TRAIN_REQUIREMENT=2}}",
             ),
             (
                 "localisation/test_l_english.yml",
@@ -244,6 +244,19 @@ impl Fixture {
                     .map(|&(country, _, _)| CountryCounterInputRow {
                         country,
                         owned_state_count: 5,
+                        owned_states: Recorded::Value(Some(if country == 100 {
+                            (1..=5).collect()
+                        } else {
+                            Vec::new()
+                        })),
+                        controlled_states: Recorded::Value(Some(if country == 100 {
+                            (1..=5).collect()
+                        } else {
+                            Vec::new()
+                        })),
+                        core_states: Recorded::Value(Some(Vec::new())),
+                        army_leaders: Recorded::Value(Some(Vec::new())),
+                        navy_leaders: Recorded::Value(Some(Vec::new())),
                         ..Default::default()
                     })
                     .collect(),
@@ -1399,9 +1412,11 @@ fn all_28_reached_event_shapes_produce_native_lines() {
 }
 
 #[test]
-fn native_leaf_conditions_and_out_of_subset_refusals_remain_local() {
+fn native_leaf_conditions_and_missing_content_refusals_remain_local() {
     let fixture = Fixture::new();
-    let out=fixture.render("annex_country=BBB add_state_claim=1 delete_unit_template_and_units={division_template=guard disband=yes disband=invalid} hidden_effect={add_equipment_to_stockpile={amount=1}} army_experience=2",&mut fresh(),Content::default());
+    // CAddEquipmentEffect is now ported. Its null type returns empty natively;
+    // a concrete token reaches the required equipment catalogue instead.
+    let out=fixture.render("annex_country=BBB add_state_claim=1 delete_unit_template_and_units={division_template=guard disband=yes disband=invalid} hidden_effect={add_equipment_to_stockpile={type=synthetic_missing amount=1}} army_experience=2",&mut fresh(),Content::default());
     assert_eq!(
         out.text,
         "Annex Alpha/Beta\nClaim One\nDisband guard\nXP2\n"

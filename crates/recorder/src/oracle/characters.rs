@@ -116,10 +116,10 @@ pub(super) fn compare(
             compare_characters(frame, manager, links, tokens, report)
         });
         complete &= report.attempt("CountryLeaderRoles", |report| {
-            compare_country_leader_roles(frame, manager, links, report)
+            compare_country_leader_roles(frame, manager, links, tokens, report)
         });
         complete &= report.attempt("AdvisorRoles", |report| {
-            compare_advisors(frame, manager, links, report)
+            compare_advisors(frame, manager, links, tokens, country_leader_traits, report)
         });
         let mut unrepresented = None;
         complete &= report.attempt("UnitLeaders", |report| {
@@ -259,16 +259,22 @@ fn compare_country_leader_roles(
     frame: &DecodedFrame,
     manager: &saved::Manager,
     links: &BTreeMap<u32, &CountryRow>,
+    tokens: &TokenNames<'_>,
     report: &mut Report,
 ) -> io::Result<()> {
     let mut seen = BTreeSet::new();
     let mut counts = BTreeMap::<u64, usize>::new();
+    let mut roles = BTreeMap::<u64, BTreeMap<i32, _>>::new();
     for row in complete::<tables::CountryLeaderRoles>(frame)? {
         if !seen.insert((row.character, row.ideology)) {
             return Err(invalid("duplicate country leader role key"));
         }
         let character = handle(73, row.character);
         *counts.entry(character).or_default() += 1;
+        roles
+            .entry(character)
+            .or_default()
+            .insert(row.ideology, row);
         if let Some(expected) = manager.characters.get(&character) {
             equal(
                 report,
@@ -290,6 +296,36 @@ fn compare_country_leader_roles(
             character.country_leaders.len(),
         );
         count += actual.min(character.country_leaders.len());
+        // 140F913A0 writes roles in signed map order. 1403611C0 changes the
+        // current ideology without rekeying that map; 140FB73E0 saves +0x140.
+        if actual != character.country_leaders.len() {
+            report.limitation(
+                "current leader ideologies cannot be joined while the signed role-map census differs",
+                format!("CountryLeaderRoles character {id}"),
+            );
+        } else if let Some(roles) = roles.get(&id) {
+            for (row, saved) in roles.values().zip(&character.country_leaders) {
+                let label = format!("country leader {id}/{}.current_ideology", row.ideology);
+                if let Some(current) = report.recorded(
+                    &row.current_ideology,
+                    "CountryLeaderRoles.current_ideology",
+                    &label,
+                ) {
+                    match current {
+                        Some(Some(token)) => {
+                            token_value(report, &label, tokens, *token as i32, &saved.ideology);
+                        }
+                        Some(None) => {
+                            report.difference(&label, "native null ideology", &saved.ideology)
+                        }
+                        None => report.limitation(
+                            "current country-leader ideology unavailable from native capture",
+                            label,
+                        ),
+                    }
+                }
+            }
+        }
     }
     report.compared("CountryLeaderRoles (per-character census)", count);
     report.limitation("country leader serializer does not write numeric role-map keys; the oracle compares the per-character census and joins trait and party-leader rows by signed map order", "CountryLeaderRoles.ideology, PartyLeaders.role");
@@ -301,16 +337,49 @@ fn compare_advisors(
     frame: &DecodedFrame,
     manager: &saved::Manager,
     links: &BTreeMap<u32, &CountryRow>,
+    tokens: &TokenNames<'_>,
+    traits: Result<&LeaderTraits, &str>,
     report: &mut Report,
 ) -> io::Result<()> {
     let mut seen = BTreeSet::new();
     let mut count = 0;
+    let role_traits = frame.complete::<tables::CharacterRoleTraits>().map(|rows| {
+        rows.iter()
+            .filter(|row| row.kind == replay::rows::CharacterRoleTraitRow::ADVISOR)
+            .map(|row| ((row.character, row.role), row))
+            .collect::<BTreeMap<_, _>>()
+    });
     for row in complete::<tables::AdvisorRoles>(frame)? {
         let key = (handle(73, row.character), row.ordinal);
         if !seen.insert(key) {
             return Err(invalid("duplicate advisor role position"));
         }
         let label = format!("advisor {key:?}");
+        if let Some(keys) = report.recorded(
+            &row.tooltip_keys,
+            "AdvisorRoles.tooltip_keys",
+            format!("{label}.tooltip_keys"),
+        ) {
+            match keys {
+                Some(keys) => {
+                    report.limitation("CAdvisor::vf2@1412902F0 omits the +0x218 tooltip string table; the structural content check cannot certify its occupied-slot order or refresh history", format!("{label}.tooltip_keys"));
+                    compare_advisor_tooltip_keys(
+                        row,
+                        keys,
+                        role_traits
+                            .as_ref()
+                            .map(|rows| rows.get(&(row.character, row.ordinal)).copied()),
+                        tokens,
+                        traits,
+                        report,
+                    );
+                }
+                None => report.limitation(
+                    "AdvisorRoles.tooltip_keys is explicitly unavailable",
+                    format!("{label}.tooltip_keys"),
+                ),
+            }
+        }
         if let Some(cache) = report.recorded(
             &row.modifier_cache,
             "AdvisorRoles.modifier_cache",
@@ -368,6 +437,65 @@ fn compare_advisors(
     report.compared("AdvisorRoles", count);
     report.limitation("advisor serializer emits slot and idea_token from the role object, not the native map key; ordered role values are compared but map-key bytes are not", "AdvisorRoles.key");
     Ok(())
+}
+
+/// 14128FF90 rebuilds the advisor's keys from the current trait key sets.
+fn compare_advisor_tooltip_keys(
+    row: &replay::rows::AdvisorRoleRow,
+    keys: &[Vec<u8>],
+    trait_row: Result<Option<&replay::rows::CharacterRoleTraitRow>, &io::Error>,
+    tokens: &TokenNames<'_>,
+    traits: Result<&LeaderTraits, &str>,
+    report: &mut Report,
+) {
+    let label = format!("advisor {}/{}.tooltip_keys", row.character, row.ordinal);
+    let Ok(traits) = traits else {
+        report.limitation(
+            "advisor tooltip structural check lacks the recorded content's trait definitions",
+            label,
+        );
+        return;
+    };
+    let trait_row = match trait_row {
+        Ok(row) => row,
+        Err(reason) => {
+            report.limitation(
+                &format!("advisor tooltip structural check lacks CharacterRoleTraits: {reason}"),
+                label,
+            );
+            return;
+        }
+    };
+    let mut authored = BTreeSet::new();
+    if let Some(trait_row) = trait_row {
+        if advisor_trait_names(trait_row, tokens, Ok(traits)).is_err() {
+            report.limitation(
+                "advisor tooltip structural check cannot identify every recorded trait",
+                label,
+            );
+            return;
+        }
+        for &ordinal in &trait_row.definitions {
+            let definition = traits.by_ordinal(ordinal).unwrap();
+            authored.extend(
+                definition
+                    .modifiers
+                    .tooltips()
+                    .into_iter()
+                    .map(String::into_bytes),
+            );
+        }
+    }
+    for (ordinal, key) in keys.iter().enumerate() {
+        if !authored.contains(key) {
+            report.difference(
+                format!("{label}[{ordinal}]"),
+                key,
+                "key in a recorded trait's content",
+            );
+        }
+    }
+    report.compared("AdvisorRoles.tooltip_keys (content membership)", keys.len());
 }
 
 /// Signed map order is the serializer's role order (140F913A0, comparator 140F8A750).
@@ -966,6 +1094,8 @@ fn compare_leaders(
         "CUnitLeader::IsVisible inputs (+0x18 choice presence, +0xF50) are not serialized",
         "UnitLeaders.visibility_choice/template_visibility",
     );
+    report.limitation("CUnitLeader::Serialize@140C0D920 and CArmyLeader::Serialize@140C18CA0 omit the active formation reference at +0x1048. The army writer's optional token283D reads the distinct +0x1050 reference. Saved group membership cannot certify the exact active reference used by ability late-join and communications gates; a matched-hour native comparison remains necessary",
+        "UnitLeaders.formation_reference");
     Ok(unrepresented)
 }
 

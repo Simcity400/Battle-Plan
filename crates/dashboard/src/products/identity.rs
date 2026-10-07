@@ -189,11 +189,12 @@ pub(crate) struct NamingCountry {
     pub look: Option<Look>,
 }
 
-/// A country's CountryAppearance `name_tag` and `cosmetic_tag`
-/// ([`appearance`]), and whether 140D2BD20 holds for it.
+/// A country's naming operands: dynamic-gated appearance, the independent
+/// original-or-own getter, and whether 140D2BD20 holds for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Look {
     pub name_tag: String,
+    pub original_or_own_tag: Result<String, String>,
     pub cosmetic_tag: String,
     /// [`civil_war`] for a dynamic country (`name_tag` set, so 140BA61F0
     /// holds); `Ok(false)` for any other, which 140FBCF90 never asks.
@@ -210,6 +211,11 @@ impl Look {
         let (name_tag, cosmetic_tag) = appearance(frame, row.id)?;
         Some(Self {
             name_tag: name_tag.to_owned(),
+            original_or_own_tag: installed_content::country_names::original_or_own_tag(
+                frame,
+                row.canonical_slot,
+            )
+            .map(str::to_owned),
             cosmetic_tag: cosmetic_tag.to_owned(),
             civil_war: if name_tag.is_empty() {
                 Ok(false)
@@ -222,6 +228,7 @@ impl Look {
     pub fn country_look(&self) -> politics_content::CountryLook<'_> {
         politics_content::CountryLook {
             name_tag: &self.name_tag,
+            original_or_own_tag: self.original_or_own_tag.as_deref().map_err(String::as_str),
             cosmetic_tag: &self.cosmetic_tag,
             civil_war: self.civil_war.as_ref().copied().map_err(String::as_str),
         }

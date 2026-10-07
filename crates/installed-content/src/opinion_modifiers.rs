@@ -71,15 +71,18 @@ fn parse_with_notes(input: &[u8], bounds: [i16; 2]) -> io::Result<(Vec<Opinion>,
             Node::Group => Shape::Object(Node::Opinion),
             Node::Opinion => match field.keyword().as_deref() {
                 Some(
-                    b"value" | b"target" | b"trade" | b"days" | b"months" | b"years"
-                    | b"decay" | b"min_trust" | b"max_trust",
+                    b"value" | b"target" | b"trade" | b"days" | b"months" | b"years" | b"decay"
+                    | b"min_trust" | b"max_trust",
                 ) => Shape::One,
                 _ => Shape::Skip,
             },
         },
     );
     if let Some(error) = read.unsettled {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, error.to_string()));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            error.to_string(),
+        ));
     }
     let notes = read.misreads.iter().map(ToString::to_string).collect();
     let mut definitions = Vec::new();
@@ -122,12 +125,16 @@ fn parse_with_notes(input: &[u8], bounds: [i16; 2]) -> io::Result<(Vec<Opinion>,
                         }
                     }
                     Some(b"trade") => {
-                        if let Some(value) = parser::read_bool(field.value.scalar().unwrap_or_default()) {
+                        if let Some(value) =
+                            parser::read_bool(field.value.scalar().unwrap_or_default())
+                        {
                             definition.trade = value;
                         }
                     }
                     Some(b"target") => {
-                        if let Some(value) = parser::read_bool(field.value.scalar().unwrap_or_default()) {
+                        if let Some(value) =
+                            parser::read_bool(field.value.scalar().unwrap_or_default())
+                        {
                             target = value;
                         }
                         // Returning to target=no does not undo the name.
@@ -141,7 +148,7 @@ fn parse_with_notes(input: &[u8], bounds: [i16; 2]) -> io::Result<(Vec<Opinion>,
                             definition.name = format!("{}_target", definition.token);
                         }
                     }
-                    _ => {},
+                    _ => {}
                 }
             }
             if definition.opinion < min {
@@ -172,10 +179,13 @@ pub fn read(layers: &ResolvedLayers, defines: &crate::defines::Defines) -> io::R
         match parse_with_notes(&layers.read(&path)?, bounds) {
             Ok((definitions, notes)) => {
                 database.definitions.extend(definitions);
-                database.notes.extend(notes.into_iter().map(|note| format!("{path}: {note}")));
+                database
+                    .notes
+                    .extend(notes.into_iter().map(|note| format!("{path}: {note}")));
             }
             Err(error) => {
-                let reason = format!("{path}: {error}; unread first-token definitions cannot be determined");
+                let reason =
+                    format!("{path}: {error}; unread first-token definitions cannot be determined");
                 database.notes.push(reason.clone());
                 database.gap = Some(reason);
                 // A future definition cannot supersede an unknown first

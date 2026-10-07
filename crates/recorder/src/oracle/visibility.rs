@@ -524,6 +524,18 @@ fn compare_local_player(
 
 /// Inputs the text save does not carry: they decode, but nothing certifies them.
 fn record_inputs(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
+    for row in complete::<tables::SimulationFeatures>(frame)? {
+        if let Some(instant) = report.recorded(
+            &row.instant_decisions,
+            "SimulationFeatures.instant_decisions",
+            "instant decisions console byte",
+        ) {
+            match instant {
+                Some(_) => report.limitation("instant_decisions is the session console byte at 143317263 (reader 14071E7D0, writer 1402928D0); no established text-save field certifies it", "SimulationFeatures.instant_decisions"),
+                None => report.limitation("instant decisions console byte capture refused", "SimulationFeatures.instant_decisions: other simulation features remain available"),
+            }
+        }
+    }
     report.limitation(
         "CWeatherManager+0x349/+0x34A gate the hourly weather/day-night update (140F07550); the manager serializer 140F0D8E0 does not write these bytes or the held local-hour/night outputs, so a text save cannot certify suspension or recover their held history",
         "SimulationFeatures.weather_suspend: runtime-only census, no exact text-save comparison",

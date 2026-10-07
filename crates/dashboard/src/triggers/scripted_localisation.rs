@@ -56,9 +56,12 @@ impl Evaluator<'_, '_> {
         let value = self.mtth_operand("random_list", &list.seed, "seed", 0, scopes)?;
         let identity = match scopes.this {
             super::Scope::Country(slot) => slot.wrapping_mul(31),
+            super::Scope::CountryLeader { country, .. }
+                if self.variable_scope_has_country(country)? => country.wrapping_mul(31),
             super::Scope::State(id) if (id as i32) > 0 => id.wrapping_mul(59),
             super::Scope::State(_) | super::Scope::Province(_) => 0,
-            super::Scope::Leader(reference) => {
+            super::Scope::Leader(reference)
+                | super::Scope::CountryLeader { leader: reference, .. } => {
                 match self.world().unit_leader(reference)? {
                     Some(leader) => reference_hash((u64::from(leader.character_id) << 32) | u64::from(leader.character_type)),
                     None => 0,
@@ -96,7 +99,7 @@ impl Evaluator<'_, '_> {
 
 /// HashReferenceHandle (14220A010): word swap, wrapping u64 multiplication,
 /// then high XOR low. UnitLeaders records the character's complete handle.
-fn reference_hash(reference: u64) -> u32 {
+pub(super) fn reference_hash(reference: u64) -> u32 {
     let product = reference.rotate_left(32).wrapping_mul(0x4963_1a45);
     (product >> 32) as u32 ^ product as u32
 }

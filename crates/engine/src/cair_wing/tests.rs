@@ -78,6 +78,95 @@ fn capture(bytes: &[u8], rows: &mut [Row]) -> Outcome {
     walk(&SliceMemory { base: 0, bytes }, 0, GS, rows)
 }
 
+#[test]
+fn stored_wing_names_keep_sso_heap_empty_bytes_and_field_local_failures() {
+    for text in [
+        Vec::new(),
+        b"Player %d".to_vec(),
+        vec![0xff, 0, b'X'],
+        vec![b'x'; 4097],
+    ] {
+        let mut bytes = fixture();
+        bytes.resize(0xe000 + text.len() + 1, 0);
+        let source = if text.len() <= 15 {
+            WING_A + NAME
+        } else {
+            p64(&mut bytes, WING_A + NAME, 0xe000);
+            0xe000
+        };
+        bytes[source..source + text.len()].copy_from_slice(&text);
+        p64(
+            &mut bytes,
+            WING_A + NAME + crate::msvc_string::LENGTH,
+            text.len() as u64,
+        );
+        p64(
+            &mut bytes,
+            WING_A + NAME + crate::msvc_string::CAPACITY,
+            text.len().max(15) as u64,
+        );
+        p64(&mut bytes, WING_B + NAME + crate::msvc_string::CAPACITY, 15);
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        assert_eq!(name_demand(&memory, 0, GS), Ok(text.len()));
+        let mut storage = vec![0; text.len()];
+        let mut arena = NameArena {
+            bytes: &mut storage,
+            used: 0,
+            required: 0,
+            failures: 0,
+        };
+        let mut rows = [Row::default(); 2];
+        assert_eq!(
+            walk_with_names(&memory, 0, GS, &mut rows, &mut arena, |_, _, _| {}),
+            Outcome::Rows { len: 2 }
+        );
+        assert_eq!(
+            (arena.used, arena.required, arena.failures),
+            (text.len(), text.len(), 0)
+        );
+        assert_eq!(rows[0].name, Some((0, text.len())));
+        assert_eq!(rows[1].name, Some((text.len(), 0)));
+        assert_eq!(storage, text);
+        if !text.is_empty() {
+            let mut arena = NameArena {
+                bytes: &mut [],
+                used: 0,
+                required: 0,
+                failures: 0,
+            };
+            assert_eq!(
+                walk_with_names(&memory, 0, GS, &mut rows, &mut arena, |_, _, _| {}),
+                Outcome::Rows { len: 2 }
+            );
+            assert_eq!((arena.required, arena.failures), (text.len(), 1));
+            assert_eq!(rows[0].name, None);
+            assert_eq!(rows[1].name, Some((0, 0)));
+            assert_eq!(rows[0].planes, i32::MIN);
+        }
+        let fault = Traced {
+            bytes: &bytes,
+            reads: Default::default(),
+            fault: Some(WING_A + NAME + crate::msvc_string::LENGTH),
+        };
+        let mut arena = NameArena {
+            bytes: &mut storage,
+            used: 0,
+            required: 0,
+            failures: 0,
+        };
+        assert_eq!(
+            walk_with_names(&fault, 0, GS, &mut rows, &mut arena, |_, _, _| {}),
+            Outcome::Rows { len: 2 }
+        );
+        assert_eq!(rows[0].name, None);
+        assert_eq!(rows[1].name, Some((0, 0)));
+        assert_eq!(arena.failures, 1);
+    }
+}
+
 struct Traced<'a> {
     bytes: &'a [u8],
     reads: std::cell::RefCell<Vec<(usize, usize)>>,
@@ -553,6 +642,7 @@ fn raw_handles_signed_counts_alias_owner_and_nullable_region_survive() {
             eligibility_counter: i32::MIN,
             eligibility_limit: i32::MAX,
             attached_orders_group: None,
+            name: None,
         }
     );
     assert_eq!(rows[1].id, 69); // One zero handle word is not a null handle.

@@ -57,6 +57,16 @@ keys! {
     NAVY_ORG_FACTOR = 0x47;
     /// Register@140569722 (token global 0x1427bfef8).
     LOCAL_INTEL_TO_ENEMIES = 0x4b;
+    /// Register@1405A7DEB; fresh own-army attrition 140C65DC0.
+    ATTRITION = 0x4f;
+    /// Register@1405A96C9; fresh weather branch 140C65DC0.
+    WINTER_ATTRITION_FACTOR = 0x50;
+    /// Register@1405A9AEE; fresh weather branch 140C65DC0.
+    WINTER_ATTRITION = 0x51;
+    /// Register@1405AA338; fresh weather branch 140C65DC0.
+    HEAT_ATTRITION = 0x52;
+    /// Register@1405A9F13; fresh weather branch 140C65DC0.
+    HEAT_ATTRITION_FACTOR = 0x53;
     /// Register@1405b40b6 (token global 0x1427c0228).
     UNIT_UPKEEP_ATTRITION_FACTOR = 0x54;
     /// Register@1405D0447; selected by escape chance 14195C7D0.
@@ -187,6 +197,10 @@ keys! {
     DISABLE_STRATEGIC_REDEPLOYMENT = 0x1ea;
     /// Register@140573494 (token global 0x1427c03d4).
     DISABLE_STRATEGIC_REDEPLOYMENT_FOR_CONTROLLER = 0x1eb;
+    /// Register@1405A8210; fresh state branch 140C65DC0.
+    ATTRITION_FOR_CONTROLLER = 0x1ee;
+    /// Register@1405A8635; fresh state branch 140C65DC0.
+    ENEMY_ATTRITION = 0x1ef;
     /// Register@1405EC993 (token global 0x1427C0348); `1411DED90/140C07140`.
     INTELLIGENCE_AGENCY_DEFENSE = 0x1ff;
     /// Register@1405F1C6B (token global 0x1427C0388); `1413E3350`.
@@ -211,6 +225,8 @@ keys! {
     ARMY_RETREAT_SPEED_FACTOR = 0x286;
     /// Register@140586321 (token global 0x1427c060c).
     LOCAL_RESOURCE_GAIN_EFFICIENCY_PER_INFRASTRUCTURE = 0x292;
+    /// Register@1405FE1C4; fresh own-counter dig-in getter 1418BC515.
+    COMBAT_ENTRENCHMENT = 0x293;
     /// Register@1405ff258 (token global 0x1427bfb70).
     CANNOT_RETREAT_WHILE_DEFENDING = 0x297;
     /// Register@1405ff67d (token global 0x1427bfb74).

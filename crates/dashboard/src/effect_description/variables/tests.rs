@@ -15,6 +15,11 @@ fn fixture() -> Fixture {
                 value_raw: 300_000,
             }],
         }]));
+    *fixture.frame.tables[TableId::TrainInventory.index()] =
+        TableView::Complete(TableRows::TrainInventory(vec![TrainInventoryRow {
+            country: 100,
+            ..Default::default()
+        }]));
     fixture
 }
 
@@ -70,6 +75,21 @@ fn persistent_arithmetic_only_describes_authored_tooltips() {
 #[test]
 fn tooltip_evaluates_right_before_left_and_repeats_temp_rhs() {
     let mut fixture = fixture();
+    let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
+    else {
+        panic!("fixture has a complete CountryAppearance table");
+    };
+    let country = rows.iter_mut().find(|row| row.country == 100).unwrap();
+    // GetOriginalTagOrTag@1406DF830 takes own+8 for a recorded nonpositive
+    // original reference; an unread field must not silently select AAA.
+    country.original_tag_reference = Recorded::Value(Some(0));
+    country.original_tag = Recorded::Value(Some(Vec::new()));
+    // AliasResolve@1407141F0 accepts its original candidate before reading
+    // either native list when this candidate's condition succeeds.
+    *fixture.frame.tables[TableId::ReservedCountryNaming.index()] = TableView::Unavailable {
+        reason: "unused alias country lists not sampled".into(),
+    };
     let mut names = installed_content::key_names::KeyNames::default();
     names.countries = [b"AAA".to_vec()].into();
     names.aliases = [b"ali".to_vec()].into();
@@ -86,8 +106,8 @@ fn tooltip_evaluates_right_before_left_and_repeats_temp_rhs() {
         &mut fresh(),
         Content::default(),
     );
-    assert_eq!(out.text, "AAA:3/2\nXP9\nAAA:9/3\nXP9\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    assert_eq!(out.text, "AAA:3/2\nXP9\nAAA:9/3\nXP9\n");
 }
 
 #[test]
@@ -216,12 +236,15 @@ fn known_noops_do_not_need_rng_or_supply_totals() {
         ("set_temp_variable_to_random={var=n}", "CVariables+8"),
         (
             "get_supply_vehicles_temp={var=n type=truck need=yes}",
-            "+0x130 i64",
+            "TrainInventory.required_trucks_raw",
         ),
-        ("get_supply_vehicles_temp={var=n type=truck}", "+0x138 i32"),
+        (
+            "get_supply_vehicles_temp={var=n type=truck}",
+            "TrainInventory.allocated_trucks",
+        ),
         (
             "get_supply_vehicles_temp={var=n type=train need=yes}",
-            "+0x140 i32",
+            "TrainInventory.required_trains",
         ),
         ("get_supply_vehicles={var=n}", "description is not ported"),
     ] {
@@ -254,4 +277,331 @@ fn known_noops_do_not_need_rng_or_supply_totals() {
             .keys()
             .any(|why| why.contains("temp write is not reproduced"))
     );
+}
+
+#[test]
+fn format98_random_temp_uses_store_seed_and_keeps_one_tls_session() {
+    let mut fixture = fixture();
+    let TableView::Complete(TableRows::ScriptVariables(rows)) =
+        &mut *fixture.frame.tables[TableId::ScriptVariables.index()]
+    else {
+        panic!("complete variables");
+    };
+    rows[0].seed = Recorded::Value(Some(37));
+    let mut graph = fresh();
+    fixture.with_renderer(&mut graph, Content::default(), |renderer| {
+        let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
+        // 1405354A0: 37 + THIS(1*31)*13 + FROM(1*31)*17 = 967.
+        assert_eq!(
+            renderer
+                .evaluator()
+                .unwrap()
+                .scoped_value(b"random_seed", scopes),
+            Ok(967)
+        );
+        let body =
+            installed_content::parser::parse(b"set_temp_variable_to_random={var=n min=2 max=4}").unwrap();
+        assert_eq!(renderer.group(&body.items, scopes, 0), "");
+        assert_eq!(
+            renderer.evaluator().unwrap().scoped_value(b"n", scopes),
+            Ok(330_754)
+        );
+        assert_eq!(
+            renderer
+                .evaluator()
+                .unwrap()
+                .scoped_value(b"random_seed", scopes),
+            Ok(1_514_732_982_084_589_112)
+        );
+        // A nested description/scope uses the outer TLS generator, not BBB's store.
+        let selected = renderer
+            .evaluator()
+            .unwrap()
+            .with_this(scopes, Scope::Country(2))
+            .unwrap();
+        renderer.evaluator().unwrap().begin_description_in(selected);
+        assert_eq!(renderer.group(&body.items, selected, 0), "");
+        renderer
+            .evaluator()
+            .unwrap()
+            .end_description(selected)
+            .unwrap();
+        assert_eq!(
+            renderer.evaluator().unwrap().scoped_value(b"n", scopes),
+            Ok(318_646)
+        );
+        assert_eq!(
+            renderer
+                .evaluator()
+                .unwrap()
+                .scoped_value(b"random_seed", scopes),
+            Ok(8_040_804_592_834_738_808)
+        );
+        assert!(
+            renderer.out.refusals.is_empty(),
+            "{:?}",
+            renderer.out.refusals
+        );
+        renderer
+            .evaluator()
+            .unwrap()
+            .refuse_description_writer("synthetic unknown seed write".into());
+        renderer.group(&body.items, scopes, 0);
+        assert!(
+            renderer
+                .out
+                .refusals
+                .keys()
+                .any(|why| why.contains("synthetic unknown seed write")),
+            "{:?}",
+            renderer.out.refusals
+        );
+    });
+    assert_eq!(graph.scopes[0].random_seed, 1); // Independent iterator RNG was untouched.
+    let out = fixture.render(
+        "set_temp_variable_to_random={var=n min=2 max=4} army_experience=n",
+        &mut fresh(),
+        Content::default(),
+    );
+    assert_eq!(out.text, "XP3\n");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+#[test]
+fn format98_random_seed_uses_immediate_from_and_native_integer_flooring() {
+    let mut fixture = fixture();
+    let TableView::Complete(TableRows::ScriptVariables(rows)) =
+        &mut *fixture.frame.tables[TableId::ScriptVariables.index()]
+    else {
+        panic!("complete variables");
+    };
+    rows[0].seed = Recorded::Value(Some(37));
+    let mut graph = EventScopes::new(vec![
+        EventScope {
+            root: Link::Scope(2),
+            from: Link::Scope(1),
+            ..EventScope::of(EventObject::Country(1))
+        },
+        EventScope::of(EventObject::Country(2)),
+        EventScope::of(EventObject::State(5)),
+    ]);
+    fixture.with_renderer(&mut graph, Content::default(), |renderer| {
+        let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
+        // ROOT does not contribute: 37 + 31*13 + 62*17 = 1494.
+        assert_eq!(
+            renderer
+                .evaluator()
+                .unwrap()
+                .scoped_value(b"random_seed", scopes),
+            Ok(1494)
+        );
+        let body = installed_content::parser::parse(
+            b"set_temp_variable_to_random={var=n min=-2.25 max=3.75 integer=yes}",
+        )
+        .unwrap();
+        renderer.group(&body.items, scopes, 0);
+        // Fraction 95061: floor(-2.25)=-3, floor(3.75)=3, floor(6*.95061)=5.
+        assert_eq!(
+            renderer.evaluator().unwrap().scoped_value(b"n", scopes),
+            Ok(200_000)
+        );
+        assert!(
+            renderer.out.refusals.is_empty(),
+            "{:?}",
+            renderer.out.refusals
+        );
+    });
+}
+
+#[test]
+fn format98_variable_rng_selects_native_state_character_and_global_stores() {
+    let mut fixture = fixture();
+    *fixture.frame.tables[TableId::ScriptVariables.index()] =
+        TableView::Complete(TableRows::ScriptVariables(
+            [(0, 0, 5), (1, 100, 37), (2, 3, 7), (3, 9, 11)]
+                .map(|(scope_kind, scope_id, seed)| ScriptVariablesRow {
+                    scope_kind,
+                    scope_id,
+                    seed: Recorded::Value(Some(seed)),
+                    ..Default::default()
+                })
+                .to_vec(),
+        ));
+    *fixture.frame.tables[TableId::Characters.index()] =
+        TableView::Complete(TableRows::Characters(vec![CharacterRow {
+            id: 9,
+            country: 100,
+            ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::UnitLeaders.index()] =
+        TableView::Complete(TableRows::UnitLeaders(vec![UnitLeaderRow {
+            id: 4,
+            character_id: 9,
+            ..Default::default()
+        }]));
+    // 1405354A0 selects country before state, then character, else global.
+    // 140529EE0 hashes state 3 as 177 and character type 73/id 9 as 2033816002.
+    for (object, expected) in [
+        (
+            EventObject::CountryState {
+                country: 1,
+                state: 3,
+            },
+            967,
+        ),
+        (EventObject::State(3), 5_317),
+        (EventObject::Character(9), 884_937_927),
+        (EventObject::UnitLeader(4 << 32), 884_937_927),
+        (EventObject::State(0), 35), // Empty scope uses its +0x0C seed 1.
+    ] {
+        let mut graph = EventScopes::new(vec![EventScope::of(object)]);
+        fixture.with_renderer(&mut graph, Content::default(), |renderer| {
+            let evaluator = renderer.evaluator().unwrap();
+            let scopes = evaluator.event_scopes(0).unwrap();
+            assert_eq!(evaluator.scoped_value(b"random_seed", scopes), Ok(expected));
+        });
+    }
+}
+
+#[test]
+fn format98_random_seed_unavailable_or_old_records_refuse_without_losing_prefix() {
+    let mut fixture = fixture();
+    for seed in [Recorded::NotRecorded, Recorded::Value(None)] {
+        let TableView::Complete(TableRows::ScriptVariables(rows)) =
+            &mut *fixture.frame.tables[TableId::ScriptVariables.index()]
+        else {
+            panic!("complete variables");
+        };
+        rows[0].seed = seed;
+        let out = fixture.render(
+            "army_experience=2 set_temp_variable_to_random={var=n} army_experience=n",
+            &mut fresh(),
+            Content::default(),
+        );
+        assert_eq!(out.text, "XP2\n");
+        assert!(
+            out.refusals
+                .keys()
+                .any(|why| why.contains("ScriptVariables.seed (CVariables+8)")),
+            "{:?}",
+            out.refusals
+        );
+        assert!(
+            out.refusals
+                .keys()
+                .any(|why| why.contains("temp write is not reproduced")),
+            "{:?}",
+            out.refusals
+        );
+    }
+}
+
+#[test]
+fn format98_supply_temps_use_stored_scalars_native_ceiling_and_content_minimum() {
+    let mut fixture = fixture();
+    for (kind, need, raw, expected) in [
+        ("truck", false, -4, -400_000),
+        ("truck", true, 200_001, 300_000),
+        ("truck", true, -200_001, -200_000),
+        ("truck", true, 0, 0),
+        ("truck", true, i64::MAX, 70_231_305_300_000),
+        ("truck", true, i64::MIN, 70_231_305_300_000),
+        ("train", true, 1, 0),
+        ("train", true, 2, 0), // Strictly above synthetic NSupply.MIN_TRAIN_REQUIREMENT=2.
+        ("train", true, 3, 300_000),
+    ] {
+        let TableView::Complete(TableRows::TrainInventory(rows)) =
+            &mut *fixture.frame.tables[TableId::TrainInventory.index()]
+        else {
+            panic!("complete train inventory");
+        };
+        rows[0].allocated_trucks = Recorded::Value(Some(raw as i32));
+        rows[0].required_trucks_raw = Recorded::Value(Some(raw));
+        rows[0].required_trains = Recorded::Value(Some(raw as i32));
+        let script = format!(
+            "get_supply_vehicles_temp={{var=n type={kind} need={}}}",
+            if need { "yes" } else { "no" }
+        );
+        fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
+            let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
+            let body = installed_content::parser::parse(script.as_bytes()).unwrap();
+            assert_eq!(renderer.group(&body.items, scopes, 0), "");
+            assert_eq!(
+                renderer.evaluator().unwrap().scoped_value(b"n", scopes),
+                Ok(expected),
+                "{script}/{raw}"
+            );
+            assert!(
+                renderer.out.refusals.is_empty(),
+                "{:?}",
+                renderer.out.refusals
+            );
+        });
+    }
+    let out = fixture.render(
+        "get_supply_vehicles_temp={var=n type=train} army_experience=n",
+        &mut fresh(),
+        Content::default(),
+    );
+    assert!(out.text.is_empty());
+    assert!(
+        out.refusals
+            .keys()
+            .any(|why| why.contains("CCountrySupplySystem+0x110 i32 are not recorded")),
+        "{:?}",
+        out.refusals
+    );
+}
+
+#[test]
+fn format98_supply_unavailable_and_old_scalars_keep_named_refusals() {
+    let mut fixture = fixture();
+    for unavailable in [false, true] {
+        let TableView::Complete(TableRows::TrainInventory(rows)) =
+            &mut *fixture.frame.tables[TableId::TrainInventory.index()]
+        else {
+            panic!("complete train inventory");
+        };
+        rows[0].allocated_trucks = if unavailable {
+            Recorded::Value(None)
+        } else {
+            Recorded::NotRecorded
+        };
+        rows[0].required_trucks_raw = if unavailable {
+            Recorded::Value(None)
+        } else {
+            Recorded::NotRecorded
+        };
+        rows[0].required_trains = if unavailable {
+            Recorded::Value(None)
+        } else {
+            Recorded::NotRecorded
+        };
+        for (kind, need, field) in [
+            ("truck", "no", "allocated_trucks"),
+            ("truck", "yes", "required_trucks_raw"),
+            ("train", "yes", "required_trains"),
+        ] {
+            let out = fixture.render(
+                &format!(
+                    "get_supply_vehicles_temp={{var=n type={kind} need={need}}} army_experience=n"
+                ),
+                &mut fresh(),
+                Content::default(),
+            );
+            assert!(out.text.is_empty());
+            assert!(
+                out.refusals.keys().any(|why| why.contains(field)),
+                "{:?}",
+                out.refusals
+            );
+            assert!(
+                out.refusals
+                    .keys()
+                    .any(|why| why.contains("temp write is not reproduced")),
+                "{:?}",
+                out.refusals
+            );
+        }
+    }
 }

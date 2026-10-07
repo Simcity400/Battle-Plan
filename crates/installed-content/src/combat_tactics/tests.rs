@@ -843,7 +843,7 @@ fn meta_text_is_raw_and_an_invalid_key_skips_its_block() {
     let trigger = database.tactics[0].fields[0].value.items().unwrap();
     assert_eq!(
         trigger[0].value.items().unwrap()[0].value,
-        Value::Block(Vec::new())
+        Value::Scalar(b" @hidden = 1 ".to_vec())
     );
     assert_eq!(trigger[1].value, Value::Block(Vec::new()));
     assert_eq!(database.tactics[0].effects[2], 0);

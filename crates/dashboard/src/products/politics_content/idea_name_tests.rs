@@ -76,6 +76,7 @@ fn an_idea_name_is_its_selected_key_alone() {
     let content = PoliticsContent::load(Arc::new(catalogue)).unwrap();
     let look = CountryLook {
         name_tag: "",
+        original_or_own_tag: Ok("MOD"),
         cosmetic_tag: "",
         civil_war: Ok(false),
     };
@@ -174,8 +175,17 @@ fn an_idea_is_named_for_its_country() {
     let content = PoliticsContent::load(Arc::new(catalogue)).unwrap();
     let fixed = CountryLook {
         name_tag: "",
+        original_or_own_tag: Ok("GER"),
         cosmetic_tag: "",
         civil_war: Ok(false),
+    };
+    let sov = CountryLook {
+        original_or_own_tag: Ok("SOV"),
+        ..fixed
+    };
+    let italian = CountryLook {
+        original_or_own_tag: Ok("ITA"),
+        ..fixed
     };
     let country = |tag, look| IdeaCountry { tag, slot: 3, look };
     let key = |key: &str| Ok(IdeaName::Key(key.to_owned()));
@@ -184,12 +194,13 @@ fn an_idea_is_named_for_its_country() {
         key("GER_MOD_spirit")
     );
     assert_eq!(
-        content.idea_name("MOD_spirit", country("SOV", Some(fixed))),
+        content.idea_name("MOD_spirit", country("SOV", Some(sov))),
         key("MOD_spirit")
     );
     // A dynamic country whose civil-war inputs the hour lacks.
     let dynamic = CountryLook {
         name_tag: "GER",
+        original_or_own_tag: Ok("GER"),
         cosmetic_tag: "",
         civil_war: Err("hour 1 CountryCivilWars is unavailable"),
     };
@@ -219,7 +230,7 @@ fn an_idea_is_named_for_its_country() {
     let ita = content.names.for_country("", "ITA");
     let (first, surname) = content.names.draw(ita, 7).unwrap();
     assert_eq!(
-        content.idea_name("MOD_nameless", country("ITA", Some(fixed))),
+        content.idea_name("MOD_nameless", country("ITA", Some(italian))),
         Ok(IdeaName::Generated(format!(
             "{} {}",
             String::from_utf8_lossy(first),
@@ -240,6 +251,7 @@ fn an_idea_is_named_for_its_country() {
     // A cosmetic tag the names list is used first.
     let cosmetic = CountryLook {
         name_tag: "",
+        original_or_own_tag: Ok("GER"),
         cosmetic_tag: "GER_red",
         civil_war: Ok(false),
     };
@@ -250,9 +262,135 @@ fn an_idea_is_named_for_its_country() {
     // A country without names or surnames draws from the default, which
     // has none: empty text.
     assert_eq!(
-        content.idea_name("MOD_nameless", country("SOV", Some(fixed))),
+        content.idea_name("MOD_nameless", country("SOV", Some(sov))),
         Ok(IdeaName::Generated(String::new()))
     );
+}
+
+#[test]
+fn generated_advisor_names_read_the_ungated_original_only_after_cosmetic_miss() {
+    use crate::products::identity::NamingCountry;
+    use replay::{
+        frame::TableView,
+        rows::{Recorded, TableId, TableRows, tables},
+    };
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "localisation/test_l_english.yml",
+            concat!(
+                "\u{feff}l_english:\n",
+                " GER_MOD_keyed:0 \"Own idea key\"\n",
+                " POLITICS_ADVISOR_NAME_PATTERN:0 \"$NAME$ $SURNAME$\"\n",
+            ),
+        ),
+        (
+            "common/defines/mod.lua",
+            "NDefines = { NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { } } }",
+        ),
+        (
+            "common/idea_tags/mod.txt",
+            "idea_categories = { government = { slot = political_advisor } }",
+        ),
+        (
+            "common/ideas/mod.txt",
+            "ideas = { political_advisor = { MOD_generated = { } MOD_keyed = { } } }",
+        ),
+        (
+            "common/names/mod.txt",
+            "GER = { male = { names = { Own } surnames = { Name } } } \
+             MOD_original = { male = { names = { Original } surnames = { Name } } } \
+             MOD_cosmetic = { male = { names = { Cosmetic } surnames = { Name } } }",
+        ),
+    ]);
+    let content = PoliticsContent::load(Arc::new(catalogue)).unwrap();
+    let mut frame = crate::scope::tests::positive_frame();
+    let name = |frame: &replay::frame::DecodedFrame, token| {
+        let row = &frame.complete::<tables::Countries>().unwrap()[0];
+        let naming = NamingCountry::read(frame, row);
+        content.idea_name(token, naming.for_tag("GER"))
+    };
+    assert_eq!(
+        name(&frame, "MOD_generated"),
+        Ok(IdeaName::Generated("Own Name".into()))
+    );
+    for nonpositive in [0, -1] {
+        if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+            &mut *frame.tables[TableId::CountryAppearance.index()]
+        {
+            rows[0].original_tag_reference = Recorded::Value(Some(nonpositive));
+            rows[0].original_tag = Recorded::NotRecorded;
+        }
+        assert_eq!(
+            name(&frame, "MOD_generated"),
+            Ok(IdeaName::Generated("Own Name".into()))
+        );
+    }
+    if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *frame.tables[TableId::CountryAppearance.index()]
+    {
+        // The generator's dynamic witness stays empty for this static slot.
+        rows[0].original_tag_reference = Recorded::Value(Some(300));
+        rows[0].original_tag = Recorded::Value(Some(b"MOD_original".to_vec()));
+    }
+    assert_eq!(
+        name(&frame, "MOD_generated"),
+        Ok(IdeaName::Generated("Original Name".into()))
+    );
+    for (reference, unread, reason) in [
+        (
+            Recorded::NotRecorded,
+            Recorded::Value(Some(b"MOD_original".to_vec())),
+            "CountryAppearance.original_tag_reference not recorded",
+        ),
+        (
+            Recorded::Value(None),
+            Recorded::Value(Some(b"MOD_original".to_vec())),
+            "CountryAppearance.original_tag_reference capture refused",
+        ),
+        (
+            Recorded::Value(Some(300)),
+            Recorded::NotRecorded,
+            "CountryAppearance.original_tag not recorded",
+        ),
+        (
+            Recorded::Value(Some(300)),
+            Recorded::Value(None),
+            "CountryAppearance.original_tag capture refused",
+        ),
+        (
+            Recorded::Value(Some(300)),
+            Recorded::Value(Some(vec![0xFF])),
+            "country original-or-own tag is not UTF-8",
+        ),
+    ] {
+        if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+            &mut *frame.tables[TableId::CountryAppearance.index()]
+        {
+            rows[0].original_tag_reference = reference;
+            rows[0].original_tag = unread;
+            rows[0].cosmetic_tag.clear();
+        }
+        assert!(name(&frame, "MOD_generated").unwrap_err().contains(reason));
+        assert_eq!(
+            name(&frame, "MOD_keyed"),
+            Ok(IdeaName::Key("GER_MOD_keyed".into()))
+        );
+        if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+            &mut *frame.tables[TableId::CountryAppearance.index()]
+        {
+            rows[0].cosmetic_tag = b"MOD_cosmetic".to_vec();
+        }
+        assert_eq!(
+            name(&frame, "MOD_generated"),
+            Ok(IdeaName::Generated("Cosmetic Name".into()))
+        );
+        if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+            &mut *frame.tables[TableId::CountryAppearance.index()]
+        {
+            rows[0].cosmetic_tag = b"MOD_missing".to_vec();
+        }
+        assert!(name(&frame, "MOD_generated").unwrap_err().contains(reason));
+    }
 }
 
 /// 140FBCF90 for a dynamic country (SOV, named after GER) read from a
@@ -310,6 +448,8 @@ fn a_dynamic_country_in_civil_war_skips_its_keys() {
             &mut *frame.tables[TableId::CountryAppearance.index()]
         {
             rows[1].name_tag = b"GER".to_vec();
+            rows[1].original_tag_reference = replay::rows::Recorded::Value(Some(100));
+            rows[1].original_tag = replay::rows::Recorded::Value(Some(b"GER".to_vec()));
         }
         *frame.tables[TableId::CountryCivilWars.index()] =
             TableView::Complete(TableRows::CountryCivilWars(civil));
@@ -397,7 +537,7 @@ fn a_dynamic_country_in_civil_war_skips_its_keys() {
         refused.contains("140D2BD20") && refused.contains("CountryCivilWars is unavailable"),
         "{refused}"
     );
-    // A country without an original tag never asks.
+    // A country outside the dynamic gate never asks about civil war.
     let mut fixed = unread.clone();
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixed.tables[TableId::CountryAppearance.index()]

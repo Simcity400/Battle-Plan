@@ -26,6 +26,18 @@ use replay::{
     rows::{self, TableId, tables},
 };
 use std::mem::size_of;
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+static SCIENTIST_ACTIVE_REFUSALS: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn scientist_active_data() -> impl serde::Serialize {
+    let refused = SCIENTIST_ACTIVE_REFUSALS.load(Relaxed);
+    crate::status::status!({
+        "refused": refused,
+        "refusals": crate::status::map(std::iter::once(("scientist active byte unreadable or address overflow", refused)).filter(|(_, count)| *count != 0)),
+        "scope": "cumulative appended scientist activity read failures; membership and skills remain available",
+    })
+}
 
 pub const N: usize = 19;
 pub const TABLES: [TableId; N] = [
@@ -632,6 +644,13 @@ impl Captured {
                     (walk.scientists, walk.skills)
                 },
             );
+            SCIENTIST_ACTIVE_REFUSALS.fetch_add(
+                self.scientists.rows[..self.scientists.outcome.len()]
+                    .iter()
+                    .filter(|row| row.active.is_none())
+                    .count() as u64,
+                Relaxed,
+            );
             ticks[8] = elapsed(begin);
         } else {
             self.scientists.outcome = Outcome::Unavailable {
@@ -757,6 +776,7 @@ impl Captured {
                     ordinal: r.ordinal,
                     trait_count: r.trait_count,
                     skill_count: r.skill_count,
+                    active: rows::Recorded::Value(r.active),
                 }
             }),
             table::<tables::ScientistSkills, _>(outcomes[9], &self.scientist_skills.rows, |r| {

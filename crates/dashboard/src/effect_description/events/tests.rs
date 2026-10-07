@@ -1,5 +1,6 @@
 use super::*;
 use crate::catalogue::tests::{Folder, folder_catalogue};
+use replay::rows::{LexicalTokenRow, TableId};
 
 fn decision() -> Decision {
     let id = b"sample_decision".to_vec();
@@ -13,6 +14,262 @@ fn decision() -> Decision {
 
 fn event_fixture() -> (Fixture, installed_content::decisions::Database, Folder) {
     event_files_fixture(&[])
+}
+
+#[test]
+fn custom_effect_tooltip_binds_nested_arguments_in_the_caller_scope() {
+    // Reached native forms: Germany.txt's replace_ascended_advisor_tt and
+    // GOE_Raj.txt's country-transfer arguments; 1413832B0/14238F670.
+    let (mut fixture, _, _folder) = event_files_fixture(&[(
+        "localisation/bound_l_english.yml",
+        concat!(
+            "\u{feff}l_english:\n BOUND_ROOT:0 \"$CHARACTER$ / $TARGET$ / $NUMBER|0$ / $NESTED$\"\n",
+            " BOUND_CHILD:0 \"<$WORD$>\"\n BOUND_WORD:0 \"[ROOT.GetTag]\"\n",
+            " BOUND_WRONG:0 \"wrong\"\n BOUND_FIRST:0 \"first\"\n BOUND_SECOND:0 \"second\"\n"
+        ),
+    )]);
+    set::<tables::LexicalTokens>(
+        &mut fixture,
+        vec![LexicalTokenRow {
+            token: 37,
+            literal: b"bound_integer".to_vec(),
+        }],
+    );
+    let names = installed_content::key_names::KeyNames::default();
+    let content = Content {
+        key_names: Some(&names),
+        ..Default::default()
+    };
+    let output = fixture.render_native(
+        "custom_effect_tooltip={localization_key=BOUND_WRONG CHARACTER=AAA TARGET=[ROOT.GetName] NUMBER=token:bound_integer NESTED={localization_key=BOUND_CHILD WORD=BOUND_WORD} localization_key=BOUND_ROOT}",
+        &mut super::super::tests::fresh(),
+        content,
+    );
+    assert_eq!(output.text, "Alpha / Alpha / 37 / <AAA>");
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+
+    let output = fixture.render_native(
+        "custom_effect_tooltip={localization_key=BOUND_CHILD WORD=BOUND_FIRST WORD=BOUND_SECOND}",
+        &mut super::super::tests::fresh(),
+        content,
+    );
+    assert_eq!(output.text, "<first>"); // Native substitution takes the first match.
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+}
+
+#[test]
+fn custom_effect_tooltip_idea_callback_reuses_native_wrapper_and_missing_name() {
+    // The authored doubled brace stores a literal brace (14238C1A0).
+    let (fixture, _, _folder) = event_files_fixture(&[(
+        "localisation/bound_l_english.yml",
+        concat!(
+            "\u{feff}l_english:\n BOUND_IDEA:0 \"Spirit [ROOT.GetTag]\"\n",
+            " EFFECT_SHOW_IDEA_TOOLTIP:0 \"<$NAME$>\"\n BOUND_CHILD:0 \"{{$WORD$}\"\n"
+        ),
+    )]);
+    let parsed =
+        installed_content::ideas::parse_ideas(b"ideas={country={BOUND_IDEA={}}}", &[], &Default::default());
+    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), parsed.ideas);
+    let lists = installed_content::names::NameLists::default();
+    let names = installed_content::key_names::KeyNames::default();
+    let content = Content {
+        ideas: Some(&ideas),
+        name_lists: Some(&lists),
+        key_names: Some(&names),
+        ..Default::default()
+    };
+    for (body, expected) in [
+        ("custom_effect_tooltip=idea_desc|BOUND_IDEA", "<Spirit AAA>"),
+        (
+            "custom_effect_tooltip={localization_key=BOUND_CHILD WORD=idea_desc|BOUND_IDEA}",
+            "{<Spirit AAA>}",
+        ),
+        ("custom_effect_tooltip=idea_desc|missing_idea", ""),
+        ("custom_effect_tooltip={WORD=BOUND_IDEA}", ""),
+    ] {
+        let output = fixture.render_native(body, &mut super::super::tests::fresh(), content);
+        assert_eq!(output.text, expected, "{body}");
+        assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+    }
+}
+
+#[test]
+fn custom_effect_tooltip_refuses_only_the_unavailable_bound_fragment() {
+    let (fixture, _, _folder) = event_fixture();
+    let names = installed_content::key_names::KeyNames::default();
+    let output = fixture.render_native(
+        "custom_effect_tooltip={localization_key=TIP VALUE=unsupported_formatter|something} custom_effect_tooltip=TIP",
+        &mut super::super::tests::fresh(),
+        Content {
+            key_names: Some(&names),
+            ..Default::default()
+        },
+    );
+    assert_eq!(output.text, "detail");
+    assert_eq!(output.refusals.values().sum::<usize>(), 1);
+    assert!(
+        output
+            .refusals
+            .keys()
+            .any(|why| why.contains("unsupported_formatter"))
+    );
+}
+
+#[test]
+fn unscoped_bound_callbacks_use_native_null_context_text() {
+    let (fixture, _, _folder) = event_fixture();
+    fixture.with_renderer(
+        &mut super::super::tests::fresh(),
+        Content::default(),
+        |renderer| {
+            for callback in ["idea_desc", "tech_effect"] {
+                let item = installed_content::parser::parse(format!("name={callback}|missing").as_bytes())
+                    .unwrap()
+                    .items
+                    .remove(0);
+                let bound = installed_content::gui::native::BoundLocalization::from_value(&item.value);
+                assert_eq!(
+                    renderer.bound_localisation(&bound, Scopes::of(Scope::Country(1)), false),
+                    Ok("NULL".to_owned())
+                );
+            }
+        },
+    );
+}
+
+#[test]
+fn format99_inactive_decision_seed_uses_first_stored_random_item() {
+    let (mut fixture, database) = decision_fixture(Some(None));
+    set::<tables::Decisions>(&mut fixture, Vec::new());
+    let definition = database.decision(b"SYN_DECISION").unwrap().unwrap();
+    set::<tables::DecisionRandomItems>(
+        &mut fixture,
+        vec![
+            DecisionRandomItemRow {
+                country: 100,
+                ordinal: 2,
+                token: b"syn_decision".to_vec(),
+                count: 9,
+                target: 2,
+            },
+            DecisionRandomItemRow {
+                country: 100,
+                ordinal: 0,
+                token: b"SYN_DECISION".to_vec(),
+                count: -3,
+                target: 2,
+            },
+            DecisionRandomItemRow {
+                country: 200,
+                ordinal: 0,
+                token: b"SYN_DECISION".to_vec(),
+                count: 70,
+                target: 2,
+            },
+        ],
+    );
+    fixture.with_renderer(
+        &mut super::super::tests::fresh(),
+        Content::default(),
+        |renderer| {
+            assert_eq!(
+                renderer
+                    .decision_description_seed(definition, None, 1, 2)
+                    .map_err(str::to_owned),
+                decision_seed(0, definition, Some(Some(-3)), 2)
+            );
+            assert_eq!(
+                renderer
+                    .decision_description_seed(definition, None, 1, 3)
+                    .map_err(str::to_owned),
+                decision_seed(0, definition, Some(None), 3)
+            );
+            // Raw country 200 resolves to slot 2; 140721230 passes slot 2.
+            let selected = renderer
+                .decision_seeded_scope(definition, 1, Some(2), 0, false)
+                .unwrap();
+            let graph = renderer.graph.borrow();
+            let own = &graph.scopes[selected.cursor.unwrap()];
+            let seed = decision_seed(0, definition, Some(Some(-3)), 2).unwrap();
+            assert_eq!(own.random_seed, random::scope_seed(seed));
+            assert_eq!(own.random_counter, random::scope_counter(seed));
+            assert!(own.random_seed_refusal.is_none());
+        },
+    );
+}
+
+#[test]
+fn format99_unlock_decision_reads_instant_flag_only_for_positive_delay() {
+    let (mut fixture, mut database, _folder) = event_fixture();
+    let definition = database
+        .entries
+        .get_mut(b"syn_decision".as_slice())
+        .unwrap();
+    definition.complete_effect = installed_content::parser::parse(b"custom_effect_tooltip=TIP")
+        .unwrap()
+        .items;
+    definition.days_remove = b"7".to_vec();
+    let names = installed_content::key_names::KeyNames::default();
+    let content = Content {
+        decisions: Some(&database),
+        key_names: Some(&names),
+        ..Default::default()
+    };
+    for (instant, days) in [(0, 7), (255, 1)] {
+        set::<tables::SimulationFeatures>(
+            &mut fixture,
+            vec![SimulationFeatureRow {
+                instant_decisions: Recorded::Value(Some(instant)),
+                ..Default::default()
+            }],
+        );
+        let output = fixture.render_native(
+            "unlock_decision_tooltip={decision=SYN_DECISION show_effect_tooltip=yes}",
+            &mut super::super::tests::fresh(),
+            content,
+        );
+        assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+        assert_eq!(
+            output.text,
+            format!("Unlock Plan AAA\nSelect:\ndetailAfter {days}:\n\n")
+        );
+    }
+    for instant_decisions in [Recorded::Value(None), Recorded::NotRecorded] {
+        set::<tables::SimulationFeatures>(
+            &mut fixture,
+            vec![SimulationFeatureRow {
+                instant_decisions,
+                ..Default::default()
+            }],
+        );
+        let output = fixture.render_native(
+            "unlock_decision_tooltip={decision=SYN_DECISION show_effect_tooltip=yes}",
+            &mut super::super::tests::fresh(),
+            content,
+        );
+        assert_eq!(output.text, "Unlock Plan AAA\nSelect:\ndetail\n");
+        assert!(
+            output
+                .refusals
+                .keys()
+                .any(|why| why.contains("SimulationFeatures.instant_decisions"))
+        );
+    }
+    let definition = database
+        .entries
+        .get_mut(b"syn_decision".as_slice())
+        .unwrap();
+    definition.days_remove = b"0".to_vec();
+    let output = fixture.render_native(
+        "unlock_decision_tooltip={decision=SYN_DECISION show_effect_tooltip=yes}",
+        &mut super::super::tests::fresh(),
+        Content {
+            decisions: Some(&database),
+            key_names: Some(&names),
+            ..Default::default()
+        },
+    );
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
 
 fn event_files_fixture(
@@ -792,8 +1049,99 @@ fn unlock_mio_policy_reached_block_refuses_only_unrecorded_roster() {
             .keys()
             .next()
             .unwrap()
-            .contains("policy-definition roster +0x148/+0x154")
+            .contains("CountryCounterInputs.mio_policies")
     );
+}
+
+#[test]
+fn format99_mio_policy_uses_cached_membership_content_and_native_modifiers() {
+    // 1413D0370 supplies fixed5 VALUE; its plain $VALUE$ uses two decimals.
+    let (mut fixture, _, _folder) = event_fixture();
+    let names = installed_content::key_names::KeyNames::default();
+    let mut database = installed_content::industrial_organisations::Database::default();
+    database.policies.read_file(
+        b"SYN_POLICY={name=POLICY_NAME equipment_bonus={synthetic_group={soft_attack=1}} organization_modifier={custom_modifier_tooltip=TIP}}",
+        &names,
+    ).unwrap();
+    fixture.catalogue.localisation = std::sync::Arc::new(
+        fixture
+            .catalogue
+            .localisation
+            .iter()
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .chain([
+                ("AAA_POLICY_NAME".into(), "Owned [ROOT.GetTag]".into()),
+                ("synthetic_group".into(), "Group".into()),
+                ("STAT_ARMY_SOFT_ATTACK".into(), "Soft".into()),
+                ("STAT_MODIFIER_DIFF".into(), "+$VALUE$".into()),
+            ])
+            .collect(),
+    );
+    set::<tables::LexicalTokens>(
+        &mut fixture,
+        vec![replay::rows::LexicalTokenRow {
+            token: 7,
+            literal: b"SYN_POLICY".to_vec(),
+        }],
+    );
+    let content = Content {
+        industrial_organisations: Some(&database),
+        key_names: Some(&names),
+        ..Default::default()
+    };
+    for value in [Recorded::Value(None), Recorded::NotRecorded] {
+        set::<tables::CountryCounterInputs>(
+            &mut fixture,
+            vec![replay::rows::CountryCounterInputRow {
+                country: 100,
+                mio_policies: value,
+                ..Default::default()
+            }],
+        );
+        let output = fixture.render_native(
+            "unlock_mio_policy_tooltip={policy=SYN_POLICY}",
+            &mut super::super::tests::fresh(),
+            content,
+        );
+        assert!(output.text.is_empty());
+        assert_eq!(output.refusals.values().sum::<usize>(), 1);
+        assert!(
+            output
+                .refusals
+                .keys()
+                .any(|why| why.contains("CountryCounterInputs.mio_policies"))
+        );
+    }
+    for (policies, expected) in [
+        (Vec::new(), "Policy Tools\n"),
+        (
+            vec![7],
+            "Policy Owned AAA\n (\u{11}YGroup\u{11}! Soft+1.00, detail)",
+        ),
+    ] {
+        set::<tables::CountryCounterInputs>(
+            &mut fixture,
+            vec![replay::rows::CountryCounterInputRow {
+                country: 100,
+                mio_policies: Recorded::Value(Some(policies)),
+                ..Default::default()
+            }],
+        );
+        let output = fixture.render_native(
+            "unlock_mio_policy_tooltip={policy=SYN_POLICY}",
+            &mut super::super::tests::fresh(),
+            content,
+        );
+        assert_eq!(output.text, expected);
+        assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+    }
+    let output = fixture.render_native(
+        "unlock_mio_policy_tooltip={policy=SYN_POLICY show_modifiers=no}",
+        &mut super::super::tests::fresh(),
+        content,
+    );
+    assert_eq!(output.text, "Policy Owned AAA\n");
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
 
 #[test]
@@ -1176,7 +1524,10 @@ fn native_decision_name_fallback_ladder() {
 use super::super::tests::Fixture;
 use replay::{
     frame::TableView,
-    rows::{ClockRow, PoliticalPartyRow, PoliticsRow, TableSchema},
+    rows::{
+        ClockRow, DecisionRandomItemRow, PoliticalPartyRow, PoliticsRow, Recorded,
+        SimulationFeatureRow, TableSchema,
+    },
 };
 
 fn set<T: TableSchema>(fixture: &mut Fixture, rows: Vec<T::Row>) {
@@ -1185,6 +1536,9 @@ fn set<T: TableSchema>(fixture: &mut Fixture, rows: Vec<T::Row>) {
 
 fn decision_fixture(seed: Option<Option<i32>>) -> (Fixture, installed_content::decisions::Database) {
     let mut fixture = Fixture::new();
+    *fixture.frame.tables[TableId::DecisionRandomItems.index()] = TableView::Unavailable {
+        reason: "random items not recorded".into(),
+    };
     set::<tables::Clock>(&mut fixture, vec![ClockRow::default()]);
     set::<tables::Politics>(
         &mut fixture,

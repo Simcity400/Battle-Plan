@@ -16,8 +16,9 @@ use crate::{
     rows::{
         AirWingRow, ArmyOrderRow, CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionRow,
         FactionMemberRow, FactionRow, FleetRow, HumanControllerRow, LandCombatRow,
-        NavalCombatParticipantRow, NavalCombatRow, PlayerRow, ProvinceRow, RowCodec, RowRef,
-        ShipRow, StateRow, TableId, TableRows, TableSchema, TaskForceRow, WarRelationRow, tables,
+        NavalCombatParticipantRow, NavalCombatRow, PlayerRow, ProvinceRow, Recorded, RowCodec,
+        RowRef, ShipRow, StateRow, TableId, TableRows, TableSchema, TaskForceRow, WarRelationRow,
+        tables,
     },
     spool::{
         ControlRecord, Record, Recovery, SegmentBackend, SegmentSink, SegmentedSpool,
@@ -35,7 +36,7 @@ const DIVISION_EDGE_KEYS: [u64; 2] = [0, u64::MAX];
 const OPTIONAL_SCALAR_CASES: [Option<i64>; 4] = [None, Some(0), Some(i64::MIN), Some(i64::MAX)];
 // Every ordered pair of scalar cases occurs once per cycle, including the wraparound.
 const OPTIONAL_SCALAR_ORDER: [usize; 16] = [0, 0, 1, 0, 2, 0, 3, 1, 1, 2, 1, 3, 2, 2, 3, 3];
-const DOMAIN_TABLES: [TableId; 266] = [
+const DOMAIN_TABLES: [TableId; 271] = [
     TableId::WarRelations,
     TableId::Factions,
     TableId::FactionMembers,
@@ -285,6 +286,10 @@ const DOMAIN_TABLES: [TableId; 266] = [
     TableId::HiredAdvisors,
     TableId::AvailableAdvisors,
     TableId::OwnedWargoals,
+    TableId::TimedIdeas,
+    TableId::DecisionRandomItems,
+    TableId::CapturedOperativeReferences,
+    TableId::ReservedCountryNaming,
     TableId::CountryStabilityInputs,
     TableId::CountryStabilityLines,
     TableId::SupplyNodes,
@@ -295,6 +300,7 @@ const DOMAIN_TABLES: [TableId; 266] = [
     TableId::NavalCombatDetails,
     TableId::NavalCombatShips,
     TableId::NavalModifierBreakdowns,
+    TableId::AttritionModifierBreakdowns,
     TableId::NavalCombatResultDetails,
     TableId::DivisionEtaInputs,
     TableId::FactionTheatres,
@@ -584,6 +590,9 @@ fn add_map_rows(index: usize, tables: &mut [TableView]) {
                 eligibility_limit: [i32::MAX, -1, 0][tick % 3],
                 attached_orders_group: [None, Some(0), Some(u64::MAX)][tick % 3],
                 pool_ordinal: [0, u32::MAX, 1][tick % 3],
+                name: Recorded::Value(
+                    [None, Some(Vec::new()), Some(vec![0xff, 0, b'W'])][tick % 3].clone(),
+                ),
             },
         );
         push_map::<tables::ArmyOrders>(

@@ -339,6 +339,7 @@ impl Captured {
                     span(variants, r.excluded_variants).unwrap(),
                 )),
                 model_unreadable: u8::from(r.model_failure.is_some()),
+                formation_division_count: replay::rows::Recorded::Value(r.formation_division_count),
             }
         })
     }

@@ -50,10 +50,19 @@ pub struct Politics {
     /// Each party's naming, keyed like `parties`.
     pub names: BTreeMap<Vec<u8>, PartyName>,
     pub ideas: Vec<Vec<u8>>,
+    /// 140BA12D0 writes repeated 0x346C entries in roster order.
+    pub timed_ideas: Vec<TimedIdea>,
     pub ruling_party: Option<Vec<u8>>,
     pub last_election: Option<SavedDate>,
     pub election_frequency: Option<i32>,
     pub elections_allowed: Option<bool>,
+}
+
+/// CTimedIdea::vf2@140BA1580 writes the literal idea and stored signed days.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimedIdea {
+    pub token: Vec<u8>,
+    pub days: i32,
 }
 
 /// A party's naming as `CPoliticalParty::vf2@141191FA0` writes it: `default`
@@ -249,6 +258,18 @@ fn parse_politics(items: &[Item]) -> io::Result<Politics> {
         leaders,
         names,
         ideas: list(items, b"ideas")?,
+        timed_ideas: items
+            .iter()
+            // Token 0x346C: repeated timed_idea blocks witnessed in PL_R362_H60828108.
+            .filter(|item| item.keyword_is("timed_idea"))
+            .map(|item| {
+                let fields = block(&item.value)?;
+                Ok(TimedIdea {
+                    token: required_bytes(fields, b"idea")?,
+                    days: integer(&required_bytes(fields, b"days")?)?,
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?,
         ruling_party: bytes(items, b"ruling_party")?,
         last_election: bytes(items, b"last_election")?
             .map(|value| SavedDate::parse(&value))
@@ -637,6 +658,46 @@ mod tests {
 
     fn parse_text(text: &[u8]) -> io::Result<Pack> {
         parse(&crate::parser::parse(text)?.items)
+    }
+
+    #[test]
+    fn timed_ideas_preserve_order_repeats_and_stored_signed_days() {
+        let pack = parse_text(
+            br#"countries={AAA={politics={
+            timed_idea={idea="second" days=-2147483648}
+            timed_idea={idea="first" days=0}
+            timed_idea={idea="second" days=2147483647}
+        }} BBB={politics={}}}"#,
+        )
+        .unwrap();
+        let ideas = &pack.countries[b"AAA".as_slice()]
+            .politics
+            .as_ref()
+            .unwrap()
+            .timed_ideas;
+        assert_eq!(
+            ideas
+                .iter()
+                .map(|idea| (idea.token.as_slice(), idea.days))
+                .collect::<Vec<_>>(),
+            [
+                (b"second".as_slice(), i32::MIN),
+                (b"first".as_slice(), 0),
+                (b"second".as_slice(), i32::MAX),
+            ]
+        );
+        assert!(
+            pack.countries[b"BBB".as_slice()]
+                .politics
+                .as_ref()
+                .unwrap()
+                .timed_ideas
+                .is_empty()
+        );
+        for entry in ["idea=x", "days=1", "idea=x days=1 days=2"] {
+            let text = format!("countries={{AAA={{politics={{timed_idea={{{entry}}}}}}}}}");
+            assert!(parse_text(text.as_bytes()).is_err());
+        }
     }
 
     #[test]

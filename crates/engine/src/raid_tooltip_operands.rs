@@ -11,6 +11,7 @@ use crate::{
 
 mod context;
 mod names;
+pub(crate) use names::StoredString;
 mod requirements;
 
 pub const REFERENCES: u32 = 0;

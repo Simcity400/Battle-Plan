@@ -19,6 +19,8 @@ impl Evaluator<'_, '_> {
         match &collection.input {
             Input::Empty => return Ok(None),
             Input::Scope => match caller.this {
+                Scope::CountryLeader { country: 0, .. } => return Ok(None),
+                Scope::CountryLeader { country, .. } => source.push(Scope::Country(country)),
                 Scope::Country(0) | Scope::State(0) => return Ok(None),
                 Scope::Country(_) | Scope::State(_) => source.push(caller.this),
                 _ => return Err("game:scope collection object is not ported (1404C2DC0)".into()),
@@ -166,35 +168,24 @@ impl Evaluator<'_, '_> {
                 }
             }
             Operator::OwnedStates | Operator::ControlledStates => {
-                let rows = world
-                    .frame()
-                    .complete::<tables::States>()
-                    .map_err(|why| why.to_string())?;
-                world
-                    .frame()
-                    .complete::<tables::Provinces>()
-                    .map_err(|why| why.to_string())?;
-                let nonempty = world.state_members()?;
-                for row in rows {
-                    if nonempty
-                        .get(&row.id)
-                        .is_none_or(|provinces| provinces.is_empty())
-                    {
-                        continue;
-                    } // 1406C52B0/1406C3890.
-                    let raw = if matches!(operator, Operator::OwnedStates) {
-                        row.owner
-                    } else {
-                        row.controller
-                    };
-                    if raw != 0 && slot(raw)? == country {
-                        targets.push(Scope::State(row.id));
-                    }
-                }
-                if matches!(operator, Operator::OwnedStates)
-                    && world.owned_state_count(country)? != targets.len() as i32
+                let inputs = world.country_counter_inputs(country)?;
+                let (recorded, name) = if matches!(operator, Operator::OwnedStates) {
+                    (
+                        &inputs.owned_states,
+                        "CountryCounterInputs.owned_states (CCountry+0x478)",
+                    )
+                } else {
+                    (
+                        &inputs.controlled_states,
+                        "CountryCounterInputs.controlled_states (CCountry+0x460)",
+                    )
+                };
+                for &state in recorded
+                    .require(name)?
+                    .as_deref()
+                    .ok_or_else(|| format!("{name} capture unavailable"))?
                 {
-                    return Err("collection owned-state membership differs from owned_state_count (CCountry+0x484)".into());
+                    targets.push(Scope::State(state));
                 }
             }
             Operator::CountryAndSubjects => {
@@ -213,23 +204,12 @@ impl Evaluator<'_, '_> {
             }
             Operator::Limit(_) => unreachable!(),
         }
-        let mut selected = None;
-        let unordered = matches!(operator, Operator::OwnedStates | Operator::ControlledStates);
         for next in targets {
             let intermediate = self.collection_scope(caller, target, false)?;
             if let Some(found) = self.collection_path(intermediate, next, tail)? {
-                if selected.is_some() && unordered {
-                    return Err(match operator {
-                        Operator::OwnedStates => "owned_state_order: CCountry+0x478 order is unrecorded and two or more collection targets pass (1404BEDA0)",
-                        _ => "controlled_state_order: CCountry+0x460 order is unrecorded and two or more collection targets pass (1404BEDA0)",
-                    }.into());
-                }
-                selected = Some(found);
-                if !unordered {
-                    break;
-                } // Native stops the operator chain at its first success.
+                return Ok(Some(found)); // 1404BEDA0 stops at the first successful path.
             }
         }
-        Ok(selected)
+        Ok(None)
     }
 }

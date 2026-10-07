@@ -10,7 +10,8 @@ pub const SECONDARY_VTABLE_RVA: usize = 0x0296_dd88;
 pub const SECONDARY_BASE: usize = 0x18;
 /// CCountryOccupationStatus embedded occupation-data robin-hood table; old D66 attach_log.rs:148589-148628 enumerates live buckets.
 pub const OCCUPATION_DATA_TABLE: usize = 0x48;
-/// CCountryOccupationStatus occupation-data pointer vector; old a729_garrison_alert.rs:446-453 reads this independent index.
+/// Effect reader@1413DE730 and serializer@140FEAE70 (secondary base +0x18)
+/// walk this pointer vector in the same order, using group+0x18 -> country+8.
 pub const OCCUPATION_DATA_ROWS: usize = 0x60;
 /// CCountryOccupationStatus occupation-data vector count, i32 read; old a729_garrison_alert.rs:449-453.
 pub const OCCUPATION_DATA_COUNT: usize = 0x6c;
@@ -39,6 +40,8 @@ pub struct Row {
     pub default_law_present: u8,
     pub law_start: usize,
     pub law_len: usize,
+    pub occupied: Option<ccountry::RosterSpan>,
+    pub occupied_reason: Option<&'static str>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +70,98 @@ pub struct Walk {
     pub reserve_manpower: Outcome,
     pub bytes_len: usize,
     pub required_bytes: usize,
+    pub occupied_len: usize,
+    pub required_occupied: usize,
+}
+
+struct Occupied<'a> {
+    rows: &'a mut [u32],
+    len: usize,
+    required: usize,
+}
+
+impl Occupied<'_> {
+    fn read(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        status: usize,
+    ) -> Result<ccountry::RosterSpan, &'static str> {
+        let source = status
+            .checked_add(OCCUPATION_DATA_ROWS)
+            .and_then(|at| crate::cpdx_array::Array::read(memory, at, 8))
+            .ok_or("occupied-country roster unreadable or invalid")?;
+        let count = source.count as usize;
+        self.required = self
+            .required
+            .checked_add(count)
+            .ok_or("occupied-country roster demand overflow")?;
+        if count > self.rows.len().saturating_sub(self.len) {
+            return Err("occupied-country roster arena capacity exceeded");
+        }
+        let span = ccountry::RosterSpan {
+            start: self.len,
+            count,
+        };
+        crate::cpdx_array::pointers(
+            memory,
+            source,
+            "occupied-country roster pointer unreadable",
+            |ordinal, pointer| {
+                let fields = read::<[u8; 32]>(memory, pointer)
+                    .ok_or("occupied-country roster group unreadable")?;
+                if base
+                    .checked_add(ccountry_occupation_data::VTABLE_RVA)
+                    .map(|p| p as u64)
+                    != Some(u64::from_le_bytes(fields[..8].try_into().unwrap()))
+                {
+                    return Err("occupied-country roster group vtable mismatch");
+                }
+                if u64::from_le_bytes(fields[8..16].try_into().unwrap()) != status as u64 {
+                    return Err("occupied-country roster group parent mismatch");
+                }
+                let country = usize::try_from(u64::from_le_bytes(fields[24..].try_into().unwrap()))
+                    .map_err(|_| "occupied-country roster country address overflow")?;
+                let identity = read::<[u8; 12]>(memory, country)
+                    .ok_or("occupied-country roster country unreadable")?;
+                if base.checked_add(ccountry::VTABLE_RVA).map(|p| p as u64)
+                    != Some(u64::from_le_bytes(identity[..8].try_into().unwrap()))
+                {
+                    return Err("occupied-country roster country vtable mismatch");
+                }
+                let id = u32::from_le_bytes(identity[8..].try_into().unwrap());
+                self.rows[span.start + ordinal as usize] = id;
+                Ok(())
+            },
+        )?;
+        self.len += count;
+        Ok(span)
+    }
+}
+
+/// Native sorted roster order is independent of the occupation hash slots
+/// (insertion@140FDEA20, removal@140FE7C70).
+pub fn occupied_demand(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+) -> Result<usize, &'static str> {
+    let countries = ccountry::Reader::new(memory, base, state)?;
+    let mut required = 0_usize;
+    for slot in 1..countries.count() {
+        let Some(country) = countries.at(slot)? else {
+            continue;
+        };
+        let pointer = status(memory, base, country.pointer)?;
+        let source = pointer
+            .checked_add(OCCUPATION_DATA_ROWS)
+            .and_then(|at| crate::cpdx_array::Array::read(memory, at, 8))
+            .ok_or("occupied-country roster unreadable or invalid")?;
+        required = required
+            .checked_add(source.count as usize)
+            .ok_or("occupied-country roster demand overflow")?;
+    }
+    Ok(required)
 }
 
 /// Independent table accounting; one table's capacity/fault never fabricates a
@@ -202,6 +297,7 @@ fn settings(
             default_law_present: 1,
             law_start,
             law_len: token.len,
+            ..Row::default()
         }),
         None => rows.omit(),
     }
@@ -211,6 +307,36 @@ fn settings(
 /// buffers. Law bytes are copied exactly into one arena; no hashing or engine
 /// invocation occurs. Reserve manpower is distinct from state assignments.
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, buffers: Buffers<'_>) -> Walk {
+    walk_inner(memory, base, game_state, buffers, None)
+}
+
+pub fn walk_with_occupied(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    buffers: Buffers<'_>,
+    occupied: &mut [u32],
+) -> Walk {
+    walk_inner(
+        memory,
+        base,
+        game_state,
+        buffers,
+        Some(Occupied {
+            rows: occupied,
+            len: 0,
+            required: 0,
+        }),
+    )
+}
+
+fn walk_inner(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    buffers: Buffers<'_>,
+    mut occupied: Option<Occupied<'_>>,
+) -> Walk {
     let mut setting_rows = Rows::new(buffers.settings);
     let mut law_rows = Rows::new(buffers.laws);
     let mut garrison_rows = Rows::new(buffers.garrisons);
@@ -235,6 +361,7 @@ pub fn walk(memory: &impl Memory, base: usize, game_state: usize, buffers: Buffe
                     continue;
                 }
             };
+            let first_setting = setting_rows.len;
             if let Err(reason) = settings(
                 memory,
                 base,
@@ -244,6 +371,15 @@ pub fn walk(memory: &impl Memory, base: usize, game_state: usize, buffers: Buffe
                 &mut names,
             ) {
                 setting_rows.fail(reason);
+            }
+            if setting_rows.len > first_setting
+                && let Some(occupied) = &mut occupied
+            {
+                let row = &mut setting_rows.data[first_setting];
+                match occupied.read(memory, base, pointer) {
+                    Ok(span) => row.occupied = Some(span),
+                    Err(reason) => row.occupied_reason = Some(reason),
+                }
             }
             let reserve = pointer
                 .checked_add(ASSIGNED_MANPOWER)
@@ -351,6 +487,8 @@ pub fn walk(memory: &impl Memory, base: usize, game_state: usize, buffers: Buffe
         reserve_manpower: reserve_rows.outcome(),
         bytes_len: names.len,
         required_bytes: names.required,
+        occupied_len: occupied.as_ref().map_or(0, |arena| arena.len),
+        required_occupied: occupied.as_ref().map_or(0, |arena| arena.required),
     }
 }
 
@@ -358,6 +496,66 @@ pub fn walk(memory: &impl Memory, base: usize, game_state: usize, buffers: Buffe
 mod tests {
     use super::*;
     use crate::{carmy_manpower_values, cgame_state, cstate, memory::SliceMemory};
+
+    #[test]
+    fn occupied_country_roster_keeps_native_order_and_preserves_settings_on_refusal() {
+        let mut bytes = fixture();
+        array(&mut bytes, 0x7000 + OCCUPATION_DATA_ROWS, 0x9200, 2);
+        u64_at(&mut bytes, 0x9200, 0x8400);
+        u64_at(&mut bytes, 0x9208, 0x8400);
+        u64_at(
+            &mut bytes,
+            0x8400 + ccountry_occupation_data::OCCUPIED_COUNTRY_POINTER,
+            0x5000,
+        );
+        let memory = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
+        assert_eq!(occupied_demand(&memory, 0, BASE), Ok(2));
+        for capacity in [2, 1] {
+            let mut settings = [Row::default(); 2];
+            let mut laws = [LawRow::default(); 8];
+            let mut garrisons = [cstate_garrison_data::Row::default(); 8];
+            let mut manpower = [ManpowerRow::default(); 8];
+            let mut reserve = [ReserveManpowerRow::default(); 8];
+            let mut names = [0; 512];
+            let mut occupied = [0; 2];
+            let walk = walk_with_occupied(
+                &memory,
+                0,
+                BASE,
+                Buffers {
+                    settings: &mut settings,
+                    laws: &mut laws,
+                    garrisons: &mut garrisons,
+                    manpower: &mut manpower,
+                    reserve_manpower: &mut reserve,
+                    names: &mut names,
+                },
+                &mut occupied[..capacity],
+            );
+            assert_eq!(walk.settings, Outcome::Rows { len: 2 });
+            assert_eq!(walk.required_occupied, 2);
+            assert_eq!(settings[0].default_law_present, 1);
+            assert_eq!(settings[0].garrison_template, Some((7_u64 << 32) | 52));
+            if capacity == 2 {
+                assert_eq!(occupied, [99, 99]);
+                assert_eq!(
+                    settings[0].occupied,
+                    Some(ccountry::RosterSpan { start: 0, count: 2 })
+                );
+                assert_eq!(settings[0].occupied_reason, None);
+            } else {
+                assert_eq!(settings[0].occupied, None);
+                assert_eq!(
+                    settings[0].occupied_reason,
+                    Some("occupied-country roster arena capacity exceeded")
+                );
+            }
+            assert!(settings[1].occupied.is_some_and(|span| span.count == 0));
+        }
+    }
 
     const BASE: usize = 0x1000;
 
@@ -541,7 +739,9 @@ mod tests {
                 manpower: Outcome::Rows { len: 2 },
                 reserve_manpower: Outcome::Rows { len: 1 },
                 bytes_len: 16,
-                required_bytes: 16
+                required_bytes: 16,
+                occupied_len: 0,
+                required_occupied: 0,
             }
         );
         assert_eq!(names, *b"civiliancivilian");

@@ -19,6 +19,30 @@ pub(in crate::oracle) fn occupation_settings(
             continue;
         };
         matched += 1;
+        if let Some(occupied) = report.recorded(
+            &row.occupied,
+            "OccupationSettings.occupied",
+            format!("{subject}.occupied"),
+        ) {
+            match occupied {
+                Some(occupied) => {
+                    let occupied = occupied
+                        .iter()
+                        .map(|&raw| required_country_tag(raw, links))
+                        .collect::<io::Result<Vec<_>>>()?;
+                    value(
+                        report,
+                        &format!("{subject}.occupied"),
+                        occupied,
+                        saved.occupied.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+                    );
+                }
+                None => report.limitation(
+                    "occupied-country roster unavailable from native capture",
+                    format!("{subject}.occupied"),
+                ),
+            }
+        }
         value(
             report,
             &format!("{subject}.garrison_template"),

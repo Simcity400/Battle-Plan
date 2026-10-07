@@ -1516,6 +1516,7 @@ fn needs_retry(tables: &[TableInput; TABLE_COUNT]) -> bool {
 struct Statistics {
     country_rosters: crate::extended::country_counters::RosterWork,
     division_naming: crate::extended::division_presentation::NamingWork,
+    counter_tooltip_inputs: crate::extended::division_presentation::CounterWork,
     character_naming: crate::extended::character_inputs::NamingWork,
     supply_vehicles: crate::extended::supply_trains::VehicleWork,
     variable_seeds: crate::extended::intel::SeedWork,
@@ -1566,6 +1567,7 @@ impl Default for Statistics {
         Self {
             country_rosters: crate::extended::country_counters::RosterWork::default(),
             division_naming: crate::extended::division_presentation::NamingWork::default(),
+            counter_tooltip_inputs: crate::extended::division_presentation::CounterWork::default(),
             character_naming: crate::extended::character_inputs::NamingWork::default(),
             supply_vehicles: crate::extended::supply_trains::VehicleWork::default(),
             variable_seeds: crate::extended::intel::SeedWork::default(),
@@ -1967,6 +1969,9 @@ impl Processor {
             captured
                 .extended
                 .observe_division_naming(&mut self.stats.division_naming)?;
+            captured
+                .extended
+                .observe_counter_tooltip_inputs(&mut self.stats.counter_tooltip_inputs)?;
             captured
                 .extended
                 .observe_character_naming(&mut self.stats.character_naming)?;
@@ -2589,10 +2594,18 @@ impl Processor {
             "war_owned_snapshots": stats.war_snapshots.status(),
             "naval_modifier_breakdowns": stats.naval_breakdowns.status(),
             "division_naming": stats.division_naming.status(),
+            "counter_tooltip_inputs": stats.counter_tooltip_inputs.status(),
             "country_rosters": stats.country_rosters.status(),
             "character_naming": stats.character_naming.status(),
             "supply_vehicles": stats.supply_vehicles.status(),
             "script_variable_seeds": stats.variable_seeds.status(),
+            "scientist_activity": crate::extended::projects::scientist_active_data(),
+            "instant_decisions": crate::extended::visibility::instant_decisions_data(),
+            "air_wing_names": crate::map_capture::air_wing_name_data(),
+            "railway_gun_names": crate::extended::railway_guns::name_data(),
+            "railway_gun_eta": crate::extended::railway_guns::eta_data(),
+            "country_original_tags": crate::extended::country_appearance::original_tag_data(),
+            "orders_group_tooltip_inputs": crate::extended::group_counters::tooltip_data(),
             "research_walk_ns": research_walk_ns,
             "relations_copy_ns": relations_copy_ns,
             "characters_copy_ns": characters_copy_ns,
@@ -5739,6 +5752,10 @@ mod tests {
         tables[TableId::AirSortieModifierMetadata.index()] =
             TableView::Complete(TableRows::AirSortieModifierMetadata(vec![
                 replay::rows::AirSortieModifierMetadataRow::default(),
+            ]));
+        tables[TableId::ReservedCountryNaming.index()] =
+            TableView::Complete(TableRows::ReservedCountryNaming(vec![
+                replay::rows::ReservedCountryNamingRow::default(),
             ]));
         if skip {
             for table in TableId::ALL {

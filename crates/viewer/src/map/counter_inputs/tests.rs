@@ -395,6 +395,35 @@ fn order_membership_preserves_native_list_and_parent_precedence() {
 }
 
 #[test]
+fn ability_root_type_uses_primary_lists_without_fallback_or_grandparent() {
+    let frame = order_membership_frame();
+    let mut index = OrdersIndex::read(&frame).unwrap();
+    index.order_types.insert((10, 9), -7);
+    index.order_types.insert((20, 3), 10);
+    assert_eq!(index.root_order_type(1, 10), Some(Some(-7)));
+    assert_eq!(index.root_order_type(2, 10), Some(Some(10)));
+    for division in [3, 4, 5] {
+        assert_eq!(index.root_order_type(division, 10), Some(None));
+    }
+    assert_eq!(index.root_order_type(1, 0), Some(None));
+}
+
+#[test]
+fn ability_root_type_keeps_unknown_membership_and_missing_order_class() {
+    let frame = order_membership_frame();
+    let mut index = OrdersIndex::read(&frame).unwrap();
+    index.order_types.remove(&(10, 9));
+    assert_eq!(index.root_order_type(1, 10), None);
+    assert_eq!(index.root_order_type(2, 10), Some(Some(0)));
+    index.memberships.remove(&20);
+    assert_eq!(index.root_order_type(2, 10), None);
+    index.groups.get_mut(&10).unwrap().parent = 0;
+    assert_eq!(index.root_order_type(2, 10), Some(None));
+    index.memberships.remove(&10);
+    assert_eq!(index.root_order_type(2, 10), None);
+}
+
+#[test]
 fn truncated_order_memberships_use_only_proven_prefix_matches() {
     use replay::{
         frame::TableView,

@@ -592,8 +592,59 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         country_experience::CountryExperience::KEY => {
             Ok("No content dependency: banked army, navy and air experience and daily changes use recorded CountryExperience rows and Countries/CountryLinks identities.".into())
         }
+        land_battles::LandBattles::KEY
+        | land_battles::LandBattlesManifest::KEY
+        | land_battles::LandBattlesRanking::KEY => {
+            Ok("No content dependency: battle census, observation bounds, participant counts and rankings use recorded Campaign, LandCombats, LandCombatSides and Countries/CountryLinks rows. Place names are resolved by the separate place-names product; casualties and winners remain unavailable without their recorded operands.".into())
+        }
+        place_names::PlaceNames::KEY => {
+            place_names_check(content, findings)?;
+            Ok("Authored state-template and strategic-region names checked through the shared state content, region reader and plain localiser. Province overrides, owner-qualified victory-point names, stored state names and their language require recorded Provinces, ProvinceNames, States, Countries, CountryLinks, CountryAppearance and Campaign context.".into())
+        }
         _ => Err("No content preparation check is registered for this product.".into()),
     }
+}
+
+fn place_names_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), String> {
+    let catalogue = content.catalogue()?;
+    // State reader notes belong to the corpus states reader, as in construction.
+    for (&id, key) in &catalogue.cached_states()?.names {
+        let subject = format!("state {id}");
+        match key {
+            Ok(key) => {
+                if catalogue
+                    .localised(key, crate::catalogue::View::Plain)
+                    .is_some_and(|name| name.is_empty())
+                {
+                    findings.push(Finding::new(
+                        Kind::Refused,
+                        &subject,
+                        format!("state {id}: native display name is empty"),
+                    ));
+                }
+                take(catalogue, &subject, findings);
+            }
+            Err(reason) => findings.push(Finding::new(Kind::Refused, subject, reason)),
+        }
+    }
+    // The corpus regions reader owns its native skip/replacement notes.
+    let regions = installed_content::regions::read(&content.resolved.layers)
+        .map_err(|error| format!("Strategic-region names unavailable: {error}"))?;
+    for region in regions.regions.values() {
+        let subject = format!("strategic region {}", region.id);
+        if catalogue
+            .localised(&region.name_key, crate::catalogue::View::Plain)
+            .is_some_and(|name| name.is_empty())
+        {
+            findings.push(Finding::new(
+                Kind::Refused,
+                &subject,
+                "native region display name is empty",
+            ));
+        }
+        take(catalogue, &subject, findings);
+    }
+    Ok(())
 }
 
 fn equipment_production_check(
@@ -743,7 +794,7 @@ fn flags_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), Str
         }
         let mut any = false;
         for group in groups.iter().map(|group| Some(group.token.as_str())) {
-            let candidates = installed_content::country_names::flag_keys(tag, "", "", group);
+            let candidates = installed_content::country_names::flag_keys(Some(tag), "", group);
             for size in [
                 CountryFlagSize::Full,
                 CountryFlagSize::Medium,
@@ -776,12 +827,11 @@ fn flags_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), Str
                 }
             }
         }
-        // choices() can pass None when a recorded country has no resolvable
-        // ruling party. Probe that path only if every group/set was absent,
+        // Probe the native null-group candidate only if every group/set was absent,
         // and retain one visible-fallback note per tag (dashboard README,
         // "Offline product checks"), rather than three impossible requests.
         if !any {
-            let candidates = installed_content::country_names::flag_keys(tag, "", "", None);
+            let candidates = installed_content::country_names::flag_keys(Some(tag), "", None);
             let mut plain_found = false;
             for size in [
                 CountryFlagSize::Full,

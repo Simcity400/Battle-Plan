@@ -135,6 +135,9 @@ fn event_scopes(scopes: Scopes) -> EventScopes {
         Scope::State(id) => EventObject::State(id),
         Scope::Province(id) => EventObject::Province(id),
         Scope::Leader(reference) => EventObject::UnitLeader(reference),
+        Scope::CountryLeader { country, leader } => {
+            EventObject::CountryUnitLeader { country, leader }
+        }
         Scope::Character(id) => EventObject::Character(id),
         Scope::IndustrialOrganisation(reference) => EventObject::IndustrialOrganisation(reference),
         Scope::Project { owner, id } => EventObject::Project { owner, id },
@@ -654,11 +657,7 @@ impl Context<'_, '_> {
             .iter()
             .find(|choice| self.world.slot(choice.raw) == Some(country))
             .ok_or("controller flag operands are absent")?;
-        choice
-            .candidates
-            .iter()
-            .find(|key| (self.flag_exists)(key))
-            .ok_or("controller has no resolved flag asset")?;
+        choice.key(self.flag_exists)?;
         // DrawInlineFlag@1402EEFF0 resolves the tag through this hour's native small atlas.
         if choice.tag.chars().count() != 3 {
         }

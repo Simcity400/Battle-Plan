@@ -185,15 +185,23 @@ impl Renderer<'_, '_, '_> {
                         if !text.is_empty() {
                             effects.push_str(&self.char_native_line(header, &[], scopes, true)?);
                             effects.push_str(&text);
-                            if header == b"EFFECT_UNLOCK_DECISION_SELECT_HEADER"
-                                && !definition.days_remove.is_empty()
-                                && self.scoped_value(
-                                    &definition.days_remove,
-                                    self.fresh_country_scope(self.current_country(scopes)?, None)?,
-                                )? / 100_000
-                                    > 0
-                            {
-                                self.refuse("CUnlockDecisionTooltipEffect", "key unlock_decision_tooltip: positive removal delay depends on the unrecorded instant-decision flag 143317263 (14071E7D0; writer 1402928D0)".into());
+                            if header == b"EFFECT_UNLOCK_DECISION_SELECT_HEADER" {
+                                match self.decision_removal_delay(definition, scopes) {
+                                    Ok(days) if days > 0 => {
+                                        // 140399360 appends this after completion text.
+                                        effects.push_str(&self.char_native_line(
+                                            b"EFFECT_UNLOCK_DECISION_TIMED_HEADER",
+                                            &[("DAYS", Argument::Int32(days))],
+                                            scopes,
+                                            true,
+                                        )?);
+                                    }
+                                    Ok(_) => {}
+                                    Err(why) => self.refuse(
+                                        "CUnlockDecisionTooltipEffect",
+                                        format!("key unlock_decision_tooltip: {why}"),
+                                    ),
+                                }
                             }
                         }
                     }
@@ -338,9 +346,11 @@ impl Renderer<'_, '_, '_> {
         highlight: bool,
     ) -> Result<Scopes, String> {
         let world = self.context.world()?;
+        // STargetedDecisionTarget::seed_target 140721230 uses canonical_slot
+        // 140BA6240 for a country, otherwise its stored numeric state bits.
         let target = country.unwrap_or(state) as i32;
         let seed = if definition.fixed_random_seed {
-            self.decision_description_seed(definition, None, target)
+            self.decision_description_seed(definition, None, owner, target)
         } else {
             let row = world
                 .frame()
@@ -360,7 +370,7 @@ impl Renderer<'_, '_, '_> {
                         })
                         .min_by_key(|row| row.ordinal)
                 });
-            self.decision_description_seed(definition, row, target)
+            self.decision_description_seed(definition, row, owner, target)
         };
         let target = country
             .map(EventObject::Country)
@@ -449,8 +459,35 @@ impl Renderer<'_, '_, '_> {
         };
         let object = if state == 0 {
             match object {
-                EventObject::Country(country) | EventObject::CountryState { country, .. } => EventObject::Country(country),
-                EventObject::UnitLeader(_) => return Err("state_event needs CEventScope ability-caster reference +0x90/+0x94, not the ordinary leader field (14137D8C0/1405294F0)".into()),
+                // 14137D8C0 resolves the +50 character's unit leader first,
+                // then SetUnitLeader(1), SetCountry(leader+120, 0). Both
+                // operands survive, even when the caller carries a country.
+                EventObject::UnitLeader(leader) | EventObject::CountryUnitLeader { leader, .. } => {
+                    let world = self.context.world()?;
+                    let original = world.unit_leader(leader)?
+                        .ok_or("state_event scope leader is not recorded (1405294F0)")?;
+                    match crate::character_scope::Tables::read(world.frame())
+                        .unit_leader(original.character_id)? {
+                        Some(crate::character_scope::UnitLeader::Direct(row)) => {
+                            let country = if row.owner == 0 { 0 } else {
+                                world.slot(row.owner).ok_or("state_event current leader country lacks CountryLinks")?
+                            };
+                            let leader = u64::from(row.id) << 32 | u64::from(row.reference_type);
+                            EventObject::CountryUnitLeader { country, leader }
+                        }
+                        Some(crate::character_scope::UnitLeader::Referenced(_)) => {
+                            return Err("state_event current operative role's CUnitLeader+F48 character reference is not recorded by CharacterOperatives (14137D8C0/1405294F0)".into());
+                        }
+                        None => match object {
+                            EventObject::CountryUnitLeader { country, .. } => EventObject::Country(country),
+                            _ => return Err("state_event bare leader with no current role leaves a native null country; that title scope is not projected (14137D8C0)".into()),
+                        },
+                    }
+                }
+                EventObject::Character(_) => return Err("state_event current character role and its resulting title scope are not projected (14137D8C0/1405294F0)".into()),
+                EventObject::Country(country) | EventObject::CountryState { country, .. } => {
+                    EventObject::Country(country)
+                }
                 _ => EventObject::Country(0),
             }
         } else if let Some(target) = field(children(item), "trigger_for") {
@@ -653,25 +690,114 @@ impl Renderer<'_, '_, '_> {
     // Allocator 1402F9DB0 sets show_modifiers (+0xA8) yes; the zero-country
     // fallback never emits the modifier block (1413970E0).
     pub(in crate::effect_description) fn unlock_mio_policy(
-        &self,
+        &mut self,
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        if self.current_country(scopes)? > 0 {
-            return Err("CProductionStatus policy-definition roster +0x148/+0x154 is not recorded (141396FF0/140E487D0; refresh 140E59290/140E45C30)".into());
-        }
         let operand = item
             .value
             .scalar()
             .or_else(|| field(children(item), "policy").and_then(|field| field.value.read_string()))
             .unwrap_or_default();
-        let name = self.localised(operand, &[], scopes, false)?;
-        self.char_native_line(
+        let world = self.context.world()?;
+        let country = if let Scope::IndustrialOrganisation(reference) = scopes.this {
+            world
+                .slot(world.industrial_organisation(reference)?.owner)
+                .ok_or("CountryLinks lacks policy MIO owner (141396FF0)")?
+        } else {
+            self.current_country(scopes)?
+        };
+        let definition = if country > 0 {
+            let row = world
+                .frame()
+                .complete::<tables::CountryCounterInputs>()
+                .map_err(|why| why.to_string())?
+                .iter()
+                .find(|row| world.slot(row.country) == Some(country))
+                .ok_or("CountryCounterInputs lacks MIO policy roster (141396FF0)")?;
+            let policies = row
+                .mio_policies
+                .require("CountryCounterInputs.mio_policies")?
+                .as_ref()
+                .ok_or("CountryCounterInputs.mio_policies capture refused (140E487D0)")?;
+            if let Some(token) = world.token_of(operand)?
+                && policies.contains(&token)
+            {
+                let spelling = world
+                    .token(token)?
+                    .ok_or("LexicalTokens lacks MIO policy spelling")?;
+                Some(
+                    self.context
+                        .content
+                        .industrial_organisations
+                        .ok_or_else(|| self.content_gap("industrial organisations"))?
+                        .policies
+                        .policy(spelling)?
+                        .clone(),
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        // 1413970E0 uses the authored raw-key fallback when the stored cache
+        // has no matching policy; it emits no modifier block on this path.
+        let name = if let Some(policy) = &definition {
+            let base = if policy.name.is_empty() {
+                &policy.token
+            } else {
+                &policy.name
+            };
+            let key = self.mio_content_name_key(base, country)?; // 140A3C9B0 -> 141399DA0.
+            self.localised(&key, &[], self.fresh_country_scope(country, None)?, true)?
+        } else {
+            self.localised(operand, &[], scopes, false)?
+        };
+        let mut text = self.char_native_line(
             b"EFFECT_MIO_UNLOCK_POLICY",
             &[("NAME", Argument::Text(&name))],
             scopes,
             true,
-        )
+        )?;
+        if installed_content::parser::read_bool_field(children(item), "show_modifiers", true)
+            && let Some(policy) = definition
+        {
+            let body = self.char_mio_policy_modifiers(&policy, scopes);
+            text.push_str(" ("); // 14270C624, appended after the wrapper's LF.
+            text.push_str(&body);
+            text.push(')'); // 14270BE94; even when no modifiers are visible.
+        }
+        Ok(text)
+    }
+
+    // 14071E7D0 evaluates in a fresh owner scope and narrows signed /100000;
+    // instant_decisions 143317263 changes only a positive delay to one.
+    fn decision_removal_delay(&self, definition: &Decision, scopes: Scopes) -> Result<i32, String> {
+        if definition.days_remove.is_empty() {
+            return Ok(0);
+        }
+        let days = (self.scoped_value(
+            &definition.days_remove,
+            self.fresh_country_scope(self.current_country(scopes)?, None)?,
+        )? / 100_000) as i32;
+        if days <= 0 {
+            return Ok(days);
+        }
+        let [features] = self
+            .context
+            .text
+            .frame()
+            .complete::<tables::SimulationFeatures>()
+            .map_err(|why| why.to_string())?
+        else {
+            return Err("SimulationFeatures lacks instant_decisions (14071E7D0)".into());
+        };
+        let instant = features
+            .instant_decisions
+            .require("SimulationFeatures.instant_decisions")?
+            .ok_or("SimulationFeatures.instant_decisions capture refused (14071E7D0)")?;
+        Ok(if instant != 0 { 1 } else { days })
     }
 
     // ReadValue@141385570/1405345D0 stores only the option name at +0x58.

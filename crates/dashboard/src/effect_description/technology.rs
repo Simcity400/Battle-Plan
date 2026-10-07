@@ -1,5 +1,6 @@
 use super::*;
 
+mod bound_effect;
 mod project_output;
 #[cfg(test)]
 mod tests;
@@ -64,7 +65,9 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         }
         let raw_country = match scopes.this {
-            Scope::Country(country) => world.raw_country(country).unwrap_or(0),
+            Scope::Country(country) | Scope::CountryLeader { country, .. } => {
+                world.raw_country(country).unwrap_or(0)
+            }
             _ => 0,
         };
         let amount = field(fields, "value");
@@ -126,7 +129,6 @@ impl Renderer<'_, '_, '_> {
 
     // CAddFactionPowerProjectionEffect::vf7 1404ABFC0 evaluates +0x58
     // then expands in a copied environment with its faction pointer installed.
-    // Country membership is recorded; the independent faction carrier is core-owned.
     // ADD_FACTION_POWER_PROJECTION_EFFECT_NO_FACTION@1427B39A8.
     pub(super) fn faction_power_projection(
         &self,
@@ -134,21 +136,35 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
     ) -> Result<String, String> {
         let amount = self.scoped_value(scalar_operand(item)?, scopes)?;
-        let mut target = item.clone();
-        target.value = installed_content::parser::Value::Scalar(b"THIS".to_vec());
-        let country = self.country_target(&target, scopes)?.unwrap_or(0);
-        if country > 0 && self.context.world()?.faction(country)?.is_some() {
-            return Err(
-                "copied faction localisation scope is pending lead I's core (1404ABFC0/141174150)"
-                    .into(),
-            );
-        }
-        self.char_native_text(
-            b"ADD_FACTION_POWER_PROJECTION_EFFECT_NO_FACTION",
-            &[("VAL", Argument::Fixed5(amount))],
-            scopes,
-            true,
-        )
+        // 141174150 reads the scope's +8 country, not its state owner or
+        // carried faction. Clearing state/character setters leave it zero.
+        let faction = match scopes.this {
+            Scope::Country(country) | Scope::CountryLeader { country, .. } if country > 0 => {
+                self.context.world()?.faction(country)?
+            }
+            _ => None,
+        };
+        let name = faction
+            .map(|id| self.context.text.faction_name_by_id(id))
+            .transpose()?;
+        let text = match name.as_deref() {
+            Some(name) => self.char_native_text(
+                b"ADD_FACTION_POWER_PROJECTION_EFFECT",
+                &[
+                    ("VAL", Argument::Fixed5(amount)),
+                    ("FACTION", Argument::Text(name)),
+                ],
+                scopes,
+                false,
+            )?,
+            None => self.char_native_text(
+                b"ADD_FACTION_POWER_PROJECTION_EFFECT_NO_FACTION",
+                &[("VAL", Argument::Fixed5(amount))],
+                scopes,
+                false,
+            )?,
+        };
+        self.expanded_with_faction_environment(&text, scopes, Some(faction))
     }
 
     // 140493450 evaluates ReadValue@141385570's sole operand, resolves
@@ -443,11 +459,8 @@ impl Renderer<'_, '_, '_> {
         original: bool,
         scopes: Scopes,
     ) -> Result<String, String> {
-        let mut tag = if country > 0 {
-            self.tag(country)?.as_bytes().to_vec()
-        } else {
-            Vec::new()
-        };
+        // Explicit country zero uses recorded CCountryDatabase slot zero.
+        let mut tag = self.tag(country)?.as_bytes().to_vec();
         if original && country > 0 {
             // 140EC9A60 -> 140BA61F0/1406DF830. CountryAppearance.name_tag
             // already applies the native dynamic-country boundary predicate.
@@ -472,11 +485,7 @@ impl Renderer<'_, '_, '_> {
             .ok()
             .is_some_and(|candidate| self.context.localisation.get(candidate).is_some());
         self.localised(
-            if country > 0 && candidate_defined {
-                &candidate
-            } else {
-                key
-            },
+            if candidate_defined { &candidate } else { key },
             &[],
             scopes,
             false,
@@ -494,43 +503,11 @@ impl Renderer<'_, '_, '_> {
         runtime: bool,
     ) -> Result<String, String> {
         let catalog = self.technology_catalog()?;
-        let mut equipment = Vec::new();
-        if runtime && !template.small_layout {
-            for entry in &template.equipment {
-                if entry.keyword_is("limit") {
-                    match self.evaluator()?.evaluate(children(entry), Scopes::empty()) {
-                        crate::triggers::Eval::True => continue,
-                        crate::triggers::Eval::False => break,
-                        crate::triggers::Eval::Unknown(why) => {
-                            return Err(why.into_iter().collect::<Vec<_>>().join("; "));
-                        }
-                    }
-                }
-                let Some(name) = entry.value.scalar() else {
-                    return Err("technology equipment reader is unsettled (140AC3C70)".into());
-                };
-                let Some(index) = catalog.equipment.get(name) else {
-                    continue;
-                };
-                let definition = &catalog.equipment.equipment[index];
-                if catalog.equipment.category(definition) & 0x200 != 0 {
-                    let features = self
-                        .context
-                        .text
-                        .frame()
-                        .complete::<tables::SimulationFeatures>()
-                        .map_err(|why| why.to_string())?
-                        .first()
-                        .ok_or("SimulationFeatures absent")?;
-                    if features.dlc_mask & 0x80 == 0 {
-                        continue;
-                    }
-                }
-                if !equipment.contains(&index) {
-                    equipment.push(index);
-                }
-            }
-        }
+        let equipment = if runtime && !template.small_layout {
+            self.technology_enabled_equipment(template)?
+        } else {
+            Vec::new()
+        };
         let key = if equipment.len() == 1 {
             catalog.equipment.equipment[equipment[0]].name.as_slice()
         } else if !template.parent.is_empty() {
@@ -588,7 +565,7 @@ impl Renderer<'_, '_, '_> {
             }
         }
         let country = match scopes.this {
-            Scope::Country(country) => country,
+            Scope::Country(country) | Scope::CountryLeader { country, .. } => country,
             _ => 0,
         };
         let mut list = String::new();
@@ -958,7 +935,9 @@ impl Renderer<'_, '_, '_> {
     ) -> Result<String, String> {
         let name = self.char_native_text(b"FACTION_ACCESS_TAB_REASEARCH", &[], scopes, false)?;
         self.char_native_text(
-            if item.value_keyword().as_deref() == Some("yes") {
+            // vf6 1404A8100 -> 1424AFED0 compares the token's raw text with
+            // "yes" including NUL, independent of token kind or case folding.
+            if installed_content::parser::c_string(scalar_operand(item)?) == b"yes" {
                 b"FACTION_ACCESS_TAB_UNLOCK"
             } else {
                 b"FACTION_ACCESS_TAB_LOCK"

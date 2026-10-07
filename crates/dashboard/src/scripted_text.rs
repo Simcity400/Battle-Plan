@@ -33,6 +33,7 @@ use replay::{
 
 mod balance;
 mod entries;
+mod numeric;
 pub(crate) use entries::{
     Environment, StateContent, StateNameUsage, StateNames, live_state_warnings, read_state_content,
     state_display_name,
@@ -88,6 +89,9 @@ pub enum Link {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventObject {
     Country(u32),
+    /// SetCombatContext(reset=1) retains only Combat+0x60 (14052DC80 /
+    /// 14052F3F0). Its side country is not CEventScope.country+8.
+    Combat,
     /// SetCountry/SetState without clearing, for environment localisation
     /// (1404A5070/1404A5160 -> 1410CF4A0).
     CountryState {
@@ -97,15 +101,26 @@ pub enum EventObject {
     /// A state by id; SetState (14052ECE0) clears the scope's country.
     State(u32),
     Province(u32),
-    /// A unit leader by full reference: set_unit_leader (14052EFD0) stores
-    /// its character (CUnitLeader+0xF48) at +0x50 and clears the country.
+    /// A unit leader by full reference: SetUnitLeader(reset=1, 14052EFD0)
+    /// stores its character (CUnitLeader+0xF48) at +0x50 and clears the country.
     UnitLeader(u64),
+    /// Active ability tooltip (1418BFCE0): SetCountry(reset=1), then
+    /// SetUnitLeader(reset=0). Country+8 and character+0x50 both survive.
+    /// Text promotions prefer the character; variable storage and RNG
+    /// identity prefer the country. Neither setter changes the self links.
+    CountryUnitLeader {
+        country: u32,
+        leader: u64,
+    },
     /// A character by id; SetCharacter (14052DAF0) clears the country.
     Character(u32),
     /// SetIndustrialOrganisation@14052E720 clears other carried objects.
     IndustrialOrganisation(u64),
     /// SetProject@14052EBE0 copies project+8 to scope+0x90.
-    Project { owner: u32, id: u32 },
+    Project {
+        owner: u32,
+        id: u32,
+    },
     /// SetRaidInstance@14052E960 copies raid+8 to scope+0x88.
     Raid(u64),
     /// SetUnit@14052EDA0 copies unit+0x18 to scope+0x70.
@@ -208,7 +223,7 @@ fn linked_scope(length: usize, at: usize, link: Link, name: &str) -> Result<usiz
 
 /// One expansion's scopes, shared by nested entries without copying their history.
 #[derive(Clone)]
-pub(crate) struct ExpansionScopes {
+pub(crate) struct ExpansionScopes<'e, 'a> {
     scopes: std::cell::RefCell<Vec<EventScope>>,
     variables: std::cell::Cell<ScopeVariables>,
     targets: std::cell::RefCell<EventScopes>,
@@ -218,9 +233,11 @@ pub(crate) struct ExpansionScopes {
     valid_links: std::cell::Cell<bool>,
     fresh_depth: std::cell::Cell<usize>,
     on_large_stack: bool,
+    pub(crate) world: Option<&'e crate::triggers::World<'a>>,
+    pub(crate) combat: Option<&'e dyn crate::triggers::Combat>,
 }
 
-impl ExpansionScopes {
+impl<'e, 'a> ExpansionScopes<'e, 'a> {
     fn new(scopes: &EventScopes) -> Self {
         let prev_distance = (0..scopes.scopes.len())
             .map(|start| {
@@ -259,6 +276,8 @@ impl ExpansionScopes {
             })),
             fresh_depth: std::cell::Cell::new(0),
             on_large_stack: false,
+            world: None,
+            combat: None,
         }
     }
 
@@ -268,7 +287,7 @@ impl ExpansionScopes {
 
     /// Keep entry history and the fresh-context guard across BuildDescription.
     /// Append its graph so active entries retain their existing cursor identities.
-    fn append_description<'s>(&'s self, scopes: &EventScopes) -> DescriptionScopeGuard<'s> {
+    fn append_description<'s>(&'s self, scopes: &EventScopes) -> DescriptionScopeGuard<'s, 'e, 'a> {
         let next = Self::new(scopes);
         let offset = self.scopes.borrow().len();
         let rebase = |link| match link {
@@ -317,21 +336,25 @@ impl ExpansionScopes {
         linked_scope(self.scopes.borrow().len(), at, link, name)
     }
 
-    fn evaluator<'e, 'a>(
-        &self,
-        world: &'e crate::triggers::World<'a>,
+    fn evaluator<'s>(
+        &'s self,
+        text: &'s ScriptedText<'a>,
         temps: crate::triggers::Temps,
-    ) -> crate::triggers::Evaluator<'e, 'a> {
+    ) -> Result<crate::triggers::Evaluator<'s, 'a>, String> {
+        let world = match self.world {
+            Some(world) => world,
+            None => text.world()?,
+        };
         let mut graph = self.targets.borrow().clone();
         graph.scopes = self.scopes.borrow().clone();
         graph.variables = self.variables.get();
-        let evaluator = crate::triggers::Evaluator::new(world, None)
+        let evaluator = crate::triggers::Evaluator::new(world, self.combat)
             .with_temps(temps)
             .with_event_scopes(std::rc::Rc::new(std::cell::RefCell::new(graph)));
-        match self.session.borrow().as_ref() {
+        Ok(match self.session.borrow().as_ref() {
             Some(session) => evaluator.with_variable_session(session),
             None => evaluator,
-        }
+        })
     }
 
     fn needs_large_stack(&self) -> bool {
@@ -340,15 +363,15 @@ impl ExpansionScopes {
     }
 }
 
-struct DescriptionScopeGuard<'s> {
-    expanded: &'s ExpansionScopes,
+struct DescriptionScopeGuard<'s, 'e, 'a> {
+    expanded: &'s ExpansionScopes<'e, 'a>,
     offset: usize,
     variables: ScopeVariables,
     valid_links: bool,
     globals: Vec<(Vec<u8>, EventObject)>,
 }
 
-impl Drop for DescriptionScopeGuard<'_> {
+impl Drop for DescriptionScopeGuard<'_, '_, '_> {
     fn drop(&mut self) {
         self.expanded.scopes.borrow_mut().truncate(self.offset);
         self.expanded
@@ -490,6 +513,7 @@ pub struct ScriptedText<'a> {
     lexical_names: crate::faction_names::LexicalNames,
     frame: &'a DecodedFrame,
     root: u32,
+    pub(crate) nato_counters: bool,
     world: std::sync::OnceLock<Result<crate::triggers::World<'a>, String>>,
 }
 
@@ -556,8 +580,15 @@ impl<'a> ScriptedText<'a> {
             ),
             frame,
             root,
+            nato_counters: installed_content::settings::Counters::default().nato == 1,
             world: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Unit-bonus icons, including nested effect descriptions, follow the view.
+    pub fn with_nato_counters(mut self, nato: bool) -> Self {
+        self.nato_counters = nato;
+        self
     }
 
     /// Expands `text` as ProcessString (1412B9CA0) does from depth 0. The
@@ -597,14 +628,19 @@ impl<'a> ScriptedText<'a> {
         text: &str,
         scopes: &EventScopes,
         at: usize,
-        evaluator: &crate::triggers::Evaluator,
+        evaluator: &crate::triggers::Evaluator<'_, 'a>,
     ) -> Result<String, String> {
+        // Only immutable World/Combat references cross on_large_stack;
+        // RefCells and the caller evaluator remain on their calling thread.
+        let mut expanded = ExpansionScopes::new(&EventScopes::new(Vec::new()));
+        expanded.world = Some(evaluator.world());
+        expanded.combat = evaluator.combat_context();
         let (result, session) = self.expand_in_description(
             text,
             scopes,
             at,
             Some(evaluator.variable_session()),
-            None,
+            Some(&expanded),
             None,
         );
         if let Some(session) = session.as_ref() {
@@ -619,7 +655,7 @@ impl<'a> ScriptedText<'a> {
         scopes: &EventScopes,
         at: usize,
         session: Option<crate::triggers::VariableSession>,
-        parent: Option<&ExpansionScopes>,
+        parent: Option<&ExpansionScopes<'_, 'a>>,
         faction_environment: Option<Option<u64>>,
     ) -> (
         Result<String, String>,
@@ -662,6 +698,10 @@ impl<'a> ScriptedText<'a> {
         &self.names
     }
 
+    pub(crate) fn viewing_country(&self) -> u32 {
+        self.root
+    }
+
     #[cfg(test)]
     pub(crate) fn set_synthetic_world(&self, world: crate::triggers::World<'a>) {
         assert!(self.world.set(Ok(world)).is_ok());
@@ -675,12 +715,20 @@ impl<'a> ScriptedText<'a> {
         }
     }
 
+    /// tag_string@140BA5C20 uses database slot zero for raw zero.
+    pub(crate) fn country_tag(&self, country: u32) -> Result<&str, String> {
+        if country == 0 {
+            installed_content::country_names::reserved_zero_tag(self.frame)
+        } else {
+            self.scopes
+                .tag(country)
+                .ok_or_else(|| format!("Countries lacks tag for country {country} (140BA5C20)"))
+        }
+    }
+
     /// CountryTag_FormatMarkedName (140BA59E0 -> 1406E63A0 -> 1424B6FE0).
     pub(crate) fn country_marked_name(&self, country: u32) -> Result<String, String> {
-        let tag = self
-            .scopes
-            .tag(country)
-            .ok_or_else(|| format!("Countries lacks marked-name tag for country {country} (140BA59E0)"))?;
+        let tag = self.country_tag(country)?;
         let name = crt_case_text(&self.names.name_with(country, "_DEF")?, true, true);
         Ok(format!("\u{12}{tag} {name}"))
     }
@@ -727,10 +775,10 @@ impl<'a> ScriptedText<'a> {
         self.process(text, 0, &scopes, 0, context)
     }
 
-    fn on_large_stack(
+    fn on_large_stack<'e>(
         &self,
-        scopes: &ExpansionScopes,
-        expand: impl FnOnce(&ExpansionScopes) -> Result<String, String> + Send,
+        scopes: &ExpansionScopes<'e, 'a>,
+        expand: impl FnOnce(&ExpansionScopes<'e, 'a>) -> Result<String, String> + Send,
     ) -> Result<String, String> {
         let mut expanded = scopes.clone();
         expanded.on_large_stack = true;
@@ -759,7 +807,7 @@ impl<'a> ScriptedText<'a> {
         text: &str,
         slot: u32,
         name: &str,
-        scopes: &ExpansionScopes,
+        scopes: &ExpansionScopes<'_, 'a>,
     ) -> Result<String, String> {
         if scopes.needs_large_stack() {
             return self.on_large_stack(scopes, |scopes| {
@@ -791,7 +839,7 @@ impl<'a> ScriptedText<'a> {
         &self,
         text: &str,
         depth: i32,
-        scopes: &ExpansionScopes,
+        scopes: &ExpansionScopes<'_, 'a>,
         start: usize,
         context: Object,
     ) -> Result<String, String> {
@@ -818,9 +866,9 @@ impl<'a> ScriptedText<'a> {
                 ));
             }
             if let Some(variable) = inner.strip_prefix('?') {
-                return Err(format!(
-                    "[?{variable}]: the variable form's value formatting (1412BA1F0) is not ported"
-                ));
+                out.push_str(&self.numeric_variable(variable, scopes, start)?);
+                rest = &rest[open + 1 + length + 1..];
+                continue;
             }
             let value = self.bracket(inner, scopes, start, context)?;
             out.push_str(&self.process(&value, depth + 1, scopes, start, context)?);
@@ -833,7 +881,7 @@ impl<'a> ScriptedText<'a> {
     fn bracket(
         &self,
         inner: &str,
-        scopes: &ExpansionScopes,
+        scopes: &ExpansionScopes<'_, 'a>,
         start: usize,
         context: Object,
     ) -> Result<String, String> {
@@ -857,7 +905,7 @@ impl<'a> ScriptedText<'a> {
         &self,
         object: Object,
         segment: &str,
-        scopes: &ExpansionScopes,
+        scopes: &ExpansionScopes<'_, 'a>,
         active: &mut usize,
         event_active: &mut bool,
     ) -> Result<Object, String> {
@@ -878,8 +926,13 @@ impl<'a> ScriptedText<'a> {
                 if named(segment, "Faction") {
                     return Ok(Object::Faction(faction)); // 141A83750, selector 1004.
                 }
-                if ["Building", "Province", "Combat"].iter().any(|name| named(segment, name)) {
-                    return Err(format!("{segment}: null faction-environment promotion (141A83750) is not ported"));
+                if ["Building", "Province", "Combat"]
+                    .iter()
+                    .any(|name| named(segment, name))
+                {
+                    return Err(format!(
+                        "{segment}: null faction-environment promotion (141A83750) is not ported"
+                    ));
                 }
             }
             Object::Faction(faction) => {
@@ -887,11 +940,17 @@ impl<'a> ScriptedText<'a> {
                     let Some(faction) = faction else {
                         return Ok(object);
                     };
-                    let members = self.frame.complete::<tables::FactionMembers>()
+                    let members = self
+                        .frame
+                        .complete::<tables::FactionMembers>()
                         .map_err(|why| why.to_string())?;
-                    let leader = members.iter().find(|row| row.faction == faction && row.ordinal == 0)
+                    let leader = members
+                        .iter()
+                        .find(|row| row.faction == faction && row.ordinal == 0)
                         .ok_or_else(|| format!("faction {faction} has no first member"))?;
-                    let country = self.scopes.slot(leader.country)
+                    let country = self
+                        .scopes
+                        .slot(leader.country)
                         .ok_or("faction leader country link is unresolved")?;
                     return Ok(Object::Country(country)); // 141A81FD0.
                 }
@@ -977,7 +1036,9 @@ impl<'a> ScriptedText<'a> {
         ] {
             if named(segment, name) {
                 if !*event_active && !matches!(object, Object::FactionEnvironment(_)) {
-                    return Err(format!("{segment}: null active event pointer in faction environment (1410CF710) is not ported"));
+                    return Err(format!(
+                        "{segment}: null active event pointer in faction environment (1410CF710) is not ported"
+                    ));
                 }
                 let chosen = scopes.linked(*active, link, name)?;
                 *active = chosen;
@@ -1062,7 +1123,7 @@ impl<'a> ScriptedText<'a> {
     fn saved_promotion(
         &self,
         name: &str,
-        scopes: &ExpansionScopes,
+        scopes: &ExpansionScopes<'_, 'a>,
         active: usize,
     ) -> Result<Object, String> {
         let mut graph = scopes.targets.borrow().clone();
@@ -1107,7 +1168,7 @@ impl<'a> ScriptedText<'a> {
         &self,
         object: Object,
         name: &str,
-        scopes: &ExpansionScopes,
+        scopes: &ExpansionScopes<'_, 'a>,
         active: usize,
         event_active: bool,
     ) -> Result<String, String> {
@@ -1190,13 +1251,9 @@ impl<'a> ScriptedText<'a> {
         &self,
         slot: u32,
         name: &str,
-        scopes: &ExpansionScopes,
+        scopes: &ExpansionScopes<'_, 'a>,
     ) -> Result<Option<String>, String> {
-        let tag = self
-            .scopes
-            .tag(slot)
-            .ok_or_else(|| format!("country slot {slot} has no tag"))?
-            .to_owned();
+        let tag = self.country_tag(slot)?.to_owned();
         let names = |suffix: &str| self.names.name_with(slot, suffix);
         // 141A7B350 cases 37..41 probe the current tag without ideology.
         let non_ideology = |suffix: &str| -> Result<String, String> {
@@ -1451,7 +1508,10 @@ impl<'a> ScriptedText<'a> {
             }
             EventObject::State(id) => Object::State(Some(id)),
             EventObject::Character(id) => Object::Character(id),
-            EventObject::UnitLeader(reference) => {
+            EventObject::UnitLeader(reference)
+            | EventObject::CountryUnitLeader {
+                leader: reference, ..
+            } => {
                 let (leaders, gap) = rows::<tables::UnitLeaders>(self.frame);
                 let row = leaders
                     .iter()
@@ -1473,7 +1533,8 @@ impl<'a> ScriptedText<'a> {
             EventObject::IndustrialOrganisation(_)
             | EventObject::Project { .. }
             | EventObject::Raid(_)
-            | EventObject::Unit(_) => Object::State(None), // No +8/+50/+A8 (141A81250).
+            | EventObject::Unit(_)
+            | EventObject::Combat => Object::State(None), // No +8/+50/+A8 (141A81250).
         })
     }
 
@@ -1513,7 +1574,9 @@ impl<'a> ScriptedText<'a> {
     /// A state, character or unit leader scope holds no country: default
     /// construction (140528800) leaves +8 zero and SetState, SetCharacter and
     /// set_unit_leader (14052EFD0) clear it (14052F3F0), so the search is
-    /// skipped. For a province scope the country is not known, so only a
+    /// skipped. The active ability's nonclearing leader setter instead keeps
+    /// the country, including after a character text promotion. For a
+    /// province scope the country is not known, so only a
     /// token no character has is proven no character.
     fn character_named(
         &self,
@@ -1523,9 +1586,12 @@ impl<'a> ScriptedText<'a> {
     ) -> Result<Option<u32>, String> {
         let country = match (object, event) {
             (Object::Country(slot), _)
-            | (_, EventObject::Country(slot) | EventObject::CountryState { country: slot, .. }) => {
-                Some(slot)
-            }
+            | (
+                _,
+                EventObject::Country(slot)
+                | EventObject::CountryState { country: slot, .. }
+                | EventObject::CountryUnitLeader { country: slot, .. },
+            ) => Some(slot),
             (
                 _,
                 EventObject::State(_)
@@ -1534,7 +1600,8 @@ impl<'a> ScriptedText<'a> {
                 | EventObject::IndustrialOrganisation(_)
                 | EventObject::Project { .. }
                 | EventObject::Raid(_)
-                | EventObject::Unit(_),
+                | EventObject::Unit(_)
+                | EventObject::Combat,
             ) => {
                 return Ok(None);
             }
@@ -1634,26 +1701,39 @@ impl<'a> ScriptedText<'a> {
                 .localise(key)
                 .map_err(|refusal| refusal.to_string());
         }
-        let (appearance, _) = rows::<tables::CountryAppearance>(self.frame);
-        let original = appearance
-            .iter()
-            .find(|row| row.country == party.country)
-            .map(|row| String::from_utf8_lossy(&row.name_tag).into_owned());
-        let party_tag = self
-            .scopes
-            .slot(party.tag)
-            .and_then(|slot| self.scopes.tag(slot))
-            .map(str::to_owned);
+        // 14118EAD0 receives CPoliticalParty+0x20, not its roster owner.
+        let slot = if party.tag == 0 {
+            0
+        } else {
+            self.scopes.slot(party.tag).ok_or_else(|| {
+                format!(
+                    "the ruling party of {tag}: tag link {} has no CountryLinks row",
+                    party.tag
+                )
+            })?
+        };
         let naming = crate::products::party_history::PartyNaming {
             token: String::from_utf8_lossy(&party.token).into_owned(),
-            tag: party_tag,
-            original_tag: original,
+            tag: Some(self.country_tag(slot)?.to_owned()),
+            original_tag: None,
             key: None,
         };
         let defines = |key: &str| self.localisation.get(key).is_some();
-        let key = crate::products::party_history::party_key(&naming, defines).ok_or_else(|| {
-            format!("the ruling party of {tag}: its tag or original tag is not recorded")
-        })?;
+        let key = match crate::products::party_history::party_key(&naming, defines) {
+            Some(key) => key,
+            None => {
+                // The native getter reads signed +0x130C only after the own
+                // party key misses, without the name generator's dynamic gate.
+                crate::products::party_history::party_key_with_selected_tag(
+                    &naming,
+                    installed_content::country_names::original_or_own_tag(self.frame, slot)?,
+                    defines,
+                )
+                .ok_or_else(|| {
+                    format!("the ruling party of {tag}: its tag or original tag is not recorded")
+                })?
+            }
+        };
         // 14118EAD0 probes `_long` only on a `_party` key it found, not on
         // the group token it falls back to.
         let long_key = format!("{key}_long");
@@ -1682,19 +1762,22 @@ impl<'a> ScriptedText<'a> {
             .iter()
             .find(|row| row.id == id)
             .ok_or_else(|| format!("faction {id} has no Factions row: {gap}"))?;
-        // Literal names do not need content, nor a recorded template dictionary.
-        let (spelling, templates) = if faction.name.is_empty() {
+        // Only a nonnull fallback template needs content or a lexer dictionary.
+        let (spelling, templates) = if faction.name.is_empty() && faction.template_token.is_some() {
             (
                 crate::faction_names::template_spelling(self.frame, faction.template_token),
                 self.content.layers.layers.faction_templates(),
             )
         } else {
             let unused = "Faction templates were not needed";
-            (Err(unused.to_owned()), Err(unused.to_owned()))
+            (Ok(None), Err(unused.to_owned()))
         };
         crate::faction_names::name(
             &faction.name,
-            spelling.as_deref().map_err(Clone::clone),
+            spelling
+                .as_ref()
+                .map(|value| value.as_deref())
+                .map_err(Clone::clone),
             templates.as_deref().map_err(Clone::clone),
             self.localisation,
             &self.content.recorded_language,

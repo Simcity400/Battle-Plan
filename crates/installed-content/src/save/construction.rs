@@ -68,6 +68,8 @@ pub struct OccupationSettings {
     pub country: Vec<u8>,
     pub garrison_template: Option<u64>,
     pub default_law: Option<Vec<u8>>,
+    /// 140FEAE70 (secondary +0x18) writes primary +0x60 in this order.
+    pub occupied: Vec<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -290,6 +292,21 @@ fn occupation(country: &[u8], items: &[Item], pack: &mut Pack) -> io::Result<()>
             .map(typed_handle)
             .transpose()?,
         default_law: bytes(items, b"default_law")?,
+        occupied: field(items, b"occupation")?
+            .map(|value| {
+                block(value)?
+                    .iter()
+                    .map(|entry| {
+                        entry
+                            .key
+                            .clone()
+                            .filter(|tag| !tag.is_empty())
+                            .ok_or_else(|| invalid("occupation lacks target tag"))
+                    })
+                    .collect::<io::Result<Vec<_>>>()
+            })
+            .transpose()?
+            .unwrap_or_default(),
     };
     if pack
         .occupation_settings

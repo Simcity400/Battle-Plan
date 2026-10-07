@@ -6,6 +6,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Immediate text, delayed body, shortcut and the bound control rectangle.
+type TooltipHit<'a> = (&'a str, Option<&'a str>, Option<&'a str>, [f32; 4]);
+
 /// `NInterface.TOOLTIP_SCREEN_{LEFT,TOP,RIGHT,BOTTOM}_OFFSET_{X,Y}` and the
 /// `NGraphics.TOOLTIP_{SHOW,DELAYED,HIDE}_DELAY` seconds `1402A4080` reads.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -93,7 +96,7 @@ impl HoverState {
     /// the show delay applies only while the CTextBox is hidden in the game.
     pub(super) fn shown(
         &mut self,
-        hit: Option<(&str, Option<&str>, Option<&str>, [f32; 4])>,
+        hit: Option<TooltipHit<'_>>,
         point: Option<[f32; 2]>,
         now: Instant,
         timing: [f32; 3],

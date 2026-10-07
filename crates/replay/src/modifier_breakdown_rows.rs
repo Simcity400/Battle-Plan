@@ -3,6 +3,7 @@ use crate::value::value_struct;
 pub use engine::modifier_breakdown::Node as ModifierBreakdownNode;
 value_struct!(ModifierBreakdownNode { children: u32, value: i64, name: Vec<u8> });
 opaque_value!(Vec<ModifierBreakdownNode>);
+opaque_value!(Option<Vec<ModifierBreakdownNode>>);
 opaque_value!(Vec<Vec<u8>>);
 
 /// Country (kind 0) or selected commander (kind 1/2) reserve-rate tree.
@@ -101,6 +102,25 @@ typed_codec!(NavalModifierBreakdownRow, 96,
         || row.uses.iter().any(|usage| usage.side > 1)
     { return Err(invalid("invalid naval modifier source identity")); }
     check_tree(&row.nodes)
+});
+
+/// One fresh attrition formatter tree per native accumulator/key. The ordered
+/// per-division uses, depth and scaling are in ArmyAttritionInputs.sources.
+/// None is a counted root-local capture failure; it leaves other trees and all
+/// independent scalar terms available. Native display names require the
+/// recording language; runtime identities have no text-save counterpart.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AttritionModifierBreakdownRow {
+    pub accumulator: u64,
+    pub key: u32,
+    pub nodes: Option<Vec<ModifierBreakdownNode>>,
+}
+typed_codec!(AttritionModifierBreakdownRow, 96,
+|row| (row.accumulator as u128) << 32 | row.key as u128,
+|key| Self { accumulator: (key >> 32) as u64, key: key as u32, ..Default::default() },
+{ 0 => (nodes): Opaque }, |row| {
+    if let Some(nodes) = &row.nodes { check_tree(nodes)?; }
+    Ok(())
 });
 
 #[cfg(test)]

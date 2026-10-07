@@ -82,6 +82,10 @@ pub const SUBUNIT_COUNT_STRIDE: usize = 0x10;
 pub const CUSTOM_ICON: usize = COMPOSITION + 0x1a8;
 /// Contained composition +1AC, token3525; controls custom-icon use under NATO settings.
 pub const CUSTOM_ICON_NATO: usize = COMPOSITION + 0x1ac;
+/// Contained composition +1B0, the signed count added with native i32 wrapping
+/// by CountFormationDivisions@140FF4770 after GetDivisionTemplate@140C6F080.
+/// The existing hourly fixed span already contains this word.
+pub const FORMATION_DIVISION_COUNT: usize = COMPOSITION + 0x1b0;
 /// Contained composition +218, first nonzero override in category getter 140B8F7F0.
 pub const UNIT_TYPE_OVERRIDE: usize = COMPOSITION + 0x218;
 
@@ -120,6 +124,9 @@ pub struct IconRow {
     pub priority_unit_name: Span,
     pub custom_icon: i32,
     pub custom_icon_nato: u8,
+    /// Raw composition count for the ability's late-join denominator. It is
+    /// independent of the model fields and retains its signed native value.
+    pub formation_division_count: Option<i32>,
     /// 140B91150's result: +0x1A0, else the priority getter's. Token zero is
     /// the null object, which draws no model. Its count is unused.
     pub representative: SubunitCount,
@@ -1079,6 +1086,7 @@ pub fn walk_icons(
                 },
                 custom_icon: dword(record, icon(CUSTOM_ICON)),
                 custom_icon_nato: record[icon(CUSTOM_ICON_NATO)],
+                formation_division_count: Some(dword(record, icon(FORMATION_DIVISION_COUNT))),
                 // Read with the authenticated record, so they cannot fail.
                 country: dword(record, icon(COUNTRY_OPERAND_289A)),
                 foreign_country: dword(record, icon(COUNTRY_OPERAND_3ABE)),
@@ -1174,6 +1182,7 @@ pub fn walk_icons(
                         priority_unit_name: row.priority_unit_name,
                         custom_icon: row.custom_icon,
                         custom_icon_nato: row.custom_icon_nato,
+                        formation_division_count: row.formation_division_count,
                         country: row.country,
                         foreign_country: row.foreign_country,
                         model_category: row.model_category,

@@ -39,6 +39,8 @@ use std::{
     sync::Arc,
 };
 
+mod entry_tooltips;
+
 #[derive(Default)]
 pub(super) struct Menu {
     pub values: Values,
@@ -60,6 +62,19 @@ struct Definition {
     /// 141C5DD20 draws that object's, so two tactics sharing a name keep
     /// their own. An error says why the viewer has none.
     picture: Result<String, String>,
+}
+
+impl Definition {
+    /// Repeated bodies append into the same native trigger or mean-time object.
+    fn blocks(&self, key: &str) -> Vec<Item> {
+        self.items
+            .iter()
+            .filter(|item| item.keyword_is(key))
+            .filter_map(|item| item.value.items())
+            .flatten()
+            .cloned()
+            .collect()
+    }
 }
 
 /// A tactic's six effects (1406B3CB0, +0x138..+0x160) in [`EFFECTS`] order.
@@ -285,6 +300,20 @@ impl Content {
 
     fn definition(&self, candidate: &Candidate) -> Evaluation<&Definition> {
         self.entry(candidate.tactic_id, &candidate.token)
+    }
+
+    /// Exact name lookup1406B11F0: entries prepend into their hash bucket;
+    /// a miss is the null tactic. A partially read registry cannot prove it.
+    fn named_id(&self, name: &[u8]) -> Evaluation<i32> {
+        if let Some(why) = &self.registry_unsettled {
+            return Err(format!("the tactic name registry is incomplete: {why}"));
+        }
+        Ok(self
+            .registry
+            .iter()
+            .rev()
+            .find(|entry| entry.token == name)
+            .map_or(0, |entry| entry.id))
     }
 
     /// The picture sprite of the tactic a recording names (141C5DD20 draws
@@ -630,30 +659,14 @@ impl Context<'_> {
                 ));
             }
         };
-        let mut named = self
-            .content
-            .registry
-            .iter()
-            .filter(|entry| entry.token.as_slice() == stored);
-        let Some(entry) = named.next() else {
-            if let Some(reason) = &self.content.registry_unsettled {
-                return Err(format!(
-                    "no tactic read is named {}, and the tactics after {reason} are unknown",
-                    String::from_utf8_lossy(stored)
-                ));
-            }
+        let id = self.content.named_id(stored)?;
+        if id == 0 {
             return Ok(true);
-        };
-        if named.next().is_some() {
-            return Err(format!(
-                "more than one tactic is named {}, and which the name lookup (1406B11F0) holds is not reproduced",
-                String::from_utf8_lossy(stored)
-            ));
         }
         let candidate = self
             .candidates
             .iter()
-            .find(|candidate| candidate.tactic_id == entry.id)
+            .find(|candidate| candidate.tactic_id == id)
             .ok_or_else(|| {
                 format!(
                     "tactic {} has no unlock token",
@@ -1045,24 +1058,14 @@ impl Context<'_> {
         // scalar trigger reads nothing (1405431C0) and is dropped, a scalar
         // base leaves the text and refuses the tactic, and a scalar modifier
         // is an empty one (installed_content::combat_tactics).
-        let blocks = |key: &str| -> Vec<Item> {
-            definition
-                .items
-                .iter()
-                .filter(|item| item.keyword_is(key))
-                .filter_map(|item| item.value.items())
-                .flatten()
-                .cloned()
-                .collect()
-        };
-        if !self.check(&blocks("trigger"))? {
+        if !self.check(&definition.blocks("trigger"))? {
             return Ok(0);
         }
         // The weight's CMeanTimeToHappen, its modifiers checked in the
         // tactic scope (1405455A0).
         let mut weight = Evaluator::new(&self.world, Some(self)).mean_time_to_happen(
             "base weight",
-            &blocks("base"),
+            &definition.blocks("base"),
             Scopes::combat(),
         )?;
         let inputs = &self.detail.tactic_inputs;
@@ -1070,26 +1073,34 @@ impl Context<'_> {
             if inputs.preferred_tactic_ids[self.side][preference] != candidate.tactic_id {
                 continue;
             }
-            let factor = if preference == 0 {
-                let recorded = &inputs.country_weights[self.side];
-                if inputs.country_weight_present[self.side] == 0 {
-                    return Err(format!(
-                        "the {}'s preferred country tactic modifier is not recorded",
-                        side_name(self.side)
-                    ));
-                }
-                let modifier = if recorded.accumulator_entry_present == 0 {
-                    0
-                } else {
-                    recorded.accumulator_raw
-                };
-                self.preference_factor(0)?.wrapping_add(modifier)
-            } else {
-                self.preference_factor(preference)?
-            };
+            let factor = self.preferred_weight_factor(preference)?;
             weight = weight.wrapping_mul(100_000_i64.wrapping_add(factor)) / 100_000;
         }
         Ok(weight)
+    }
+
+    /// The country preference adds its recorded accumulator; leader preferences
+    /// take only their content define (1412A77A0).
+    fn preferred_weight_factor(&self, preference: usize) -> Evaluation<i64> {
+        let factor = self.preference_factor(preference)?;
+        if preference != 0 {
+            return Ok(factor);
+        }
+        let inputs = &self.detail.tactic_inputs;
+        if inputs.country_weight_present[self.side] == 0 {
+            return Err(format!(
+                "the {}'s preferred country tactic modifier is not recorded",
+                side_name(self.side)
+            ));
+        }
+        let recorded = &inputs.country_weights[self.side];
+        Ok(
+            factor.wrapping_add(if recorded.accumulator_entry_present == 0 {
+                0
+            } else {
+                recorded.accumulator_raw
+            }),
+        )
     }
 }
 
@@ -1390,13 +1401,16 @@ pub(super) fn bind(
     let chances = normalized_chances(&weights);
     let (icons, loc): (&dyn TextIcons, _) = (&document.icons.combat, &document.names.localisation);
     let mut menu = Menu::default();
-    for name in [
-        "filter_all",
-        "filter_attack",
-        "filter_defend",
-        "preferred_tactic_desc_text",
-    ] {
+    for name in ["filter_all", "filter_attack", "filter_defend"] {
         hide(&mut menu.values, name);
+    }
+    if let Some(popup) = document
+        .icons
+        .combat
+        .native_windows
+        .gui_type(b"tactics_list_view")
+    {
+        preferred_description(&mut menu.values, popup, icons, loc, &mut unavailable);
     }
     match builtin(icons, loc, "TACTICS_LIST_VIEW_TITLE", &[]) {
         Ok(title) => text(&mut menu.values, "window_title", title),
@@ -1454,6 +1468,13 @@ pub(super) fn bind(
     } else {
         unavailable.insert("selection chances or unlocks are incomplete; candidate order remains matching content order".into());
     }
+    let scripted = document
+        .scripted
+        .as_ref()
+        .map(|content| {
+            dashboard::scripted_text::ScriptedText::new(frame, loc, content, vision.ours())
+        })
+        .map_err(Clone::clone);
     for index in order {
         let candidate = &candidates[index];
         let token = String::from_utf8_lossy(&candidate.token);
@@ -1469,7 +1490,7 @@ pub(super) fn bind(
                 continue;
             }
         }
-        menu.entries.push(entry_values(
+        let mut row = entry_values(
             icons,
             &|name: &str| document.icons.combat.has_sprite(name),
             loc,
@@ -1480,14 +1501,106 @@ pub(super) fn bind(
             chances[index],
             unlocked[index],
             &mut unavailable,
-        ));
+        );
+        let main = match unlocked[index] {
+            Some(true) => {
+                entry_tooltips::main(icons, loc, content, candidate, definition, &mut unavailable)
+            }
+            Some(false) => (|| {
+                let text = scripted.as_ref().map_err(Clone::clone)?;
+                let scripted_content = document.scripted.as_ref().map_err(Clone::clone)?;
+                let effects = scripted_content.effects()?;
+                let effect_context = dashboard::effect_description::Context::new(
+                    text,
+                    loc,
+                    vision.ours(),
+                    "common/combat_tactics.txt",
+                    effects.view(None),
+                );
+                let mut refused = BTreeMap::new();
+                let sources = dashboard::effect_description::doctrine_tactic_sources(
+                    &effect_context,
+                    vision.ours(),
+                    candidate.tactic_id,
+                    |name| content.named_id(name),
+                    &mut refused,
+                );
+                for (why, count) in refused {
+                    unavailable.insert(format!(
+                        "tactic {token}'s doctrine source hover ({count}): {why}"
+                    ));
+                }
+                entry_tooltips::locked(icons, loc, &sources?)
+            })(),
+            None => Err("the viewing country's tactic unlock is unavailable".into()),
+        };
+        let requirements_body = if side_known {
+            (|| {
+                let text = scripted.as_ref().map_err(Clone::clone)?;
+                let evaluator = Evaluator::new(&context.world, Some(&context));
+                let mut refused = BTreeMap::new();
+                let body = dashboard::triggers::description::describe(
+                    &definition.blocks("trigger"),
+                    &evaluator,
+                    text,
+                    loc,
+                    Scopes::combat(),
+                    &content.phases,
+                    &|stored| {
+                        Ok(if content.named_id(stored)? == 0 {
+                            NULL_TACTIC_NAME.to_vec()
+                        } else {
+                            stored.to_vec()
+                        })
+                    },
+                    &mut refused,
+                );
+                for (why, count) in refused {
+                    unavailable.insert(format!(
+                        "tactic {token}'s requirement description hover ({count}): {why}"
+                    ));
+                }
+                body
+            })()
+        } else {
+            Err("the viewing country's combat side is unavailable".into())
+        };
+        let requirements = entry_tooltips::requirements(
+            icons,
+            loc,
+            &candidate.token,
+            requirements_body,
+            &mut unavailable,
+        );
+        let status = if side_known {
+            entry_tooltips::status(
+                icons,
+                loc,
+                &context,
+                candidate,
+                definition,
+                &weights,
+                index,
+                &mut unavailable,
+            )
+        } else {
+            Err("the viewing country's combat side is unavailable".into())
+        };
+        entry_tooltips::bind(
+            &mut row,
+            &token,
+            main,
+            requirements,
+            status,
+            &mut unavailable,
+        );
+        menu.entries.push(row);
     }
     for reason in unavailable {
         out.warnings.push(format!(
             "Possible tactics: {reason}; missing values remain unavailable."
         ));
     }
-    out.warnings.push("Possible-tactics condition and unlock tooltips are not reproduced; the list does not substitute the selected-tactic tooltip.".into());
     out.tactics = menu;
     Ok(())
 }
@@ -1690,6 +1803,46 @@ fn entry_values(
         }
     }
     row
+}
+
+/// The battle popup only hides its filter buttons (141C5C000); its preferred
+/// tactic explanation retains the authored text. RefreshLocalizedText@1422B60E0
+/// localises that text with no arguments, unlike the country/leader selection
+/// variants (141C5BE00/141C5BB80) that replace it with their chance arguments.
+fn preferred_description(
+    values: &mut Values,
+    popup: &installed_content::gui::native::Element,
+    icons: &dyn TextIcons,
+    loc: &Localisation,
+    unavailable: &mut BTreeSet<String>,
+) {
+    let name = "preferred_tactic_desc_text";
+    let Some(element) = popup.path_named(name) else {
+        return;
+    };
+    let Some(authored) = element.text_box() else {
+        return;
+    };
+    let label = if authored.context_aware && !authored.bound_text.nodes.is_empty() {
+        Err(
+            "uses scoped bound_text (1422B60E0), whose battle-popup localizer is unavailable"
+                .to_owned(),
+        )
+    } else {
+        token(icons, loc, &authored.text)
+    };
+    match label {
+        Ok(label) => {
+            text(values, name, label);
+            values.get_mut(name).expect("bound above").hidden = element.hide;
+        }
+        Err(reason) => withhold(
+            values,
+            name,
+            unavailable,
+            format!("the preferred tactic explanation: {reason}"),
+        ),
+    }
 }
 
 /// A refused popup field, as a refused window binding (binding::Bindings::
@@ -2043,7 +2196,7 @@ mod tests {
         }
     }
 
-    fn context<'a>(
+    pub(super) fn context<'a>(
         detail: &'a LandCombatDetailsRow,
         content: &'a Content,
         aliases: &'a BTreeMap<u32, u32>,
@@ -2170,7 +2323,7 @@ mod tests {
     }
 
     /// Content read through the real tactic parser.
-    fn parsed(text: &[u8]) -> Content {
+    pub(super) fn parsed(text: &[u8]) -> Content {
         parsed_with(text, &names(&ScriptedTriggers::default()))
     }
 
@@ -2327,6 +2480,93 @@ mod tests {
             identities.sort_unstable();
             assert_eq!(identities, (0..count).collect::<Vec<_>>());
         }
+    }
+
+    /// The battle variant keeps the GUI's key and supplies no country-selector
+    /// chance; unsupported explanation text leaves the phase label available.
+    #[test]
+    fn popup_preferred_description_retains_authored_text_without_selector_arguments() {
+        let gui = installed_content::gui::native::read(
+            br#"guiTypes = { containerWindowType = {
+                name = tactics_list_view
+                instantTextboxType = {
+                    name = preferred_tactic_desc_text text = MOD_PREFERRED_DESC
+                    position = { x = 20 y = 66 } maxWidth = 340 maxHeight = 20
+                    alwaystransparent = yes
+                }
+            } }"#,
+        );
+        let popup = gui.template(b"tactics_list_view").unwrap();
+        let loc: Localisation = [(
+            "MOD_PREFERRED_DESC".to_owned(),
+            "The country's preferred tactic has an extra $CHANCE|H$ chance to be selected during combat."
+                .to_owned(),
+        )]
+        .into_iter()
+        .collect();
+        let mut values = Values::new();
+        let mut unavailable = BTreeSet::new();
+        text(&mut values, "current_phase", "Known phase");
+        preferred_description(
+            &mut values,
+            popup,
+            &crate::combat::binding::NoIcons,
+            &loc,
+            &mut unavailable,
+        );
+        let explanation = &values["preferred_tactic_desc_text"];
+        assert!(!explanation.hidden);
+        assert_eq!(
+            explanation.text.as_deref(),
+            Some(
+                "The country's preferred tactic has an extra  chance to be selected during combat."
+            )
+        );
+        assert!(unavailable.is_empty(), "{unavailable:?}");
+
+        let refused: Localisation = [("MOD_PREFERRED_DESC".to_owned(), "\u{14}".to_owned())]
+            .into_iter()
+            .collect();
+        preferred_description(
+            &mut values,
+            popup,
+            &crate::combat::binding::NoIcons,
+            &refused,
+            &mut unavailable,
+        );
+        let explanation = &values["preferred_tactic_desc_text"];
+        assert!(explanation.hidden && explanation.text.is_none());
+        assert_eq!(values["current_phase"].text.as_deref(), Some("Known phase"));
+        assert_eq!(
+            unavailable,
+            BTreeSet::from([
+                "the preferred tactic explanation: localisation MOD_PREFERRED_DESC holds the control byte 0x14 (an authored `¤`), which the viewer does not draw".to_owned()
+            ])
+        );
+
+        let scoped = installed_content::gui::native::read(
+            br#"guiTypes = { containerWindowType = {
+                name = tactics_list_view instantTextboxType = {
+                    name = preferred_tactic_desc_text text = MOD_PREFERRED_DESC
+                    context_aware_text = { localization_key = MOD_SCOPED_DESC }
+                }
+            } }"#,
+        );
+        unavailable.clear();
+        preferred_description(
+            &mut values,
+            scoped.template(b"tactics_list_view").unwrap(),
+            &crate::combat::binding::NoIcons,
+            &loc,
+            &mut unavailable,
+        );
+        assert!(values["preferred_tactic_desc_text"].text.is_none());
+        assert_eq!(
+            unavailable,
+            BTreeSet::from([
+                "the preferred tactic explanation: uses scoped bound_text (1422B60E0), whose battle-popup localizer is unavailable".to_owned()
+            ])
+        );
     }
 
     /// Every popup value the localisation or the authored fields cannot give
@@ -2992,14 +3232,14 @@ mod tests {
     /// 1424A6500, found in any case), then looks the token's stored spelling
     /// up byte-for-byte among the tactic names (14051F250 -> 1406B11F0): a
     /// miss is the active null tactic (1406B3BD0), so the trigger holds; an
-    /// inactive tactic needs the country's unlock (1413B8CF0); a name two
-    /// tactics share is refused by name.
+    /// inactive tactic needs the country's unlock (1413B8CF0); duplicate
+    /// names select the last authored definition (hash-bucket prepend).
     #[test]
     fn has_tactic_looks_up_the_interned_spelling() {
         let file = b"t = { trigger = { has_tactic = @operand } }\n\
                      Tactic_Foo = { active = no }\n\
                      other = { }\n\
-                     twin = { } twin = { }\n";
+                     twin = { active = no } twin = { }\n";
         let detail = LandCombatDetailsRow::default();
         let aliases = BTreeMap::from([(10, 1)]);
         let weigh = |operand: &str, literals: &[(u32, &[u8])], unlocked: &[u32]| {
@@ -3019,7 +3259,13 @@ mod tests {
             context.tokens = literals.iter().copied().collect();
             context.country_unlocks = BTreeMap::from([(1, unlocked)]);
             let definition = content.definition(&derived[0])?;
-            context.weight(&derived[0], definition)
+            // HasCombatTactic's native mask is country-only. The bare combat
+            // setter clears its country carrier; lookup assertions use a real
+            // country scope while retaining this Combat implementation.
+            Evaluator::new(&context.world, Some(&context))
+                .evaluate(&definition.blocks("trigger"), Scopes::of(Scope::Country(1)))
+                .decided()
+                .map(|holds| if holds { 100_000 } else { 0 })
         };
         let dictionary: [(u32, &[u8]); 5] = [
             (41, b"t"),
@@ -3045,8 +3291,12 @@ mod tests {
             let reason = weigh(operand, &dictionary, &[]).unwrap_err();
             assert!(reason.contains(why), "{operand}: {reason}");
         };
-        refused("twin", "more than one tactic is named twin");
+        assert_eq!(weigh("twin", &dictionary, &[]), Ok(100_000));
         refused("absent", "absent is not in the recorded lexical dictionary");
+        assert_eq!(
+            weight_of("t={trigger={has_tactic=missing_tactic}}", &detail),
+            Ok(0)
+        );
     }
 
     /// `only_show_for` (141C5C1F0): the recorded country of the tag sees
@@ -3437,8 +3687,12 @@ mod tests {
             weigh("if = yes"),
             Err("trigger if = yes: the conditional is not a block (CIfTrigger 141395B90)".into())
         );
-        assert_eq!(weigh("Steel > 5"), Ok(100_000));
+        // Resetting the combat scope clears its country carrier. OWNER
+        // explicitly installs the side's first primary country (14146BB30).
+        assert_eq!(weigh("Steel > 5"), Ok(0));
         assert_eq!(weigh("Steel > 6"), Ok(0));
+        assert_eq!(weigh("OWNER = { Steel > 5 }"), Ok(100_000));
+        assert_eq!(weigh("OWNER = { Steel > 6 }"), Ok(0));
         // A bare key a whole dictionary lacks is token 0xF (1424A7A90): no
         // lookup by token finds it, and naming no scripted trigger it is
         // "Invalid trigger", no child.
@@ -3944,13 +4198,16 @@ mod tests {
     /// trigger are the tactic scope itself (1405286D0), the combat included;
     /// a country target carries no combat (set_country 14052DD00 ->
     /// 14052F3F0). A tag whose country owns no state is substituted from
-    /// the original-tag lists (1401DA520), which dashboard::scope derives
-    /// from CountryAppearance; without it the tag is refused by name.
+    /// the exact recorded original-tag buckets (1401DA520); without those
+    /// native list inputs the tag is refused by name.
     #[test]
     fn scope_keys_check_their_block_in_the_resolved_scope() {
         use replay::{
             frame::{Metrics, TableView},
-            rows::{CountryCounterInputRow, CountryLinkRow, CountryRow, TableId, TableRows},
+            rows::{
+                CountryCounterInputRow, CountryLinkRow, CountryRow, Recorded,
+                ReservedCountryNamingRow, TableId, TableRows,
+            },
         };
         let mut frame = DecodedFrame {
             branch: 1,
@@ -3961,7 +4218,8 @@ mod tests {
             .map(Into::into),
             metrics: Metrics::default(),
         };
-        let countries = [(100, 0, "GER", 5), (200, 1, "SOV", 3), (300, 2, "ENG", 0)];
+        // Native slot zero is reserved, separately from the positive roster.
+        let countries = [(100, 1, "GER", 5), (200, 2, "SOV", 3), (300, 3, "ENG", 0)];
         let mut set = |id: TableId, rows: TableRows| {
             *frame.tables[id.index()] = TableView::Complete(rows);
         };
@@ -4023,7 +4281,7 @@ mod tests {
             ),
         );
         let detail = skilled();
-        let aliases = BTreeMap::from([(100, 0), (200, 1), (300, 2)]);
+        let aliases = BTreeMap::from([(100, 1), (200, 2), (300, 3)]);
         let tokens: &[(&[u8], u32)] = &[
             (b"GER", 0x7001),
             (b"SOV", 0x7002),
@@ -4034,9 +4292,9 @@ mod tests {
             (b"root.owner", 0x7004),
             (b"var:x", 0x7005),
         ];
-        let weigh = |trigger: &str| {
+        let weigh_in = |frame: &DecodedFrame, trigger: &str| {
             let content = parsed(format!("t = {{ trigger = {{ {trigger} }} }}").as_bytes());
-            let mut context = context_in(&detail, &content, &aliases, &frame);
+            let mut context = context_in(&detail, &content, &aliases, frame);
             context.first_countries[0] = Some(100);
             context.tokens = tokens.iter().map(|(literal, id)| (*id, *literal)).collect();
             context.country_tags = countries
@@ -4053,6 +4311,7 @@ mod tests {
             };
             context.weight(&candidate, definition)
         };
+        let weigh = |trigger: &str| weigh_in(&frame, trigger);
         assert_eq!(weigh("GER = { tag = GER }"), Ok(100_000));
         assert_eq!(weigh("SOV = { tag = GER }"), Ok(0));
         // A quoted key's text is still a tag (steps 1-3 read the text).
@@ -4071,8 +4330,23 @@ mod tests {
         assert_eq!(weigh("GER = { NOT = { is_attacker = yes } }"), Ok(100_000));
         assert_eq!(
             weigh("ENG = { tag = ENG }"),
-            Err("trigger ENG = { ... }: ENG owns no state, and the countries with it as original tag are unknown: CountryAppearance is incomplete since hour 1".into())
+            Err("trigger ENG = { ... }: ReservedCountryNaming native lists are unavailable this hour".into())
         );
+        // Capturing an empty ENG bucket proves native keep-own fallback.
+        // The physical array and reserved object's count are not demanded.
+        let mut empty_buckets = frame.clone();
+        *empty_buckets.tables[TableId::ReservedCountryNaming.index()] =
+            TableView::Complete(TableRows::ReservedCountryNaming(vec![
+                ReservedCountryNamingRow {
+                    original_tag_buckets: Recorded::Value(Some(vec![
+                        Vec::new();
+                        countries.len() + 1
+                    ])),
+                    ..Default::default()
+                },
+            ]));
+        assert_eq!(weigh_in(&empty_buckets, "ENG = { tag = ENG }"), Ok(100_000));
+        assert_eq!(weigh_in(&empty_buckets, "tag = ENG"), Ok(0));
         // A `var:` key decodes the stored value (1405382B0 -> 140537A10).
         assert_eq!(weigh("var:x = { tag = GER }"), Ok(100_000));
         assert_eq!(weigh("var:missing = { tag = GER }"), Ok(0));
@@ -4108,7 +4382,7 @@ mod tests {
         assert_eq!(weigh("tag = x"), Ok(100_000));
         // XYZ is no tag: the variable `xyz`, which GER does not hold, is 0.
         assert_eq!(weigh("tag = XYZ"), Ok(0));
-        refused("tag = ENG", "ENG owns no state");
+        refused("tag = ENG", "ReservedCountryNaming native lists");
     }
 
     /// Content count triggers (CTrigger::LoadKey 1405434F0, steps 3 to 6):
@@ -4220,7 +4494,8 @@ mod tests {
                         .collect(),
                 ),
             );
-            let countries = [(100, 0, "GER", 2), (200, 1, "SOV", 1)];
+            // Positive country slots never alias the reserved zero object.
+            let countries = [(100, 1, "GER", 2), (200, 2, "SOV", 1)];
             set(
                 TableId::CountryLinks,
                 TableRows::CountryLinks(
@@ -4408,7 +4683,7 @@ mod tests {
             frame
         };
         let detail = skilled();
-        let aliases = BTreeMap::from([(100, 0), (200, 1)]);
+        let aliases = BTreeMap::from([(100, 1), (200, 2)]);
         // The attacking side's four units: two of the category, one of
         // another, one of none (LandCombatDivisions.categories).
         let (armor_mask, other) = (installed_content::trigger_keys::EQUIPMENT_CATEGORIES[0].1, 0x20);
@@ -4432,7 +4707,7 @@ mod tests {
             let mut context = context_with(&detail, &content, &aliases, &frame, facts);
             context.first_countries[0] = Some(100);
             context.tokens = tokens.iter().map(|(literal, id)| (*id, *literal)).collect();
-            context.country_tags = BTreeMap::from([(b"GER".as_slice(), 0)]);
+            context.country_tags = BTreeMap::from([(b"GER".as_slice(), 1)]);
             context.links = frame
                 .complete::<tables::CountryLinks>()
                 .map(|_| ())
@@ -4451,25 +4726,42 @@ mod tests {
         };
         let weigh_at = |hour, trigger: &str| weigh_with_units(hour, &participants, trigger);
         let weigh = |trigger: &str| weigh_at(hour, trigger);
+        let weigh_country_at =
+            |hour, trigger: &str| weigh_at(hour, &format!("OWNER = {{ {trigger} }}"));
+        let weigh_country = |trigger: &str| weigh_country_at(hour, trigger);
 
-        // Buildings (14138FEB0): the tactic scope's country sums its owned
+        // SetCombatContext resets the country carrier. These count masks
+        // reject the bare combat before reading its country's operands,
+        // even when the country links are incomplete. OWNER installs the
+        // combat side's first country through the native scope resolver.
+        for trigger in [
+            "arms_factory > 4",
+            "mod_mill = 3",
+            "steel > 12",
+            "technocracy > 0.1",
+        ] {
+            assert_eq!(weigh(trigger), Ok(0), "{trigger}");
+            assert_eq!(weigh_at(9, trigger), Ok(0), "{trigger}");
+        }
+
+        // Buildings (14138FEB0): an explicit country scope sums its owned
         // states' state building (3 + 2) and its owned provinces' province
         // building (1 + 2); a state sums its own and its provinces'.
-        assert_eq!(weigh("arms_factory > 4"), Ok(100_000));
-        assert_eq!(weigh("arms_factory > 5"), Ok(0));
-        assert_eq!(weigh("ARMS_FACTORY = 5"), Ok(100_000));
-        assert_eq!(weigh("mod_mill = 3"), Ok(100_000));
+        assert_eq!(weigh_country("arms_factory > 4"), Ok(100_000));
+        assert_eq!(weigh_country("arms_factory > 5"), Ok(0));
+        assert_eq!(weigh_country("ARMS_FACTORY = 5"), Ok(100_000));
+        assert_eq!(weigh_country("mod_mill = 3"), Ok(100_000));
         assert_eq!(weigh("GER = { Mod_Mill < 4 }"), Ok(100_000));
         assert_eq!(weigh("64 = { arms_factory = 3 }"), Ok(100_000));
         assert_eq!(weigh("65 = { mod_mill = 4 }"), Ok(100_000));
         // A scoped constant operand compares by its integer part.
-        assert_eq!(weigh("arms_factory = \"5.9\""), Ok(100_000));
+        assert_eq!(weigh_country("arms_factory = \"5.9\""), Ok(100_000));
 
         // Resources (141390640): produced plus adjustment, 13 whole units,
         // at any hour (CountryResources is hourly).
-        assert_eq!(weigh("steel > 12"), Ok(100_000));
-        assert_eq!(weigh("steel > 13"), Ok(0));
-        assert_eq!(weigh_at(hour + 1, "steel > 12"), Ok(100_000));
+        assert_eq!(weigh_country("steel > 12"), Ok(100_000));
+        assert_eq!(weigh_country("steel > 13"), Ok(0));
+        assert_eq!(weigh_country_at(hour + 1, "steel > 12"), Ok(100_000));
         // A state scope (1409CC730): 15 whole units, compared by
         // CIntTrigger::Evaluate (14138CC70).
         assert_eq!(weigh("64 = { steel > 14 }"), Ok(100_000));
@@ -4483,11 +4775,11 @@ mod tests {
 
         // Ideology support (141390530): 20000 * 100000 / 100000, fixed5,
         // `=` compared as `>` (14138D120); a state scope is outside mask 4.
-        assert_eq!(weigh("technocracy > 0.1"), Ok(100_000));
-        assert_eq!(weigh("Technocracy > 0.2"), Ok(0));
-        assert_eq!(weigh("technocracy = 0.1"), Ok(100_000));
-        assert_eq!(weigh("technocracy < \"0.25\""), Ok(100_000));
-        assert_eq!(weigh("fascism > 0.59"), Ok(100_000));
+        assert_eq!(weigh_country("technocracy > 0.1"), Ok(100_000));
+        assert_eq!(weigh_country("Technocracy > 0.2"), Ok(0));
+        assert_eq!(weigh_country("technocracy = 0.1"), Ok(100_000));
+        assert_eq!(weigh_country("technocracy < \"0.25\""), Ok(100_000));
+        assert_eq!(weigh_country("fascism > 0.59"), Ok(100_000));
         assert_eq!(weigh("64 = { technocracy > 0.1 }"), Ok(0));
 
         // Equipment categories (141390370): the share of the side's units
@@ -4534,11 +4826,11 @@ mod tests {
         // name instead of shrinking.
         for (trigger, why) in [
             (
-                "arms_factory > 4",
+                "OWNER = { arms_factory > 4 }",
                 "the owner of state 67: country link 999",
             ),
             (
-                "technocracy > 0.1",
+                "OWNER = { technocracy > 0.1 }",
                 "PoliticalParties row: country link 999",
             ),
             (

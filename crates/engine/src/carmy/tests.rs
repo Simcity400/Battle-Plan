@@ -312,7 +312,7 @@ fn owned_normal_nonzero_proof_covers_extreme_allowed_operands() {
 
 use super::{Row, walk, walk_with};
 use crate::{
-    carmy, carmy_group, ccountry, corders_group, cprovince, creferenced_division_template,
+    carmy, carmy_group, ccountry, corders_group, cprovince, creferenced_division_template, cunit,
     memory::SliceMemory, walk::Outcome,
 };
 const GS: usize = 0x1000;
@@ -962,8 +962,28 @@ fn presentation_scalar_batches_preserve_success_trace_and_early_guards() {
     );
     assert_eq!(actual, expected);
     // Status gathers fixed seeds, the country's modifier snapshot and the
-    // stat block's maxima and exfiltration byte once each.
-    assert_eq!(packed.batches.get(), 3);
+    // stat block's maxima and exfiltration byte once each, then the independent
+    // supply-footer scalar spans in one additional gather.
+    assert_eq!(packed.batches.get(), 4);
+    for (offset, width) in [
+        (crate::cunit_supply_inputs::ASKED, 8),
+        (crate::cunit_supply_inputs::RECEIVED, 16),
+        (crate::cunit_supply_inputs::FROM_STATE, 12),
+        (crate::cunit_supply_inputs::DIVISION_DEMAND, 12),
+        (crate::cunit_supply_inputs::AIRPLANE_DEMAND, 12),
+        (crate::cunit_supply_inputs::SHIP_DEMAND, 16),
+    ] {
+        assert_eq!(
+            packed
+                .reads
+                .borrow()
+                .iter()
+                .filter(|&&(address, len)| address == A1 + offset && len == width)
+                .count(),
+            1,
+            "each supply-footer span is acquired once"
+        );
+    }
     assert_eq!(
         packed
             .reads
@@ -5715,6 +5735,70 @@ fn division_status_supply_grace_preserves_signed_words_and_owned_seed_failures()
         assert_eq!(
             packet.capture(&memory, 0, GS, &failed, Outcome::Rows { len: 1 }, 1),
             Outcome::Unavailable { reason }
+        );
+    }
+}
+
+#[test]
+fn division_status_invalid_order_reason_is_lazy_raw_and_field_local() {
+    let mut memory = presentation_fixture();
+    let mut packet = super::StatusPacket::new(1).unwrap();
+    let mut rows = [super::StatusRow::default(); 1];
+    let reason_address = A1 + cunit::INVALID_ORDERS_REASON;
+    for raw in [i32::MIN, -1, 0, 1, 7, 8, i32::MAX] {
+        memory.bytes[A1 + carmy::INVALID_ORDERS] = 0xff;
+        p32(&mut memory.bytes, reason_address, raw as u32);
+        let mut seeds = [super::DivisionSeed {
+            pointer: A1,
+            division: presentation_source()[0].division,
+            ..Default::default()
+        }];
+        super::capture_division_seeds(&memory, &mut seeds);
+        let observed = ScalarBatchMemory::new(&memory);
+        assert_eq!(
+            packet.capture(&observed, 0, GS, &seeds, Outcome::Rows { len: 1 }, 1),
+            Outcome::Rows { len: 1 }
+        );
+        assert_eq!(
+            observed
+                .reads
+                .borrow()
+                .iter()
+                .filter(|&&(at, _)| at == reason_address)
+                .count(),
+            1
+        );
+        drop(observed);
+        p32(&mut memory.bytes, reason_address, 42);
+        assert_eq!(packet.project(&mut rows), Outcome::Rows { len: 1 });
+        assert_eq!(rows[0].invalid_orders_reason, Some(raw));
+
+        let observed = ScalarBatchMemory::new(&memory);
+        observed.fault.set(Some(reason_address));
+        assert_eq!(
+            packet.capture(&observed, 0, GS, &seeds, Outcome::Rows { len: 1 }, 1),
+            Outcome::Rows { len: 1 }
+        );
+        assert_eq!(packet.project(&mut rows), Outcome::Rows { len: 1 });
+        assert_eq!(rows[0].invalid_orders_reason, None);
+        assert_eq!(rows[0].invalid_orders, 0xff);
+        assert_eq!(rows[0].entrenchment, i64::MIN);
+        assert_eq!(rows[0].maximum_hit_points, 200_000);
+
+        seeds[0].invalid_orders = Some(0);
+        observed.reads.borrow_mut().clear();
+        assert_eq!(
+            packet.capture(&observed, 0, GS, &seeds, Outcome::Rows { len: 1 }, 1),
+            Outcome::Rows { len: 1 }
+        );
+        assert_eq!(packet.project(&mut rows), Outcome::Rows { len: 1 });
+        assert_eq!(rows[0].invalid_orders_reason, None);
+        assert!(
+            observed
+                .reads
+                .borrow()
+                .iter()
+                .all(|&(at, _)| at != reason_address)
         );
     }
 }

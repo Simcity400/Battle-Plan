@@ -25,6 +25,7 @@ pub mod source;
 pub mod state_resources;
 pub mod transport;
 pub mod triggers;
+pub mod unit_names;
 
 pub use config::Config;
 pub use dto::*;

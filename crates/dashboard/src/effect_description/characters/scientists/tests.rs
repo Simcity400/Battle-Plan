@@ -167,8 +167,7 @@ fn add_scientist_trait() {
         Content::default(),
     );
     assert_eq!(
-        out.text,
-        "TraitQuick [Root.GetTag]\n  TooltipAAA",
+        out.text, "TraitQuick [Root.GetTag]\n  TooltipAAA",
         "{:?}",
         out.refusals
     );
@@ -190,14 +189,16 @@ fn scientist_trait_uses_full_category_mask_and_caller_scope() {
         literal: b"research_speed_factor".to_vec(),
     });
     *fixture.frame.tables[TableId::ModifierDefinitions.index()] =
-        TableView::Complete(TableRows::ModifierDefinitions(vec![ModifierDefinitionRow {
-            token: 31,
-            category_mask: 1 << 31,
-            flags: crate::modifier_text::POSITIVE_IS_GOOD,
-            precision: 2,
-            name_key: b"SCIENTIST_SCOPE".to_vec(),
-            ..Default::default()
-        }]));
+        TableView::Complete(TableRows::ModifierDefinitions(vec![
+            ModifierDefinitionRow {
+                token: 31,
+                category_mask: 1 << 31,
+                flags: crate::modifier_text::POSITIVE_IS_GOOD,
+                precision: 2,
+                name_key: b"SCIENTIST_SCOPE".to_vec(),
+                ..Default::default()
+            },
+        ]));
     let out = fixture.render(
         "add_scientist_trait=scientist_trait_scoped",
         &mut caller(),
@@ -216,9 +217,15 @@ fn scientist_trait_uses_full_category_mask_and_caller_scope() {
             .scientist_traits
             .as_ref()
             .unwrap();
-        let modifiers = &traits.get("scientist_trait_scoped").unwrap().unwrap().modifiers;
+        let modifiers = &traits
+            .get("scientist_trait_scoped")
+            .unwrap()
+            .unwrap()
+            .modifiers;
         assert_eq!(
-            renderer.modifier_list(modifiers, "", scopes).unwrap(),
+            renderer
+                .modifier_list_with(modifiers, "", scopes, ModifierListOptions::default())
+                .unwrap(),
             "TooltipAAA"
         );
     });

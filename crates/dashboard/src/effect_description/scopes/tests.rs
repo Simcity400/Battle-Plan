@@ -3,6 +3,446 @@ use crate::effect_description::tests::{Fixture, fresh};
 use replay::{frame::TableView, rows::*};
 
 #[test]
+fn format99_country_rosters_preserve_stored_order_at_scale() {
+    let mut fixture = Fixture::new();
+    let countries = crate::effect_description::tests::synthetic_countries(5_000);
+    *fixture.frame.tables[TableId::CountryLinks.index()] =
+        TableView::Complete(TableRows::CountryLinks(
+            countries
+                .iter()
+                .map(|row| CountryLinkRow {
+                    id: row.id,
+                    canonical_slot: row.canonical_slot,
+                })
+                .collect(),
+        ));
+    *fixture.frame.tables[TableId::Countries.index()] =
+        TableView::Complete(TableRows::Countries(countries));
+    let references: Vec<_> = (1..=5_000).rev().map(|slot| slot * 100).collect();
+    *fixture.frame.tables[TableId::CountryCounterInputs.index()] =
+        TableView::Complete(TableRows::CountryCounterInputs(vec![
+            CountryCounterInputRow {
+                country: 100,
+                neighbors: Recorded::Value(Some(references.clone())),
+                ..Default::default()
+            },
+        ]));
+    *fixture.frame.tables[TableId::OccupationSettings.index()] =
+        TableView::Complete(TableRows::OccupationSettings(vec![OccupationSettingsRow {
+            country: 100,
+            occupied: Recorded::Value(Some(references)),
+            ..Default::default()
+        }]));
+    let item = installed_content::parser::parse(b"every_neighbor_country={}")
+        .unwrap()
+        .items
+        .remove(0);
+    let roster = |fixture: &Fixture, source| {
+        fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
+            renderer.roster(source, &item, Scopes::of(Scope::Country(1)))
+        })
+    };
+    let expected: Vec<_> = (1..=5_000).rev().map(Scope::Country).collect();
+    for source in [Roster::CountryNeighbors, Roster::OccupiedCountries] {
+        assert_eq!(roster(&fixture, source).unwrap(), expected);
+    }
+    let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryCounterInputs.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].neighbors = Recorded::Value(None);
+    assert!(
+        roster(&fixture, Roster::CountryNeighbors)
+            .unwrap_err()
+            .contains("CountryCounterInputs.neighbors capture refused")
+    );
+    let TableView::Complete(TableRows::OccupationSettings(rows)) =
+        &mut *fixture.frame.tables[TableId::OccupationSettings.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].occupied = Recorded::NotRecorded;
+    assert!(
+        roster(&fixture, Roster::OccupiedCountries)
+            .unwrap_err()
+            .contains("OccupationSettings.occupied not recorded")
+    );
+
+    *fixture.frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(
+        (0_u32..5_000)
+            .rev()
+            .map(|ordinal| DivisionRow {
+                id: 39 | u64::from(ordinal + 1) << 32,
+                roster_owner: 100,
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *fixture.frame.tables[TableId::DivisionStatus.index()] =
+        TableView::Complete(TableRows::DivisionStatus(
+            (0_u32..5_000)
+                .map(|ordinal| DivisionStatusRow {
+                    division: 39 | u64::from(ordinal + 1) << 32,
+                    country_ordinal: Recorded::Value(Some(ordinal)),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    assert_eq!(
+        roster(&fixture, Roster::CountryDivisions).unwrap(),
+        (0_u32..5_000)
+            .map(|ordinal| Scope::Unit(39 | u64::from(ordinal + 1) << 32))
+            .collect::<Vec<_>>()
+    );
+    let TableView::Complete(TableRows::DivisionStatus(rows)) =
+        &mut *fixture.frame.tables[TableId::DivisionStatus.index()]
+    else {
+        unreachable!()
+    };
+    rows[4_999].country_ordinal = Recorded::Value(Some(0));
+    assert!(
+        roster(&fixture, Roster::CountryDivisions)
+            .unwrap_err()
+            .contains("not a complete country roster")
+    );
+}
+
+#[test]
+fn state_divisions_follow_native_province_and_mixed_unit_order() {
+    use crate::triggers::ContentFacts;
+    let mut fixture = Fixture::new();
+    let first = 39 | 1_u64 << 32;
+    let second = 4713 | 1_u64 << 32;
+    let third = 39 | 2_u64 << 32;
+    let fleet = 4713 | 2_u64 << 32;
+    let gun = 4713 | 3_u64 << 32;
+    let provinces = BTreeMap::from([(7, vec![4, 2, 1])]);
+    *fixture.frame.tables[TableId::States.index()] =
+        TableView::Complete(TableRows::States(vec![StateRow {
+            id: 7,
+            ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(
+        [1, 2, 4]
+            .map(|id| ProvinceRow {
+                id,
+                state: 7,
+                ..Default::default()
+            })
+            .to_vec(),
+    ));
+    *fixture.frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(
+        [(first, 4), (third, 2), (second, 4)]
+            .map(|(id, province)| DivisionRow {
+                id,
+                province,
+                ..Default::default()
+            })
+            .to_vec(),
+    ));
+    *fixture.frame.tables[TableId::TaskForces.index()] =
+        TableView::Complete(TableRows::TaskForces(vec![TaskForceRow {
+            id: fleet,
+            province: 4,
+            ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::RailwayGunCounterInputs.index()] =
+        TableView::Complete(TableRows::RailwayGunCounterInputs(vec![
+            RailwayGunCounterInputRow {
+                gun,
+                province: 4,
+                ..Default::default()
+            },
+        ]));
+    *fixture.frame.tables[TableId::ProvinceUnitOrder.index()] =
+        TableView::Complete(TableRows::ProvinceUnitOrder(vec![
+            ProvinceUnitOrderRow {
+                province: 1,
+                ..Default::default()
+            },
+            ProvinceUnitOrderRow {
+                province: 2,
+                mixed: vec![third],
+                ..Default::default()
+            },
+            ProvinceUnitOrderRow {
+                province: 4,
+                mixed: vec![fleet, second, gun, first],
+                ..Default::default()
+            },
+        ]));
+    let roster = |fixture: &Fixture, scope| {
+        let scripted = fixture.catalogue.scripted_content().unwrap();
+        let text = ScriptedText::new(&fixture.frame, &fixture.catalogue.localisation, scripted, 1);
+        let dlcs = std::collections::BTreeSet::new();
+        let mut facts = ContentFacts::content_only(&dlcs, &fixture.triggers, &fixture.aliases);
+        facts.state_provinces = &provinces;
+        text.set_synthetic_world(World::read(&fixture.frame, facts));
+        let context = Context::new(
+            &text,
+            &fixture.catalogue.localisation,
+            1,
+            "synthetic",
+            Content::default(),
+        );
+        let renderer = Renderer {
+            context: &context,
+            graph: Rc::new(RefCell::new(fresh())),
+            evaluator: OnceCell::new(),
+            out: Description::default(),
+            scripted_stack: Vec::new(),
+        };
+        let item = installed_content::parser::parse(b"every_state_division={}")
+            .unwrap()
+            .items
+            .remove(0);
+        renderer.roster(Roster::StateDivisions, &item, Scopes::of(scope))
+    };
+    assert_eq!(
+        roster(&fixture, Scope::State(7)).unwrap(),
+        vec![Scope::Unit(second), Scope::Unit(first), Scope::Unit(third)]
+    );
+    for scope in [Scope::State(0), Scope::State(8), Scope::Country(1)] {
+        assert!(roster(&fixture, scope).unwrap().is_empty());
+    }
+    let TableView::Complete(TableRows::ProvinceUnitOrder(rows)) =
+        &mut *fixture.frame.tables[TableId::ProvinceUnitOrder.index()]
+    else {
+        unreachable!()
+    };
+    rows[2].mixed.push(39 | 99_u64 << 32);
+    assert!(
+        roster(&fixture, Scope::State(7))
+            .unwrap_err()
+            .contains("no recorded class census")
+    );
+    let TableView::Complete(TableRows::ProvinceUnitOrder(rows)) =
+        &mut *fixture.frame.tables[TableId::ProvinceUnitOrder.index()]
+    else {
+        unreachable!()
+    };
+    rows[2].mixed.pop();
+    rows.remove(0); // Even an empty province needs its captured census.
+    assert!(
+        roster(&fixture, Scope::State(7))
+            .unwrap_err()
+            .contains("ProvinceUnitOrder lacks state 7 province 1")
+    );
+    let TableView::Complete(TableRows::Provinces(rows)) =
+        &mut *fixture.frame.tables[TableId::Provinces.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].state = 8;
+    assert!(
+        roster(&fixture, Scope::State(7))
+            .unwrap_err()
+            .contains("native order is unknown")
+    );
+}
+
+#[test]
+fn format99_active_scientists_use_raw_nonzero_byte_and_native_order() {
+    let mut fixture = Fixture::new();
+    *fixture.frame.tables[TableId::Scientists.index()] =
+        TableView::Complete(TableRows::Scientists(
+            [(2, 9, 255), (0, 7, 1), (1, 8, 0)]
+                .into_iter()
+                .map(|(ordinal, character, active)| ScientistRow {
+                    country: 100,
+                    ordinal,
+                    character,
+                    active: Recorded::Value(Some(active)),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
+        let item = installed_content::parser::parse(b"every_active_scientist={}")
+            .unwrap()
+            .items
+            .remove(0);
+        let scopes = Scopes::of(Scope::Country(1));
+        let roster = renderer
+            .roster(Roster::Scientists { active: true }, &item, scopes)
+            .unwrap();
+        assert_eq!(
+            renderer
+                .targets(roster, children(&item), scopes, true)
+                .unwrap(),
+            vec![Scope::Character(7), Scope::Character(9)]
+        );
+    });
+    for unavailable in [Recorded::NotRecorded, Recorded::Value(None)] {
+        let TableView::Complete(TableRows::Scientists(rows)) =
+            &mut *fixture.frame.tables[TableId::Scientists.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].active = unavailable;
+        fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
+            let item = installed_content::parser::parse(b"random_active_scientist={}")
+                .unwrap()
+                .items
+                .remove(0);
+            let scopes = Scopes::of(Scope::Country(1));
+            let roster = renderer
+                .roster(Roster::Scientists { active: true }, &item, scopes)
+                .unwrap();
+            assert!(
+                renderer
+                    .targets(roster, children(&item), scopes, true)
+                    .unwrap_err()
+                    .contains("Scientists.active")
+            );
+            assert_eq!(
+                renderer
+                    .roster(Roster::Scientists { active: false }, &item, scopes)
+                    .unwrap(),
+                vec![
+                    Scope::Character(7),
+                    Scope::Character(8),
+                    Scope::Character(9)
+                ]
+            );
+        });
+        assert_eq!(
+            fixture.render(
+                "every_active_scientist={limit={always=no} army_experience=2}",
+                &mut fresh(),
+                Content::default()
+            ),
+            Description::default()
+        );
+    }
+}
+
+#[test]
+fn inactive_scientists_still_consume_limit_variable_randomness() {
+    let mut fixture = Fixture::new();
+    *fixture.frame.tables[TableId::Scientists.index()] =
+        TableView::Complete(TableRows::Scientists(vec![ScientistRow {
+            country: 100,
+            character: 9,
+            active: Recorded::Value(Some(0)),
+            ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::Characters.index()] =
+        TableView::Complete(TableRows::Characters(vec![CharacterRow {
+            id: 9,
+            country: 100,
+            ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::ScriptVariables.index()] =
+        TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
+            scope_kind: 1,
+            scope_id: 100,
+            seed: Recorded::Value(Some(37)),
+            ..Default::default()
+        }]));
+    fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
+        let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
+        let evaluator = renderer.evaluator().unwrap();
+        assert_eq!(evaluator.scoped_value(b"random_seed", scopes), Ok(967));
+        let item = installed_content::parser::parse(
+            b"every_active_scientist={limit={check_variable={random < 1}}}",
+        )
+        .unwrap()
+        .items
+        .remove(0);
+        let roster = renderer
+            .roster(Roster::Scientists { active: true }, &item, scopes)
+            .unwrap();
+        assert!(
+            renderer
+                .targets(roster, children(&item), scopes, true)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            renderer
+                .evaluator()
+                .unwrap()
+                .scoped_value(b"random_seed", scopes),
+            Ok(1_514_732_982_084_589_112)
+        );
+        assert_eq!(renderer.graph.borrow().scopes[0].random_seed, 1);
+    });
+}
+
+#[test]
+fn format99_party_leader_selector_uses_current_ideology_and_refuses_capture_failure() {
+    let mut fixture = Fixture::new();
+    fixture.triggers.counts = Some(installed_content::trigger_keys::CountTriggerNames {
+        ideology_types: [b"synthetic_type".to_vec()].into(),
+        ..Default::default()
+    });
+    *fixture.frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 11,
+            literal: b"synthetic_type".to_vec(),
+        }]));
+    *fixture.frame.tables[TableId::Characters.index()] =
+        TableView::Complete(TableRows::Characters(vec![CharacterRow {
+            id: 9,
+            country: 100,
+            name: b"Nine".to_vec(),
+            ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::PoliticalParties.index()] =
+        TableView::Complete(TableRows::PoliticalParties(vec![PoliticalPartyRow {
+            country: 100,
+            id: 2,
+            token: b"synthetic_group".to_vec(),
+            ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::PartyLeaders.index()] =
+        TableView::Complete(TableRows::PartyLeaders(vec![PartyLeaderRow {
+            country: 100,
+            party: 2,
+            character: Some(9),
+            role: Some(-7),
+            ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::CountryLeaderRoles.index()] =
+        TableView::Complete(TableRows::CountryLeaderRoles(vec![CountryLeaderRoleRow {
+            country: 100,
+            character: 9,
+            ideology: -7,
+            current_ideology: Recorded::Value(Some(Some(11))),
+        }]));
+    let body = "party_leader={limit={has_ideology=synthetic_type} army_experience=2}";
+    let output = fixture.render(body, &mut fresh(), Content::default());
+    assert!(output.text.contains("Nine") && output.text.contains("XP2"));
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+    let TableView::Complete(TableRows::CountryLeaderRoles(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryLeaderRoles.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].current_ideology = Recorded::Value(Some(None));
+    let output = fixture.render(body, &mut fresh(), Content::default());
+    assert!(output.text.is_empty());
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+    let TableView::Complete(TableRows::CountryLeaderRoles(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryLeaderRoles.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].current_ideology = Recorded::Value(None);
+    let output = fixture.render(body, &mut fresh(), Content::default());
+    assert!(output.text.is_empty());
+    assert_eq!(output.refusals.values().sum::<usize>(), 1);
+    assert!(
+        output
+            .refusals
+            .keys()
+            .any(|why| why.contains("CountryLeaderRoles.current_ideology"))
+    );
+}
+
+#[test]
 fn industrial_organisation_iterator_uses_recorded_order_native_scopes_and_visibility() {
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::IndustrialOrganisations.index()] =
@@ -543,6 +983,19 @@ fn country_iterator_sizes_from_five_thousand_live_rows() {
 #[test]
 fn operand_gaps_and_zero_reach_are_named_once_by_native_class() {
     let mut fixture = Fixture::new();
+    if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryCounterInputs.index()]
+    {
+        rows[0].owned_states = Recorded::NotRecorded;
+        rows[0].army_leaders = Recorded::NotRecorded;
+    }
+    *fixture.frame.tables[TableId::Scientists.index()] =
+        TableView::Complete(TableRows::Scientists(vec![ScientistRow {
+            country: 100,
+            character: 9,
+            active: Recorded::NotRecorded,
+            ..Default::default()
+        }]));
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
         TableView::Complete(TableRows::UnitLeaders(
             [7, 8]
@@ -563,12 +1016,12 @@ fn operand_gaps_and_zero_reach_are_named_once_by_native_class() {
         (
             "random_army_leader={army_experience=2}",
             "CRandomArmyLeaderEffect",
-            "army_leader_order",
+            "army_leaders",
         ),
         (
             "every_active_scientist={army_experience=2}",
             "CEveryActiveScientistEffect",
-            "not ported",
+            "Scientists.active",
         ),
     ] {
         let out = fixture.render(script, &mut fresh(), Content::default());
@@ -606,37 +1059,44 @@ fn operand_gaps_and_zero_reach_are_named_once_by_native_class() {
             role: Some(1),
             ..Default::default()
         }]));
-    let mut graph = fresh();
-    let out = fixture.render(
-        "party_leader={limit={has_ideology=ideology} army_experience=2}",
-        &mut graph,
-        Content::default(),
-    );
-    assert_eq!(out.refusals.values().sum::<usize>(), 1);
-    assert!(
-        out.refusals
-            .keys()
-            .any(|why| why.contains("CCountryLeader current ideology pointer +0x140"))
-    );
-    assert_eq!(graph.scopes[0].random_seed, 1);
     let mut names = installed_content::key_names::KeyNames::default();
     names.counts.ideologies.insert(b"ideology".to_vec());
     if let TableView::Complete(TableRows::Politics(rows)) =
         &mut *fixture.frame.tables[TableId::Politics.index()]
     {
-        rows.iter_mut().find(|row| row.country == 100).unwrap().ruling_party = Some(2);
+        rows.iter_mut()
+            .find(|row| row.country == 100)
+            .unwrap()
+            .ruling_party = Some(2);
     }
     for (body, country, expected) in [
-        ("ruling_party=ideology long_name=TIP", 1, "Politics\nideology=tip\nParty tip\n"),
-        ("ruling_party=2 long_name=TIP", 1, "Politics\nideology=tip\nParty tip\n"),
-        ("ruling_party=ROOT long_name=TIP", 1, "Politics\nideology=tip\nParty tip\n"),
+        (
+            "ruling_party=ideology long_name=TIP",
+            1,
+            "Politics\nideology=tip\nParty tip\n",
+        ),
+        (
+            "ruling_party=2 long_name=TIP",
+            1,
+            "Politics\nideology=tip\nParty tip\n",
+        ),
+        (
+            "ruling_party=ROOT long_name=TIP",
+            1,
+            "Politics\nideology=tip\nParty tip\n",
+        ),
         ("ruling_party=ideology", 1, "Politics\nParty tip\n"),
         // 1403A0010 bypasses FindPartyByIdeology entirely with a long-name override.
-        ("ruling_party=ideology long_name=TIP", 2, "Politics\nideology=tip\nParty tip\n"),
+        (
+            "ruling_party=ideology long_name=TIP",
+            2,
+            "Politics\nideology=tip\nParty tip\n",
+        ),
     ] {
-        let mut scopes = crate::scripted_text::EventScopes::new(vec![
-            crate::scripted_text::EventScope::of(crate::scripted_text::EventObject::Country(country)),
-        ]);
+        let mut scopes =
+            crate::scripted_text::EventScopes::new(vec![crate::scripted_text::EventScope::of(
+                crate::scripted_text::EventObject::Country(country),
+            )]);
         let out = fixture.render(
             &format!("set_politics={{{body}}}"),
             &mut scopes,
@@ -701,61 +1161,73 @@ fn individual_targets_share_one_scope_seed_and_probe_refusals_count_once() {
 }
 
 #[test]
-fn state_and_leader_order_gaps_only_refuse_multiple_passing_targets() {
+fn format98_state_iterators_list_and_select_in_recorded_order() {
     let mut fixture = Fixture::new();
-    *fixture.frame.tables[TableId::StateCores.index()] =
-        TableView::Complete(TableRows::StateCores(
-            (1..=5)
-                .map(|state| StateCoreRow {
-                    state,
-                    cores: vec![100],
-                })
-                .collect(),
-        ));
-    for (key, reason) in [
-        ("every_owned_state", "owned_state_order"),
-        ("random_owned_state", "owned_state_order"),
-        ("every_controlled_state", "controlled_state_order"),
-        ("random_controlled_state", "controlled_state_order"),
-        ("every_core_state", "core_state_order"),
-        ("random_core_state", "core_state_order"),
+    let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryCounterInputs.index()]
+    else {
+        panic!("complete counter inputs");
+    };
+    rows[0].owned_states = Recorded::Value(Some(vec![3, 1, 2]));
+    rows[0].controlled_states = Recorded::Value(Some(vec![2, 3, 1]));
+    rows[0].core_states = Recorded::Value(Some(vec![1, 3, 2]));
+    for (kind, names, picked) in [
+        ("owned", ["Three", "One", "Two"], "Two"),
+        ("controlled", ["Two", "Three", "One"], "One"),
+        ("core", ["One", "Three", "Two"], "Two"),
     ] {
-        for (limit, count) in [
-            ("always=no", 0),
-            ("state=1", 1),
-            ("OR={state=1 state=2}", 2),
-        ] {
-            let out = fixture.render(
-                &format!("{key}={{limit={{{limit}}} army_experience=2}}"),
-                &mut fresh(),
-                Content::default(),
-            );
-            assert_eq!(
-                out.refusals.values().sum::<usize>(),
-                usize::from(count == 2),
-                "{key}/{limit}: {:?}",
-                out.refusals
-            );
-            if count == 2 {
-                assert!(out.refusals.keys().any(|why| why.contains(reason)));
-            } else {
-                assert_eq!(out.text.matches("XP2").count(), count);
-            }
-        }
-        let mut graph =
-            crate::scripted_text::EventScopes::new(vec![crate::scripted_text::EventScope::of(
-                crate::scripted_text::EventObject::State(1),
-            )]);
         let out = fixture.render(
-            &format!("{key}={{army_experience=2}}"),
+            &format!("every_{kind}_state={{army_experience=2}}"),
+            &mut fresh(),
+            Content::default(),
+        );
+        assert_eq!(
+            out.text,
+            format!(
+                "(\u{11}Y{}\u{11}!, \u{11}Y{}\u{11}!, \u{11}Y{}\u{11}!):\n   XP2\n",
+                names[0], names[1], names[2]
+            )
+        );
+        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+        let mut graph = fresh();
+        let out = fixture.render(
+            &format!("random_{kind}_state={{army_experience=2}}"),
             &mut graph,
             Content::default(),
         );
-        assert!(out.text.is_empty() && out.refusals.is_empty());
+        // Native draw 411376010 % 3 == 2, against the stored array.
+        assert_eq!(out.text, format!("(\u{11}Y{picked}\u{11}!): XP2\n"));
+        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+        assert_eq!(graph.scopes[0].random_seed, 2);
     }
+    let out = fixture.render(
+        "random_owned_state={prioritize={1 3} army_experience=2}",
+        &mut fresh(),
+        Content::default(),
+    );
+    assert_eq!(out.text, "(\u{11}YThree\u{11}!): XP2\n"); // Priority retains [3,1], not authored [1,3].
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    let TableView::Complete(TableRows::States(rows)) =
+        &mut *fixture.frame.tables[TableId::States.index()]
+    else {
+        panic!("complete states");
+    };
+    rows[2].controller = 200;
+    let out = fixture.render(
+        "random_owned_controlled_state={army_experience=2}",
+        &mut fresh(),
+        Content::default(),
+    );
+    assert_eq!(out.text, "(\u{11}YOne\u{11}!): XP2\n"); // [3,1,2] filters to [1,2].
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+#[test]
+fn format98_leaders_use_army_then_navy_order_and_native_global_repetition() {
+    let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
         TableView::Complete(TableRows::UnitLeaders(
-            (1..=6)
+            (1..=5)
                 .map(|id| UnitLeaderRow {
                     id,
                     owner: 100,
@@ -766,10 +1238,182 @@ fn state_and_leader_order_gaps_only_refuse_multiple_passing_targets() {
                     } else {
                         3
                     },
-                    inherited_text_a: b"Leader".to_vec(),
+                    inherited_text_a: format!("Leader{id}").into_bytes(),
                     ..Default::default()
                 })
                 .collect(),
+        ));
+    let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryCounterInputs.index()]
+    else {
+        panic!("complete counter inputs");
+    };
+    rows[0].army_leaders = Recorded::Value(Some(vec![2 << 32, 1 << 32]));
+    rows[0].navy_leaders = Recorded::Value(Some(vec![4 << 32, 3 << 32]));
+    for (key, ids) in [
+        ("every_army_leader", vec![2, 1]),
+        ("every_navy_leader", vec![4, 3]),
+        ("every_unit_leader", vec![2, 1, 4, 3]),
+        ("global_every_army_leader", vec![2, 1, 2, 1]),
+    ] {
+        let out = fixture.render(
+            &format!("{key}={{army_experience=2}}"),
+            &mut fresh(),
+            Content::default(),
+        );
+        let labels = ids
+            .iter()
+            .map(|id| format!("\u{11}YLeader{id}\u{11}!"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert_eq!(out.text, format!("({labels}):\n   XP2\n"), "{key}");
+        assert!(out.refusals.is_empty(), "{key}: {:?}", out.refusals);
+    }
+    for (key, picked) in [
+        ("random_army_leader", 2),
+        ("random_navy_leader", 4),
+        ("random_unit_leader", 4),
+    ] {
+        let out = fixture.render(
+            &format!("{key}={{army_experience=2}}"),
+            &mut fresh(),
+            Content::default(),
+        );
+        assert_eq!(
+            out.text,
+            format!("(\u{11}YLeader{picked}\u{11}!): XP2\n"),
+            "{key}"
+        );
+        assert!(out.refusals.is_empty(), "{key}: {:?}", out.refusals);
+    }
+}
+
+#[test]
+fn format98_orders_require_recorded_fields_even_for_single_passing_targets() {
+    let mut fixture = Fixture::new();
+    for unavailable in [Recorded::NotRecorded, Recorded::Value(None)] {
+        let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+            &mut *fixture.frame.tables[TableId::CountryCounterInputs.index()]
+        else {
+            panic!("complete counter inputs");
+        };
+        rows[0].owned_states = unavailable.clone();
+        rows[0].controlled_states = unavailable.clone();
+        rows[0].core_states = unavailable.clone();
+        rows[0].army_leaders = match &unavailable {
+            Recorded::NotRecorded => Recorded::NotRecorded,
+            _ => Recorded::Value(None),
+        };
+        rows[0].navy_leaders = rows[0].army_leaders.clone();
+        for (key, name) in [
+            ("every_owned_state", "owned_states"),
+            ("every_controlled_state", "controlled_states"),
+            ("every_core_state", "core_states"),
+            ("every_army_leader", "army_leaders"),
+            ("every_navy_leader", "navy_leaders"),
+        ] {
+            let out = fixture.render(
+                &format!("{key}={{limit={{state=1}} army_experience=2}}"),
+                &mut fresh(),
+                Content::default(),
+            );
+            assert_eq!(
+                out.refusals.values().sum::<usize>(),
+                1,
+                "{key}: {:?}",
+                out.refusals
+            );
+            assert!(out.text.is_empty());
+            assert!(out.refusals.keys().any(|why| why.contains(name)));
+        }
+    }
+}
+
+#[test]
+fn format98_operative_memberships_supply_native_order_and_full_handles() {
+    let mut fixture = Fixture::new();
+    *fixture.frame.tables[TableId::UnitLeaders.index()] =
+        TableView::Complete(TableRows::UnitLeaders(
+            [(5, 101, "Five"), (6, 101, "Six"), (5, 102, "WrongHandle")]
+                .map(|(id, reference_type, name)| UnitLeaderRow {
+                    id,
+                    reference_type,
+                    owner: 100,
+                    category: 3,
+                    inherited_text_a: name.as_bytes().to_vec(),
+                    ..Default::default()
+                })
+                .to_vec(),
+        ));
+    *fixture.frame.tables[TableId::OperativeMemberships.index()] =
+        TableView::Complete(TableRows::OperativeMemberships(
+            [
+                (5, 100, 0, 1),
+                (6, 100, 0, 0),
+                (5, 200, 0, 0),
+                (5, 100, 1, 0),
+            ]
+            .map(
+                |(id, roster_country, roster_kind, ordinal)| OperativeMembershipRow {
+                    id: id << 32 | 101,
+                    roster_country,
+                    roster_kind,
+                    ordinal: Recorded::Value(ordinal),
+                    ..Default::default()
+                },
+            )
+            .to_vec(),
+        ));
+    let out = fixture.render(
+        "every_operative={army_experience=2}",
+        &mut fresh(),
+        Content::default(),
+    );
+    assert_eq!(
+        out.text,
+        "(\u{11}YSix\u{11}!, \u{11}YFive\u{11}!):\n   XP2\n"
+    );
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    let out = fixture.render(
+        "random_operative={army_experience=2}",
+        &mut fresh(),
+        Content::default(),
+    );
+    assert_eq!(out.text, "(\u{11}YSix\u{11}!): XP2\n");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    let TableView::Complete(TableRows::UnitLeaders(rows)) =
+        &mut *fixture.frame.tables[TableId::UnitLeaders.index()]
+    else {
+        unreachable!()
+    };
+    rows.remove(0);
+    let out = fixture.render(
+        "every_operative={army_experience=2}",
+        &mut fresh(),
+        Content::default(),
+    );
+    assert!(out.text.is_empty());
+    assert!(
+        out.refusals
+            .keys()
+            .any(|why| why.contains("iterator operative") && why.contains("not recorded"))
+    );
+}
+
+#[test]
+fn unrecorded_operative_order_allows_pure_empty_and_singleton_selections() {
+    let mut fixture = Fixture::new();
+    *fixture.frame.tables[TableId::UnitLeaders.index()] =
+        TableView::Complete(TableRows::UnitLeaders(
+            [5, 6]
+                .map(|id| UnitLeaderRow {
+                    id,
+                    owner: 100,
+                    category: 3,
+                    inherited_text_a: b"Leader".to_vec(),
+                    ..Default::default()
+                })
+                .to_vec(),
         ));
     *fixture.frame.tables[TableId::OperativeMemberships.index()] =
         TableView::Complete(TableRows::OperativeMemberships(
@@ -778,73 +1422,144 @@ fn state_and_leader_order_gaps_only_refuse_multiple_passing_targets() {
                     id: id << 32,
                     roster_country: 100,
                     roster_kind: 0,
+                    ordinal: Recorded::NotRecorded,
                     ..Default::default()
                 })
                 .to_vec(),
         ));
-    for (key, reason) in [
-        ("random_army_leader", "army_leader_order"),
-        ("random_navy_leader", "navy_leader_order"),
-        ("random_operative", "operative_order"),
-    ] {
-        for (limit, multiple) in [("always=no", false), ("always=yes", true)] {
-            let out = fixture.render(
-                &format!("{key}={{limit={{{limit}}} army_experience=2}}"),
-                &mut fresh(),
-                Content::default(),
-            );
-            assert_eq!(
-                out.refusals.values().sum::<usize>(),
-                usize::from(multiple),
-                "{key}: {:?}",
-                out.refusals
-            );
-            if multiple {
-                assert!(out.refusals.keys().any(|why| why.contains(reason)));
-            }
-        }
-    }
-    if let TableView::Complete(TableRows::UnitLeaders(rows)) =
-        &mut *fixture.frame.tables[TableId::UnitLeaders.index()]
-    {
-        rows.retain(|row| row.id % 2 == 1);
-    }
-    for key in [
-        "random_army_leader",
-        "random_navy_leader",
-        "random_operative",
-    ] {
-        let mut graph = fresh();
-        let out = fixture.render(
-            &format!("{key}={{army_experience=2}}"),
-            &mut graph,
-            Content::default(),
-        );
-        assert_eq!(
-            out.text.matches("XP2").count(),
-            1,
-            "{key}: {} / {:?}",
-            out.text,
-            out.refusals
-        );
-        assert!(out.refusals.is_empty());
-        assert_eq!(graph.scopes[0].random_seed, 2);
-    }
-    if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
-        &mut *fixture.frame.tables[TableId::CountryCounterInputs.index()]
-    {
-        rows[0].owned_state_count = 6;
-    }
     let out = fixture.render(
-        "every_owned_state={limit={always=no} army_experience=2}",
+        "random_operative={limit={always=no} army_experience=2}",
         &mut fresh(),
         Content::default(),
     );
-    assert!(
-        out.refusals
-            .keys()
-            .any(|why| why.contains("membership differs"))
+    assert_eq!(out, Description::default());
+    let out = fixture.render(
+        "random_operative={army_experience=2}",
+        &mut fresh(),
+        Content::default(),
     );
+    assert_eq!(out.refusals.values().sum::<usize>(), 1);
+    assert!(out.refusals.keys().any(|why| why.contains("OperativeMemberships.ordinal") && why.contains("not recorded")));
+    let TableView::Complete(TableRows::OperativeMemberships(rows)) =
+        &mut *fixture.frame.tables[TableId::OperativeMemberships.index()]
+    else {
+        panic!("complete operative memberships");
+    };
+    rows.pop();
+    let out = fixture.render(
+        "random_operative={army_experience=2}",
+        &mut fresh(),
+        Content::default(),
+    );
+    assert_eq!(out.text, "(\u{11}YLeader\u{11}!): XP2\n");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+#[test]
+fn unrecorded_operative_order_refuses_reached_limit_writes_and_rng_even_for_no_matches() {
+    let mut fixture = Fixture::new();
+    *fixture.frame.tables[TableId::UnitLeaders.index()] =
+        TableView::Complete(TableRows::UnitLeaders(
+            [5, 6]
+                .map(|id| UnitLeaderRow {
+                    id,
+                    owner: 100,
+                    category: 3,
+                    ..Default::default()
+                })
+                .to_vec(),
+        ));
+    *fixture.frame.tables[TableId::OperativeMemberships.index()] =
+        TableView::Complete(TableRows::OperativeMemberships(
+            [5, 6]
+                .map(|id| OperativeMembershipRow {
+                    id: id << 32,
+                    roster_country: 100,
+                    roster_kind: 0,
+                    ordinal: Recorded::NotRecorded,
+                    ..Default::default()
+                })
+                .to_vec(),
+        ));
+    *fixture.frame.tables[TableId::ScriptVariables.index()] =
+        TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
+            scope_kind: 1,
+            scope_id: 100,
+            seed: Recorded::Value(Some(37)),
+            ..Default::default()
+        }]));
+    for limit in [
+        "set_temp_variable={stable=1} always=no", // Idempotent write.
+        "set_temp_variable={stable=2} set_temp_variable={stable=1} always=no", // Cancelled writes.
+        "check_variable={random > 2}",
+    ] {
+        fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
+            let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
+            renderer
+                .evaluator()
+                .unwrap()
+                .store_description_temp(b"stable".to_vec(), 100_000);
+            assert_eq!(renderer.scoped_value(b"random_seed", scopes), Ok(967));
+            let item = installed_content::parser::parse(
+                format!("random_operative={{limit={{{limit}}}}}").as_bytes(),
+            )
+            .unwrap()
+            .items
+            .remove(0);
+            let result = renderer.iterator(
+                &item,
+                scopes,
+                0,
+                IteratorKind {
+                    roster: Roster::Leaders {
+                        army: false,
+                        navy: false,
+                        operative: true,
+                        global: false,
+                    },
+                    random: true,
+                },
+            );
+            assert!(
+                result.unwrap_err().contains("OperativeMemberships.ordinal"),
+                "{limit}"
+            );
+            assert_eq!(renderer.scoped_value(b"stable", scopes), Ok(100_000));
+            assert_eq!(renderer.scoped_value(b"random_seed", scopes), Ok(967));
+            assert_eq!(renderer.graph.borrow().scopes[0].random_seed, 1);
+        });
+    }
+    fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
+        let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
+        let evaluator = renderer.evaluator().unwrap();
+        evaluator.store_description_temp(b"stable".to_vec(), 100_000);
+        let effects = evaluator.variable_effects();
+        let item = installed_content::parser::parse(
+            b"random_operative={limit={divide_temp_variable={stable=0} always=no}}",
+        )
+        .unwrap()
+        .items
+        .remove(0);
+        assert_eq!(
+            renderer.iterator(
+                &item,
+                scopes,
+                0,
+                IteratorKind {
+                    roster: Roster::Leaders {
+                        army: false,
+                        navy: false,
+                        operative: true,
+                        global: false
+                    },
+                    random: true,
+                }
+            ),
+            Ok(String::new())
+        );
+        assert_eq!(renderer.evaluator().unwrap().variable_effects(), effects);
+        assert_eq!(renderer.scoped_value(b"stable", scopes), Ok(100_000));
+    });
 }
 
 #[test]
@@ -935,4 +1650,194 @@ fn collection_builder_renders_header_in_caller_and_body_in_representative() {
     assert!(out.refusals.is_empty());
     let out = fixture.render("every_collection_element={input={input=game:scope operators={faction_members limit={always=no}}} army_experience=2}", &mut fresh(), Content::default());
     assert!(out.text.is_empty() && out.refusals.is_empty());
+}
+
+#[test]
+fn ability_context_header_uses_country_while_character_getters_keep_leader() {
+    use crate::scripted_text::{EventObject, EventScope, EventScopes};
+    let mut fixture = Fixture::new();
+    let leader = 9_u64 << 32 | 3;
+    *fixture.frame.tables[TableId::UnitLeaders.index()] =
+        TableView::Complete(TableRows::UnitLeaders(vec![UnitLeaderRow {
+            id: 9,
+            reference_type: 3,
+            owner: 300,
+            character_id: 44,
+            character_type: engine::ccharacter::REFERENCE_TYPE,
+            ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::Characters.index()] =
+        TableView::Complete(TableRows::Characters(vec![CharacterRow {
+            id: 44,
+            country: 300,
+            name: b"Ability Leader".to_vec(),
+            ..Default::default()
+        }]));
+    let object = EventObject::CountryUnitLeader { country: 2, leader };
+    let mut graph = EventScopes::new(vec![EventScope::of(object)]);
+    fixture.with_renderer(&mut graph, Content::default(), |renderer| {
+        let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
+        assert_eq!(renderer.current_country(scopes), Ok(2));
+        assert_eq!(
+            renderer.effect_character(scopes.this).unwrap().unwrap().id,
+            44
+        );
+    });
+    // CContextEffect 141382590 tests carried country before character;
+    // text ROOT.GetName separately prefers the character (141A81250).
+    let out = fixture.render("ROOT={army_experience=2}", &mut graph, Content::default());
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    assert!(
+        out.text.contains("Beta") && out.text.contains("XP2"),
+        "{}",
+        out.text
+    );
+    assert!(!out.text.contains("Ability Leader"), "{}", out.text);
+    assert_eq!(graph.scopes[0].this, object);
+}
+
+#[test]
+fn state_event_uses_current_character_role_or_refuses_ambiguous_association() {
+    use crate::scripted_text::{EventObject, EventScope, EventScopes};
+    let mut fixture = Fixture::new();
+    let leader = 9_u64 << 32 | 3;
+    *fixture.frame.tables[TableId::UnitLeaders.index()] =
+        TableView::Complete(TableRows::UnitLeaders(vec![UnitLeaderRow {
+            id: 9,
+            reference_type: 3,
+            owner: 300,
+            character_id: 44,
+            character_type: engine::ccharacter::REFERENCE_TYPE,
+            ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::Characters.index()] =
+        TableView::Complete(TableRows::Characters(vec![CharacterRow {
+            id: 44,
+            country: 200,
+            ..Default::default()
+        }]));
+    let lookup = |_: &[u8]| {
+        Ok(std::sync::Arc::new(installed_content::events::Event {
+            titles: installed_content::parser::parse(b"title=TIP").unwrap().items,
+            ..Default::default()
+        }))
+    };
+    let content = Content {
+        events: Some(&lookup),
+        ..Default::default()
+    };
+    let object = EventObject::CountryUnitLeader { country: 2, leader };
+    let mut graph = EventScopes::new(vec![EventScope::of(object)]);
+    let out = fixture.render("state_event={id=synthetic.1}", &mut graph, content);
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    assert!(
+        graph
+            .scopes
+            .iter()
+            .skip(1)
+            .any(|scope| scope.this == EventObject::CountryUnitLeader { country: 3, leader })
+    );
+    let TableView::Complete(TableRows::UnitLeaders(leaders)) =
+        &mut *fixture.frame.tables[TableId::UnitLeaders.index()]
+    else {
+        panic!("leaders");
+    };
+    leaders.push(UnitLeaderRow {
+        id: 10,
+        reference_type: 3,
+        owner: 200,
+        character_id: 44,
+        character_type: engine::ccharacter::REFERENCE_TYPE,
+        ..Default::default()
+    });
+    let mut graph = EventScopes::new(vec![EventScope::of(object)]);
+    let out = fixture.render("state_event={id=synthetic.1}", &mut graph, content);
+    assert!(
+        out.refusals
+            .keys()
+            .any(|why| why.contains("more than one UnitLeaders row")),
+        "{:?}",
+        out.refusals
+    );
+    let mut graph = EventScopes::new(vec![EventScope::of(EventObject::Character(44))]);
+    let out = fixture.render("state_event={id=synthetic.1}", &mut graph, content);
+    assert!(
+        out.refusals
+            .keys()
+            .any(|why| why.contains("current character role")),
+        "{:?}",
+        out.refusals
+    );
+}
+
+#[test]
+fn original_tag_effect_rosters_keep_native_order_and_skip_nonpositive_raw_before_lookup() {
+    let mut fixture = Fixture::new();
+    if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
+    {
+        rows[0].original_tag_reference = Recorded::Value(Some(0));
+        rows[0].original_tag = Recorded::NotRecorded; // Numeric roster selection needs no text.
+    }
+    *fixture.frame.tables[TableId::ReservedCountryNaming.index()] =
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            ReservedCountryNamingRow {
+                tag: b"ZZ0".to_vec(),
+                original_tag_reference: Recorded::Value(Some(-7)),
+                original_tag_buckets: Recorded::Value(Some(vec![
+                    vec![],
+                    vec![0, u32::MAX, 300, 200, 300],
+                    vec![],
+                    vec![],
+                ])),
+                ..Default::default()
+            },
+        ]));
+    let item = installed_content::parser::parse(b"every_country_with_original_tag={original_tag=THIS}")
+        .unwrap()
+        .items
+        .remove(0);
+    let roster = |fixture: &Fixture, slot| {
+        fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
+            renderer.roster(
+                Roster::OriginalTags,
+                &item,
+                Scopes::of(Scope::Country(slot)),
+            )
+        })
+    };
+    // Both rawzero and a signed-negative word are filtered before resolution
+    // and state-count demand. The raw300 occurrence remains twice, then the
+    // selected own raw100 is appended unconditionally by1413AA900.
+    assert_eq!(
+        roster(&fixture, 1),
+        Ok(vec![
+            Scope::Country(3),
+            Scope::Country(2),
+            Scope::Country(3),
+            Scope::Country(1)
+        ])
+    );
+    if let TableView::Complete(TableRows::ReservedCountryNaming(rows)) =
+        &mut *fixture.frame.tables[TableId::ReservedCountryNaming.index()]
+    {
+        rows[0].original_tag_buckets =
+            Recorded::Value(Some(vec![vec![], vec![999], vec![], vec![]]));
+    }
+    assert!(
+        roster(&fixture, 1)
+            .unwrap_err()
+            .contains("country raw reference 999")
+    );
+    if let TableView::Complete(TableRows::ReservedCountryNaming(rows)) =
+        &mut *fixture.frame.tables[TableId::ReservedCountryNaming.index()]
+    {
+        rows[0].original_tag_buckets = Recorded::NotRecorded;
+    }
+    assert!(
+        roster(&fixture, 1)
+            .unwrap_err()
+            .contains("original_tag_buckets not recorded")
+    );
+    assert_eq!(roster(&fixture, 0), Ok(Vec::new())); // Selectedraw<=0 fast path.
 }

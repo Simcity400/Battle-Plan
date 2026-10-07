@@ -1,7 +1,113 @@
 //! Stored hourly country rosters; never sort, filter or refresh them.
 
 use super::{CONTROLLED_STATES, CORE_STATES, Country, OWNED_STATES, Reader};
-use crate::{Memory, ccountry_characters, cpdx_array, cpdx_array::Array, cstate, cunit_leader};
+use crate::{
+    Memory, ccountry_characters, cpdx_array, cpdx_array::Array, cproduction_status, cstate,
+    cunit_leader,
+};
+
+/// Refresh@1406FE3C0 rebuilds these raw country references; controller changes
+/// and RefreshDerivedStateByFlags@1406F2680 invoke it, with no hourly refresh.
+pub const NEIGHBORS: usize = 0x1088;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct EffectRosterDemand {
+    pub neighbors: usize,
+    pub policies: usize,
+}
+
+pub struct EffectRosters<'a> {
+    pub neighbors: &'a mut [u32],
+    pub policies: &'a mut [u32],
+    pub neighbor_len: usize,
+    pub policy_len: usize,
+    pub required: EffectRosterDemand,
+}
+
+pub fn counter_effect_roster_demand(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+) -> Result<EffectRosterDemand, &'static str> {
+    let countries = Reader::new(memory, base, state)?;
+    let mut demand = EffectRosterDemand::default();
+    for slot in 1..countries.count() {
+        let Some(country) = countries.at(slot)? else {
+            continue;
+        };
+        let neighbors = country
+            .pointer
+            .checked_add(NEIGHBORS)
+            .and_then(|at| Array::read(memory, at, 4))
+            .ok_or("country neighbor roster unreadable or invalid")?;
+        add(&mut demand.neighbors, neighbors.count)?;
+        if let Some(policies) = cproduction_status::policies_header(memory, base, country)? {
+            add(&mut demand.policies, policies.count)?;
+        }
+    }
+    Ok(demand)
+}
+
+impl EffectRosters<'_> {
+    pub(super) fn read_neighbors(
+        &mut self,
+        memory: &impl Memory,
+        country: Country,
+        fits: bool,
+    ) -> Result<RosterSpan, &'static str> {
+        let source = country
+            .pointer
+            .checked_add(NEIGHBORS)
+            .and_then(|at| Array::read(memory, at, 4))
+            .ok_or("country neighbor roster unreadable or invalid")?;
+        add(&mut self.required.neighbors, source.count)?;
+        let count = source.count as usize;
+        if !fits || count > self.neighbors.len().saturating_sub(self.neighbor_len) {
+            return Err("country neighbor roster arena capacity exceeded");
+        }
+        let span = RosterSpan {
+            start: self.neighbor_len,
+            count,
+        };
+        cpdx_array::copy_u32s(
+            memory,
+            source,
+            &mut self.neighbors[span.start..span.start + count],
+            "country neighbor roster entries unreadable",
+        )?;
+        self.neighbor_len += count;
+        Ok(span)
+    }
+
+    pub(super) fn read_policies(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        country: Country,
+        fits: bool,
+    ) -> Result<RosterSpan, &'static str> {
+        let Some(source) = cproduction_status::policies_header(memory, base, country)? else {
+            return Err("MIO policy production status is null");
+        };
+        add(&mut self.required.policies, source.count)?;
+        let count = source.count as usize;
+        if !fits || count > self.policies.len().saturating_sub(self.policy_len) {
+            return Err("MIO policy roster arena capacity exceeded");
+        }
+        let span = RosterSpan {
+            start: self.policy_len,
+            count,
+        };
+        cproduction_status::read_policies(
+            memory,
+            base,
+            source,
+            &mut self.policies[span.start..span.start + count],
+        )?;
+        self.policy_len += count;
+        Ok(span)
+    }
+}
 
 /// Army and navy CUnitLeader* arrays. 1406DF460/1406E6500 read them;
 /// 1410DAF80 inserts, 1410D2540/1410D26B0 and 1410D90E0 remove.

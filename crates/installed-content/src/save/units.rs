@@ -29,6 +29,10 @@ pub struct IntelEntry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RailwayGun {
     pub id: u64,
+    /// CUnit::Serialize@140BF7010 writes primary+0x258 as `name` only for
+    /// nonzero length. The text writer truncates at the first NUL, so the
+    /// oracle keeps any difference against the full captured bytes.
+    pub name: Option<Vec<u8>>,
     pub roster_owner: Vec<u8>,
     pub logical_owner: Vec<u8>,
     pub expeditionary_owner: Option<Vec<u8>>,
@@ -87,6 +91,9 @@ pub struct DivisionPresentation {
     pub max_supply: Option<Decimal>,
     /// 140C810BB/CA writes secondary+0x600 (primary+0x610) unconditionally.
     pub army_current_supply_ratio: Option<Decimal>,
+    /// CSupplyConsumer::Serialize@140EBB270 writes +0xA0 (primary CUnit+0xB0)
+    /// as token 0x4CF2 only when positive. Absence proves nonpositive only.
+    pub disrupted_supply: Option<Decimal>,
     pub strategic_redeployment: bool,
     /// CArmy C80E00 writes its +0x340 CNameGroupMember under token 0x3904
     /// (`division_name`) through serializer 1409BCC70.
@@ -223,6 +230,9 @@ pub struct ArmyOrder {
 pub struct AirWing {
     pub id: u64,
     pub owner: Vec<u8>,
+    /// Stored text, mandatory even when empty in ordinary saves. Optional
+    /// parsing preserves omitted-key evidence for the oracle (`140F539B0`).
+    pub name: Option<Vec<u8>>,
     pub country_override: Vec<u8>,
     pub air_base: u64,
     pub planes: i32,
@@ -372,6 +382,7 @@ pub(super) fn parse_railway_gun(roster_owner: &[u8], items: &[Item]) -> io::Resu
     };
     Ok(RailwayGun {
         id,
+        name: bytes(items, b"name")?,
         roster_owner: roster_owner.to_vec(),
         logical_owner: required_bytes(items, b"logical_country")?,
         expeditionary_owner: bytes(items, b"expeditionary_owner")?,
@@ -414,6 +425,15 @@ pub(super) fn parse_division(roster_owner: &[u8], items: &[Item]) -> io::Result<
             "division explicitly saves location zero; native null location must be omitted",
         ));
     }
+    let disrupted_supply = decimal(items, b"disrupted_supply")?;
+    if disrupted_supply
+        .as_ref()
+        .is_some_and(|value| value.raw <= 0)
+    {
+        return Err(invalid(
+            "division explicitly saves nonpositive disrupted_supply; native writer must omit it",
+        ));
+    }
     Ok(Division {
         id,
         roster_owner: roster_owner.to_vec(),
@@ -447,6 +467,7 @@ pub(super) fn parse_division(roster_owner: &[u8], items: &[Item]) -> io::Result<
             dig_in_cap: decimal(items, b"dig_in_cap")?,
             max_supply: decimal(items, b"max_supply")?,
             army_current_supply_ratio: decimal(items, b"army_current_supply_ratio")?,
+            disrupted_supply,
             strategic_redeployment: field(items, b"strategic_redeployment")?
                 .map(boolean)
                 .transpose()?
@@ -687,6 +708,9 @@ pub(super) fn parse_air_wings(items: &[Item]) -> io::Result<BTreeMap<u64, AirWin
                 let wing = AirWing {
                     id: object_id(fields)?,
                     owner: owner.to_vec(),
+                    name: field(fields, b"name")?
+                        .map(|value| scalar(value).map(Vec::from))
+                        .transpose()?,
                     country_override: required_bytes(fields, b"tag")?,
                     air_base: typed_handle(
                         field(pool, b"air_base")?

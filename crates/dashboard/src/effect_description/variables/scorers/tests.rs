@@ -61,14 +61,44 @@ fn scorer_filters_reverse_from_for_score_and_reads_shared_temporary_array() {
 fn invalid_scorer_is_native_noop_and_unknown_target_form_is_named_once() {
     let fixture = Fixture::new();
     let (names, database) = make_database(b"sample={targets={state_target=yes}}");
-    let out = fixture.render_native("get_highest_scored_country_temp={scorer=missing} army_experience=2", &mut fresh(), Content { key_names: Some(&names), country_scorers: Some(&database), ..Default::default() });
+    let out = fixture.render_native(
+        "get_highest_scored_country_temp={scorer=missing} army_experience=2",
+        &mut fresh(),
+        Content {
+            key_names: Some(&names),
+            country_scorers: Some(&database),
+            ..Default::default()
+        },
+    );
     assert_eq!(out.text, "XP2\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-    let out = fixture.render_native("get_highest_scored_country_temp={scorer=sample}", &mut fresh(), Content { key_names: Some(&names), country_scorers: Some(&database), ..Default::default() });
+    let out = fixture.render_native(
+        "get_highest_scored_country_temp={scorer=sample}",
+        &mut fresh(),
+        Content {
+            key_names: Some(&names),
+            country_scorers: Some(&database),
+            ..Default::default()
+        },
+    );
     assert_eq!(out.refusals.values().sum::<usize>(), 1);
-    assert!(out.refusals.keys().any(|why| why.contains("state_target") && why.contains("CVariableEffectBuilder")), "{:?}", out.refusals);
+    assert!(
+        out.refusals
+            .keys()
+            .any(|why| why.contains("state_target") && why.contains("CVariableEffectBuilder")),
+        "{:?}",
+        out.refusals
+    );
     let (_, usable) = make_database(b"sample={targets={targets={AAA}}}");
-    let out = fixture.render_native("get_highest_scored_country_temp={scorer=sample var=chosen var=other}", &mut fresh(), Content { key_names: Some(&names), country_scorers: Some(&usable), ..Default::default() });
+    let out = fixture.render_native(
+        "get_highest_scored_country_temp={scorer=sample var=chosen var=other}",
+        &mut fresh(),
+        Content {
+            key_names: Some(&names),
+            country_scorers: Some(&usable),
+            ..Default::default()
+        },
+    );
     assert_eq!(out.refusals.values().sum::<usize>(), 1);
     assert!(out.refusals.keys().any(|why| why.contains("repeated variable operand other") && why.contains("140539B50")), "{:?}", out.refusals);
 }
@@ -76,7 +106,9 @@ fn invalid_scorer_is_native_noop_and_unknown_target_form_is_named_once() {
 #[test]
 fn native_score_map_rehashes_and_preserves_distinct_values() {
     let mut scores = ScoreMap::default();
-    for country in 1..=5_000 { scores.insert(country, i64::from(country)); }
+    for country in 1..=5_000 {
+        scores.insert(country, i64::from(country));
+    }
     scores.insert(100, 6_000);
     let sorted = scores.sorted();
     assert_eq!(sorted.len(), 5_000);

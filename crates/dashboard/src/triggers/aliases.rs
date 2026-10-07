@@ -9,12 +9,7 @@ use installed_content::tag_aliases::{TagAlias, VariableKey};
 
 use super::{Eval, Scope, Scopes, eval::Evaluator};
 
-/// Candidates whose order among themselves is known: one, or several
-/// appended in one recorded interval (crate::scope::OriginalTagLists).
-struct Group {
-    members: Vec<u32>,
-    when: Option<String>,
-}
+type Candidates = Vec<Result<u32, String>>;
 
 impl Evaluator<'_, '_> {
     /// A country tag or tag alias as ResolveScriptCountryTag (140BA5D10)
@@ -103,71 +98,65 @@ impl Evaluator<'_, '_> {
         }
     }
 
-    /// The first phase of candidates 1407141F0 visits: every country slot
-    /// (+0x1E0, CGameState+0x310 in slot order), which needs the whole
-    /// roster; else the original-tag country, then `_CountriesForOriginalTags`
-    /// of it front to back (1401DB900, CGameState+0x988).
-    fn original_candidates(&self, alias: &TagAlias, caller: Scopes) -> Result<Vec<Group>, String> {
+    /// Native physical-array order for checks_all; otherwise the selected
+    /// original's own country, followed by its actual stored bucket. Unknown
+    /// later operands are deferred until an earlier unscored candidate fails.
+    fn original_candidates(&self, alias: &TagAlias, caller: Scopes) -> Result<Candidates, String> {
         let recorded = self.world().recorded();
-        let ordered = |slot| Group {
-            members: vec![slot],
-            when: None,
-        };
+        let candidate = |raw| recorded.positive_country(raw);
         if alias.checks_all() {
             return Ok(recorded
-                .roster()
-                .map_err(|why| format!("it checks every country: {why}"))?
-                .map(ordered)
+                .original_tags()
+                .country_array()?
+                .iter()
+                .filter(|&&raw| (raw as i32) > 0)
+                .map(|&raw| candidate(raw))
+                .filter_map(|result| result.transpose())
                 .collect());
         }
-        // Not in the corpus (vanilla and the installed mods, 2026-09-30).
         if alias.original_tag_assignments > 1 {
             return Err(super::refused(format!(
                 "it assigns original_tag {} times, and the country specifier's state across assignments (AssignCountrySpecifierFromString 140BA53F0, read by 140BA5D10) is not replayed",
                 alias.original_tag_assignments
             )));
         }
-        let mut groups = Vec::new();
-        if let Some(original) = &alias.original_tag {
-            // ResolveScriptCountryTag (param 0) then GetOriginalTagOrTag
-            // (1406DF830): a dynamic country's original tag, else its own.
-            let original = match self.operand_tag(original, caller) {
-                Ok(Some(slot)) => {
-                    let lists = recorded.original_tags();
-                    if let Some(since) = lists.pending() {
-                        return Err(format!(
-                            "the original tags are unknown: CountryAppearance is incomplete since hour {since}"
-                        ));
-                    }
-                    match lists.name_tag(slot) {
-                        Some(tag) => String::from_utf8_lossy(tag).into_owned(),
-                        None => recorded.tag(slot).unwrap_or_default().to_owned(),
-                    }
-                }
-                Ok(None) => String::new(),
-                Err(why) => return Err(format!("its original tag: {why}")),
-            };
-            if let Some(own) = recorded.country(&original) {
-                groups.push(ordered(own));
-            }
-            for group in recorded.original_tags().list(&original) {
-                groups.push(Group {
-                    members: group.members.clone(),
-                    when: (group.members.len() > 1).then(|| group.when.clone()),
-                });
+        let Some(original) = &alias.original_tag else {
+            return Ok(Vec::new());
+        };
+        let Some(slot) = self
+            .operand_tag(original, caller)
+            .map_err(|why| format!("its original tag: {why}"))?
+        else {
+            return Ok(Vec::new());
+        };
+        let selected = self.world().original_reference(slot)?;
+        if selected <= 0 {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        match candidate(selected as u32) {
+            Ok(Some(slot)) => out.push(Ok(slot)),
+            Ok(None) => {}
+            Err(why) => {
+                out.push(Err(why));
+                return Ok(out);
             }
         }
-        Ok(groups)
+        match recorded.original_bucket(selected) {
+            Ok(members) => out.extend(
+                members
+                    .iter()
+                    .map(|&raw| candidate(raw))
+                    .filter_map(|result| result.transpose()),
+            ),
+            Err(why) => out.push(Err(why)),
+        }
+        Ok(out)
     }
 
-    /// by canonical slot and deduplicated), which 1407141F0 reaches only
-    /// when no earlier candidate won an unscored alias; none for an alias
-    /// checking every country.
-    fn target_candidates(&self, alias: &TagAlias, caller: Scopes) -> Result<Vec<Group>, String> {
-        let ordered = |slot| Group {
-            members: vec![slot],
-            when: None,
-        };
+    /// Sorted/deduplicated script targets, reached after the original phase
+    /// for an unscored alias, or included in scoring for a scored alias.
+    fn target_candidates(&self, alias: &TagAlias, caller: Scopes) -> Result<Candidates, String> {
         if alias.checks_all() {
             return Ok(Vec::new());
         }
@@ -181,8 +170,10 @@ impl Evaluator<'_, '_> {
             &installed_content::country_scorers::ScriptTargets {
                 targets: alias.targets.clone(),
                 ..Default::default()
-            }, caller)?;
-        Ok(targets.into_iter().map(ordered).collect())
+            },
+            caller,
+        )?;
+        Ok(targets.into_iter().map(Ok).collect())
     }
 
     /// CScriptTargets::GetTargets (140C1C820), shared by aliases and scorers.
@@ -192,13 +183,15 @@ impl Evaluator<'_, '_> {
         caller: Scopes,
     ) -> Result<Vec<u32>, String> {
         let country = match caller.this {
-            Scope::Country(country) => Some(country),
+            Scope::Country(country) | Scope::CountryLeader { country, .. } => Some(country),
             Scope::Combat => Some(self.combat_country()?),
             _ => None,
         };
         if !targets.root_limit.is_empty() {
             let root = self.fresh_country_scope(country, None)?;
-            if !self.evaluate(&targets.root_limit, root).decided()? { return Ok(Vec::new()); }
+            if !self.evaluate(&targets.root_limit, root).decided()? {
+                return Ok(Vec::new());
+            }
         }
         if !targets.unported.is_empty() {
             return Err(format!("script targets: {}", targets.unported.join("; ")));
@@ -206,7 +199,10 @@ impl Evaluator<'_, '_> {
         // No reached temporary scorer requests the dynamic tail. Its start is
         // CCountryDatabase+0x88, which this selector does not yet resolve.
         if targets.dynamic {
-            return Err("script targets_dynamic: dynamic country slot boundary is unported (140C1C820)".into());
+            return Err(
+                "script targets_dynamic: dynamic country slot boundary is unported (140C1C820)"
+                    .into(),
+            );
         }
         let mut selected = Vec::new();
         let mut accept = |slot| -> Result<(), String> {
@@ -218,106 +214,61 @@ impl Evaluator<'_, '_> {
                 // the score subsequently reverses them (140C1D5B0/14047BB20).
                 let target = self.fresh_country_scope(Some(slot), None)?;
                 let initiator = self.fresh_country_scope(country, Some(target))?;
-                if !self.evaluate(&targets.target_limit, initiator).decided()? { return Ok(()); }
+                if !self.evaluate(&targets.target_limit, initiator).decided()? {
+                    return Ok(());
+                }
             }
             selected.push(slot);
             Ok(())
         };
         for array in &targets.arrays {
             self.visit_scoped_array_scopes(array, caller, |target| {
-                if let Some(Scope::Country(slot)) = target { accept(slot)?; }
+                if let Some(Scope::Country(slot)) = target {
+                    accept(slot)?;
+                }
                 Ok(())
             })?;
         }
         for target in &targets.targets {
-            if let Some(slot) = self.operand_tag(target, caller)? { accept(slot)?; }
+            if let Some(slot) = self.operand_tag(target, caller)? {
+                accept(slot)?;
+            }
         }
         selected.sort_unstable();
         selected.dedup();
         Ok(selected)
     }
 
-    /// The first candidate whose triggers pass (+0x1F8), each phase read
-    /// only when 1407141F0 reaches it, or with a `country_score` (+0x250)
-    /// the highest score above 0 over every phase, a tie keeping the
-    /// earlier. Candidates of one group whose order is unknown are refused
-    /// by name where their order would decide.
+    /// Native first passing candidate, or highest positive score with the
+    /// first occurrence winning ties. Duplicate native visits remain visits.
     fn choose(&self, alias: &TagAlias, caller: Scopes) -> Result<Option<u32>, String> {
-        let phases: [&dyn Fn() -> Result<Vec<Group>, String>; 2] =
+        let phases: [&dyn Fn() -> Result<Candidates, String>; 2] =
             [&|| self.original_candidates(alias, caller), &|| {
                 self.target_candidates(alias, caller)
             }];
-        // A fresh scope (140528800) with the caller's ROOT and FROM, PREV
-        // the caller, and the candidate set with clearing (set_country
-        // 14052DD00 -> 14052F3F0).
-        let scopes = |slot: u32| self.with_this(caller, Scope::Country(slot));
-        let passes = |slot: u32| match self.evaluate(&alias.limit, scopes(slot)?) {
+        let scopes = |slot| self.with_this(caller, Scope::Country(slot));
+        let passes = |slot| match self.evaluate(&alias.limit, scopes(slot)?) {
             Eval::Unknown(reasons) => Err(reasons.into_iter().collect::<Vec<_>>().join("; ")),
             value => Ok(value == Eval::True),
         };
-        let ambiguous = |group: &Group, several: &[u32]| {
-            format!(
-                "{} candidates with the same original tag were added to _CountriesForOriginalTags (CGameState+0x988) in one recorded interval, {}, so which one AliasResolve (1407141F0) meets first is not known: {}",
-                several.len(),
-                group.when.as_deref().unwrap_or_default(),
-                several
-                    .iter()
-                    .map(|slot| self.describe(Scope::Country(*slot)))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        };
-        let Some(score) = alias.scored() else {
-            for phase in phases {
-                for group in &phase()? {
-                    let mut passing = Vec::new();
-                    for &slot in &group.members {
-                        if passes(slot)? {
-                            passing.push(slot);
-                        }
-                    }
-                    match passing.as_slice() {
-                        [] => {}
-                        [only] => return Ok(Some(*only)),
-                        several => return Err(ambiguous(group, several)),
-                    }
-                }
-            }
-            return Ok(None);
-        };
-        let mut groups = Vec::new();
+        let mut best = None;
+        let mut best_score = 0_i64;
         for phase in phases {
-            groups.extend(phase()?);
-        }
-        let (mut best, mut best_score, mut tied) = (None, 0_i64, None);
-        for group in &groups {
-            let mut scored = Vec::new();
-            for &slot in &group.members {
-                if passes(slot)? {
-                    scored.push((
-                        slot,
-                        self.mean_time_to_happen("country_score", score, scopes(slot)?)?,
-                    ));
+            for candidate in phase()? {
+                let slot = candidate?;
+                if !passes(slot)? {
+                    continue;
+                }
+                let Some(score) = alias.scored() else {
+                    return Ok(Some(slot));
+                };
+                let score = self.mean_time_to_happen("country_score", score, scopes(slot)?)?;
+                if score > best_score {
+                    best = Some(slot);
+                    best_score = score;
                 }
             }
-            let Some(top) = scored.iter().map(|(_, score)| *score).max() else {
-                continue;
-            };
-            if top <= best_score {
-                continue;
-            }
-            let winners: Vec<u32> = scored
-                .iter()
-                .filter(|(_, score)| *score == top)
-                .map(|(slot, _)| *slot)
-                .collect();
-            best = winners.first().copied();
-            best_score = top;
-            tied = (winners.len() > 1).then(|| ambiguous(group, &winners));
         }
-        match tied {
-            Some(why) => Err(why),
-            None => Ok(best),
-        }
+        Ok(best)
     }
 }

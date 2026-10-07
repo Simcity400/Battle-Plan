@@ -36,8 +36,11 @@ enum Roster {
     PartyLeaders,
     Neighbors,
     OriginalTags,
+    CountryNeighbors,
+    OccupiedCountries,
+    CountryDivisions,
+    StateDivisions,
     IndustrialOrganisations,
-    Missing(&'static str),
 }
 
 #[derive(Clone, Copy)]
@@ -119,6 +122,7 @@ fn iterator_kind(class: u64) -> Option<IteratorKind> {
         0x1427A9500 => (Roster::Scientists { active: false }, false),
         0x1427A9410 => (Roster::Scientists { active: false }, true),
         0x1427A96D0 => (Roster::Scientists { active: true }, true),
+        0x1427A95E8 => (Roster::Scientists { active: true }, false),
         0x142738278 => (Roster::Neighbors, false),
         0x1427575F8 => (Roster::Neighbors, true),
         0x142758AE8 => (Roster::OriginalTags, false),
@@ -147,18 +151,8 @@ fn iterator_kind(class: u64) -> Option<IteratorKind> {
             },
             class == 0x142758048,
         ),
-        0x142758248 | 0x142758138 => (
-            Roster::Missing(
-                "CCountry ordered neighbor-country refs +0x1088/count +0x1094 are not recorded (14039D4E0)",
-            ),
-            class == 0x142758138,
-        ),
-        0x1427588A8 | 0x142758798 => (
-            Roster::Missing(
-                "CCountryOccupationStatus ordered occupied-country records +0x60/count +0x6C are not recorded (1413DE730)",
-            ),
-            class == 0x142758798,
-        ),
+        0x142758248 | 0x142758138 => (Roster::CountryNeighbors, class == 0x142758138),
+        0x1427588A8 | 0x142758798 => (Roster::OccupiedCountries, class == 0x142758798),
         0x142753F50 | 0x142753C88 | 0x142753E68 | 0x142753D78 | 0x142753BA0 | 0x142753AB0
         | 0x142754210 | 0x142754128 | 0x142754038 => (
             Roster::Leaders {
@@ -167,23 +161,13 @@ fn iterator_kind(class: u64) -> Option<IteratorKind> {
                     0x142753F50 | 0x142753C88 | 0x142753BA0 | 0x142753AB0 | 0x142754210
                 ),
                 navy: matches!(class, 0x142753E68 | 0x142753D78 | 0x142753BA0 | 0x142753AB0),
-                operative: matches!(class, 0x142754128 | 0x142754038 | 0x142753BA0 | 0x142753AB0),
+                operative: matches!(class, 0x142754128 | 0x142754038),
                 global: class == 0x142754210,
             },
             matches!(class, 0x142753C88 | 0x142753D78 | 0x142753AB0 | 0x142754038),
         ),
-        0x1427971A8 | 0x1427970B8 => (
-            Roster::Missing(
-                "CCountry ordered division pointers +0x290/count +0x29C are not recorded (14143D4A0); UNIT identity and ProvinceUnitOrder are available",
-            ),
-            class == 0x1427970B8,
-        ),
-        0x1427975D8 | 0x1427974E8 => (
-            Roster::Missing(
-                "state division iteration is not ported (14143D4A0); UNIT identity and ProvinceUnitOrder are recorded",
-            ),
-            class == 0x1427974E8,
-        ),
+        0x1427971A8 | 0x1427970B8 => (Roster::CountryDivisions, class == 0x1427970B8),
+        0x1427975D8 | 0x1427974E8 => (Roster::StateDivisions, class == 0x1427974E8),
         0x14272F680 | 0x14272F590 => (Roster::IndustrialOrganisations, class == 0x14272F590),
         _ => return None,
     };
@@ -269,7 +253,7 @@ impl Renderer<'_, '_, '_> {
             return Ok(None);
         };
         let header = match selected.this {
-            Scope::Country(country) => {
+            Scope::Country(country) | Scope::CountryLeader { country, .. } => {
                 if country == self.context.perspective
                     && self.origin_country(scopes)? == Some(country)
                 {
@@ -352,17 +336,29 @@ impl Renderer<'_, '_, '_> {
                 )? // 141382590.
             }
             Scope::Project { owner, id } => {
-                if self.context.localisation.get("EFFECT_CONTEXT_SPECIAL_PROJECT").is_none() {
+                if self
+                    .context
+                    .localisation
+                    .get("EFFECT_CONTEXT_SPECIAL_PROJECT")
+                    .is_none()
+                {
                     return Err("native carrier localisation key EFFECT_CONTEXT_SPECIAL_PROJECT is not defined (141382590)".into());
                 }
-                let country = self.context.world()?.slot(owner)
+                let country = self
+                    .context
+                    .world()?
+                    .slot(owner)
                     .ok_or("CountryLinks lacks project owner")?;
                 let name = self.project_name(owner, id)?;
                 let flag = format!("\u{12}{}", self.tag(country)?);
                 self.localised(
                     b"EFFECT_CONTEXT_SPECIAL_PROJECT",
-                    &[("SPECIAL_PROJECT", Argument::Text(&name)), ("FLAG", Argument::Text(&flag))],
-                    selected, false,
+                    &[
+                        ("SPECIAL_PROJECT", Argument::Text(&name)),
+                        ("FLAG", Argument::Text(&flag)),
+                    ],
+                    selected,
+                    false,
                 )? // 141382590 -> 140FCDDF0.
             }
             // 141382590 has no raid/unit header arm; still walk the children.
@@ -376,7 +372,9 @@ impl Renderer<'_, '_, '_> {
     // when ROOT carries neither; 141382590 uses it for perspective suppression.
     fn origin_country(&self, scopes: Scopes) -> Result<Option<u32>, String> {
         match scopes.root {
-            Scope::Country(country) => Ok((country > 0).then_some(country)),
+            Scope::Country(country) | Scope::CountryLeader { country, .. } => {
+                Ok((country > 0).then_some(country))
+            }
             Scope::State(state) if state != 0 && state != crate::triggers::NULL_STATE => {
                 let state = self
                     .context
@@ -392,7 +390,9 @@ impl Renderer<'_, '_, '_> {
                     .ok_or_else(|| format!("CountryLinks lacks ROOT state owner {}", state.owner))
             }
             _ => Ok(match scopes.this {
-                Scope::Country(country) if country > 0 => Some(country),
+                Scope::Country(country) | Scope::CountryLeader { country, .. } if country > 0 => {
+                    Some(country)
+                }
                 _ => None,
             }),
         }
@@ -483,41 +483,6 @@ impl Renderer<'_, '_, '_> {
         }) // vf11 ReturnTrue@1401802A0.
     }
 
-    fn roster_order_gap(&self, source: Roster) -> Option<&'static str> {
-        match source {
-            Roster::CountryStates { owned: true, .. } => Some(
-                "owned_state_order: two or more targets pass the limit; CCountry+0x478/count +0x484 is not recorded (14039D200/14039D340)",
-            ),
-            Roster::CountryStates {
-                controlled: true, ..
-            } => Some(
-                "controlled_state_order: two or more targets pass the limit; CCountry+0x460/count +0x46C is not recorded (140319610)",
-            ),
-            Roster::CountryStates { core: true, .. } => Some(
-                "core_state_order: two or more targets pass the limit; CCountry+0x4A8/count +0x4B4 is not recorded (14039D1A0)",
-            ),
-            Roster::Leaders {
-                army: true,
-                navy: true,
-                ..
-            } => Some(
-                "unit_leader_order: two or more targets pass the limit; army/navy/operative rosters are not recorded (140338150/140338ED0/1403388C0)",
-            ),
-            Roster::Leaders { army: true, .. } => Some(
-                "army_leader_order: two or more targets pass the limit; CCountryCharacters+0x70/count +0x7C is not recorded (140338150)",
-            ),
-            Roster::Leaders { navy: true, .. } => Some(
-                "navy_leader_order: two or more targets pass the limit; CCountryCharacters+0x88/count +0x94 is not recorded (140338ED0)",
-            ),
-            Roster::Leaders {
-                operative: true, ..
-            } => Some(
-                "operative_order: two or more targets pass the limit; CIntelligenceAgency+0xD8/count +0xE4 is not recorded (1403388C0/140368C10)",
-            ),
-            _ => None,
-        }
-    }
-
     fn roster(&self, source: Roster, item: &Item, scopes: Scopes) -> Result<Vec<Scope>, String> {
         let world = self.context.world()?;
         let frame = world.frame();
@@ -531,90 +496,53 @@ impl Renderer<'_, '_, '_> {
                 .ok_or_else(|| format!("CountryLinks lacks iterator country {raw}"))
         };
         match source {
-            Roster::Missing(why) => {
-                if self.effect_class(item).is_some_and(|class| {
-                    matches!(
-                        class.vtable,
-                        0x142758248 | 0x142758138 | 0x1427588A8 | 0x142758798
-                    )
-                }) && !matches!(scopes.this, Scope::Country(_))
-                {
-                    return Ok(Vec::new());
-                }
-                Err(why.into())
-            }
             Roster::CountryStates {
                 owned,
                 controlled,
                 core,
             } => {
-                let Scope::Country(caller) = scopes.this else {
+                let (Scope::Country(caller)
+                | Scope::CountryLeader {
+                    country: caller, ..
+                }) = scopes.this
+                else {
                     return Ok(Vec::new());
                 };
-                let states = frame
-                    .complete::<tables::States>()
-                    .map_err(|why| why.to_string())?;
-                let owned_count = if owned {
-                    Some(world.owned_state_count(caller)?)
+                let inputs = world.country_counter_inputs(caller)?;
+                // vf28@14039D200/140319610/14039D1A0 copies these arrays;
+                // random vf25@140337AA0/1403377B0 preserves the same order.
+                let (recorded, name) = if owned {
+                    (
+                        &inputs.owned_states,
+                        "CountryCounterInputs.owned_states (CCountry+0x478)",
+                    )
+                } else if controlled {
+                    (
+                        &inputs.controlled_states,
+                        "CountryCounterInputs.controlled_states (CCountry+0x460)",
+                    )
                 } else {
-                    None
+                    debug_assert!(core);
+                    (
+                        &inputs.core_states,
+                        "CountryCounterInputs.core_states (CCountry+0x4A8)",
+                    )
                 };
+                let states = recorded
+                    .require(name)?
+                    .as_deref()
+                    .ok_or_else(|| format!("{name} capture unavailable"))?;
                 let mut out = Vec::new();
-                let mut found_owned = 0;
-                let cores = if core {
-                    Some(
-                        frame
-                            .complete::<tables::StateCores>()
-                            .map_err(|why| why.to_string())?,
-                    )
-                } else {
-                    None
-                };
-                let nonempty = if owned || controlled {
-                    Some(
-                        frame
-                            .complete::<tables::Provinces>()
-                            .map_err(|why| why.to_string())?
-                            .iter()
-                            .map(|row| row.state)
-                            .collect::<std::collections::BTreeSet<_>>(),
-                    )
-                } else {
-                    None
-                };
-                for row in states {
-                    // Country roster writers omit empty states (1406C52B0/1406C3890).
-                    if nonempty
-                        .as_ref()
-                        .is_some_and(|states| !states.contains(&row.id))
-                    {
-                        continue;
+                for &id in states {
+                    if owned && controlled {
+                        let row = world.states.get(&id).ok_or_else(|| {
+                            format!("owned-controlled iterator state {id} is not recorded")
+                        })?;
+                        if slot(row.controller)? != caller {
+                            continue;
+                        } // CRandomOwnedControlledStateEffect vf25@1403377B0.
                     }
-                    let is_owned = owned && slot(row.owner)? == caller;
-                    if is_owned {
-                        found_owned += 1;
-                    }
-                    let is_core = match cores {
-                        Some(cores) => cores
-                            .iter()
-                            .find(|core| core.state == row.id)
-                            .ok_or("StateCores lacks state membership")?
-                            .cores
-                            .iter()
-                            .map(|raw| slot(*raw))
-                            .collect::<Result<Vec<_>, _>>()?
-                            .contains(&caller),
-                        None => true,
-                    };
-                    if (!owned || is_owned)
-                        && (!controlled || slot(row.controller)? == caller)
-                        && is_core
-                    {
-                        out.push(Scope::State(row.id));
-                    }
-                }
-                if owned_count.is_some_and(|count| count != found_owned) {
-                    return Err("States.owner membership differs from CountryCounterInputs.owned_state_count (CCountry+0x484)".into());
+                    out.push(Scope::State(id));
                 }
                 Ok(out)
             }
@@ -625,7 +553,10 @@ impl Renderer<'_, '_, '_> {
                 global,
             } => {
                 let caller = match scopes.this {
-                    Scope::Country(caller) => caller,
+                    Scope::Country(caller)
+                    | Scope::CountryLeader {
+                        country: caller, ..
+                    } => caller,
                     _ if !global => return Ok(Vec::new()),
                     _ => 0,
                 };
@@ -633,42 +564,97 @@ impl Renderer<'_, '_, '_> {
                 let invisible = field(children(item), "include_invisible").is_some_and(|field| {
                     field.value.scalar().and_then(installed_content::parser::read_bool) == Some(true)
                 });
-                let members = if operative {
-                    Some(
-                        frame
-                            .complete::<tables::OperativeMemberships>()
-                            .map_err(|why| why.to_string())?,
-                    )
-                } else {
-                    None
-                };
-                for row in frame
-                    .complete::<tables::UnitLeaders>()
+                if !operative {
+                    // 140338ED0 combines army then navy only; operatives have
+                    // their separate 1403388C0 selector.
+                    let repeats = if global {
+                        // 140338900 (asm 140338B48) resolves the CALLER for
+                        // each other existing country, repeating its army roster.
+                        let mut count = 0;
+                        for row in frame
+                            .complete::<tables::Countries>()
+                            .map_err(|why| why.to_string())?
+                        {
+                            if row.id as i32 > 0
+                                && row.canonical_slot != caller
+                                && world.exists(row.canonical_slot)?
+                            {
+                                count += 1;
+                            }
+                        }
+                        count
+                    } else {
+                        1
+                    };
+                    if repeats == 0 {
+                        return Ok(out);
+                    }
+                    let inputs = world.country_counter_inputs(caller)?;
+                    for _ in 0..repeats {
+                        for (enabled, recorded, name) in [
+                            (
+                                army,
+                                &inputs.army_leaders,
+                                "CountryCounterInputs.army_leaders (CCountryCharacters+0x70)",
+                            ),
+                            (
+                                navy,
+                                &inputs.navy_leaders,
+                                "CountryCounterInputs.navy_leaders (CCountryCharacters+0x88)",
+                            ),
+                        ] {
+                            if !enabled {
+                                continue;
+                            }
+                            let leaders = recorded
+                                .require(name)?
+                                .as_deref()
+                                .ok_or_else(|| format!("{name} capture unavailable"))?;
+                            for &reference in leaders {
+                                let row = world.unit_leader(reference)?.ok_or_else(|| {
+                                    format!("iterator unit leader {reference:#x} is not recorded")
+                                })?;
+                                // CollectVisibleArmy/NavyLeaders@1406CE170/1406CE1D0.
+                                if invisible || self.evaluator()?.leader_visible(row).decided()? {
+                                    out.push(Scope::Leader(reference));
+                                }
+                            }
+                        }
+                    }
+                    return Ok(out);
+                }
+                let mut members = frame
+                    .complete::<tables::OperativeMemberships>()
                     .map_err(|why| why.to_string())?
-                {
-                    let reference = u64::from(row.id) << 32 | u64::from(row.reference_type);
-                    let member = members.is_some_and(|members| {
-                        members.iter().any(|member| {
-                            member.id == reference
-                                && member.roster_kind == 0
-                                && world.slot(member.roster_country) == Some(caller)
-                        })
-                    });
-                    let military = (army && matches!(row.category, 0 | 1)
-                        || navy && row.category == 2)
-                        && (global || slot(row.owner)? == caller);
-                    // CollectVisibleArmy/NavyLeaders@1406CE170/1406CE1D0, mask 0xF.
-                    if military && !invisible && !self.evaluator()?.leader_visible(row).decided()? {
-                        continue;
-                    }
-                    if military || operative && member {
-                        out.push(Scope::Leader(reference));
-                    }
+                    .iter()
+                    .filter(|member| {
+                        member.roster_kind == 0 && world.slot(member.roster_country) == Some(caller)
+                    })
+                    .collect::<Vec<_>>();
+                // 1403388C0 / 140368C10 copy the active operative array.
+                // Older rows can still settle a pure empty/singleton selection;
+                // the iterator also checks reached limit writes/RNG below.
+                members.sort_by_key(|member| {
+                    member
+                        .ordinal
+                        .require("OperativeMemberships.ordinal")
+                        .ok()
+                        .copied()
+                });
+                for member in members {
+                    world.unit_leader(member.id)?.ok_or_else(|| {
+                        format!("iterator operative {:#x} is not recorded", member.id)
+                    })?;
+                    out.push(Scope::Leader(member.id));
                 }
                 Ok(out)
             }
             Roster::IndustrialOrganisations => {
-                let Scope::Country(caller) = scopes.this else {
+                let (Scope::Country(caller)
+                | Scope::CountryLeader {
+                    country: caller, ..
+                }) = scopes.this
+                else {
                     return Ok(Vec::new());
                 };
                 if caller == 0 {
@@ -807,7 +793,7 @@ impl Renderer<'_, '_, '_> {
                 .into_iter()
                 .map(|id| Scope::Character(id.unwrap_or(0)))
                 .collect()), // 14138B830.
-            Roster::Scientists { active } => {
+            Roster::Scientists { .. } => {
                 let caller = country()?;
                 let mut rows = Vec::new();
                 for row in frame
@@ -817,9 +803,6 @@ impl Renderer<'_, '_, '_> {
                     if slot(row.country)? == caller {
                         rows.push(row);
                     }
-                }
-                if active && !rows.is_empty() {
-                    return Err("CScientist active byte +0x130 is not recorded (14048F1D0); Scientists is Hourly".into());
                 }
                 rows.sort_by_key(|row| row.ordinal); // 14048F3F0 -> 140490C00.
                 Ok(rows
@@ -849,13 +832,146 @@ impl Renderer<'_, '_, '_> {
                         }
                     }
                 }
-                if !out.is_empty()
-                    && self
-                        .limit(children(item))?
+                Ok(out)
+            }
+            Roster::CountryNeighbors | Roster::OccupiedCountries => {
+                let (Scope::Country(caller)
+                | Scope::CountryLeader {
+                    country: caller, ..
+                }) = scopes.this
+                else {
+                    return Ok(Vec::new());
+                };
+                let refs = if matches!(source, Roster::CountryNeighbors) {
+                    frame
+                        .complete::<tables::CountryCounterInputs>()
+                        .map_err(|why| why.to_string())?
                         .iter()
-                        .any(|item| item.keyword_is("has_ideology"))
+                        .find(|row| world.slot(row.country) == Some(caller))
+                        .ok_or("CountryCounterInputs lacks neighbor roster (14039D4E0)")?
+                        .neighbors
+                        .require("CountryCounterInputs.neighbors")?
+                        .as_ref()
+                        .ok_or("CountryCounterInputs.neighbors capture refused (14039D4E0)")?
+                } else {
+                    frame
+                        .complete::<tables::OccupationSettings>()
+                        .map_err(|why| why.to_string())?
+                        .iter()
+                        .find(|row| world.slot(row.country) == Some(caller))
+                        .ok_or("OccupationSettings lacks occupied roster (1413DE730)")?
+                        .occupied
+                        .require("OccupationSettings.occupied")?
+                        .as_ref()
+                        .ok_or("OccupationSettings.occupied capture refused (1413DE730)")?
+                };
+                // 14039D4E0 / 1413DE730 copy the stored roster in order.
+                refs.iter()
+                    .map(|raw| slot(*raw).map(Scope::Country))
+                    .collect()
+            }
+            Roster::CountryDivisions => {
+                let (Scope::Country(caller)
+                | Scope::CountryLeader {
+                    country: caller, ..
+                }) = scopes.this
+                else {
+                    return Ok(Vec::new());
+                };
+                if caller == 0 {
+                    return Ok(Vec::new()); // 14143D4A0 case 4.
+                }
+                let status: std::collections::BTreeMap<_, _> = frame
+                    .complete::<tables::DivisionStatus>()
+                    .map_err(|why| why.to_string())?
+                    .iter()
+                    .map(|row| (row.division, row))
+                    .collect();
+                let mut rows = Vec::new();
+                for row in frame
+                    .complete::<tables::Divisions>()
+                    .map_err(|why| why.to_string())?
                 {
-                    return Err("CHasIdeology reads CCountryLeader current ideology pointer +0x140 (140440A10/140F8EC50); CountryLeaderRoles records the independent map key, not this operand (writer 1403611C0)".into());
+                    if slot(row.roster_owner)? != caller {
+                        continue;
+                    }
+                    let ordinal = status
+                        .get(&row.id)
+                        .ok_or("DivisionStatus lacks country ordinal (14143D4A0)")?
+                        .country_ordinal
+                        .require("DivisionStatus.country_ordinal")?
+                        .ok_or("DivisionStatus.country_ordinal capture refused (14143D4A0)")?;
+                    rows.push((ordinal, row.id));
+                }
+                rows.sort_by_key(|row| row.0);
+                if rows
+                    .iter()
+                    .enumerate()
+                    .any(|(index, row)| row.0 as usize != index)
+                {
+                    return Err("DivisionStatus.country_ordinal is not a complete country roster (14143D4A0)".into());
+                }
+                Ok(rows
+                    .into_iter()
+                    .map(|(_, unit)| Scope::Unit(unit))
+                    .collect())
+            }
+            Roster::StateDivisions => {
+                let Scope::State(state) = scopes.this else {
+                    return Ok(Vec::new());
+                };
+                if state == 0 {
+                    return Ok(Vec::new());
+                }
+                frame
+                    .complete::<tables::States>()
+                    .map_err(|why| why.to_string())?;
+                if !world.states.contains_key(&state) {
+                    return Ok(Vec::new()); // 14143D4A0 case 2: invalid state.
+                }
+                let order: std::collections::BTreeMap<_, _> = frame
+                    .complete::<tables::ProvinceUnitOrder>()
+                    .map_err(|why| why.to_string())?
+                    .iter()
+                    .map(|row| (row.province, row))
+                    .collect();
+                let armies: std::collections::BTreeSet<_> = frame
+                    .complete::<tables::Divisions>()
+                    .map_err(|why| why.to_string())?
+                    .iter()
+                    .map(|row| row.id)
+                    .collect();
+                let mut out = Vec::new();
+                // 14143D4A0 walks CState+0x18, then each province's +0xE0.
+                // state_order verifies runtime membership against the native
+                // content order. Divisions authenticates class-0 full handles;
+                // the reference type alone cannot distinguish unit classes.
+                for &province in world.state_order(state)? {
+                    let row = order.get(&province).ok_or_else(|| {
+                        format!(
+                            "ProvinceUnitOrder lacks state {state} province {province} (14143D4A0)"
+                        )
+                    })?;
+                    for &unit in &row.mixed {
+                        if armies.contains(&unit) {
+                            out.push(Scope::Unit(unit));
+                        } else if frame
+                            .complete::<tables::TaskForces>()
+                            .ok()
+                            .is_some_and(|rows| rows.iter().any(|row| row.id == unit))
+                            || frame
+                                .complete::<tables::RailwayGunCounterInputs>()
+                                .ok()
+                                .is_some_and(|rows| rows.iter().any(|row| row.gun == unit))
+                        {
+                            // Only class 0 passes the native +8 check; known
+                            // task forces (1) and railway guns (13) are skipped.
+                        } else {
+                            return Err(format!(
+                                "state iterator unit {unit:#x} has no recorded class census (14143D4A0)"
+                            ));
+                        }
+                    }
                 }
                 Ok(out)
             }
@@ -879,38 +995,27 @@ impl Renderer<'_, '_, '_> {
                 let Some(target) = self.evaluator()?.scoped_country(operand, scopes)? else {
                     return Ok(Vec::new());
                 };
+                let selected = world.original_reference(target)?;
+                if selected <= 0 {
+                    return Ok(Vec::new());
+                }
                 let recorded = world.recorded();
-                if let Some(hour) = recorded.original_tags().pending() {
-                    return Err(format!(
-                        "_CountriesForOriginalTags is unknown since hour {hour} (1413AA900)"
-                    ));
-                }
-                let original = recorded
-                    .original_tags()
-                    .name_tag(target)
-                    .filter(|tag| !tag.is_empty())
-                    .unwrap_or(self.tag(target)?.as_bytes());
-                let name =
-                    std::str::from_utf8(original).map_err(|_| "original tag is not UTF-8")?;
                 let mut out = Vec::new();
-                for group in recorded.original_tags().list(name) {
-                    if group.members.len() > 1 {
-                        return Err(format!(
-                            "_CountriesForOriginalTags[{name}] order is ambiguous at {} (1413AA900)",
-                            group.when
-                        ));
-                    }
-                    for &slot in &group.members {
-                        if world.exists(slot)? {
-                            out.push(Scope::Country(slot));
-                        }
-                    }
-                }
-                let original = recorded.country(name);
-                if let Some(original) = original
-                    && world.exists(original)?
+                // 1413DE2A0/1413DE500 skip signed-nonpositive raw entries
+                // before resolving and testing existence; preserve duplicates.
+                for raw in recorded
+                    .original_bucket(selected)?
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(selected as u32))
                 {
-                    out.push(Scope::Country(original));
+                    if (raw as i32) <= 0 {
+                        continue;
+                    }
+                    let slot = recorded.raw_slot(raw)?;
+                    if world.exists(slot)? {
+                        out.push(Scope::Country(slot));
+                    }
                 }
                 Ok(out)
             }
@@ -937,12 +1042,41 @@ impl Renderer<'_, '_, '_> {
         roster: Vec<Scope>,
         items: &[Item],
         scopes: Scopes,
+        active_scientist: bool,
     ) -> Result<Vec<Scope>, String> {
         let mut out = Vec::new();
         for target in roster {
             let selected = self.evaluator()?.with_this(scopes, target)?;
             match self.condition(items, selected) {
-                Eval::True => out.push(target),
+                Eval::True => {
+                    if active_scientist {
+                        let Scope::Character(character) = target else {
+                            return Err(
+                                "active scientist target is not a character (14048F1D0)".into()
+                            );
+                        };
+                        // Every scientist evaluates the limit; 14048F1D0 checks
+                        // +0x130 only after that limit succeeds.
+                        let row = self
+                            .context
+                            .world()?
+                            .frame()
+                            .complete::<tables::Scientists>()
+                            .map_err(|why| why.to_string())?
+                            .iter()
+                            .find(|row| row.character == character)
+                            .ok_or("Scientists lacks active iterator target (14048F1D0)")?;
+                        if row
+                            .active
+                            .require("Scientists.active")?
+                            .ok_or("Scientists.active capture refused (14048F1D0)")?
+                            == 0
+                        {
+                            continue;
+                        }
+                    }
+                    out.push(target);
+                }
                 Eval::False => {}
                 Eval::Unknown(why) => return Err(why.into_iter().collect::<Vec<_>>().join("; ")),
             }
@@ -952,8 +1086,8 @@ impl Renderer<'_, '_, '_> {
 
     fn label(&self, scope: Scope, caller: Scopes, list: bool) -> Result<String, String> {
         let text = match scope {
-            Scope::Country(0) => String::new(),
-            Scope::Country(country) => {
+            Scope::Country(0) | Scope::CountryLeader { country: 0, .. } => String::new(),
+            Scope::Country(country) | Scope::CountryLeader { country, .. } => {
                 if list {
                     let name = self.country_name(country, false)?;
                     let tag = self.tag(country)?;
@@ -1098,11 +1232,49 @@ impl Renderer<'_, '_, '_> {
     ) -> Result<String, String> {
         let items = children(item);
         let roster = self.roster(kind.roster, item, scopes)?;
+        let mut unordered_operatives = Vec::new();
+        if roster.len() >= 2
+            && matches!(
+                kind.roster,
+                Roster::Leaders {
+                    operative: true,
+                    ..
+                }
+            )
+        {
+            let world = self.context.world()?;
+            let caller = self.current_country(scopes)?;
+            unordered_operatives.extend(
+                world
+                    .frame()
+                    .complete::<tables::OperativeMemberships>()
+                    .map_err(|why| why.to_string())?
+                    .iter()
+                    .filter(|member| {
+                        member.roster_kind == 0
+                            && world.slot(member.roster_country) == Some(caller)
+                            && member
+                                .ordinal
+                                .require("OperativeMemberships.ordinal")
+                                .is_err()
+                    })
+                    .map(|member| Scope::Leader(member.id)),
+            );
+        }
+        let order_checkpoint = if unordered_operatives.is_empty() {
+            None
+        } else {
+            let evaluator = self.evaluator()?;
+            Some((evaluator.variable_effects(), evaluator.variable_session()))
+        };
         let mut targets = Vec::new();
         // CRandomStateEffectBase vf25@1403374B0/140337D80: priority
         // membership preserves roster order; retry all only if none pass.
         if kind.random
-            && matches!(kind.roster, Roster::States | Roster::Neighbors)
+            && matches!(
+                kind.roster,
+                Roster::States | Roster::Neighbors | Roster::CountryStates { .. }
+            )
             && let Some(preferred) = field(items, "prioritize")
         {
             let ids = children(preferred)
@@ -1120,15 +1292,34 @@ impl Renderer<'_, '_, '_> {
                     .collect(),
                 items,
                 scopes,
+                false,
             )?;
         }
         if targets.is_empty() {
-            targets = self.targets(roster, items, scopes)?;
+            let selected = self.targets(
+                roster,
+                items,
+                scopes,
+                matches!(kind.roster, Roster::Scientists { active: true }),
+            );
+            if selected.is_err()
+                && let Some((_, session)) = &order_checkpoint
+            {
+                self.evaluator()?.restore_variable_session(session);
+            }
+            targets = selected?;
         }
-        if targets.len() >= 2
-            && let Some(why) = self.roster_order_gap(kind.roster)
-        {
-            return Err(why.into());
+        if let Some((effects, session)) = order_checkpoint {
+            let evaluator = self.evaluator()?;
+            if effects != evaluator.variable_effects()
+                || targets.len() >= 2
+                    && targets
+                        .iter()
+                        .any(|target| unordered_operatives.contains(target))
+            {
+                evaluator.restore_variable_session(&session);
+                return Err("OperativeMemberships.ordinal not recorded for native limit/selection order (1403388C0/140368C10)".into());
+            }
         }
         let body = self.effect_children(item);
         if !kind.random
@@ -1260,7 +1451,7 @@ impl Renderer<'_, '_, '_> {
             .into_iter()
             .flatten()
             .collect();
-        let targets = self.targets(roster, children(item), scopes)?;
+        let targets = self.targets(roster, children(item), scopes, false)?;
         if targets.is_empty() {
             return Ok(String::new());
         }
@@ -1280,7 +1471,7 @@ impl Renderer<'_, '_, '_> {
         indent: usize,
     ) -> Result<String, String> {
         let roster = self.roster(Roster::Characters, item, scopes)?;
-        let targets = self.targets(roster, children(item), scopes)?;
+        let targets = self.targets(roster, children(item), scopes, false)?;
         let world = self.context.world()?;
         let frame = world.frame();
         let tables = crate::character_scope::Tables::read(frame);

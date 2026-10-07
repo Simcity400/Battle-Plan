@@ -63,7 +63,7 @@ impl Captured {
         } else {
             None
         };
-        let occupation = ccountry_occupation_status::walk(
+        let occupation = ccountry_occupation_status::walk_with_occupied(
             &recorded,
             base,
             game_state,
@@ -75,6 +75,7 @@ impl Captured {
                 reserve_manpower: &mut self.reserve_manpower.rows,
                 names: &mut self.law_bytes.first,
             },
+            &mut self.occupied.first,
         );
         self.settings.outcome = occupation.settings;
         self.laws.outcome = occupation.laws;
@@ -83,6 +84,8 @@ impl Captured {
         self.reserve_manpower.outcome = occupation.reserve_manpower;
         self.law_bytes.len = occupation.bytes_len;
         self.law_bytes.required = occupation.required_bytes;
+        self.occupied.len = occupation.occupied_len;
+        self.occupied.required = occupation.required_occupied;
         if law_error.is_none() {
             self.law_bytes.required = self.law_bytes.required.max(job.law_bytes_required);
         }
@@ -973,6 +976,31 @@ fn copy_occupation_walk(
         // replay derives identical rows and reasons.
         if let Some(table) = status.checked_add(ccountry_occupation_status::OCCUPATION_DATA_TABLE) {
             copy_occupation_entries(log, memory, base, table, required, demand_overflowed);
+        }
+        // Appended-field faults belong to its optional value, not the existing
+        // occupation tables. These spans therefore carry no table failure bit.
+        if let Some(header) = status.checked_add(ccountry_occupation_status::OCCUPATION_DATA_ROWS)
+            && let Some(start) = cspan(log, memory, Some(header), 16, 0)
+        {
+            let raw: [u8; 16] = log.bytes[start..start + 16].try_into().unwrap();
+            if let Some(array) = Array::from_header(raw, 8) {
+                for ordinal in 0..array.count {
+                    let Some(start) = cspan(log, memory, array.element(ordinal, 8), 8, 0) else {
+                        continue;
+                    };
+                    let Some(group) = usize::try_from(c_pool_u64(log, start)).ok() else {
+                        continue;
+                    };
+                    if let Some(start) = cspan(log, memory, Some(group), 32, 0) {
+                        let country = u64::from_le_bytes(
+                            log.bytes[start + 24..start + 32].try_into().unwrap(),
+                        );
+                        if let Ok(country) = usize::try_from(country) {
+                            let _ = cspan(log, memory, Some(country), 12, 0);
+                        }
+                    }
+                }
+            }
         }
         if log.overflowed {
             return;

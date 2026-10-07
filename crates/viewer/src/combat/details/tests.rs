@@ -525,6 +525,8 @@ fn committed_names_carry_the_owner_flag_on_the_side_the_native_entry_writes() {
 
 #[test]
 fn names_prefer_a_custom_name_then_the_selected_group_in_the_content() {
+    let mut localisation = Localisation::default();
+    localisation.language = "english".into();
     let names = installed_content::division_names::parse(
         br#"SOV_INF_01 = { ordered = { 144 = { "%dya Strelkovaya Diviziya" } } }"#,
         &installed_content::key_names::KeyNames::default(),
@@ -537,17 +539,20 @@ fn names_prefer_a_custom_name_then_the_selected_group_in_the_content() {
         ..Default::default()
     };
     assert_eq!(
-        division_name(&row, &names).as_deref(),
+        division_name(&row, &names, &localisation, "english").as_deref(),
         Ok("144ya Strelkovaya Diviziya")
     );
     row.name_custom = b"Guards".to_vec();
-    assert_eq!(division_name(&row, &names).as_deref(), Ok("Guards"));
+    assert_eq!(
+        division_name(&row, &names, &localisation, "english").as_deref(),
+        Ok("Guards")
+    );
     // A programmatic member with a group: the capture records no stored
     // name, and the group's entry is shown.
     row.name_programmatic = 1;
-    row.name_custom.clear();
+    row.name_custom = b"Ignored programmatic text".to_vec();
     assert_eq!(
-        division_name(&row, &names).as_deref(),
+        division_name(&row, &names, &localisation, "english").as_deref(),
         Ok("144ya Strelkovaya Diviziya")
     );
     // With a null group the capture records the stored name, which
@@ -555,18 +560,90 @@ fn names_prefer_a_custom_name_then_the_selected_group_in_the_content() {
     row.name_group.clear();
     row.name_custom = b"1-ya Strelkovaya".to_vec();
     assert_eq!(
-        division_name(&row, &names).as_deref(),
+        division_name(&row, &names, &localisation, "english").as_deref(),
+        Ok("1-ya Strelkovaya")
+    );
+    localisation.language = "french".into();
+    let refused = division_name(&row, &names, &localisation, "english").unwrap_err();
+    assert!(matches!(&refused, Unnamed::StoredText(_)));
+    assert!(refused.to_string().contains("stored in english"));
+    let warnings = unnamed_warnings(9, std::iter::once(&row), |row| {
+        shown_name(row, &names, &NoIcons, &localisation, "english")
+    });
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("1 division names are unavailable"));
+    assert!(shown_name(&row, &names, &NoIcons, &localisation, "english").is_err());
+    row.name_programmatic = 0;
+    assert_eq!(
+        division_name(&row, &names, &localisation, "english").as_deref(),
         Ok("1-ya Strelkovaya")
     );
     // Without one the game builds the legacy name.
     row.name_custom.clear();
     assert_eq!(
-        division_name(&row, &names),
+        division_name(&row, &names, &localisation, "english"),
         Err(Unnamed::Unresolved(Unresolved::NoGroup))
     );
     row.name_group = b"SOV_INF_01".to_vec();
     row.name_type = 1;
-    assert_eq!(division_name(&row, &names), Err(Unnamed::ForeignType(1)));
+    assert_eq!(
+        division_name(&row, &names, &localisation, "english"),
+        Err(Unnamed::ForeignType(1))
+    );
+}
+
+#[test]
+fn combat_names_use_the_retained_getter_and_never_mask_cache_failures() {
+    use replay::rows::{DivisionStatusRow, Recorded};
+    let names = Database::default();
+    let mut loc = Localisation::default();
+    loc.language = "english".into();
+    let row = LandCombatDivisionRow {
+        division: 7,
+        name_custom: b"Stale combat projection".to_vec(),
+        ..Default::default()
+    };
+    let mut status = DivisionStatusRow {
+        division: 7,
+        name: Recorded::Value(Some(b"Retained legacy allocation".to_vec())),
+        naming: Recorded::Value(None),
+        ..Default::default()
+    };
+    let shown = |status: Option<&DivisionStatusRow>| {
+        shown_recorded_name(
+            &row,
+            status,
+            "unavailable",
+            &names,
+            &NoIcons,
+            &loc,
+            "english",
+        )
+    };
+    assert_eq!(
+        shown(Some(&status)).as_deref(),
+        Ok("Retained legacy allocation")
+    );
+    status.name = Recorded::Value(Some(Vec::new()));
+    assert_eq!(shown(Some(&status)).as_deref(), Ok(""));
+    status.name = Recorded::Value(None);
+    assert!(
+        shown(Some(&status))
+            .unwrap_err()
+            .to_string()
+            .contains("DivisionStatus.name unavailable")
+    );
+    assert!(
+        shown(None)
+            .unwrap_err()
+            .to_string()
+            .contains("no cached-name row")
+    );
+    status.name = Recorded::NotRecorded;
+    assert_eq!(
+        shown(Some(&status)).as_deref(),
+        Ok("Stale combat projection")
+    );
 }
 
 /// Each cause is one warning naming every division it leaves unnamed,
@@ -612,7 +689,9 @@ fn unnamed_divisions_are_reported_by_cause_with_their_identities() {
             None
         }
     }
-    let warnings = unnamed_warnings(9, rows.iter(), &names, &NoIcons);
+    let warnings = unnamed_warnings(9, rows.iter(), |row| {
+        shown_name(row, &names, &NoIcons, &Localisation::default(), "")
+    });
     let expected = [
         (Unnamed::CustomNotText, "division 7 (group INF, ordered 1)"),
         (Unnamed::ForeignType(2), "division 8 (group INF, ordered 1)"),
@@ -838,7 +917,7 @@ fn stale() -> Bindings {
 
 fn bind_pictures(frame: &DecodedFrame, sprites: &[&str]) -> Bindings {
     let terrain = BTreeMap::from([(PROVINCE, "plains".to_owned())]);
-    let flags = BTreeMap::from([(7, "GER".to_owned())]);
+    let flags = BTreeMap::from([(7, Ok("GER".to_owned()))]);
     let has_sprite = |name: &str| sprites.contains(&name);
     let mut out = stale();
     pictures(&mut out, frame, COMBAT, &terrain, &has_sprite, &flags).unwrap();

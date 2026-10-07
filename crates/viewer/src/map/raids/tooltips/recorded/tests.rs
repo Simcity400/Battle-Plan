@@ -1,4 +1,4 @@
-use super::super::super::tests::{assets, frame};
+use super::super::super::tests::{assets, frame, positive_frame};
 use super::*;
 #[test]
 fn controller_flag_uses_native_control_and_three_codepoints() {
@@ -9,8 +9,9 @@ fn controller_flag_uses_native_control_and_three_codepoints() {
                 raw: 10,
                 tag: tag.into(),
                 candidates: vec!["GER_fascism".into()],
+                refusal: None,
             }]));
-            let result = context.flag(0, &flags);
+            let result = context.flag(2, &flags);
             if tag == "ABCD" {
                 assert_eq!(
                     result,
@@ -143,7 +144,7 @@ fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_
             let mut projects = installed_content::special_projects::Catalog::default();
             projects.projects = [("oilfield".into(), project)].into();
             assets.tooltip.projects = Ok(projects);
-            let mut frame = frame();
+            let mut frame = positive_frame();
             // The project owner's country supplies the naming scope, even when
             // its program occurs in the target controller's roster.
             put::<tables::RaidFacilities>(
@@ -301,7 +302,7 @@ fn scripted_content() -> dashboard::scripted_text::ScriptedContent {
 fn with_context(run: impl FnOnce(&Context<'_, '_>)) {
     let assets = assets();
     let scripted = Ok(scripted_content());
-    let frame = frame();
+    let frame = positive_frame();
     let world = World::new(&frame, assets.facts()).unwrap();
     let loc: Localisation = [
         ("TRIGGER_ALWAYS_FALSE", "never"),
@@ -327,7 +328,7 @@ fn with_context(run: impl FnOnce(&Context<'_, '_>)) {
         loc: &loc,
         recorded_language: &loc.language,
         scripted_content: &scripted,
-        ours: 0,
+        ours: 2,
         countries: installed_content::country_names::CountryNames::read(&frame, &loc),
         flag_exists: &|_| true,
         scripted: Default::default(),
@@ -340,7 +341,7 @@ fn triggers(text: &str) -> installed_content::triggers::Triggers {
 #[test]
 fn trigger_inversion_indentation_custom_override_and_named_unsupported_leaf() {
     with_context(|context| {
-        let scope = Scopes::of(Scope::Country(0));
+        let scope = Scopes::of(Scope::Country(2));
         let text = context.trigger_text(
             &triggers("always=no NOT={always=no} OR={always=yes always=no}"),
             scope,
@@ -467,9 +468,9 @@ fn raid_tooltip_regression_special_project_requirement_uses_native_name_and_inve
 fn custom_tooltip_uses_shared_scope_expansion_and_native_negative_key() {
     with_context(|context| {
         let scopes = Scopes {
-            root: Scope::Country(0),
+            root: Scope::Country(2),
             from: Some(Scope::State(10)),
-            prev: Some(Scope::Country(0)),
+            prev: Some(Scope::Country(2)),
             ..Scopes::of(Scope::Country(1))
         };
         let text = context.trigger_text(
@@ -478,6 +479,23 @@ fn custom_tooltip_uses_shared_scope_expansion_and_native_negative_key() {
             "test",
         );
         assert_eq!(text[0].1.as_deref(), Ok("+GER/10/ENG/GER\n"));
+        // An ordinary positive country supplies no naming data for the
+        // separate CCountry[0] object. Its missing singleton stays a refusal.
+        let zero = context.trigger_text(
+            &triggers("custom_trigger_tooltip={tooltip=scoped always=yes}"),
+            Scopes {
+                root: Scope::Country(0),
+                ..scopes
+            },
+            "test",
+        );
+        assert!(
+            zero[0]
+                .1
+                .as_ref()
+                .unwrap_err()
+                .contains("ReservedCountryNaming has no singleton row for CCountry[0]")
+        );
         let text = context.trigger_text(
             &triggers("NOT={custom_trigger_tooltip={tooltip=scoped always=yes}}"),
             scopes,
@@ -496,13 +514,13 @@ fn custom_tooltip_chains_follow_the_raid_scopes_links() {
     with_context(|context| {
         let raid = Scopes {
             from: Some(Scope::Country(1)),
-            ..Scopes::of(Scope::Country(0))
+            ..Scopes::of(Scope::Country(2))
         };
         let tooltip = triggers("custom_trigger_tooltip={tooltip=chain always=yes}");
         let text = context.trigger_text(&tooltip, raid, "test");
         assert_eq!(text[0].1.as_deref(), Ok("+ENG/ENG\n"));
         let nested = Scopes {
-            prev: Some(Scope::Country(0)),
+            prev: Some(Scope::Country(2)),
             ..raid
         };
         let text = context.trigger_text(&tooltip, nested, "test");
@@ -738,12 +756,23 @@ fn hover_build_cost() {
 #[test]
 fn raid_target_names_refuse_unknown_owners_and_preserve_recorded_null_states() {
     use super::super::super::tests::put;
+    use replay::rows::{Recorded, ReservedCountryNamingRow};
     let assets = assets();
     let loc: Localisation = [("VICTORY_POINTS_1".into(), "Wrong bare fallback".into())]
         .into_iter()
         .collect();
     for (owner, state) in [(999, 10), (0, 10), (10, 0)] {
         let mut frame = frame();
+        put::<tables::ReservedCountryNaming>(
+            &mut frame,
+            vec![ReservedCountryNamingRow {
+                tag: b"ZZ0".to_vec(),
+                name_tag: b"unrelated_generator".to_vec(),
+                original_tag_reference: Recorded::NotRecorded,
+                original_tag: Recorded::Value(Some(b"unused_original".to_vec())),
+                ..Default::default()
+            }],
+        );
         if state == 0 {
             let mut provinces = frame.complete::<tables::Provinces>().unwrap().to_vec();
             provinces[0].state = 0;
@@ -776,11 +805,14 @@ fn raid_target_names_refuse_unknown_owners_and_preserve_recorded_null_states() {
                 ..Default::default()
             })
             .unwrap_err();
-        assert!(reason.contains(if owner == 0 || state == 0 {
-            "reserved owner original tag is not recorded"
-        } else {
-            "owner 999 is unresolved"
-        }));
+        assert_eq!(
+            reason,
+            if owner == 0 || state == 0 {
+                "ReservedCountryNaming.original_tag_reference not recorded"
+            } else {
+                "raid target state's owner 999 is unresolved"
+            },
+        );
         if state == 0 {
             for scope in [
                 RaidScope {

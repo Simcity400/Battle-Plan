@@ -299,10 +299,18 @@ fn lazy_events_read_nothing_until_demand_and_cache_only_requested_identifiers() 
 }
 
 fn option_index_fixture(files: &[(&str, &[u8])]) -> (LazyEvents, std::path::PathBuf) {
-    let root = std::env::temp_dir().join(format!("hoi4-option-index-{}-{}", std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let root = std::env::temp_dir().join(format!(
+        "hoi4-option-index-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     std::fs::create_dir_all(root.join("events")).unwrap();
-    for (name, bytes) in files { std::fs::write(root.join("events").join(name), bytes).unwrap(); }
+    for (name, bytes) in files {
+        std::fs::write(root.join("events").join(name), bytes).unwrap();
+    }
     let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
     (LazyEvents::new(Arc::new(layers)), root)
 }
@@ -316,13 +324,40 @@ fn lazy_option_index_uses_raw_names_and_native_registration_order() {
     // 1413833BE walks registration order, not ID order; 140A01920 appends
     // duplicate-ID objects, and state events use its separate manager array.
     let choices = events.options(b"Choice\0ignored").unwrap();
-    assert_eq!(choices.iter().map(|(event, option)| event.options[*option][0].value.scalar().unwrap())
-        .collect::<Vec<_>>(), [b"FIRST".as_slice(), b"SECOND", b"NEWS", b"DUPLICATE", b"LEADER", b"OPERATIVE", b"CROSSES_SLOT", b"NO_ID"]);
+    assert_eq!(
+        choices
+            .iter()
+            .map(|(event, option)| event.options[*option][0].value.scalar().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            b"FIRST".as_slice(),
+            b"SECOND",
+            b"NEWS",
+            b"DUPLICATE",
+            b"LEADER",
+            b"OPERATIVE",
+            b"CROSSES_SLOT",
+            b"NO_ID"
+        ]
+    );
     assert!(Arc::ptr_eq(&choices[0].0, &choices[1].0));
     assert!(choices.iter().all(|(event, _)| event.refused.is_none()));
     assert!(events.options(b"choice").unwrap().is_empty()); // Byte-exact 14138343D.
-    assert!(events.get(b"s.9").unwrap().refused.as_ref().unwrap().contains("repeated event identifier"));
-    assert!(events.get(b"unregistered.4").unwrap_err().contains("not registered"));
+    assert!(
+        events
+            .get(b"s.9")
+            .unwrap()
+            .refused
+            .as_ref()
+            .unwrap()
+            .contains("repeated event identifier")
+    );
+    assert!(
+        events
+            .get(b"unregistered.4")
+            .unwrap_err()
+            .contains("not registered")
+    );
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -339,7 +374,10 @@ fn lazy_option_index_preserves_macro_names_last_name_and_empty_name() {
     assert_eq!(first.len(), 1);
     assert_eq!(later[0].1, 1);
     assert_eq!(empty[0].1, 2);
-    assert_eq!(first[0].0.option_names, [b"Choice".to_vec(), b"Later".to_vec(), Vec::new()]);
+    assert_eq!(
+        first[0].0.option_names,
+        [b"Choice".to_vec(), b"Later".to_vec(), Vec::new()]
+    );
     assert!(Arc::ptr_eq(&first[0].0, &later[0].0));
     assert!(Arc::ptr_eq(&first[0].0, &empty[0].0));
     assert!(events.options(b"old").unwrap().is_empty());
@@ -363,7 +401,10 @@ fn lazy_option_index_shares_requested_trees_and_keeps_other_files_header_only() 
     assert!(Arc::ptr_eq(&first[0].0, &by_id));
     // Neither lookup re-reads the shared tree after its first demand.
     std::fs::write(root.join("events/a.txt"), b"invalid replacement").unwrap();
-    assert!(Arc::ptr_eq(&first[0].0, &events.options(b"Chosen").unwrap()[0].0));
+    assert!(Arc::ptr_eq(
+        &first[0].0,
+        &events.options(b"Chosen").unwrap()[0].0
+    ));
     assert!(Arc::ptr_eq(&by_id, &events.get(b"s.1").unwrap()));
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -378,13 +419,21 @@ fn lazy_option_index_skips_unrelated_unsettled_bodies_in_the_same_static_file() 
     assert!(full.read.unsettled.is_some());
     let chosen = events.options(b"Chosen").unwrap();
     assert_eq!(chosen.len(), 2);
-    assert_eq!(chosen.iter().map(|(event, option)| event.options[*option][0].value.scalar().unwrap())
-        .collect::<Vec<_>>(), [b"ONE".as_slice(), b"TWO"]);
+    assert_eq!(
+        chosen
+            .iter()
+            .map(|(event, option)| event.options[*option][0].value.scalar().unwrap())
+            .collect::<Vec<_>>(),
+        [b"ONE".as_slice(), b"TWO"]
+    );
     assert!(chosen.iter().all(|(event, _)| event.refused.is_none()));
     assert!(events.cache.lock().unwrap().files.is_empty());
     assert_eq!(events.cache.lock().unwrap().trees.len(), 2);
     let later = events.get(b"s.3").unwrap();
-    assert_eq!(later.options[0][0].value.scalar(), Some(b"THREE".as_slice()));
+    assert_eq!(
+        later.options[0][0].value.scalar(),
+        Some(b"THREE".as_slice())
+    );
     assert_eq!(events.cache.lock().unwrap().trees.len(), 3);
     assert!(events.cache.lock().unwrap().files.is_empty());
     // Both matched ordinals are projected by one demand and then shared.
@@ -405,7 +454,10 @@ fn lazy_events_share_exact_content_and_viewer_layer_owners_and_memos() {
     let events = LazyEvents::from_content(Arc::clone(&content));
     assert!(std::ptr::eq(&*events.layers, &content.layers));
     assert_eq!(Arc::strong_count(&content), 2);
-    assert!(Arc::ptr_eq(&content_names, &events.layers.key_names().unwrap()));
+    assert!(Arc::ptr_eq(
+        &content_names,
+        &events.layers.key_names().unwrap()
+    ));
     assert!(events.cache.lock().unwrap().index.is_none());
     assert!(events.options(b"absent").unwrap().is_empty());
     assert!(events.cache.lock().unwrap().index.is_some());
@@ -420,7 +472,10 @@ fn lazy_events_share_exact_content_and_viewer_layer_owners_and_memos() {
     let viewer_events = LazyEvents::new(Arc::clone(&layers));
     assert!(std::ptr::eq(&*viewer_events.layers, layers.as_ref()));
     assert_eq!(Arc::strong_count(&layers), 2);
-    assert!(Arc::ptr_eq(&viewer_names, &viewer_events.layers.key_names().unwrap()));
+    assert!(Arc::ptr_eq(
+        &viewer_names,
+        &viewer_events.layers.key_names().unwrap()
+    ));
     assert!(viewer_events.cache.lock().unwrap().index.is_none());
     drop(layers);
     assert!(viewer_owner.upgrade().is_some());
@@ -430,16 +485,30 @@ fn lazy_events_share_exact_content_and_viewer_layer_owners_and_memos() {
 
 #[test]
 fn event_lookup_diagnostics_name_the_shared_event_database() {
-    assert_eq!(identifier_key(b"42").unwrap_err(),
-        "event 42 has no namespace; 1401F03A0 cannot resolve it");
-    assert_eq!(identifier_key(b".1").unwrap_err(),
-        "event namespace is empty (1401F03A0)");
-    let events = parse(b"add_namespace=s", "events/synthetic.txt", &KeyNames::default());
-    assert_eq!(events.get(b"missing.1").unwrap_err(),
-        "event missing.1 namespace is not registered through add_namespace (1401F03A0)");
-    assert_eq!(events.get(b"s.1").unwrap_err(),
-        "event s.1 is absent from the resolved event database; ");
+    assert_eq!(
+        identifier_key(b"42").unwrap_err(),
+        "event 42 has no namespace; 1401F03A0 cannot resolve it"
+    );
+    assert_eq!(
+        identifier_key(b".1").unwrap_err(),
+        "event namespace is empty (1401F03A0)"
+    );
+    let events = parse(
+        b"add_namespace=s",
+        "events/synthetic.txt",
+        &KeyNames::default(),
+    );
+    assert_eq!(
+        events.get(b"missing.1").unwrap_err(),
+        "event missing.1 namespace is not registered through add_namespace (1401F03A0)"
+    );
+    assert_eq!(
+        events.get(b"s.1").unwrap_err(),
+        "event s.1 is absent from the resolved event database; "
+    );
     let lazy = LazyEvents::new(Arc::new(ResolvedLayers::default()));
-    assert_eq!(lazy.get(b"missing.1").unwrap_err(),
-        "event missing.1 namespace is not registered through add_namespace (1401F03A0)");
+    assert_eq!(
+        lazy.get(b"missing.1").unwrap_err(),
+        "event missing.1 namespace is not registered through add_namespace (1401F03A0)"
+    );
 }

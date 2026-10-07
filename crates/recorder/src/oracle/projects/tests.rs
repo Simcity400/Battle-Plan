@@ -43,6 +43,7 @@ fn scientist_frame() -> DecodedFrame {
             ordinal: 0,
             trait_count: 2,
             skill_count: 2,
+            active: replay::rows::Recorded::Value(Some(0)),
         }]));
     *frame.tables[TableId::ScientistSkills.index()] =
         TableView::Complete(TableRows::ScientistSkills(vec![
@@ -93,6 +94,49 @@ fn a_matching_scientist_roster_compares_counts_tokens_and_levels() {
             .limitations
             .keys()
             .any(|reason| reason.contains("14144E480"))
+    );
+}
+
+#[test]
+fn scientist_active_oracle_checks_truth_and_preserves_older_rows() {
+    let mut frame = scientist_frame();
+    let TableView::Complete(TableRows::Scientists(rows)) =
+        &mut *frame.tables[TableId::Scientists.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].active = replay::rows::Recorded::Value(Some(1));
+    let report = run_scientists(&frame);
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains("scientist 265.active"));
+    let TableView::Complete(TableRows::Scientists(rows)) =
+        &mut *frame.tables[TableId::Scientists.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].active = replay::rows::Recorded::Value(Some(0));
+    assert!(run_scientists(&frame).differences.is_empty());
+    let TableView::Complete(TableRows::Scientists(rows)) =
+        &mut *frame.tables[TableId::Scientists.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].active = replay::rows::Recorded::Value(None);
+    let report = run_scientists(&frame);
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains("capture refused"));
+    assert_eq!(report.compared_tables["Scientists"], 1);
+    assert_eq!(report.compared_tables["ScientistSkills"], 2);
+    let TableView::Complete(TableRows::Scientists(rows)) =
+        &mut *frame.tables[TableId::Scientists.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].active = replay::rows::Recorded::NotRecorded;
+    assert!(
+        run_scientists(&frame)
+            .limitations
+            .contains_key("Scientists.active not recorded")
     );
 }
 
@@ -206,6 +250,7 @@ fn a_saved_scientist_with_a_country_must_be_recorded_and_an_extra_row_is_reporte
         ordinal: 1,
         trait_count: 0,
         skill_count: 1,
+        active: replay::rows::Recorded::Value(Some(0)),
     });
     let TableView::Complete(TableRows::ScientistSkills(skills)) =
         &mut *frame.tables[TableId::ScientistSkills.index()]

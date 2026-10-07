@@ -194,8 +194,8 @@ pub(super) fn intel(
 }
 
 /// The branch, hour, viewing country and combat a tooltip was built for, and
-/// whether the engaged index covered that hour.
-type CacheKey = (replay::BranchId, i32, u32, u64, bool);
+/// whether the engaged index covered that hour, and the viewer's NATO preference.
+type CacheKey = (replay::BranchId, i32, u32, u64, bool, bool);
 
 #[derive(Default)]
 pub(crate) struct Cache {
@@ -209,6 +209,7 @@ impl Cache {
         viewer: u32,
         id: u64,
         index: Option<&EngagedIndex>,
+        nato: bool,
     ) -> Arc<Tooltip> {
         let key = (
             frame.branch,
@@ -216,6 +217,7 @@ impl Cache {
             viewer,
             id,
             index.is_some_and(|index| index.covers(frame.branch, frame.hour)),
+            nato,
         );
         if let Some((held, text)) = &self.held
             && *held == key
@@ -301,7 +303,7 @@ impl Cache {
                 .require("LandCombatDetails.border_war")
                 .and_then(|border| match border {
                     Some(border) => super::border_marker::append(
-                        document, frame, viewer, &links, border, &mut text,
+                        document, frame, viewer, &links, border, nato, &mut text,
                     ),
                     None => Ok(()),
                 });

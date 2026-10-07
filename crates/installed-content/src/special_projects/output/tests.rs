@@ -1,4 +1,3 @@
-use super::*;
 use crate::special_projects::Catalog;
 
 #[test]

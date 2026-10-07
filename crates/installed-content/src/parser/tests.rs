@@ -244,8 +244,15 @@ fn content_readers_ask_the_keyword_helper() {
         // 1424A5EE0 folds A-Z).
         (
             "characters.rs",
-            ".filter(|(tag, _)| tag.eq_ignore_ascii_case(&built.tag))",
+            ".filter(|roles| roles.tag.eq_ignore_ascii_case(&built.tag))",
         ),
+        (
+            "characters.rs",
+            "if !built.tag.eq_ignore_ascii_case(character) {",
+        ),
+        // 1413DBE40 keys country-leader roles by the registered ideology
+        // token, whose text is folded by 1424A6500 -> 1424A65A0.
+        ("characters.rs", "ideology.to_ascii_lowercase(),"),
         // The modifier a key names (1406042A0): the lexer folds a bare
         // key (1424A7A90), FindTokenNoCase a quoted one (1424A7060).
         ("modifiers.rs", "name: key.to_ascii_lowercase(),"),

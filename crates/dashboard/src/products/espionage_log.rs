@@ -1073,14 +1073,18 @@ mod tests {
             &AtomicBool::new(false),
         )
         .unwrap();
+        assert_eq!(reply.operations.len(), 1);
+        let operation = &reply.operations[0];
+        assert_eq!(operation.first_read, 100);
+        assert!(operation.end.is_none());
         assert_eq!(
-            reply
-                .operations
+            operation
+                .runs
                 .iter()
-                .map(|op| (
-                    op.first_read,
-                    op.runs[0].owner_tag.as_deref(),
-                    op.runs[0].target_tag.as_deref()
+                .map(|run| (
+                    run.first_hour,
+                    run.owner_tag.as_deref(),
+                    run.target_tag.as_deref()
                 ))
                 .collect::<Vec<_>>(),
             [
@@ -1091,19 +1095,8 @@ mod tests {
                 (106, Some("mod2"), Some("mod2")),
             ]
         );
-        assert_eq!(reply.operations[0].runs[0].last_hour, 101);
-        assert_eq!(reply.operations[3].runs[0].last_hour, 105);
-        for (operation, by_hour, owner) in [
-            (&reply.operations[0], 102, "renamed-mod"),
-            (&reply.operations[1], 103, "mod2"),
-            (&reply.operations[2], 104, "mod2"),
-            (&reply.operations[3], 106, "mod2"),
-        ] {
-            let end = operation.end.as_ref().unwrap();
-            assert_eq!(end.by_hour, by_hour);
-            assert_eq!(end.owner_tag.as_deref(), Some(owner));
-            assert_eq!(end.target_tag.as_deref(), Some("mod2"));
-        }
+        assert_eq!(operation.runs[0].last_hour, 101);
+        assert_eq!(operation.runs[3].last_hour, 105);
         assert_eq!(reply.read_hours, [100, 101, 102, 103, 104, 105, 106]);
         assert!(reply.warnings.iter().any(|warning| warning
             == "Country identities unavailable at operation read (2 observations)."));

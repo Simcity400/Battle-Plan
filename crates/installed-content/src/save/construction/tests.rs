@@ -16,6 +16,21 @@ fn pack(input: &str) -> io::Result<Pack> {
 }
 
 #[test]
+fn occupied_country_roster_preserves_saved_group_order() {
+    let saved = pack("countries={AAA={occupation_status={occupation={CCC={} BBB={}}}} BBB={occupation_status={}}} states={} provinces={}").unwrap();
+    assert_eq!(
+        saved.occupation_settings[b"AAA".as_slice()].occupied,
+        [b"CCC".to_vec(), b"BBB".to_vec()]
+    );
+    assert!(
+        saved.occupation_settings[b"BBB".as_slice()]
+            .occupied
+            .is_empty()
+    );
+    assert!(pack("countries={AAA={occupation_status={occupation={BBB={} BBB={}}}}} states={} provinces={}").is_err());
+}
+
+#[test]
 fn country_resources_keep_origin_states_and_override_entries_in_order() {
     let saved = pack(
         r#"

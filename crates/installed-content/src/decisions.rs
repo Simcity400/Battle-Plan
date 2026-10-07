@@ -59,7 +59,10 @@ impl Database {
         if let Some(why) = &self.unread {
             return Err(why.clone());
         }
-        Ok(self.categories.get(&parser::c_string(token).to_ascii_lowercase()).map(Vec::as_slice))
+        Ok(self
+            .categories
+            .get(&parser::c_string(token).to_ascii_lowercase())
+            .map(Vec::as_slice))
     }
     pub fn decision(&self, token: &[u8]) -> Result<Option<&Decision>, String> {
         if let Some(why) = &self.unread {
@@ -247,13 +250,21 @@ fn append(
                 parser::read_bool_field(fields, "fixed_random_seed", false);
             for field in fields {
                 if field.keyword_is("complete_effect") {
-                    decision.complete_effect.extend_from_slice(field.value.items().unwrap_or_default());
+                    decision
+                        .complete_effect
+                        .extend_from_slice(field.value.items().unwrap_or_default());
                 } else if field.keyword_is("remove_effect") {
-                    decision.remove_effect.extend_from_slice(field.value.items().unwrap_or_default());
+                    decision
+                        .remove_effect
+                        .extend_from_slice(field.value.items().unwrap_or_default());
                 } else if field.keyword_is("modifier") {
-                    decision.modifier.extend_from_slice(field.value.items().unwrap_or_default());
+                    decision
+                        .modifier
+                        .extend_from_slice(field.value.items().unwrap_or_default());
                 } else if field.keyword_is("targeted_modifier") {
-                    decision.targeted_modifier.push(field.value.items().unwrap_or_default().to_vec());
+                    decision
+                        .targeted_modifier
+                        .push(field.value.items().unwrap_or_default().to_vec());
                 } else if field.keyword_is("days_remove") {
                     decision.days_remove = field.value.scalar().unwrap_or_default().to_vec();
                 }
@@ -371,30 +382,56 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
             if database.categories.contains_key(&id.to_ascii_lowercase()) {
                 continue; // First registered category wins (140719560).
             }
-            database.categories.insert(id.to_ascii_lowercase(), id.to_vec());
+            database
+                .categories
+                .insert(id.to_ascii_lowercase(), id.to_vec());
         }
     }
     // 140A7FD10 binds common/bop's decision_category to category+0x3E0;
     // category ReadKey 140726680 does not own a power_balance field.
     let mut balances = BTreeMap::new();
     for path in layers.directory_files("common/bop", ".txt")? {
-        let read = native::read(&layers.read_uncovered(&path)?, native::Mode::KeepMark,
-            native::Top::File(false), Some(&names), &mut |balance, field| {
-                if !balance { Shape::Object(true) }
-                else if field.keyword_is("decision_category") { Shape::Current }
-                else { Shape::SkipIfOpen }
-            });
-        database.notes.extend(read.misreads.iter().map(|note| format!("{path}: {note}")));
-        if let Some(why) = read.unsettled { database.unread = Some(format!("{path}: unread balance decision category: {why}")); }
+        let read = native::read(
+            &layers.read_uncovered(&path)?,
+            native::Mode::KeepMark,
+            native::Top::File(false),
+            Some(&names),
+            &mut |balance, field| {
+                if !balance {
+                    Shape::Object(true)
+                } else if field.keyword_is("decision_category") {
+                    Shape::Current
+                } else {
+                    Shape::SkipIfOpen
+                }
+            },
+        );
+        database
+            .notes
+            .extend(read.misreads.iter().map(|note| format!("{path}: {note}")));
+        if let Some(why) = read.unsettled {
+            database.unread = Some(format!("{path}: unread balance decision category: {why}"));
+        }
         for item in read.items {
-            let token = parser::c_string(item.key.as_deref().unwrap_or_default()).to_ascii_lowercase();
-            let category = item.value.items().unwrap_or_default().iter()
+            let token =
+                parser::c_string(item.key.as_deref().unwrap_or_default()).to_ascii_lowercase();
+            let category = item
+                .value
+                .items()
+                .unwrap_or_default()
+                .iter()
                 .rfind(|item| item.keyword_is("decision_category"))
-                .and_then(|item| item.value.scalar()).unwrap_or_default().to_ascii_lowercase();
+                .and_then(|item| item.value.scalar())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
             balances.insert(token, category); // Repeated balance definitions rebuild (140A7F150).
         }
     }
-    database.power_balance_categories.extend(balances.into_values().filter(|category| !category.is_empty()));
+    database.power_balance_categories.extend(
+        balances
+            .into_values()
+            .filter(|category| !category.is_empty()),
+    );
     for path in layers.directory_files("common/decisions", ".txt")? {
         append(
             &mut database,

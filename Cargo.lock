@@ -802,6 +802,7 @@ name = "dashboard"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "crc32fast",
  "engine",
  "installed-content",
  "png 0.18.1",
@@ -811,6 +812,7 @@ dependencies = [
  "serde_json",
  "ts-rs",
  "uuid",
+ "zstd",
 ]
 
 [[package]]

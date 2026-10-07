@@ -3,6 +3,129 @@ use crate::ccountry::{CounterInputsRow, synthetic::World, walk_counter_inputs_wi
 use crate::read;
 use crate::walk::Outcome;
 
+#[test]
+fn effect_rosters_preserve_order_at_5000_countries_and_fail_independently() {
+    let (mut world, _) = fixture(5_000);
+    for country in 1..=5_000 {
+        let owner = world.object(country);
+        let neighbors = world.alloc(12);
+        world.array(owner + NEIGHBORS, neighbors, 3);
+        for (index, raw) in [u32::MAX, country, country].into_iter().enumerate() {
+            world.u32(neighbors + index * 4, raw);
+        }
+        let status = world.alloc(cproduction_status::COUNTRY + 8);
+        let roster = world.alloc(16);
+        let policy = world.alloc(12);
+        world.u64(owner + crate::ccountry::PRODUCTION_STATUS, status as u64);
+        world.u64(
+            status,
+            (world.module + cproduction_status::VTABLE_RVA) as u64,
+        );
+        world.u64(status + cproduction_status::COUNTRY, owner as u64);
+        world.array(status + cproduction_status::POLICIES, roster, 2);
+        world.u64(roster, policy as u64);
+        world.u64(roster + 8, policy as u64);
+        world.u64(
+            policy,
+            (world.module + cproduction_status::POLICY_VTABLE_RVA) as u64,
+        );
+        world.u32(policy + cproduction_status::POLICY_TOKEN, country + 80_000);
+    }
+    assert_eq!(
+        counter_effect_roster_demand(&world.memory(), world.module, world.game_state()),
+        Ok(EffectRosterDemand {
+            neighbors: 15_000,
+            policies: 10_000
+        })
+    );
+    let mut rows = vec![CounterInputsRow::default(); 5_000];
+    let mut states = vec![0; 45_000];
+    let mut leaders = vec![0; 30_000];
+    let mut neighbors = vec![0; 15_000];
+    let mut policies = vec![0; 10_000];
+    let mut rosters = CounterRosters {
+        states: &mut states,
+        leaders: &mut leaders,
+        state_len: 0,
+        leader_len: 0,
+        required: Default::default(),
+    };
+    let mut effects = EffectRosters {
+        neighbors: &mut neighbors,
+        policies: &mut policies,
+        neighbor_len: 0,
+        policy_len: 0,
+        required: Default::default(),
+    };
+    assert_eq!(
+        crate::ccountry::walk_counter_inputs_with_effect_rosters(
+            &world.memory(),
+            world.module,
+            world.game_state(),
+            &mut rows,
+            &mut rosters,
+            &mut effects
+        ),
+        Outcome::Rows { len: 5_000 }
+    );
+    for row in &rows {
+        let span = row.neighbors.unwrap();
+        assert_eq!(
+            &effects.neighbors[span.start..span.start + span.count],
+            &[u32::MAX, row.country, row.country]
+        );
+        let span = row.mio_policies.unwrap();
+        assert_eq!(
+            &effects.policies[span.start..span.start + span.count],
+            &[row.country + 80_000; 2]
+        );
+    }
+    effects.neighbors = &mut [];
+    effects.neighbor_len = 0;
+    effects.policy_len = 0;
+    effects.required = Default::default();
+    rosters.state_len = 0;
+    rosters.leader_len = 0;
+    assert_eq!(
+        crate::ccountry::walk_counter_inputs_with_effect_rosters(
+            &world.memory(),
+            world.module,
+            world.game_state(),
+            &mut rows,
+            &mut rosters,
+            &mut effects
+        ),
+        Outcome::Rows { len: 5_000 }
+    );
+    assert_eq!(effects.required.neighbors, 15_000);
+    assert!(rows.iter().all(|row| row.neighbors.is_none()
+        && row.neighbor_reason == Some("country neighbor roster arena capacity exceeded")
+        && row.mio_policies.is_some()
+        && row.state_rosters.is_some()));
+    world.u64(world.object(1) + crate::ccountry::PRODUCTION_STATUS, 0);
+    effects.policy_len = 0;
+    rosters.state_len = 0;
+    rosters.leader_len = 0;
+    assert_eq!(
+        crate::ccountry::walk_counter_inputs_with_effect_rosters(
+            &world.memory(),
+            world.module,
+            world.game_state(),
+            &mut rows,
+            &mut rosters,
+            &mut effects
+        ),
+        Outcome::Rows { len: 5_000 }
+    );
+    assert_eq!(
+        rows[0].policy_reason,
+        Some("MIO policy production status is null")
+    );
+    assert!(rows[0].mio_policies.is_none());
+    assert!(rows[0].state_rosters.is_some());
+    assert!(rows[1..].iter().all(|row| row.mio_policies.is_some()));
+}
+
 fn fixture(countries: u32) -> (World, Vec<usize>) {
     let mut world = World::new(0x4000_0000, countries, 0x1100);
     let mut leader_objects = Vec::new();

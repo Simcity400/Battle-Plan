@@ -1,0 +1,222 @@
+use super::*;
+use crate::{
+    catalogue::tests::folder_catalogue,
+    triggers::{Combat, ContentFacts, Eval, World},
+};
+use installed_content::trigger_keys::TriggerNames;
+use replay::{
+    frame::TableView,
+    rows::{TableId, TableRows},
+};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex},
+};
+
+#[derive(Default)]
+struct Side {
+    calls: Mutex<Vec<String>>,
+}
+
+impl Combat for Side {
+    fn country(&self) -> Result<u32, String> {
+        Ok(0)
+    }
+
+    fn trigger(&self, name: &str, item: &Item, _: Scope, evaluator: &Evaluator) -> Option<Eval> {
+        self.calls.lock().unwrap().push(name.to_owned());
+        match name {
+            "is_attacker" => Some(Eval::from_bool(trigger_boolean(item).unwrap())),
+            "frontage_full" | "has_reserves" => {
+                Some(Eval::from_bool(!trigger_boolean(item).unwrap()))
+            }
+            "has_tactic" => Some(Eval::True),
+            "phase" | "skill_advantage" | "hardness" | "has_artillery_ratio" => Some(Eval::True),
+            "skill" => Some(Eval::from_bool(super::super::compare(
+                300_000,
+                evaluator
+                    .required(
+                        item.value.scalar().unwrap(),
+                        item.quoted(),
+                        false,
+                        Scopes::combat(),
+                    )
+                    .unwrap(),
+                item.operator,
+                false,
+            ))),
+            _ => None,
+        }
+    }
+
+    fn category_share(&self, _: u64) -> Result<i64, String> {
+        Err("no category operand in fixture".into())
+    }
+}
+
+fn run(source: &str, scripted: &str, entries: &str, extra: &str) -> Result<String, String> {
+    let (catalogue, _folder) = folder_catalogue(&[
+        (
+            "common/defines/test.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+        ),
+        ("common/scripted_triggers/test.txt", scripted),
+        ("common/scripted_localisation/test.txt", entries),
+        (
+            "localisation/test_l_english.yml",
+            &format!(
+                concat!(
+                    "\u{feff}l_english:\n",
+                    " TRIGGER_FULLFILLED_PREFIX:0 \"[yes]\"\n TRIGGER_UNFULLFILLED_PREFIX:0 \"[no]\"\n",
+                    " TRIGGER_AND_STARTS:0 \"All\"\n TRIGGER_OR_STARTS:0 \"Any\"\n",
+                    " IS_ATTACKER:0 \"Attack\"\n IS_NOT_ATTACKER:0 \"Defend\"\n",
+                    " TRIGGER_IS_FRONTAGE_FULL:0 \"Full\"\n TRIGGER_IS_NOT_FRONTAGE_FULL:0 \"Space\"\n",
+                    " TRIGGER_HAS_RESERVES:0 \"Reserve\"\n TRIGGER_DOES_NOT_HAVE_RESERVES:0 \"No reserve\"\n",
+                    " PHASE_DEFAULT:0 \"Default\"\n opening:0 \"Opening\"\n IS_IN_PHASE:0 \"In $PHASE$\"\n",
+                    " TRIGGER_SKILL_ADVANTAGE_GREATER_THEN:0 \"Advantage $VALUE|0$\"\n",
+                    " TRIGGER_HARDNESS_GREATER_THAN:0 \"Hardness $VALUE|%0$\"\n",
+                    " TRIGGER_MORE_THAN_ARTILLERY_RATIO:0 \"Artillery $NUM|%0$\"\n",
+                    " TRIGGER_COMPARE_LEVEL:0 \"Level\"\n TRIGGER_MORE_THAN:0 \"above\"\n TRIGGER_AT_MOST:0 \"at most\"\n",
+                    " TRIGGER_TYPE_COMPARISON_VALUE:0 \"$TYPE$ $COMPARISON$ $VALUE$\"\n{}"
+                ),
+                extra
+            ),
+        ),
+    ]);
+    let content = catalogue.scripted_content().unwrap();
+    content.set_synthetic_environment(Default::default());
+    let mut frame = crate::scope::tests::frame();
+    for id in TableId::ALL {
+        if matches!(&*frame.tables[id.index()], TableView::Unavailable { .. }) {
+            *frame.tables[id.index()] = TableView::Complete(TableRows::empty(id));
+        }
+    }
+    let names = TriggerNames {
+        scripted: installed_content::scripted_triggers::read(&content.layers.layers).unwrap(),
+        counts: Some(Default::default()),
+    };
+    let dlcs = BTreeSet::new();
+    let aliases = Arc::default();
+    let roles = crate::triggers::LeaderRoles::new(
+        installed_content::characters::leader_templates(&content.layers.layers).unwrap(),
+    );
+    let mut facts = ContentFacts::content_only(&dlcs, &names, &aliases);
+    facts.leader_roles = Ok(&roles);
+    let world = World::read(&frame, facts);
+    let side = Side::default();
+    let evaluator = Evaluator::new(&world, Some(&side));
+    let text = ScriptedText::new(&frame, &catalogue.localisation, content, 0);
+    let items = installed_content::parser::parse(source.as_bytes()).unwrap().items;
+    let mut refusals = BTreeMap::new();
+    let result = describe(
+        &items,
+        &evaluator,
+        &text,
+        &catalogue.localisation,
+        Scopes::combat(),
+        &[b"opening".to_vec()],
+        &|name| Ok(name.to_vec()),
+        &mut refusals,
+    );
+    assert_eq!(
+        evaluator.description_depth.get(),
+        0,
+        "a refusal must close the native variable context"
+    );
+    match result {
+        Ok(text) if !refusals.is_empty() => Err(format!("{text} {refusals:?}")),
+        result => result,
+    }
+}
+
+#[test]
+fn native_groups_share_evaluation_and_reset_descendant_mode() {
+    assert_eq!(
+        run(
+            "is_attacker=yes OR={is_attacker=yes frontage_full=yes} NOT={has_reserves=no}",
+            "",
+            "",
+            ""
+        )
+        .unwrap(),
+        "[yes]Attack\n[yes]Any:\n   Attack\n   Full\n[no]Reserve\n"
+    );
+    // A scripted trigger has no own description/Check prefix; its template
+    // receives the bool operand's inversion, including a block's native no.
+    assert_eq!(
+        run("SYN_CHECK=no", "SYN_CHECK={is_attacker=yes}", "", "").unwrap(),
+        "[no]Defend\n"
+    );
+    assert_eq!(
+        run("SYN_CHECK={arg=yes}", "SYN_CHECK={is_attacker=yes}", "", "").unwrap(),
+        "[no]Defend\n"
+    );
+}
+
+#[test]
+fn native_operands_use_integer_fixed5_and_stored_phase_names() {
+    assert_eq!(
+        run(
+            "phase=0 skill_advantage>2 hardness>0.5 has_artillery_ratio>0.1 skill>2 NOT={skill>2}",
+            "",
+            "",
+            ""
+        )
+        .unwrap(),
+        "[yes]In Opening\n[yes]Advantage 2\n[yes]Hardness 50%\n[yes]Artillery 10%\n[yes]Level above 2\n[no]Level at most 2\n"
+    );
+}
+
+#[test]
+fn conditional_entry_keeps_combat_world_and_tls_across_large_stack_handoff() {
+    let mut entries = String::new();
+    let mut loc = String::new();
+    for index in 0..10 {
+        entries.push_str(&format!(
+            "entry={{name=Hop{index} text={{localization_key=HOP{index}}}}}\n"
+        ));
+        loc.push_str(&format!(" HOP{index}:0 \"[Hop{}]\"\n", index + 1));
+    }
+    entries.push_str("entry={name=Hop10 text={trigger={is_attacker=yes check_variable={temp_var:x=7}} localization_key=YES} text={localization_key=NO}}");
+    loc.push_str(" YES:0 \"Correct side\"\n NO:0 \"Wrong side\"\n TIP:0 \"[Hop0]\"\n");
+    // Setting a temp is a supported evaluation operation, but its native own
+    // text is empty; use a conditional limit to execute it before the tooltip.
+    assert_eq!(run("if={limit={set_temp_variable={x=7}} custom_trigger_tooltip={tooltip=TIP is_attacker=yes}}", "", &entries, &loc).unwrap(), "[yes]Correct side\n");
+}
+
+#[test]
+fn native_empty_combat_scope_heading_and_counted_refusal_do_not_invent_country() {
+    assert_eq!(
+        run("ROOT={is_attacker=yes}", "", "", "").unwrap(),
+        "[yes]: Attack\n"
+    );
+    assert_eq!(
+        run("NOT={custom_trigger_tooltip={is_attacker=yes}}", "", "", "").unwrap(),
+        ""
+    );
+    let refused = run("is_attacker=yes night=yes has_reserves=no", "", "", "").unwrap_err();
+    assert!(refused.contains("night native description"), "{refused}");
+    assert!(
+        refused.contains("[yes]Attack\n") && refused.contains("[yes]No reserve\n"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn refused_conditional_taints_later_temp_read_but_keeps_pure_siblings() {
+    let result = run(
+        "if={limit={set_temp_variable={x=7}} is_attacker=yes} if={limit={night=yes} set_temp_variable={x=8}} custom_trigger_tooltip={tooltip=TIP is_attacker=yes} has_reserves=no",
+        "",
+        "entry={name=Stale text={trigger={check_variable={temp_var:x=7}} localization_key=YES} text={localization_key=NO}}",
+        " TIP:0 \"[Stale]\"\n YES:0 \"Stale kept\"\n NO:0 \"Stale lost\"\n",
+    ).unwrap_err();
+    assert!(
+        result.contains("[yes]Attack\n") && result.contains("[yes]No reserve\n"),
+        "{result}"
+    );
+    assert!(
+        !result.contains("Stale kept") && !result.contains("Stale lost"),
+        "{result}"
+    );
+    assert!(result.contains("session is uncertain"), "{result}");
+}

@@ -143,6 +143,7 @@ fn capacity() -> Capacities {
         rows: [2; N],
         routes: 4,
         law_bytes: 8,
+        occupied: 8,
     }
 }
 
@@ -228,6 +229,7 @@ fn fixture() -> Captured {
         default_law_present: 1,
         law_start: 0,
         law_len: 3,
+        ..Default::default()
     };
     captured.laws.rows[0] = ccountry_occupation_data::LawRow {
         controller: u32::MAX,
@@ -468,6 +470,46 @@ fn construction_rest_split_copy_matches_direct_walk() {
 }
 
 #[test]
+fn occupied_roster_split_copy_preserves_settings_on_short_arena_and_native_failure() {
+    use super::construction_rest_test_kit as kit;
+    for failure in [false, true] {
+        let mut bytes = kit::fixture();
+        if failure {
+            let address = 0x7300 + ccountry_occupation_data::OCCUPIED_COUNTRY_POINTER;
+            bytes[address - kit::BASE..address - kit::BASE + 8]
+                .copy_from_slice(&0xdead_0000_u64.to_le_bytes());
+        }
+        let memory = engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        };
+        for storage in [0, 1] {
+            let mut capacity = kit::capacities();
+            capacity.occupied = storage;
+            let direct = kit::direct(&memory, &capacity);
+            let (split, _, _) = kit::split(&memory, &capacity);
+            kit::assert_matches_direct(&split, &direct);
+            let tables = split.tables();
+            let TableView::Complete(rows::TableRows::OccupationSettings(settings)) = &tables[5]
+            else {
+                panic!("existing settings lost");
+            };
+            assert_eq!(settings[0].default_law_present, 1);
+            assert_eq!(settings[0].law, b"civilian");
+            assert_eq!(
+                settings[0].occupied,
+                rows::Recorded::Value((!failure && storage == 1).then(|| vec![1]))
+            );
+            let mut work = super::super::country_counters::RosterWork::default();
+            split.observe_occupied(&mut work).unwrap();
+            let status = serde_json::to_value(work.status()).unwrap();
+            assert_eq!(status["refused"], u64::from(failure || storage == 0));
+            assert_eq!(status["occupied_required"], 1);
+        }
+    }
+}
+
+#[test]
 fn construction_rest_truncation_matrix_preserves_unrelated_caps() {
     // The settings grant grows from the census; every other row grant
     // retains the direct walk's truncation behavior.
@@ -482,6 +524,7 @@ fn construction_rest_truncation_matrix_preserves_unrelated_caps() {
             rows,
             routes: 64,
             law_bytes: 64,
+            occupied: 8,
         };
         let mut expected = capacities;
         expected.rows[5] = expected.rows[5].max(1);
@@ -519,6 +562,7 @@ fn construction_rest_split_copy_matches_direct_walk_under_truncation() {
         rows: [1; N],
         routes: 1,
         law_bytes: 4,
+        occupied: 8,
     };
     let mut expected = capacities;
     expected.law_bytes = 16;

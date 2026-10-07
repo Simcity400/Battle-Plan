@@ -222,6 +222,12 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
                 wing + cair_wing::REFERENCE_TYPE,
                 (wing_id << 32) | cair_wing::TYPE as u64,
             );
+            h.bytes[wing + cair_wing::NAME..wing + cair_wing::NAME + 4].copy_from_slice(b"Wing");
+            h.u64(wing + cair_wing::NAME + engine::msvc_string::LENGTH, 4);
+            h.u64(
+                wing + cair_wing::NAME + engine::msvc_string::CAPACITY,
+                engine::msvc_string::INLINE_CAPACITY,
+            );
             h.ptr(wing + cair_wing::POOL, pool);
             h.ptr(wing + cair_wing::EQUIPMENT_POOL, equipment::VTABLE_RVA);
             let bank = h.alloc(16);

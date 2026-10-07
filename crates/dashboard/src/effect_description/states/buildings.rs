@@ -380,9 +380,7 @@ impl Renderer<'_, '_, '_> {
         if self.valid_state(state)?.is_none() {
             return Ok(String::new());
         }
-        let receiver = receiver.ok_or_else(|| {
-            "CGiveResourceRightsEffect invalid receiver needs reserved CCountry[0].definite_name +0x50 (140BA5980; native writer 140709950); its country-zero naming inputs are not recorded".to_string()
-        })?;
+        let receiver = receiver.unwrap_or(0); // 140BA5980.
         let receiver = self.country_name(receiver, true)?;
         let state = self.state_name(state)?;
         // Factory 14033E180 clears +64. Reader 1403B32D0 writes resources at
@@ -473,12 +471,14 @@ impl Renderer<'_, '_, '_> {
         }
         if parser::read_bool_field(children(item), "build_only_on_allied", false) {
             match scopes.this {
-                Scope::Country(country) if country as i32 > 0 => {
+                Scope::Country(country) | Scope::CountryLeader { country, .. }
+                    if country as i32 > 0 =>
+                {
                     return Err(
                         "CBuildRailwayEffect build_only_on_allied needs native country/controller eligibility (140E7EDD0 / 1406F3A90); fallback pathfinding 140E7E560 is not ported".into(),
                     );
                 }
-                Scope::Country(_) | Scope::State(_) => {} // 140E7E635: country zero gives no filter.
+                Scope::Country(_) | Scope::CountryLeader { .. } | Scope::State(_) => {} // 140E7E635: country zero gives no filter.
                 _ => {
                     return Err(
                         "CBuildRailwayEffect ally filtering needs the native current-scope country tag +0x08 for this projected scope kind (140E7E635)".into(),
@@ -555,12 +555,12 @@ impl Renderer<'_, '_, '_> {
         };
         // 14037CDA0 names the found province's state before the country adjective.
         let country = match scopes.this {
-            Scope::Country(country) if country as i32 > 0 => country,
-            Scope::Country(_) | Scope::State(_) => {
-                return Err(
-                    "CCreateRailwayGunEffect country zero needs reserved CCountry[0].adjective +0x30 (140BA5560; native writer 140709950); its country-zero naming inputs are not recorded".into(),
-                );
+            Scope::Country(country) | Scope::CountryLeader { country, .. }
+                if country as i32 > 0 =>
+            {
+                country
             }
+            Scope::Country(_) | Scope::CountryLeader { .. } | Scope::State(_) => 0, // 140BA5560.
             _ => {
                 return Err(
                     "CCreateRailwayGunEffect OWNER needs native current-scope country tag +0x08 for this projected scope kind (14037CDA0 / 140BA5560); the scope projection does not expose it".into(),

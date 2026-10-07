@@ -134,6 +134,10 @@ mod tests {
                 TableInput::Sampled(TableView::Unavailable {
                     reason: "fixture has no clock or campaign".into(),
                 })
+            } else if table == TableId::ReservedCountryNaming {
+                TableInput::SharedComplete(std::sync::Arc::new(TableRows::ReservedCountryNaming(
+                    vec![replay::rows::ReservedCountryNamingRow::default()],
+                )))
             } else {
                 TableInput::SharedComplete(std::sync::Arc::new(TableRows::empty(table)))
             }

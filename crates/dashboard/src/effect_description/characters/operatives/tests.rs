@@ -18,6 +18,7 @@ fn fixture(event_argument: &str) -> (Fixture, Folder) {
             " EFFECT_COUNTRY_EVENT:0 \"Event ${}$ [Root.GetTag]\"\n",
             " UNIT_TITLE:0 \"Unit [From.GetTag]\"\n",
             " OPERATIVE_TITLE:0 \"Operative [From.GetTag]/[From.From.GetTag]/[Root.GetTag]\"\n",
+            " EFFECT_FREE_RANDOM_OPERATIVE:0 \"Free $COUNTRY$\"\n EFFECT_FREE_RANDOM_OPERATIVE_ALL:0 \"Free all $COUNTRY$\"\n",
             " RAW:0 \"Wrong localisation\"\n"
         ),
         event_argument,
@@ -118,6 +119,14 @@ fn operative_scopes() -> EventScopes {
     ])
 }
 
+// CFreeRandomOperativeEfect reads CEventScope+8 directly (1405336C0),
+// unlike the operative consumers above, which require the character carrier.
+fn country_scopes() -> EventScopes {
+    let mut scopes = operative_scopes();
+    scopes.scopes[0].this = EventObject::Country(1);
+    scopes
+}
+
 fn event(key: &str) -> Arc<installed_content::events::Event> {
     Arc::new(installed_content::events::Event {
         id: b"synthetic.1".to_vec(),
@@ -182,14 +191,17 @@ fn explicit_operative_uses_native_country_roster_and_exact_leader_name() {
 // common/operations/00_operations.txt:45.
 #[test]
 fn free_random_operative_refuses_the_missing_captured_reference_roster() {
-    let (fixture, _folder) = fixture("EVENT");
+    let (mut fixture, _folder) = fixture("EVENT");
+    *fixture.frame.tables[TableId::CapturedOperativeReferences.index()] = TableView::Unavailable {
+        reason: "captured references not recorded".into(),
+    };
     let out = fixture.render(
         "free_random_operative={captured_by=FROM all=yes}",
-        &mut operative_scopes(),
+        &mut country_scopes(),
         Content::default(),
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect CFreeRandomOperativeEfect: key free_random_operative: captured operative references (CIntelligenceAgency+0x108/+0x114, 140FC7860) are unrecorded".into(), 1)]));
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect CFreeRandomOperativeEfect: key free_random_operative: hour 1 CapturedOperativeReferences is unavailable: captured references not recorded".into(), 1)]));
 }
 
 // common/on_actions/05_lar_on_actions.txt:57.
@@ -531,4 +543,43 @@ fn event_tooltips_expand_raw_text_without_localising_it_or_drawing() {
         assert_eq!(scopes.scopes.len(), 3);
         assert_eq!(scopes.scopes[0].random_seed, 123);
     }
+}
+
+#[test]
+fn format99_free_random_operative_requires_resolved_owner_in_captured_roster() {
+    let (mut fixture, _folder) = fixture("EVENT");
+    *fixture.frame.tables[TableId::CapturedOperativeReferences.index()] =
+        TableView::Complete(TableRows::CapturedOperativeReferences(vec![
+            CapturedOperativeReferenceRow {
+                country: 200,
+                ordinal: 0,
+                operative: 55 | 5 << 32,
+                owner: None,
+            },
+            CapturedOperativeReferenceRow {
+                country: 200,
+                ordinal: 1,
+                operative: 55 | 6 << 32,
+                owner: Some(100),
+            },
+        ]));
+    let out = fixture.render(
+        "free_random_operative={captured_by=FROM all=yes}",
+        &mut country_scopes(),
+        Content::default(),
+    );
+    assert_eq!(out.text, "Free all \u{11}YBeta\u{11}!");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    let TableView::Complete(TableRows::CapturedOperativeReferences(rows)) =
+        &mut *fixture.frame.tables[TableId::CapturedOperativeReferences.index()]
+    else {
+        unreachable!()
+    };
+    rows[1].owner = Some(300);
+    let out = fixture.render(
+        "free_random_operative={captured_by=FROM}",
+        &mut country_scopes(),
+        Content::default(),
+    );
+    assert!(out.text.is_empty() && out.refusals.is_empty());
 }

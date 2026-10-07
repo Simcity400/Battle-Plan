@@ -281,7 +281,17 @@ fn advisor_exact_batches_reduce_guards_and_discard_every_failed_span() {
     let traced = TracedMemory::new(&bytes, None);
     let result = cadvisor::walk_entry(&traced, 0, entry, &mut rows, &mut names);
     assert_eq!(result.outcome, Outcome::Rows { len: 1 });
-    assert_eq!(traced.guards.get(), 10);
+    // The empty appended tooltip set still requires its exact native header.
+    assert_eq!(traced.guards.get(), 11);
+    assert_eq!(
+        traced
+            .reads
+            .borrow()
+            .iter()
+            .filter(|&&(address, len)| address == role + cadvisor::TOOLTIP_KEYS + 8 && len == 17)
+            .count(),
+        1
+    );
     assert_eq!(
         traced
             .reads
@@ -289,7 +299,7 @@ fn advisor_exact_batches_reduce_guards_and_discard_every_failed_span() {
             .iter()
             .map(|&(_, len)| len)
             .sum::<usize>(),
-        253
+        253 + 17
     );
     assert_eq!(&names[..17], b"literal bytes\xff123");
     for (fault, untouched) in [

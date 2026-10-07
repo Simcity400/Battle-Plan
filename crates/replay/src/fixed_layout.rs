@@ -17,8 +17,8 @@ pub struct Family {
     pub keys: &'static [u32],
     /// Static lexer token ids.
     pub tokens: &'static [u32],
-    /// Recorded tables the collector computes with them; empty when only
-    /// playback or the save oracle uses them.
+    /// Recorded tables the collector computes with them; empty for field-local
+    /// capture guards or when only playback or the save oracle uses them.
     pub tables: &'static [TableId],
 }
 
@@ -60,6 +60,15 @@ pub const NAVAL_TRANSFER: Family = Family {
     tables: &[TableId::DivisionEtaInputs],
 };
 
+/// `141927730` reads the current variant's stat 0x3E through this token.
+/// Its guard withholds only a railway gun's ETA suffix, preserving the row.
+pub const RAILWAY_SPEED: Family = Family {
+    name: "railway gun speed",
+    keys: &[],
+    tokens: &[engine::railway_gun_speed::MAXIMUM_SPEED_TOKEN],
+    tables: &[],
+};
+
 pub const LAND_COMBAT_DIVISIONS: Family = Family {
     name: "land combat divisions",
     keys: &[
@@ -85,9 +94,22 @@ pub const LAND_COMBAT_DIVISIONS: Family = Family {
 
 pub const DIVISION_STATUS: Family = Family {
     name: "division status",
-    keys: &[keys::UNIT_UPKEEP_ATTRITION_FACTOR],
+    keys: &[
+        keys::UNIT_UPKEEP_ATTRITION_FACTOR,
+        keys::COMBAT_ENTRENCHMENT,
+    ],
     tokens: &[],
     tables: &[TableId::DivisionStatus],
+};
+
+pub const ATTRITION: Family = Family {
+    name: "fresh army attrition",
+    keys: &engine::carmy_attrition::KEYS,
+    tokens: &[],
+    tables: &[
+        TableId::DivisionStatus,
+        TableId::AttritionModifierBreakdowns,
+    ],
 };
 
 pub const RETREAT_BANS: Family = Family {
@@ -382,8 +404,10 @@ pub const FAMILIES: &[Family] = &[
     MOVEMENT,
     STRATEGIC_ACTION,
     NAVAL_TRANSFER,
+    RAILWAY_SPEED,
     LAND_COMBAT_DIVISIONS,
     DIVISION_STATUS,
+    ATTRITION,
     RETREAT_BANS,
     SHIP_ORGANISATION,
     NAVAL_WEAPONS,

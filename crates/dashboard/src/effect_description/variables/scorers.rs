@@ -19,19 +19,42 @@ impl Renderer<'_, '_, '_> {
         result.map(|_| String::new())
     }
 
-    fn scored_country_values(&self, item: &Item, caller: Scopes, sorted: bool) -> Result<(), String> {
+    fn scored_country_values(
+        &self,
+        item: &Item,
+        caller: Scopes,
+        sorted: bool,
+    ) -> Result<(), String> {
         let fields = children(item);
-        let scalar = |name| fields.iter().rev().find(|field| field.keyword_is(name))
-            .and_then(|field| field.value.read_string());
+        let scalar = |name| {
+            fields
+                .iter()
+                .rev()
+                .find(|field| field.keyword_is(name))
+                .and_then(|field| field.value.read_string())
+        };
         let name = scalar("scorer").unwrap_or_default();
-        let database = self.context.content.country_scorers
+        let database = self
+            .context
+            .content
+            .country_scorers
             .ok_or("country scorer content is unavailable (143316C48)")?;
         // An invalid scorer leaves +0x110/+0x1E0 null: no destination write
         // (14047C500/14047C6C0 -> 14047AC40/14047AD60).
-        let Some(entries) = database.get(name)? else { return Ok(()); };
+        let Some(entries) = database.get(name)? else {
+            return Ok(());
+        };
         let evaluator = self.evaluator()?;
-        let destination = if sorted { None } else {
-            Some(evaluator.description_temp_destination_fields(fields, "var", b"highest_scored_country", caller, None)?) // 14047C500.
+        let destination = if sorted {
+            None
+        } else {
+            Some(evaluator.description_temp_destination_fields(
+                fields,
+                "var",
+                b"highest_scored_country",
+                caller,
+                None,
+            )?) // 14047C500.
         };
         // One fresh scope is reused across targets, FROM a copy of the caller;
         // clearing THIS retains its links and RNG words (14047BB20/140481090).
@@ -43,8 +66,12 @@ impl Renderer<'_, '_, '_> {
             for target in evaluator.script_target_candidates(&entry.targets, caller)? {
                 let scope = evaluator.repoint_this(scope, Scope::Country(target))?;
                 let score = evaluator.mean_time_to_happen("country scorer", &entry.score, scope)?;
-                if sorted { scores.insert(target, score); }
-                else if score > best_score { best = Some(target); best_score = score; }
+                if sorted {
+                    scores.insert(target, score);
+                } else if score > best_score {
+                    best = Some(target);
+                    best_score = score;
+                }
             }
         }
         if let Some(destination) = destination {
@@ -60,17 +87,44 @@ impl Renderer<'_, '_, '_> {
         // (140481090/14047AD60). Equal scores keep native hash bucket order.
         let values = scores.sorted();
         let count = (values.len() as i64).wrapping_mul(100_000);
-        let num = installed_content::scoped_variable::ScopedVariable { parsed: true, num: true, ..Default::default() };
-        for (name, default) in [("array", b"sorted_country_list".as_slice()), ("scores", b"country_list_scores".as_slice())] {
-            let key = evaluator.description_temp_destination_fields(fields, name, default, caller, Some(&num))?;
+        let num = installed_content::scoped_variable::ScopedVariable {
+            parsed: true,
+            num: true,
+            ..Default::default()
+        };
+        for (name, default) in [
+            ("array", b"sorted_country_list".as_slice()),
+            ("scores", b"country_list_scores".as_slice()),
+        ] {
+            let key = evaluator.description_temp_destination_fields(
+                fields,
+                name,
+                default,
+                caller,
+                Some(&num),
+            )?;
             evaluator.store_description_temp(key, count);
         }
         for (index, (country, score)) in values.into_iter().enumerate() {
-            let index = installed_content::scoped_variable::ScopedVariable::literal((index as i64).wrapping_mul(100_000));
-            let key = evaluator.description_temp_destination_fields(fields, "array", b"sorted_country_list", caller, Some(&index))?;
+            let index = installed_content::scoped_variable::ScopedVariable::literal(
+                (index as i64).wrapping_mul(100_000),
+            );
+            let key = evaluator.description_temp_destination_fields(
+                fields,
+                "array",
+                b"sorted_country_list",
+                caller,
+                Some(&index),
+            )?;
             let country = evaluator.encode_description_scope(Scope::Country(country))?;
             evaluator.store_description_temp(key, country);
-            let key = evaluator.description_temp_destination_fields(fields, "scores", b"country_list_scores", caller, Some(&index))?;
+            let key = evaluator.description_temp_destination_fields(
+                fields,
+                "scores",
+                b"country_list_scores",
+                caller,
+                Some(&index),
+            )?;
             evaluator.store_description_temp(key, score);
         }
         Ok(())
@@ -78,29 +132,51 @@ impl Renderer<'_, '_, '_> {
 }
 
 #[derive(Clone, Copy)]
-struct Score { hash: u32, distance: usize, country: u32, value: i64 }
+struct Score {
+    hash: u32,
+    distance: usize,
+    country: u32,
+    value: i64,
+}
 
 /// The scorer's U32Qword Robin Hood table determines ties before the stable
 /// descending sort (140481090/14047C1F0/14047C050/1404798A0).
 #[derive(Default)]
-struct ScoreMap { slots: Vec<Option<Score>>, mask: usize, max_probe: usize, size: usize }
+struct ScoreMap {
+    slots: Vec<Option<Score>>,
+    mask: usize,
+    max_probe: usize,
+    size: usize,
+}
 
 impl ScoreMap {
     fn insert(&mut self, country: u32, value: i64) {
         let mixed = (country >> 16 ^ country).wrapping_mul(0x045d_9f3b);
         let mixed = (mixed >> 16 ^ mixed).wrapping_mul(0x045d_9f3b);
         let hash = mixed >> 16 ^ mixed;
-        self.insert_score(Score { hash, distance: 1, country, value });
+        self.insert_score(Score {
+            hash,
+            distance: 1,
+            country,
+            value,
+        });
     }
 
     // 1403256B0; linear probing extends past the mask, never wraps.
     fn insert_score(&mut self, mut new: Score) {
-        if self.slots.is_empty() { self.grow(); }
+        if self.slots.is_empty() {
+            self.grow();
+        }
         let mut at = new.hash as usize & self.mask;
         let mut distance = 1;
         while let Some(old) = self.slots[at] {
-            if old.country == new.country { self.slots[at].as_mut().unwrap().value = new.value; return; }
-            if distance > old.distance { break; }
+            if old.country == new.country {
+                self.slots[at].as_mut().unwrap().value = new.value;
+                return;
+            }
+            if distance > old.distance {
+                break;
+            }
             at += 1;
             distance += 1;
         }
@@ -113,7 +189,11 @@ impl ScoreMap {
         let inserted_at = at;
         loop {
             match &mut self.slots[at] {
-                None => { self.slots[at] = Some(new); self.size += 1; return; }
+                None => {
+                    self.slots[at] = Some(new);
+                    self.size += 1;
+                    return;
+                }
                 Some(old) if new.distance > old.distance => std::mem::swap(old, &mut new),
                 Some(_) => {}
             }
@@ -133,17 +213,28 @@ impl ScoreMap {
     // 1403A2D50: minimum eight buckets, doubling, max distance log2+2;
     // rehash visits old physical slots in order with the same insertion helper.
     fn grow(&mut self) {
-        let buckets = if self.slots.is_empty() { 8 } else { (self.mask + 1) * 2 };
+        let buckets = if self.slots.is_empty() {
+            8
+        } else {
+            (self.mask + 1) * 2
+        };
         self.mask = buckets - 1;
         self.max_probe = buckets.trailing_zeros() as usize + 2;
         let old = std::mem::replace(&mut self.slots, vec![None; buckets + self.max_probe]);
         self.size = 0;
-        for score in old.into_iter().flatten() { self.insert_score(score); }
+        for score in old.into_iter().flatten() {
+            self.insert_score(score);
+        }
     }
 
     fn sorted(self) -> Vec<(u32, i64)> {
-        let mut values = self.slots.into_iter().flatten().map(|score| (score.country, score.value)).collect::<Vec<_>>();
-        values.sort_by(|a, b| b.1.cmp(&a.1));
+        let mut values = self
+            .slots
+            .into_iter()
+            .flatten()
+            .map(|score| (score.country, score.value))
+            .collect::<Vec<_>>();
+        values.sort_by_key(|value| std::cmp::Reverse(value.1));
         values
     }
 }

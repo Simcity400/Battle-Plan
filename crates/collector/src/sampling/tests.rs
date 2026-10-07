@@ -1196,6 +1196,7 @@ fn divisions_owned_success_supplies_both_live_companions_before_decode_without_e
         TableView::Complete(TableRows::DivisionMovement(movement)),
         TableView::Complete(TableRows::DivisionStatus(status)),
         _,
+        _,
     ] = &before
     else {
         panic!("complete presentation tables");

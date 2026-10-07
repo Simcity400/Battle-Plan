@@ -12,12 +12,97 @@ impl CombatResources for Fixture {
 }
 
 #[test]
+fn tactics_entry_provider_fills_child_hits_and_preserves_explicit_hovers() {
+    use super::super::tooltips::set_hover;
+    let windows = windows(
+        b"guiTypes={containerWindowType={name=tactics_list_entry
+        size={width=140 height=40}
+        iconType={name=tactics_icon position={x=5 y=5} spriteType=GFX_even}
+        iconType={name=child position={x=60 y=5} spriteType=GFX_even}
+        instantTextBoxType={name=tactics_name position={x=30 y=5} font=Main_14
+            maxWidth=100 maxHeight=14 alwaystransparent=yes}}}",
+    );
+    let root = windows.gui_type(b"tactics_list_entry").unwrap();
+    // Bindings use relative names; hover regions retain the native tree's paths.
+    let tactics_icon = root.path_named("tactics_icon").unwrap();
+    let child_element = root.path_named("child").unwrap();
+    let tactics_name = root.path_named("tactics_name").unwrap();
+    let resources = fixture();
+    let mut values = Values::new();
+    set_hover(
+        &mut values,
+        "",
+        Some("Tactic".into()),
+        Some("Requirements".into()),
+    );
+    set_hover(&mut values, "child", Some("Own child".into()), None);
+    values.entry("tactics_name".into()).or_default().text = Some("Name".into());
+    let mut retained = Retained::new("tactics_list_entry", root, [800, 600], &resources).unwrap();
+    let mut refused = BTreeMap::new();
+    let prepared = retained
+        .prepare(
+            root,
+            &values,
+            Vec::new(),
+            &windows,
+            &resources,
+            Tick { time: 0., dt: 0. },
+            1,
+            true,
+            true,
+            true,
+            &mut refused,
+        )
+        .unwrap();
+    assert!(refused.is_empty(), "{refused:?}");
+    assert!(
+        prepared
+            .hovers
+            .iter()
+            .any(|hit| hit.region.path == tactics_icon.path
+                && hit.text.as_deref() == Some("Tactic")
+                && hit.description.as_deref() == Some("Requirements"))
+    );
+    assert!(
+        prepared
+            .hovers
+            .iter()
+            .any(|hit| hit.region.path == child_element.path
+                && hit.text.as_deref() == Some("Own child")
+                && hit.description.is_none())
+    );
+    assert!(
+        !prepared
+            .hovers
+            .iter()
+            .any(|hit| hit.region.path == tactics_name.path)
+    );
+    // A child whose own provider refused text still blocks the entry fallback.
+    set_hover(&mut values, "child", None, None);
+    let hovers = hover_regions(root, &prepared.layout.regions, &values);
+    let child = hovers
+        .iter()
+        .find(|hit| hit.region.path == child_element.path)
+        .unwrap();
+    assert!(child.text.is_none() && child.description.is_none());
+    let mut hits = Vec::new();
+    append_hovers(&mut hits, hovers, [0; 2]);
+    assert!(
+        hits.iter()
+            .rev()
+            .find(|hit| super::super::contains(hit.rect, [65., 8.]))
+            .unwrap()
+            .text
+            .is_none()
+    );
+}
+
+#[test]
 fn combat_box_hovers_pass_through_counts_and_keep_ship_icons_on_both_sides() {
     use super::super::{Widget, tooltips::set_hover};
     for (transparent, cover) in [(true, false), (false, false), (true, true)] {
-        let mut source = String::from(
-            "guiTypes={containerWindowType={name=view size={width=640 height=120}",
-        );
+        let mut source =
+            String::from("guiTypes={containerWindowType={name=view size={width=640 height=120}");
         let mut values = Values::new();
         let mut groups = Vec::new();
         let mut entry_values = Values::new();
@@ -112,7 +197,11 @@ fn combat_box_hovers_pass_through_counts_and_keep_ship_icons_on_both_sides() {
                 assert_eq!(hover([x + 60., y + 30.]), Some(key.as_str()));
                 assert_eq!(
                     hover([x + 60., y + 10.]),
-                    Some(if transparent || cover { key.as_str() } else { "Ship" }),
+                    Some(if transparent || cover {
+                        key.as_str()
+                    } else {
+                        "Ship"
+                    }),
                 );
             }
         }

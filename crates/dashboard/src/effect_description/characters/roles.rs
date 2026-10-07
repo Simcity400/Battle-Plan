@@ -18,35 +18,52 @@ fn boolean(item: &Item, name: &str) -> bool {
         .unwrap_or(false)
 }
 
-enum FactionArgument {
+enum BoundResult {
     Text(String),
     Token(i32),
 }
 
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
-    // 14238F3B0 evaluates the bound node's arguments in authored order,
-    // then 142393810 calls the native localiser with that argument array.
-    // This adapter consumes the existing parsed tree and core localiser.
-    fn char_faction_bound_node(
-        &self,
+    pub(in crate::effect_description) fn bound_localisation(
+        &mut self,
+        bound: &BoundLocalization,
+        scopes: Scopes,
+        scoped: bool,
+    ) -> Result<String, String> {
+        if bound.is_empty() {
+            return Ok(String::new());
+        }
+        match self.bound_node(bound, 0, scopes, scoped)? {
+            BoundResult::Text(text) => Ok(text),
+            BoundResult::Token(_) => Err("bound localisation root returns a token integer, not the native string variant (14238F090/14238F220)".into()),
+        }
+    }
+
+    // 14238F3B0/14238F670 evaluate arguments in authored order with the
+    // original supplied array (empty here), then the key with its own
+    // argument array. 1423935D0 uses the scope localiser for every key;
+    // faction names instead use 142393810's unscoped localiser.
+    fn bound_node(
+        &mut self,
         bound: &BoundLocalization,
         index: usize,
         scopes: Scopes,
-    ) -> Result<FactionArgument, String> {
+        scoped: bool,
+    ) -> Result<BoundResult, String> {
         let node = bound
             .nodes
             .get(index)
-            .ok_or("faction bound localisation node is absent")?;
+            .ok_or("bound localisation node is absent")?;
         let mut arguments = Vec::with_capacity(node.arguments.len());
         for argument in &node.arguments {
             let value = match &argument.value {
                 BoundValue::Localization(value) => {
-                    self.char_faction_formatted(value, &[], scopes)?
+                    self.bound_formatted(value, &[], scopes, scoped)?
                 }
-                BoundValue::Node(child) => self.char_faction_bound_node(bound, *child, scopes)?,
+                BoundValue::Node(child) => self.bound_node(bound, *child, scopes, scoped)?,
             };
             let name = std::str::from_utf8(&argument.name)
-                .map_err(|_| "faction bound argument name is not UTF-8")?;
+                .map_err(|_| "bound argument name is not UTF-8")?;
             arguments.push((name, value));
         }
         let arguments = arguments
@@ -55,42 +72,57 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 (
                     *name,
                     match value {
-                        FactionArgument::Text(text) => Argument::Text(text),
-                        FactionArgument::Token(token) => Argument::Int32(*token),
+                        BoundResult::Text(text) => Argument::Text(text),
+                        BoundResult::Token(token) => Argument::Int32(*token),
                     },
                 )
             })
             .collect::<Vec<_>>();
-        self.char_faction_formatted(&node.key, &arguments, scopes)
+        self.bound_formatted(&node.key, &arguments, scopes, scoped)
     }
 
-    fn char_faction_formatted(
-        &self,
+    fn bound_formatted(
+        &mut self,
         value: &FormattedLocalization,
         arguments: &[(&str, Argument<'_>)],
         scopes: Scopes,
-    ) -> Result<FactionArgument, String> {
+        scoped: bool,
+    ) -> Result<BoundResult, String> {
         match value {
             FormattedLocalization::Key(key) => self
-                .localised(key, arguments, scopes, false)
-                .map(FactionArgument::Text),
+                .localised(key, arguments, scopes, scoped)
+                .map(BoundResult::Text),
             // 1423939C0 interns token: payloads; 142393810 returns the
             // integer variant, which the containing localiser formats.
             FormattedLocalization::Token(token) => self
                 .context
                 .world()?
                 .token_of(token)?
-                .map(|token| FactionArgument::Token(token as i32))
+                .map(|token| BoundResult::Token(token as i32))
                 .ok_or_else(|| {
                     format!(
-                        "faction bound localisation token {} is absent from LexicalTokens",
+                        "bound localisation token {} is absent from LexicalTokens",
                         String::from_utf8_lossy(token)
                     )
                 }),
-            FormattedLocalization::Formatter { formatter, .. } => Err(format!(
-                "faction bound localisation formatter {} requires core registry callback (142393810)",
-                String::from_utf8_lossy(formatter)
-            )),
+            FormattedLocalization::Formatter { formatter, token } => {
+                let token =
+                    std::str::from_utf8(token).map_err(|_| "bound formatter token is not UTF-8")?;
+                let text = match formatter.as_slice() {
+                    // The registry's no-context callbacks return literal NULL.
+                    // A scoped callback keeps the caller's event scope carrier.
+                    b"idea_desc" if scoped => self.bound_idea_description(token, scopes)?,
+                    b"tech_effect" if scoped => self.bound_technology_effect(token, scopes)?,
+                    b"idea_desc" | b"tech_effect" => "NULL".to_owned(),
+                    _ => {
+                        return Err(format!(
+                            "bound localisation formatter {} requires core registry callback (142393810/1423935D0)",
+                            String::from_utf8_lossy(formatter)
+                        ));
+                    }
+                };
+                Ok(BoundResult::Text(text))
+            }
         }
     }
 
@@ -376,7 +408,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<String, String> {
         // 1403AA3C0: scope-kind 8 reads a scalar as ideology (exact yes
         // means empty), and its block accepts ideology but not character.
-        let character_scope = matches!(scopes.this, Scope::Character(_) | Scope::Leader(_));
+        let character_scope = matches!(
+            scopes.this,
+            Scope::Character(_) | Scope::Leader(_) | Scope::CountryLeader { .. }
+        );
         let selector = if character_scope {
             None
         } else {
@@ -740,93 +775,101 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let character = self
             .effect_character(Scope::Character(advisor.character))?
             .ok_or("AdvisorRoles references missing character")?;
-        let catalogue = self
-            .character_content()?
-            .catalogue
-            .as_ref()
-            .map_err(Clone::clone)?;
-        let idea_token =
-            std::str::from_utf8(&advisor.idea).map_err(|_| "advisor idea token is not UTF-8")?;
-        let built = crate::products::identity::built_template(
-            character,
-            self.character_table::<tables::LexicalTokens>().ok(),
-        );
-        let role = catalogue
-            .held_advisor(idea_token, built.as_ref().map_err(String::as_str))?
-            .ok_or_else(|| format!("advisor role {idea_token} is absent from content"))?;
-        // Factory@141289CF0 (14128A0A6) and load@14128E7D0 (14128E8D0)
-        // add the own block after Rebuild@14128FF90, which omits it. Its
-        // tooltip membership at +0x218 therefore depends on refresh history.
-        let mut own_blocks = vec![&role.modifiers];
-        while let Some(block) = own_blocks.pop() {
-            if let Some(why) = block.unheld.cause() {
-                return Err(why.to_owned());
-            }
-            if !block.tooltips().is_empty() {
-                return Err("advisor own-block custom tooltip presence in +0x218 depends on refresh history (141289CF0/14128E7D0 vs 14128FF90)".into());
-            }
-            own_blocks.extend(&block.children);
-        }
-        // With no own-block tooltips, Rebuild@14128FF90 copies current
-        // trait tooltip keys into +0x218;
-        // Clear@14054B860 retains that table's capacity and therefore its
-        // slot order. Zero/one distinct key is independent of that order;
-        // two or more need the unrecorded order. Reuse the catalogue's set.
-        let mut modifiers = Modifiers::default();
-        let mut tooltip_key: Option<String> = None;
-        for row in self
-            .character_table::<tables::CharacterRoleTraits>()?
-            .iter()
-            .filter(|row| {
-                row.character == advisor.character
-                    && row.kind == CharacterRoleTraitRow::ADVISOR
-                    && row.role == advisor.ordinal
-            })
-        {
-            let traits = self.char_country_traits()?;
-            for &definition in &row.definitions {
-                let trait_ = traits.by_ordinal(definition).ok_or_else(|| {
-                    format!("advisor trait definition {definition} is absent from content")
-                })?;
-                if let Some(why) = trait_.modifiers.unheld.cause() {
+        let description = if matches!(advisor.tooltip_keys, replay::rows::Recorded::NotRecorded) {
+            // Older recordings can prove zero/one trait key only when the own
+            // block has no tooltips. Recorded keys always supersede this fallback.
+            let catalogue = self
+                .character_content()?
+                .catalogue
+                .as_ref()
+                .map_err(Clone::clone)?;
+            let idea_token = std::str::from_utf8(&advisor.idea)
+                .map_err(|_| "advisor idea token is not UTF-8")?;
+            let built = crate::products::identity::built_template(
+                character,
+                self.character_table::<tables::LexicalTokens>().ok(),
+            );
+            let role = catalogue
+                .held_advisor(idea_token, built.as_ref().map_err(String::as_str))?
+                .ok_or_else(|| format!("advisor role {idea_token} is absent from content"))?;
+            // Factory@141289CF0 (14128A0A6) and load@14128E7D0 (14128E8D0)
+            // add the own block after Rebuild@14128FF90, which omits it. Its
+            // tooltip membership at +0x218 therefore depends on refresh history.
+            let mut own_blocks = vec![&role.modifiers];
+            while let Some(block) = own_blocks.pop() {
+                if let Some(why) = block.unheld.cause() {
                     return Err(why.to_owned());
                 }
-                for key in trait_.modifiers.tooltips() {
-                    if tooltip_key
-                        .as_ref()
-                        .is_some_and(|previous| previous != &key)
-                    {
-                        return Err("advisor cached tooltip keys/slot order (CAdvisor+0x218, 141290135/14054E050) not recorded".into());
+                if !block.tooltips().is_empty() {
+                    return Err("advisor own-block custom tooltip presence in +0x218 depends on refresh history (141289CF0/14128E7D0 vs 14128FF90)".into());
+                }
+                own_blocks.extend(&block.children);
+            }
+            // With no own-block tooltips, Rebuild@14128FF90 copies current
+            // trait tooltip keys into +0x218;
+            // Clear@14054B860 retains that table's capacity and therefore its
+            // slot order. Zero/one distinct key is independent of that order;
+            // two or more need the unrecorded order. Reuse the catalogue's set.
+            let mut modifiers = Modifiers::default();
+            let mut tooltip_key: Option<String> = None;
+            for row in self
+                .character_table::<tables::CharacterRoleTraits>()?
+                .iter()
+                .filter(|row| {
+                    row.character == advisor.character
+                        && row.kind == CharacterRoleTraitRow::ADVISOR
+                        && row.role == advisor.ordinal
+                })
+            {
+                let traits = self.char_country_traits()?;
+                for &definition in &row.definitions {
+                    let trait_ = traits.by_ordinal(definition).ok_or_else(|| {
+                        format!("advisor trait definition {definition} is absent from content")
+                    })?;
+                    if let Some(why) = trait_.modifiers.unheld.cause() {
+                        return Err(why.to_owned());
                     }
-                    if tooltip_key.is_none() {
-                        modifiers = trait_.modifiers.clone();
-                        tooltip_key = Some(key);
+                    for key in trait_.modifiers.tooltips() {
+                        if tooltip_key
+                            .as_ref()
+                            .is_some_and(|previous| previous != &key)
+                        {
+                            return Err("advisor cached tooltip keys/slot order (CAdvisor+0x218, 141290135/14054E050) not recorded".into());
+                        }
+                        if tooltip_key.is_none() {
+                            modifiers = trait_.modifiers.clone();
+                            tooltip_key = Some(key);
+                        }
                     }
                 }
             }
-        }
-        modifiers.values.clear();
-        modifiers.hidden.clear();
-        modifiers.children.clear();
-        // 14036F0A2/14037E452: raw 14054E050, mask FFFFFFFF, prefix null;
-        // +0x1B0 numeric-array order and definition IDs need no lexer lookup.
-        // DESC@142751CF0 expands only after substitution into the wrapper.
-        let options = ModifierListOptions {
-            category_mask: u32::MAX,
-            ..Default::default()
+            modifiers.values.clear();
+            modifiers.hidden.clear();
+            modifiers.children.clear();
+            // 14036F0A2/14037E452: raw 14054E050, mask FFFFFFFF, prefix null;
+            // +0x1B0 numeric-array order and definition IDs need no lexer lookup.
+            // DESC@142751CF0 expands only after substitution into the wrapper.
+            let options = ModifierListOptions {
+                category_mask: u32::MAX,
+                ..Default::default()
+            };
+            let mut description =
+                self.cached_modifier_description_with(&cache.entries, "", options)?;
+            if tooltip_key.is_some() {
+                let tooltip = self.modifier_description_with(&modifiers, "", options)?;
+                // 14054E296/14054E2AF: one LF before a nonempty tooltip, only
+                // when the numeric text is nonempty and does not already end in LF.
+                if !tooltip.is_empty() {
+                    if !description.is_empty() && !description.ends_with('\n') {
+                        description.push('\n');
+                    }
+                    description.push_str(&tooltip);
+                }
+            }
+            description
+        } else {
+            self.advisor_cache_description(advisor)?
         };
-        let mut description = self.cached_modifier_description_with(&cache.entries, "", options)?;
-        if tooltip_key.is_some() {
-            let tooltip = self.modifier_description_with(&modifiers, "", options)?;
-            // 14054E296/14054E2AF: one LF before a nonempty tooltip, only
-            // when the numeric text is nonempty and does not already end in LF.
-            if !tooltip.is_empty() {
-                if !description.is_empty() && !description.ends_with('\n') {
-                    description.push('\n');
-                }
-                description.push_str(&tooltip);
-            }
-        }
         let name = self.effect_character_name(character)?;
         self.char_native_text(
             if item.keyword_is("deactivate_advisor") {
@@ -938,10 +981,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     // Own 1404AEB90: positive country, faction and not its first member;
     // CFaction::display_name 140D77360, expand + LF.
     pub(in crate::effect_description) fn char_set_faction_leader(
-        &self,
+        &mut self,
         scopes: Scopes,
     ) -> Result<String, String> {
-        let Scope::Country(country) = scopes.this else {
+        let (Scope::Country(country) | Scope::CountryLeader { country, .. }) = scopes.this else {
             return Ok(String::new());
         };
         if country == 0 {
@@ -989,17 +1032,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .as_ref()
                 .map_err(Clone::clone)?
                 .get(token)?
-                .ok_or_else(|| {
-                    format!("faction template {token} is absent from recorded content")
-                })?;
-            if bound.is_empty() {
-                String::new()
-            } else {
-                match self.char_faction_bound_node(bound, 0, scopes)? {
-                    FactionArgument::Text(text) => text,
-                    FactionArgument::Token(_) => return Err("faction bound root returns a token integer, not the native string variant (14238F090)".into()),
-                }
-            }
+                .ok_or_else(|| format!("faction template {token} is absent from recorded content"))?
+                .clone();
+            self.bound_localisation(&bound, scopes, false)?
         } else {
             String::new()
         };

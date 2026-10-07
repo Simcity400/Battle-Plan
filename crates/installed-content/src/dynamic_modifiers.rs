@@ -35,8 +35,7 @@ pub struct Database {
 impl Database {
     pub fn find(&self, name: &str) -> Result<Option<&Dynamic>, String> {
         // 14054E630 compares the stored id's bytes without case folding.
-        let name = parser::text(parser::c_string(name.as_bytes()))
-            .map_err(|e| e.to_string())?;
+        let name = parser::text(parser::c_string(name.as_bytes())).map_err(|e| e.to_string())?;
         if let Some(reason) = self.refused.get(name) {
             return Err(reason.clone());
         }
@@ -108,10 +107,16 @@ fn parse_with_notes(input: &[u8], names: &KeyNames) -> io::Result<(Vec<Dynamic>,
         },
     );
     if let Some(error) = read.unsettled {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, error.to_string()));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            error.to_string(),
+        ));
     }
     if let Some(error) = undecided.first() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, error.to_string()));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            error.to_string(),
+        ));
     }
     let notes = read.misreads.iter().map(ToString::to_string).collect();
     let definitions = read
@@ -133,7 +138,7 @@ fn definition(item: &Item, names: &KeyNames) -> io::Result<Dynamic> {
     };
     for field in item.value.items().unwrap_or_default() {
         match field.keyword().map(|key| key.folded()).as_deref() {
-            Some(b"icon" | b"attacker_modifier" | b"enable" | b"remove_trigger") => {},
+            Some(b"icon" | b"attacker_modifier" | b"enable" | b"remove_trigger") => {}
             Some(b"custom_modifier_tooltip" | b"hidden_modifier" | b"added_modifier") => {
                 result.modifiers.read(field)
             }
@@ -144,10 +149,9 @@ fn definition(item: &Item, names: &KeyNames) -> io::Result<Dynamic> {
                 } else if field.keyword().is_some() {
                     let key = field.key_str().map_err(|e| invalid(e.to_string()))?;
                     if modifiers::registered(key.as_bytes(), Some(names)) == Some(true) {
-                        result.scoped_modifiers.push((
-                            key.to_ascii_lowercase(),
-                            parser::c_string(value).to_vec(),
-                        ));
+                        result
+                            .scoped_modifiers
+                            .push((key.to_ascii_lowercase(), parser::c_string(value).to_vec()));
                     }
                 }
             }
@@ -155,15 +159,18 @@ fn definition(item: &Item, names: &KeyNames) -> io::Result<Dynamic> {
     }
     filter_unknown(&mut result.modifiers, names);
     if let Some(error) = result.modifiers.unheld.cause() {
-        return Err(invalid(format!("dynamic modifier {}: {error}", result.name)));
+        return Err(invalid(format!(
+            "dynamic modifier {}: {error}",
+            result.name
+        )));
     }
     Ok(result)
 }
 
 fn filter_unknown(block: &mut modifiers::Modifiers, names: &KeyNames) {
-    block.values.retain(|value| {
-        modifiers::registered(value.name.as_bytes(), Some(names)) != Some(false)
-    });
+    block
+        .values
+        .retain(|value| modifiers::registered(value.name.as_bytes(), Some(names)) != Some(false));
     for child in &mut block.children {
         filter_unknown(child, names);
     }
@@ -177,12 +184,17 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
             Ok((definitions, notes)) => {
                 for definition in definitions {
                     database.refused.remove(&definition.name);
-                    database.definitions.insert(definition.name.clone(), definition);
+                    database
+                        .definitions
+                        .insert(definition.name.clone(), definition);
                 }
-                database.notes.extend(notes.into_iter().map(|note| format!("{path}: {note}")));
+                database
+                    .notes
+                    .extend(notes.into_iter().map(|note| format!("{path}: {note}")));
             }
             Err(error) => {
-                let reason = format!("{path}: {error}; unread definitions may replace earlier exact names");
+                let reason =
+                    format!("{path}: {error}; unread definitions may replace earlier exact names");
                 for name in database.definitions.keys() {
                     database.refused.insert(name.clone(), reason.clone());
                 }

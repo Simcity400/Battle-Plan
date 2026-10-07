@@ -3,7 +3,7 @@ use crate::triggers::{Eval, Evaluator, Scope};
 use replay::rows::{DivisionTemplateIconRow, DivisionTemplateRow, TableId, TableRows};
 
 fn frame() -> DecodedFrame {
-    let mut frame = crate::scope::tests::frame();
+    let mut frame = crate::scope::tests::positive_frame();
     for id in TableId::ALL {
         if matches!(&*frame.tables[id.index()], TableView::Unavailable { .. }) {
             *frame.tables[id.index()] = TableView::Complete(TableRows::empty(id));
@@ -38,7 +38,7 @@ fn template_fallback_uses_recorded_language_and_template_country() {
                 ..Default::default()
             },
         ]));
-    let text = ScriptedText::new(&frame, &catalogue.localisation, content, 0);
+    let text = ScriptedText::new(&frame, &catalogue.localisation, content, 1);
     let evaluator = Evaluator::new(text.world().unwrap(), None);
     let triggers = installed_content::triggers::read(
         b"has_template = \"Intervention Force\"",
@@ -46,7 +46,7 @@ fn template_fallback_uses_recorded_language_and_template_country() {
     )
     .items;
     assert_eq!(
-        evaluator.evaluate(&triggers, crate::triggers::Scopes::of(Scope::Country(0))),
+        evaluator.evaluate(&triggers, crate::triggers::Scopes::of(Scope::Country(1))),
         Eval::True
     );
     drop(evaluator);
@@ -59,9 +59,9 @@ fn template_fallback_uses_recorded_language_and_template_country() {
                 ..Default::default()
             },
         ]));
-    let text = ScriptedText::new(&frame, &catalogue.localisation, content, 0);
+    let text = ScriptedText::new(&frame, &catalogue.localisation, content, 1);
     let refused = Evaluator::new(text.world().unwrap(), None)
-        .evaluate(&triggers, crate::triggers::Scopes::of(Scope::Country(0)))
+        .evaluate(&triggers, crate::triggers::Scopes::of(Scope::Country(1)))
         .decided()
         .unwrap_err();
     assert!(refused.contains("DivisionTemplateIcons"), "{refused}");
@@ -76,20 +76,20 @@ fn entry_conditions_use_deep_links_and_description_variable_session() {
     let content = catalogue.scripted_content().unwrap();
     content.set_synthetic_environment(Default::default());
     let frame = frame();
-    let text = ScriptedText::new(&frame, &catalogue.localisation, content, 0);
+    let text = ScriptedText::new(&frame, &catalogue.localisation, content, 1);
     let graph = EventScopes::new(vec![
         EventScope {
             from: Link::Scope(1),
-            ..EventScope::of(EventObject::Country(0))
+            ..EventScope::of(EventObject::Country(1))
         },
         EventScope {
             from: Link::Scope(2),
             ..EventScope::of(EventObject::State(64))
         },
-        EventScope::of(EventObject::Country(1)),
+        EventScope::of(EventObject::Country(2)),
     ]);
     let evaluator = Evaluator::new(text.world().unwrap(), None);
-    let caller = crate::triggers::Scopes::of(Scope::Country(0));
+    let caller = crate::triggers::Scopes::of(Scope::Country(1));
     evaluator.begin_description();
     let set = installed_content::triggers::read(
         b"set_temp_variable = { x = 7 }",
@@ -110,14 +110,14 @@ fn text_target_priority_matches_trigger_context_and_saved_only_predicate() {
     let content = catalogue.scripted_content().unwrap();
     content.set_synthetic_environment(Default::default());
     let frame = frame();
-    let text = ScriptedText::new(&frame, &catalogue.localisation, content, 0);
-    let mut graph = EventScopes::new(vec![EventScope::of(EventObject::Country(0))]);
+    let text = ScriptedText::new(&frame, &catalogue.localisation, content, 1);
+    let mut graph = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
     graph
         .tooltip_targets
-        .insert(0, vec![(b"target".to_vec(), EventObject::Country(1))]);
+        .insert(0, vec![(b"target".to_vec(), EventObject::Country(2))]);
     graph
         .global_tooltip_targets
-        .push((b"target".to_vec(), EventObject::Country(0)));
+        .push((b"target".to_vec(), EventObject::Country(1)));
     assert_eq!(
         text.expand_in_at("[target.GetTag]", &graph, 0),
         Ok("SOV".into())
@@ -167,10 +167,10 @@ fn balance_nested_description_inherits_the_active_variable_session() {
                 ..Default::default()
             },
         ]));
-    let text = ScriptedText::new(&frame, &catalogue.localisation, content, 0);
-    let graph = EventScopes::new(vec![EventScope::of(EventObject::Country(0))]);
+    let text = ScriptedText::new(&frame, &catalogue.localisation, content, 1);
+    let graph = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
     let evaluator = Evaluator::new(text.world().unwrap(), None);
-    let caller = crate::triggers::Scopes::of(Scope::Country(0));
+    let caller = crate::triggers::Scopes::of(Scope::Country(1));
     evaluator.begin_description();
     let set = installed_content::triggers::read(
         b"set_temp_variable={x=7}",

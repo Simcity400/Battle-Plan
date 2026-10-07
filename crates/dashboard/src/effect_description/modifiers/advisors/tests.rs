@@ -50,6 +50,7 @@ fn fixture() -> (Fixture, Folder) {
                     character,
                     country: 100,
                     idea: b"SYN_ADVISOR".to_vec(),
+                    tooltip_keys: Recorded::NotRecorded, // Historical cache fixture.
                     modifier_cache: Recorded::Value(Some(AdvisorModifierCache {
                         entries: vec![
                             CachedModifier {
@@ -146,7 +147,9 @@ fn available_order_precedes_retired_and_multi_names_do_not_need_the_cache() {
     // The advisor registry wins an add/remove token collision; Show also
     // appends the CIdea name through 14039504D after the character's name.
     let file = installed_content::ideas::parse_ideas(
-        b"ideas={country={SYN_ADVISOR={}}}",
+        // An explicit CIdea name selects its native first naming branch;
+        // an unnamed idea would need a declared category/name generator.
+        b"ideas={country={SYN_ADVISOR={name=SYN_ADVISOR}}}",
         &[],
         &Default::default(),
     );
@@ -168,8 +171,8 @@ fn available_order_precedes_retired_and_multi_names_do_not_need_the_cache() {
                 ..Default::default()
             },
         );
-        assert_eq!(result.text, expected);
         assert!(result.refusals.is_empty(), "{:?}", result.refusals);
+        assert_eq!(result.text, expected);
     }
 }
 
@@ -257,7 +260,7 @@ fn cached_numbers_use_definition_ids_and_native_order_not_authored_modifiers() {
                 .keys()
                 .next()
                 .unwrap()
-                .contains("advisor cached tooltip keys +0x218 unrecorded until format 99")
+                .contains("AdvisorRoles.tooltip_keys not recorded")
         );
     }
 }
@@ -282,7 +285,7 @@ fn known_empty_numeric_cache_still_refuses_the_unrecorded_tooltip_keys() {
             .keys()
             .next()
             .unwrap()
-            .contains("advisor cached tooltip keys +0x218 unrecorded until format 99")
+            .contains("AdvisorRoles.tooltip_keys not recorded")
     );
 }
 
@@ -352,7 +355,7 @@ fn advisor_research_and_recorded_trait_targets_surround_the_stored_numbers() {
             .keys()
             .next()
             .unwrap()
-            .contains("advisor cached tooltip keys +0x218 unrecorded until format 99")
+            .contains("AdvisorRoles.tooltip_keys not recorded")
     );
 }
 
@@ -393,4 +396,63 @@ fn unavailable_or_absent_cache_and_rosters_are_named_not_empty_blocks() {
             .unwrap()
             .contains("AvailableAdvisors")
     );
+}
+
+#[test]
+fn format99_advisor_ideas_render_recorded_tooltips_in_slot_order() {
+    let (mut fixture, _folder) = fixture();
+    fixture.catalogue.localisation = std::sync::Arc::new(
+        fixture
+            .catalogue
+            .localisation
+            .iter()
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .chain([
+                ("CACHE_FIRST".into(), "First tip".into()),
+                ("CACHE_SECOND".into(), "Second tip".into()),
+            ])
+            .collect(),
+    );
+    // These synthetic stored strings were recorded in this declared language.
+    std::sync::Arc::make_mut(&mut fixture.catalogue.localisation).language =
+        fixture.catalogue.recorded_language.clone();
+    for (keys, tips) in [
+        (Some(Vec::new()), ""),
+        (
+            Some(vec![
+                b"CACHE_SECOND".to_vec(),
+                b"CACHE_FIRST\0ignored".to_vec(),
+            ]),
+            ", Second tip, First tip",
+        ),
+        (None, ""),
+    ] {
+        roles(&mut fixture)[0].tooltip_keys = Recorded::Value(keys);
+        for (body, prefix) in [
+            ("add_ideas=SYN_ADVISOR", "Add "),
+            ("remove_ideas=SYN_ADVISOR", "Remove "),
+            ("show_ideas_tooltip=SYN_ADVISOR", ""),
+        ] {
+            let result = fixture.render(body, &mut fresh(), Content::default());
+            assert_eq!(
+                result.text,
+                format!(
+                    "{prefix}First:\nDefense: \u{11}G+2.00\u{11}!, Attack: \u{11}G+1.00\u{11}!{tips}\n"
+                )
+            );
+            if matches!(roles(&mut fixture)[0].tooltip_keys, Recorded::Value(None)) {
+                assert_eq!(result.refusals.values().sum::<usize>(), 1);
+                assert!(
+                    result
+                        .refusals
+                        .keys()
+                        .next()
+                        .unwrap()
+                        .contains("AdvisorRoles.tooltip_keys capture unavailable")
+                );
+            } else {
+                assert!(result.refusals.is_empty(), "{:?}", result.refusals);
+            }
+        }
+    }
 }

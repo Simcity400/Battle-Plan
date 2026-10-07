@@ -57,6 +57,7 @@ fn fixture_with_advisor_modifier(modifier: &str) -> (Fixture, Folder) {
                 " EFFECT_ADD_ADVISOR_ROLE_APPOINT:0 \"Appoint $NAME$/$SLOT$/$MODIFIER$ [Root.GetTag]\"\n",
                 " EFFECT_ASSIGN_ADVISOR:0 \"Activate $NAME$/$DESC$ [Root.GetTag]\"\n",
                 " EFFECT_DEACTIVATE_ADVISOR:0 \"Deactivate $NAME$/$DESC$ [Root.GetTag]\"\n",
+                " CACHE_A:0 \"First [Root.GetTag]\"\n CACHE_B:0 \"Second\"\n",
                 " EFFECT_SET_CAN_BE_FIRED:0 \"Fire $CHARACTER$/$SLOT$[Root.GetTag]\"\n",
                 " EFFECT_SET_CANNOT_BE_FIRED:0 \"Keep $CHARACTER$/$SLOT$[Root.GetTag]\"\n",
                 " EFFECT_RECRUIT_CHARACTER:0 \"Recruit $NAME$ [Root.GetTag]\"\n",
@@ -133,6 +134,7 @@ fn fixture_with_advisor_modifier(modifier: &str) -> (Fixture, Folder) {
             character: 7,
             country: 100,
             ideology: 101,
+            current_ideology: Recorded::Value(Some(Some(101))),
         }]));
     *fixture.frame.tables[TableId::PoliticalParties.index()] =
         TableView::Complete(TableRows::PoliticalParties(vec![PoliticalPartyRow {
@@ -158,6 +160,7 @@ fn fixture_with_advisor_modifier(modifier: &str) -> (Fixture, Folder) {
             ordinal: 0,
             idea: b"synthetic_advisor".to_vec(),
             slot: b"synthetic_slot".to_vec(),
+            tooltip_keys: Recorded::NotRecorded, // Historical zero/one-key derivation.
             modifier_cache: Recorded::Value(Some(AdvisorModifierCache {
                 entries: vec![CachedModifier {
                     definition: 0,
@@ -287,6 +290,7 @@ fn promote_character_uses_character_scope_reader_fields() {
             character: 8,
             country: 100,
             ideology: 101,
+            current_ideology: Recorded::Value(Some(Some(101))),
         });
     }
     for (body, expected) in [
@@ -327,11 +331,13 @@ fn promote_scalar_and_template_fallback_keep_native_single_role_gate() {
                 character: 7,
                 country: 100,
                 ideology: 101,
+                current_ideology: Recorded::Value(Some(Some(101))),
             },
             CountryLeaderRoleRow {
                 character: 7,
                 country: 100,
                 ideology: 102,
+                current_ideology: Recorded::Value(Some(Some(102))),
             },
         ]));
     let out = render(
@@ -1091,6 +1097,118 @@ fn advisor_single_tooltip_is_derivable_but_several_need_recorded_slot_order() {
             &mut *fixture.frame.tables[TableId::CharacterRoleTraits.index()]
         {
             rows[0].definitions[0] = definition;
+        }
+    }
+}
+
+#[test]
+fn format99_advisor_cache_keeps_stored_tooltip_order_and_old_format_fallback() {
+    let (mut fixture, _folder) = fixture();
+    *fixture.frame.tables[TableId::AvailableAdvisors.index()] =
+        TableView::Complete(TableRows::AvailableAdvisors(vec![AvailableAdvisorRow {
+            country: 100,
+            character: 7,
+            idea: b"synthetic_advisor".to_vec(),
+            ..Default::default()
+        }]));
+    let TableView::Complete(TableRows::AdvisorRoles(rows)) =
+        &mut *fixture.frame.tables[TableId::AdvisorRoles.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].modifier_cache = Recorded::Value(Some(AdvisorModifierCache {
+        entries: vec![CachedModifier {
+            definition: 0,
+            value: 10_000,
+        }],
+    }));
+    rows[0].tooltip_keys = Recorded::Value(Some(vec![b"CACHE_B".to_vec(), b"CACHE_A".to_vec()]));
+    for (effect, expected) in [
+        ("activate_advisor", "Activate"),
+        ("deactivate_advisor", "Deactivate"),
+    ] {
+        let out = render(
+            &fixture,
+            &format!("{effect}=synthetic_advisor"),
+            &mut country_scopes(),
+        );
+        assert_eq!(
+            out.text,
+            format!("{expected} Current name/Power: \u{11}G+0.10\u{11}!\nSecond\nFirst AAA AAA")
+        );
+        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    }
+    let TableView::Complete(TableRows::AdvisorRoles(rows)) =
+        &mut *fixture.frame.tables[TableId::AdvisorRoles.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].tooltip_keys = Recorded::NotRecorded;
+    let out = render(
+        &fixture,
+        "activate_advisor=synthetic_advisor",
+        &mut country_scopes(),
+    );
+    assert_eq!(
+        out.text,
+        "Activate Current name/Power: \u{11}G+0.10\u{11}! AAA"
+    );
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+#[test]
+fn recorded_advisor_tooltip_keys_override_authored_blocks_and_failed_captures_refuse() {
+    let (mut fixture, _folder) = fixture_with_advisor_modifier("custom_modifier_tooltip=SYN_TIP");
+    // Recorded-empty proves the stale cache has no keys even when authored
+    // modifiers contain them; current trait data is not needed either.
+    *fixture.frame.tables[TableId::CharacterRoleTraits.index()] = TableView::Unavailable {
+        reason: "unused by recorded tooltip cache".into(),
+    };
+    for (keys, expected) in [
+        (
+            Recorded::Value(Some(Vec::new())),
+            Some("Power: \u{11}G+0.20\u{11}!"),
+        ),
+        (
+            Recorded::Value(Some(vec![b"CACHE_A\0ignored".to_vec()])),
+            Some("Power: \u{11}G+0.20\u{11}!\nFirst AAA"),
+        ),
+        (Recorded::Value(None), None),
+    ] {
+        let TableView::Complete(TableRows::AdvisorRoles(rows)) =
+            &mut *fixture.frame.tables[TableId::AdvisorRoles.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].tooltip_keys = keys;
+        for (key, class, verb) in [
+            ("activate_advisor", "CActivateAdvisorEffect", "Activate"),
+            (
+                "deactivate_advisor",
+                "CDeactivateAdvisorEffect",
+                "Deactivate",
+            ),
+        ] {
+            let out = render(
+                &fixture,
+                &format!("{key}=synthetic_advisor"),
+                &mut country_scopes(),
+            );
+            if let Some(description) = expected {
+                assert_eq!(out.text, format!("{verb} Current name/{description} AAA"));
+                assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+            } else {
+                assert!(out.text.is_empty());
+                assert_eq!(
+                    out.refusals,
+                    BTreeMap::from([(
+                        format!(
+                            "synthetic effect {class}: key {key}: AdvisorRoles.tooltip_keys capture unavailable (CAdvisor+0x218)"
+                        ),
+                        1,
+                    )])
+                );
+            }
         }
     }
 }

@@ -15,6 +15,7 @@ The pre-rewrite implementation is retained at Git tag `archive/pre-rewrite-2026-
 | Which executable and sampling boundary are supported? | [build.rs](src/build.rs), [cgame_state.rs](src/cgame_state.rs) and the collector's [hook.rs](../collector/src/hook.rs). |
 | How are memory reads bounded and failures represented? | [memory.rs](src/memory.rs), [walk.rs](src/walk.rs) and the relevant struct's reader. |
 | How do country references resolve? | [ccountry_tag.rs](src/ccountry_tag.rs), [country_memory.rs](src/country_memory.rs) and the [replay identity rules](../replay/README.md#values-availability-and-freshness). |
+| Where are original-tag membership and country order read? | [original_tag_lists.rs](src/original_tag_lists.rs) copies the native cached buckets; [country_roster.rs](src/country_roster.rs) copies the physical array. Both preserve raw order and repeated occurrences. |
 | Where is a native row captured and encoded? | Collector [acquisition](../collector/src/acquisition.rs) and [extended packs](../collector/src/extended/), then replay [rows](../replay/src/rows.rs), [extended rows](../replay/src/extended_rows/) and [format](../replay/src/format.rs). |
 | What do the raid map tooltips read? | [raid_facilities.rs](src/raid_facilities.rs), [raid_air_scores.rs](src/raid_air_scores.rs), [raid_intel_inputs.rs](src/raid_intel_inputs.rs) and [raid_tooltip_operands.rs](src/raid_tooltip_operands.rs); each separates stored values from the tooltip's on-demand arithmetic. |
 | What can a save validate? | [Text-save parsers](../installed-content/src/save/) and the recorder's [oracle comparators](../recorder/src/oracle/); keep unsupported fields explicit. |
@@ -156,7 +157,7 @@ still overprovision storage; live cost remains unmeasured.
 
 [border_effect_demand.rs](src/border_effect_demand.rs) walks active border-war event definitions without reading armies. It follows the native namespace/reference lookup, the immediate and single-option description roots and the supported effect children, including attached else chains. Branches and scope switches form a conservative demand union; only targeted decision rows whose names match that union read their optional status execution count. The caller supplies checked, reusable token, copied-name, visited-event and DFS arenas; faults, cycles and capacity shortage never become an empty successful demand census. `CDecision+0x140` is derived from the authored key's ASCII-folded FNV-1a hash (`1407198A0`, `140BBA1B0`, constructor `140716650`), so it is not captured. The default constructor `140716320` writes the `0xFFFFFFFF` sentinel from `1427C79D0` at `1407163A5`; its sole caller `140716C90` creates the database null placeholder and replaces its vtable, outside authored content reach. Demand follows the existing daily decision pass: a border war beginning between passes can lack a description seed until the next pass, for up to one day.
 
-The appearance reader retains the ordered raw subject header from `CDiplomacyStatus+0x170` (`1404AC450`); the collector acquires payloads only for positive counts. Template dictionary gathers also retain the fallback localisation key (`140B91170`) in the existing string arena. The decision walker reads the first matching `SDecisionRandomCountItem` execution count (`140721170`) only for demanded active targeted rows and keeps known absence distinct from unavailable memory. Live correctness and save agreement remain unverified.
+The appearance reader retains the ordered raw subject header from `CDiplomacyStatus+0x170` (`1404AC450`); the collector acquires payloads only for positive counts. Template dictionary gathers also retain the fallback localisation key (`140B91170`) in the existing string arena. The decision walker reads the first matching `SDecisionRandomCountItem` execution count (`140721170`) only for demanded active targeted rows and keeps known absence distinct from unavailable memory. The coordinated vanilla fresh-save check passed for saved template keys and demanded description counts. Live subject-roster order and runtime getter agreement remain unverified.
 
 ## Strategic-action operands
 
@@ -198,5 +199,6 @@ limitation. CArmy::Serialize@140C80E00 -> CUnit::Serialize@140BF7010 saves route
 target and strategic truth, which remain exact comparisons.
 Synthetic fixtures cover skipped reads, per-row failures, ownership, state
 overrides/base, friendly gates, clamp/feature rules, shared ETA projection and
-codec/drawing. Live pixels, getter values, fresh-save/smoke and game-thread cost
-remain unverified.
+codec/drawing. The coordinated vanilla fresh-save and 124-hour smoke checks
+passed for serialized route, target and strategic truth. Live ladder pixels,
+getter values and game-thread cost remain separate acceptance checks.

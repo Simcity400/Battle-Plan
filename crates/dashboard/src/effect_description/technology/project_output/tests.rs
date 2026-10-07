@@ -12,6 +12,10 @@ fn fixture(output: &str) -> (Fixture, Folder) {
             "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NSupply={MAX_RAILWAY_LEVEL=5}}",
         ),
         ("common/country_tags/test.txt", "AAA=a BBB=b CCC=c"),
+        (
+            "common/characters/test.txt",
+            "characters={mod_later={} mod_first={}}",
+        ),
         ("common/special_projects/projects/test.txt", &project),
         (
             "common/special_projects/specialization/test.txt",
@@ -35,7 +39,8 @@ fn fixture(output: &str) -> (Fixture, Folder) {
                 " PROJECT_COUNTRY:0 \"Country [Root.GetTag]/[Prev.GetTag]\"\n PROJECT_SCIENTIST:0 \"Scientist [Root.GetName]\"\n PROJECT_FACILITY:0 \"Facility [Root.GetName]/[?facility_province_id|0]\"\n",
                 " SPECIAL_PROJECT_OUTPUT_SUBUNITS:0 \"Subunits:\"\n SPECIAL_PROJECT_OUTPUT_EQUIPMENT:0 \"Equipment:\"\n SPECIAL_PROJECT_OUTPUT_MODULE:0 \"Modules:\"\n",
                 " mod_unit:0 \"Unit\"\n AAA_mod_unit:0 \"Alpha unit\"\n mod_equipment:0 \"Equipment\"\n AAA_mod_equipment:0 \"Alpha equipment\"\n mod_module:0 \"Module\"\n AAA_mod_module:0 \"Alpha module\"\n",
-                " STAT_ARMY_SOFT_ATTACK:0 \"Soft:\"\n STAT_MODIFIER_DIFF:0 \"$VALUE|2$\"\n"
+                " STAT_ARMY_SOFT_ATTACK:0 \"Soft:\"\n STAT_MODIFIER_DIFF:0 \"$VALUE|2$\"\n",
+                " SUBUNIT_BONUS_HEADER:0 \"$ICON$$NAME$\"\n STAT_MODIFIER_VALUE:0 \"$VALUE|2$\"\n"
             ),
         ),
     ]);
@@ -166,6 +171,16 @@ fn fixture(output: &str) -> (Fixture, Folder) {
                 ..Default::default()
             },
         ]));
+    // ResolveCharacter evaluates the operand as a scoped variable before
+    // its named-character fallback (140536B10). A recorded empty store
+    // proves that no variable shadows either registered scientist token.
+    *fixture.frame.tables[TableId::ScriptVariables.index()] =
+        TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
+            scope_kind: 1,
+            scope_id: 100,
+            entries: Vec::new(),
+            seed: Recorded::Value(None),
+        }]));
     (fixture, folder)
 }
 
@@ -194,11 +209,22 @@ fn template_output_header_unlocks_limits_and_module_country_gate() {
 }
 
 #[test]
+fn subunit_unlock_duplicate_keeps_its_first_limit_before_admission() {
+    let (fixture, _folder) = fixture(
+        "enable_subunits={limit={always=no} mod_unit} enable_subunits={limit={always=yes} mod_unit}",
+    );
+    let output = render(&fixture, "complete_special_project=sp:mod_project");
+    assert_eq!(output.text, "Complete Project AAA\n  Output\n");
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+}
+
+#[test]
 fn country_effects_use_fresh_owner_root_and_prev() {
     let (fixture, _folder) = fixture("country_effects={custom_effect_tooltip=PROJECT_COUNTRY}");
     let output = render(
         &fixture,
-        "complete_special_project={project=sp:mod_project show_modifiers=yes iteration_output={country_effects={custom_effect_tooltip=unused}}}",
+        // 1404964D0 -> 14048FD40 reads reward/option statements, not output effects.
+        "complete_special_project={project=sp:mod_project show_modifiers=yes iteration_output={mod_reward=mod_option}}",
     );
     assert_eq!(
         output.text,
@@ -212,6 +238,7 @@ fn country_output_from_link_preserves_the_project_carrier() {
     // air_projects.txt:98 enters FROM; 141A26600 installs the project there.
     let (fixture, _folder) = fixture("country_effects={FROM={add_project_progress_ratio=0.5}}");
     let output = render(&fixture, "complete_special_project=sp:mod_project");
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
     assert_eq!(
         output.text,
         "Complete Project AAA\n  Output\n  Project context Project AAA Progress Project AAA 0.50\n\n"
@@ -288,6 +315,7 @@ fn facility_selector_precedes_specialization_and_injects_stored_province_id() {
         &fixture,
         "complete_special_project={project=sp:mod_project state=2 state=1}",
     );
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
     assert_eq!(
         output.text,
         "Complete Project AAA\n  Output\n  Facility One/1\n\n"
@@ -302,14 +330,14 @@ fn facility_selector_precedes_specialization_and_injects_stored_province_id() {
 }
 
 #[test]
-fn shared_equipment_bonus_formatter_and_conditional_subunit_refusal_preserve_other_lines() {
+fn project_output_reuses_equipment_and_subunit_bonus_formatters() {
     let (fixture, _folder) = fixture(
         "equipment_bonus={mod_equipment={soft_attack=0.2}} sub_unit_bonus={mod_unit={soft_attack=0.1}} enable_equipments={mod_equipment}",
     );
     let output = render(&fixture, "complete_special_project=sp:mod_project");
     assert_eq!(
         output.text,
-        "Complete Project AAA\n  Output\n  \u{11}YEquipment\u{11}!: \n      Soft:0.20\n  Equipment:\n  Alpha equipment\n"
+        "Complete Project AAA\n  Output\n  \u{13}GFX_mod_unit_icon_small|1 Alpha unit\n     Soft:0.10\n  \u{11}YEquipment\u{11}!: \n      Soft:0.20\n  Equipment:\n  Alpha equipment\n"
     );
-    assert_eq!(output.refusals, BTreeMap::from([("synthetic effect CCompleteProjectEffect@?A0x9898cfbe@NProject: key complete_special_project: sub_unit_bonus uses shared native CSubUnitStatBonus formatter 140635420 (SOutput+0x110); helper pending lead D2/I".into(),1)]));
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }

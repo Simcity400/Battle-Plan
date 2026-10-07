@@ -1,7 +1,10 @@
 use super::*;
 use installed_content::parser;
 use replay::rows::{VariantDefinitionRow, tables};
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
+
+mod bonuses;
 
 #[cfg(test)]
 mod tests;
@@ -27,6 +30,13 @@ fn integer_field(items: &[Item], name: &str, default: i32) -> i32 {
         )
         .next_back()
         .unwrap_or(default) // ReadScriptSignedInt32@1424AB970.
+}
+
+fn variant_version(variant: &VariantDefinitionRow) -> Result<u8, String> {
+    variant
+        .version
+        .require("VariantDefinitions.version u8 +0x41C (140BC2A00/140BC2AC0/140E535D0)")
+        .copied()
 }
 
 struct EquipmentTexts<'a>(&'a Localisation);
@@ -457,7 +467,11 @@ impl Renderer<'_, '_, '_> {
             let country = match producer {
                 Some(country) => country,
                 None => match scopes.this {
-                    Scope::Country(country) if (country as i32) > 0 => country,
+                    Scope::Country(country) | Scope::CountryLeader { country, .. }
+                        if (country as i32) > 0 =>
+                    {
+                        country
+                    }
                     _ => {
                         return Err("native direct country0 production roster is unavailable for concrete equipment without a positive producer (14049B6D0 -> 140BA5140, CCountry+0xF68); a state scope does not select its owner".into());
                     }
@@ -606,6 +620,43 @@ impl Renderer<'_, '_, '_> {
         })
     }
 
+    fn units_pool_variant_order(
+        &self,
+        left: &VariantDefinitionRow,
+        left_index: usize,
+        right: &VariantDefinitionRow,
+        right_index: usize,
+    ) -> Result<Ordering, String> {
+        if left.id == right.id {
+            return Ok(Ordering::Equal);
+        }
+        // 140BC2A00/140BC2AC0: version, type +0x418, creator, then origin.
+        // Equal tuples merge even when the definition handles differ.
+        let version = variant_version(left)?.cmp(&variant_version(right)?);
+        if version != Ordering::Equal {
+            return Ok(version);
+        }
+        let kind = (left_index as i32).cmp(&(right_index as i32));
+        if kind != Ordering::Equal {
+            return Ok(kind);
+        }
+        let world = self.context.world()?;
+        let slot = |raw| -> Result<i32, String> {
+            if raw == 0 {
+                Ok(0)
+            } else {
+                world.slot(raw).map(|slot| slot as i32).ok_or_else(|| {
+                    format!("CountryLinks lacks equipment pool country {raw} (140BA6240)")
+                })
+            }
+        };
+        let creator = slot(left.creator_link)?.cmp(&slot(right.creator_link)?);
+        if creator != Ordering::Equal {
+            return Ok(creator);
+        }
+        Ok(slot(left.origin_link)?.cmp(&slot(right.origin_link)?))
+    }
+
     pub(super) fn equipment_list_description(
         &self,
         entries: &[Item],
@@ -615,7 +666,7 @@ impl Renderer<'_, '_, '_> {
         key: &[u8],
     ) -> Result<String, String> {
         // 140306B70 / 140304C20: only resolved variants evaluate their amounts.
-        let mut pool: Vec<(usize, &VariantDefinitionRow, i64)> = Vec::new();
+        let mut pool: Vec<(usize, usize, &VariantDefinitionRow, i64)> = Vec::new();
         for entry in entries.iter().filter(|entry| entry.keyword_is("equipment")) {
             let fields = children(entry);
             let index = self.units_equipment_type(fields, &["type"], scopes)?;
@@ -749,26 +800,51 @@ impl Renderer<'_, '_, '_> {
             let archetype = database.equipment[at]
                 .archetype
                 .ok_or("equipment pool has a null archetype (140FF7A30)")?;
-            if let Some((_, prior, quantity)) =
-                pool.iter_mut().find(|(kind, _, _)| *kind == archetype)
-            {
-                if prior.id != variant.id {
-                    return Err("equipment pool comparison needs unrecorded CEquipmentVariant.version u8 +0x41C for distinct variants of one archetype (140FF9650 -> 140BC2A00/140BC2AC0)".into());
+            if let Some(start) = pool.iter().position(|(kind, _, _, _)| *kind == archetype) {
+                let mut insert = start;
+                let mut equal = false;
+                for (offset, &(kind, prior_index, prior, _)) in pool[start..].iter().enumerate() {
+                    if kind != archetype {
+                        break;
+                    }
+                    insert = start + offset;
+                    match self.units_pool_variant_order(prior, prior_index, variant, at)? {
+                        Ordering::Less => insert += 1,
+                        Ordering::Equal => {
+                            equal = true;
+                            break;
+                        }
+                        Ordering::Greater => break,
+                    }
+                } // FindVariantInRange 140FF9650: stop at the first boundary.
+                if equal {
+                    pool[insert].3 = pool[insert]
+                        .3
+                        .wrapping_add(amount)
+                        .clamp(-0x53e2d620fb40, 0x53e2d620fb40);
+                } else {
+                    pool.insert(
+                        insert,
+                        (
+                            archetype,
+                            at,
+                            variant,
+                            amount.clamp(-0x53e2d620fb40, 0x53e2d620fb40),
+                        ),
+                    );
                 }
-                *quantity = quantity
-                    .wrapping_add(amount)
-                    .clamp(-0x53e2d620fb40, 0x53e2d620fb40);
             } else {
                 // New archetypes append their first item (140FF7A30/140FF7BE0).
                 pool.push((
                     archetype,
+                    at,
                     variant,
                     amount.clamp(-0x53e2d620fb40, 0x53e2d620fb40),
                 ));
             }
         }
         let mut lines = Vec::new();
-        for (archetype, variant, quantity) in pool {
+        for (archetype, _, variant, quantity) in pool {
             let amount = quantity.div_euclid(100_000) as i32;
             if amount <= 0 {
                 continue; // 1413A8A20: floor, int32, positive only.
@@ -866,7 +942,11 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         };
         let country = match scopes.this {
-            Scope::Country(country) if (country as i32) > 0 => country,
+            Scope::Country(country) | Scope::CountryLeader { country, .. }
+                if (country as i32) > 0 =>
+            {
+                country
+            }
             Scope::State(NULL_STATE) => return Ok(String::new()),
             Scope::State(state) => {
                 let row = self.valid_state(state)?.ok_or_else(|| {
@@ -889,23 +969,32 @@ impl Renderer<'_, '_, '_> {
             false
         } else {
             let world = self.context.world()?;
+            let mut found = false;
             for variant in self.units_available_variants(country)? {
                 let variant = variant.ok_or(
                     "AvailableEquipmentVariants references an absent VariantDefinitions row",
                 )?;
-                if (variant.origin_link as i32) >= 1
-                    || world.slot(variant.creator_link) != Some(country)
-                {
-                    continue;
-                }
                 let token = world
                     .token(variant.equipment_token)?
                     .ok_or("LexicalTokens lacks the available variant equipment token")?;
-                if database.get(token) == Some(kind.family) {
-                    return Err("candidate-bearing no-tech probe of recorded CEquipmentVariant.version u8 +0x41C is not ported (140E535D0/14049BEA0); allow_without_tech=yes or no matching family/creator/origin candidate is decidable without it".into());
+                if database.get(token) != Some(kind.family) || variant_version(variant)? != 0 {
+                    continue;
+                }
+                let owner = world
+                    .raw_country(country)
+                    .ok_or("Countries lacks equipment-variant owner (140E535D0)")?;
+                let same_creator = variant.creator_link == owner
+                    || (variant.creator_link != 0
+                        && world
+                            .slot(variant.creator_link)
+                            .ok_or("CountryLinks lacks equipment-variant creator (140E535D0)")?
+                            == country);
+                if same_creator && (variant.origin_link as i32) < 1 {
+                    found = true;
+                    break; // 140E535D0: first family/version-zero/creator/origin match.
                 }
             }
-            true
+            !found
         };
         let modular = self.units_enabled_module_slots(index)?;
         let type_name = self.units_short_equipment_name(
@@ -967,7 +1056,7 @@ impl Renderer<'_, '_, '_> {
     pub(super) fn units_subsidy(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let fields = children(item);
         let country = match scopes.this {
-            Scope::Country(country) => country,
+            Scope::Country(country) | Scope::CountryLeader { country, .. } => country,
             _ => 0,
         };
         let country = self.country_name(country, false)?;
@@ -1023,11 +1112,12 @@ impl Renderer<'_, '_, '_> {
         ) // 140305540 / 140306C50: positive sellers retain order and duplicates.
     }
 
-    pub(super) fn units_unit_bonus(&self, item: &Item) -> Result<String, String> {
-        if children(item).iter().all(|entry| entry.keyword_is("name")) {
-            return Ok(String::new()); // Empty arrays in 140635420, called by 1403794A0.
-        }
-        Err("native nonempty unit-bonus formatter needs CSettings+0x2AC template_counter (140635420/1401FABF0) and registered sub-unit/category arrays; the caller exposes neither cached counter preference nor category description helper".into())
+    pub(super) fn units_unit_bonus(
+        &mut self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        self.units_bonus_description(children(item), scopes)
     }
 
     fn units_current_name(&self, name: &[u8], scopes: Scopes) -> Result<String, String> {
@@ -1043,7 +1133,7 @@ impl Renderer<'_, '_, '_> {
                 b"EFFECT_MANPOWER_ADD_STATE".as_slice(),
                 self.state_name(state)?,
             ),
-            Scope::Country(country) => (
+            Scope::Country(country) | Scope::CountryLeader { country, .. } => (
                 b"EFFECT_MANPOWER_ADD_COUNTRY".as_slice(),
                 self.country_name(country, false)?,
             ),
@@ -1307,7 +1397,11 @@ impl Renderer<'_, '_, '_> {
                 .evaluator()?
                 .scoped_country(scalar_operand(creator)?, scopes)?,
             None => match scopes.this {
-                Scope::Country(country) if (country as i32) > 0 => Some(country),
+                Scope::Country(country) | Scope::CountryLeader { country, .. }
+                    if (country as i32) > 0 =>
+                {
+                    Some(country)
+                }
                 _ => None,
             }, // Native direct CEventScope.country +8, not state owner (14037D200).
         };

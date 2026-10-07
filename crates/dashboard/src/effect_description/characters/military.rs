@@ -292,7 +292,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<String, String> {
         // 1403AAC00: character scope accepts exact yes only; outside it,
         // scalar and character-key forms both assign the +0x58 selector.
-        let operand = if matches!(scopes.this, Scope::Character(_) | Scope::Leader(_)) {
+        let operand = if matches!(
+            scopes.this,
+            Scope::Character(_) | Scope::Leader(_) | Scope::CountryLeader { .. }
+        ) {
             None
         } else {
             item.value
@@ -383,26 +386,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Format 98 records the selected naming operands. Lead D2's format-98
-    // follow-up PR will use them in the shared CArmy formatter (140C72F00).
-    fn char_recorded_unit_name(&self, reference: u64) -> Result<String, String> {
-        // A UNIT absent from Divisions (possibly non-Army) conservatively
-        // refuses; native ResolveArmy null gives empty (14045D0D0).
-        self.context.world()?.unit(reference)?;
-        let row = self
-            .character_table::<tables::DivisionStatus>()?
-            .iter()
-            .find(|row| row.division == reference)
-            .ok_or("DivisionStatus lacks UNIT naming row")?;
-        row.naming
-            .require("Army name (Army+0x340 -> CNameGroupMember+0x60, 140C72F00)")?
-            .as_ref()
-            .ok_or(
-                "Army name (Army+0x340 -> CNameGroupMember+0x60, 140C72F00) capture unavailable",
-            )?;
-        Err("shared UNIT name formatter (140C72F00) awaits lead D2's format-98 follow-up PR to use DivisionStatus.naming".into())
-    }
-
     // Own 14045D2E0: ResolveArmy, slot-13 name, UNIT@142776CA8;
     // key/subject/allow are execution-only. No expansion or appended LF.
     pub(in crate::effect_description) fn char_history_entry(
@@ -415,7 +398,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         if reference == 0 {
             return Ok(String::new());
         }
-        let name = self.char_recorded_unit_name(reference)?;
+        self.context.world()?.unit(reference)?;
+        let name = self.unit_name(reference)?;
         self.char_native_text(
             b"EFFECT_ADD_HISTORY_ENTRY_UNIT_EFFECT",
             &[("UNIT", Argument::Text(&name))],
@@ -436,15 +420,25 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         if reference == 0 {
             return Ok(String::new());
         }
-        let raid = self.context.world()?.raid(reference)?;
-        let name = if raid.unit != 0 {
-            // A missing Divisions row cannot prove native ResolveArmy null.
-            self.char_recorded_unit_name(raid.unit)?
+        let world = self.context.world()?;
+        let raid = world.raid(reference)?;
+        let army_resolved = raid.unit != 0
+            && match world.frame().complete::<replay::rows::tables::Divisions>() {
+                Ok(rows) => rows.iter().any(|row| row.id == raid.unit),
+                Err(why) => {
+                    // The legacy active-raid witness proves Army resolution
+                    // failed before choosing this exact wing. An unknown
+                    // census alone cannot establish the native fallback.
+                    world
+                        .raid_wing_name(raid.air_wing)
+                        .map_err(|_| why.to_string())?;
+                    false
+                }
+            };
+        let name = if army_resolved {
+            self.unit_name(raid.unit)?
         } else if raid.air_wing != 0 {
-            return Err(
-                "shared wing naming hook (141454480 -> 140F4B8F0, CAirWing+0x998) is unavailable"
-                    .into(),
-            );
+            self.unit_name(raid.air_wing)?
         } else {
             String::new()
         };
@@ -469,7 +463,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(String::new());
         }
         // Missing Divisions cannot prove ResolveArmy null (140529260/14045D8B0).
-        let name = self.char_recorded_unit_name(reference)?;
+        self.context.world()?.unit(reference)?;
+        let name = self.unit_name(reference)?;
         self.char_native_text(
             b"ADD_UNIT_MEDAL_DIV_EFFECT",
             &[("DIV", Argument::Text(&name))],

@@ -85,9 +85,7 @@ impl Renderer<'_, '_, '_> {
         key: &[u8],
     ) -> Result<String, String> {
         // 140318680 / 140318BA0 / 1403192B0: LF, without scoped expansion.
-        let country = self.country_target(item, scopes)?.ok_or_else(|| {
-            "invalid country target names reserved CCountry[0]+0x10 (140BA5960); its CountryAppearance naming inputs have no recording writer".to_string()
-        })?;
+        let country = self.country_target(item, scopes)?.unwrap_or(0); // 140BA5960.
         let country = self.country_name(country, false)?;
         self.line(key, &[("COUNTRY", Argument::Text(&country))], scopes, false)
     }

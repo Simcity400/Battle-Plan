@@ -1,7 +1,7 @@
 //! Native naval member grouping and retained ship-result categories (format 22).
 use super::{
     HoverText, Selection, Values, Widget,
-    binding::{Bindings, NavalEntry, fill, hide, sprite, text},
+    binding::{Bindings, FLAG, Flags, NavalEntry, TEXT, country_flag, fill, hide, sprite, text},
     tooltips::{hover_text, set_hover},
 };
 use crate::{
@@ -236,7 +236,7 @@ fn air_entries(
     document: &Document,
     frame: &DecodedFrame,
     id: u64,
-    flags: &BTreeMap<u32, String>,
+    flags: &Flags,
     aliases: &BTreeMap<u32, u32>,
     vision: &Vision,
     heights: &mut BTreeMap<(u8, &str), f32>,
@@ -666,21 +666,19 @@ fn air_entries(
             }
             Ok(false)
         })();
-        let label = if let (Some(tag), Ok(low)) = (flags.get(&first.country), low_efficiency) {
-            Some(air_count_label(group.side, tag, current, maximum, low))
-        } else {
-            out.refuse(format!(
-                "Naval combat {id} air group model {} count/flag is withheld: {}.",
-                group.model + 1,
-                match low_efficiency {
-                    Err(reason) => reason.to_owned(),
-                    Ok(_) => format!(
-                        "country {} has no content-resolved tag and flag",
-                        first.country
-                    ),
-                }
-            ));
-            None
+        let label = low_efficiency.map_err(str::to_owned).and_then(|low| {
+            country_flag(flags, first.country)
+                .map(|tag| air_count_label(group.side, &tag, current, maximum, low))
+        });
+        let label = match label {
+            Ok(label) => Some(label),
+            Err(reason) => {
+                out.refuse(format!(
+                    "Naval combat {id} air group model {} count/flag is withheld: {reason}.",
+                    group.model + 1,
+                ));
+                None
+            }
         };
         push_air_entry(out, heights, group.side, name, size, label, hover);
     }
@@ -692,7 +690,7 @@ pub(super) fn bind(
     document: &Document,
     frame: &DecodedFrame,
     selection: Selection,
-    flags: &BTreeMap<u32, String>,
+    flags: &Flags,
     vision: &Vision,
 ) -> io::Result<()> {
     match selection {
@@ -784,7 +782,7 @@ fn active(
     document: &Document,
     frame: &DecodedFrame,
     id: u64,
-    flags: &BTreeMap<u32, String>,
+    flags: &Flags,
     vision: &Vision,
 ) -> io::Result<()> {
     let table = rows::<tables::NavalCombatShips>(frame)?;
@@ -948,6 +946,7 @@ fn active(
         );
         if !key.unknown {
             descriptions(
+                out,
                 &mut values,
                 first.owner,
                 members.len(),
@@ -1181,12 +1180,13 @@ fn center_icon(values: &mut Values, key: &str, name: &str, width: f32, document:
 /// icon + 56; ROM's count "1" starts at icon - 8 and its flag ends 8 px past
 /// the icon.
 pub(super) fn descriptions(
+    out: &mut Bindings,
     values: &mut Values,
     owner: u32,
     count: usize,
     side: u8,
     width: f32,
-    flags: &BTreeMap<u32, String>,
+    flags: &Flags,
 ) {
     let (count_key, flag_key) = if side == 0 {
         ("desc_right", "desc_left")
@@ -1208,16 +1208,13 @@ pub(super) fn descriptions(
             ..Widget::default()
         },
     );
-    if let Some(flag) = flags.get(&owner) {
-        values.insert(
-            flag_key.into(),
-            Widget {
-                text: Some(format!("{}{flag}", super::INLINE_FLAG)),
-                offset: offset(flag_key),
-                ..Widget::default()
-            },
-        );
-    }
+    out.bind_in(
+        values,
+        flag_key,
+        TEXT,
+        country_flag(flags, owner).map(|flag| format!("{}{flag}", super::INLINE_FLAG)),
+    );
+    values.entry(flag_key.into()).or_default().offset = offset(flag_key);
 }
 
 fn repeated(values: &mut Values, key: &str, template: String, entries: Vec<Values>) {
@@ -1235,7 +1232,7 @@ fn result(
     document: &Document,
     frame: &DecodedFrame,
     id: u64,
-    flags: &BTreeMap<u32, String>,
+    flags: &Flags,
 ) -> io::Result<()> {
     let table = rows::<tables::NavalCombatResultDetails>(frame)?;
     let Some(detail) = table.rows().iter().find(|r| r.result == id) else {
@@ -1291,7 +1288,7 @@ fn result(
                 hide(&mut values, "fleet");
             }
             text(&mut values, "number", group.len().to_string());
-            result_flags(&mut values, &group, flags);
+            result_flags(out, &mut values, &group, flags);
             entries.push(values);
         }
         repeated(
@@ -1331,17 +1328,12 @@ fn result(
                 .map(|(owner, count)| {
                     let mut values = Values::new();
                     text(&mut values, "number", count.to_string());
-                    if let Some(flag) = flags.get(&owner) {
-                        values.insert(
-                            "country_flag".into(),
-                            Widget {
-                                flag: Some(flag.clone()),
-                                ..Widget::default()
-                            },
-                        );
-                    } else {
-                        hide(&mut values, "country_flag");
-                    }
+                    out.bind_in(
+                        &mut values,
+                        "country_flag",
+                        FLAG,
+                        country_flag(flags, owner),
+                    );
                     values
                 })
                 .collect();
@@ -1366,7 +1358,12 @@ fn result(
     out.warnings.push("Format-22 retained results: copied sunk_by classifies survivors/losses; native subunit/formation survivor and sprite/convoy loss groups, recorded counts, copied sprites and country flags are bound. UNVERIFIED: country ordering, representative survivor sprite choice, plane equipment-icon joins, outcome perspective, detail hit text and result scrolling require native binder completion and a retained-result capture. No active-combat disappearance is treated as a result.".into());
     Ok(())
 }
-fn result_flags(values: &mut Values, ships: &[&NavalResultShip], flags: &BTreeMap<u32, String>) {
+fn result_flags(
+    out: &mut Bindings,
+    values: &mut Values,
+    ships: &[&NavalResultShip],
+    flags: &Flags,
+) {
     for key in [
         "country_flag_left",
         "country_flag_right",
@@ -1387,16 +1384,8 @@ fn result_flags(values: &mut Values, ships: &[&NavalResultShip], flags: &BTreeMa
         &["country_flag_left", "country_flag_right"]
     };
     for (owner, key) in owners.into_iter().zip(slots) {
-        if let Some(flag) = flags.get(&owner) {
-            values.insert(
-                (*key).into(),
-                Widget {
-                    flag: Some(flag.clone()),
-                    size: Some([12.0, 8.0]),
-                    ..Widget::default()
-                },
-            );
-        }
+        out.bind_in(values, key, FLAG, country_flag(flags, owner));
+        values.entry((*key).into()).or_default().size = Some([12.0, 8.0]);
     }
 }
 

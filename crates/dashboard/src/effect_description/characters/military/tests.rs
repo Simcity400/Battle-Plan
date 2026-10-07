@@ -31,6 +31,8 @@ fn fixture(category: i32) -> (Fixture, Folder) {
                 " operative_skill_3:0 \"Expert Agent\"\n OPERATIVE:0 \"Agent\"\n",
                 " synthetic_operative:0 \"Authored agent\"\n",
                 " ADD_DIVISIONAL_COMMANDER_XP:0 \"Commander XP $VAL|2$ [Root.GetTag]\"\n",
+                " EFFECT_ADD_HISTORY_ENTRY_UNIT_EFFECT:0 \"History $UNIT$ [Root.GetTag]\"\n",
+                " ADD_UNIT_MEDAL_DIV_EFFECT:0 \"Medal $DIV$ [Root.GetTag]\"\n",
                 " EFFECT_ADD_RAID_HISTORY_ENTRY_UNIT_EFFECT:0 \"Raid history $NAME$ [Root.GetTag]\"\n",
             ),
         ),
@@ -490,7 +492,11 @@ fn add_unit_medal_to_latest_entry() {
     *fixture.frame.tables[TableId::DivisionStatus.index()] =
         TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
             division: reference,
-            naming: Recorded::Value(Some(NameOperands::default())),
+            name: Recorded::NotRecorded, // Historical generator operands.
+            naming: Recorded::Value(Some(NameOperands {
+                custom: b"Recorded army".to_vec(),
+                ..Default::default()
+            })),
             ..Default::default()
         }]));
     let out = fixture.render(
@@ -498,10 +504,8 @@ fn add_unit_medal_to_latest_entry() {
         &mut EventScopes::new(vec![EventScope::of(EventObject::Unit(reference))]),
         Content::default(),
     );
-    assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([(
-        "synthetic effect CAddUnitMedalEffect: key add_unit_medal_to_latest_entry: shared UNIT name formatter (140C72F00) awaits lead D2's format-98 follow-up PR to use DivisionStatus.naming".to_owned(), 1
-    )]));
+    assert_eq!(out.text, "Medal Recorded army [Root.GetTag]");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     let out = fixture.render(
         "add_unit_medal_to_latest_entry={unit_medals=synthetic_medal}",
         &mut EventScopes::new(vec![EventScope::of(EventObject::Unit(0))]),
@@ -511,11 +515,10 @@ fn add_unit_medal_to_latest_entry() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// All three Army consumers distinguish old field absence from the still
-// pending lead D2 format-98 formatter. Their caller keys/arguments are 14045D2E0,
-// 14045D8B0 and 1404A2FB0 -> 141454480.
+// All three Army consumers use the shared formatter and distinguish old
+// fields from failed captures (14045D2E0, 14045D8B0, 1404A2FB0 -> 141454480).
 #[test]
-fn army_name_consumers_keep_field_level_compatibility_and_name_missing_core_hook() {
+fn army_name_consumers_share_names_and_field_level_compatibility() {
     let (mut fixture, _folder) = fixture(1);
     let unit = 44 | 2 << 32;
     let raid = 9 | 3 << 32;
@@ -531,32 +534,41 @@ fn army_name_consumers_keep_field_level_compatibility_and_name_missing_core_hook
             unit,
             ..Default::default()
         }]));
-    for recorded in [false, true] {
+    for naming in [
+        Recorded::NotRecorded,
+        Recorded::Value(None),
+        Recorded::Value(Some(NameOperands {
+            custom: b"Recorded army".to_vec(),
+            ..Default::default()
+        })),
+    ] {
+        let recorded = matches!(naming, Recorded::Value(Some(_)));
+        let unavailable = matches!(naming, Recorded::Value(None));
         *fixture.frame.tables[TableId::DivisionStatus.index()] =
             TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
                 division: unit,
-                naming: if recorded {
-                    Recorded::Value(Some(NameOperands::default()))
-                } else {
-                    Recorded::NotRecorded
-                },
+                name: Recorded::NotRecorded, // Test the older naming field independently.
+                naming,
                 ..Default::default()
             }]));
-        for (source, class, scope) in [
+        for (source, class, scope, expected) in [
             (
                 "add_history_entry={key=synthetic_history subject=\"Custom String\" allow=yes}",
                 "CAddHistoryEntryEffect",
                 EventObject::Unit(unit),
+                "History Recorded army [Root.GetTag]",
             ),
             (
                 "add_unit_medal_to_latest_entry={unit_medals=synthetic_medal}",
                 "CAddUnitMedalEffect",
                 EventObject::Unit(unit),
+                "Medal Recorded army [Root.GetTag]",
             ),
             (
                 "add_raid_history_entry=yes",
                 "CAddRaidHistoryEntryEffect@?A0x8a0aef5d@NRaids",
                 EventObject::Raid(raid),
+                "Raid history Recorded army [Root.GetTag]\n",
             ),
         ] {
             let out = fixture.render(
@@ -564,11 +576,18 @@ fn army_name_consumers_keep_field_level_compatibility_and_name_missing_core_hook
                 &mut EventScopes::new(vec![EventScope::of(scope)]),
                 Content::default(),
             );
-            assert_eq!(out.text, "");
-            let reason = if recorded {
-                "shared UNIT name formatter (140C72F00) awaits lead D2's format-98 follow-up PR to use DivisionStatus.naming"
+            if recorded {
+                assert_eq!(out.text, expected);
+                assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+                continue;
+            }
+            assert!(out.text.is_empty());
+            let reason = if unavailable {
+                format!(
+                    "DivisionStatus.naming unavailable for UNIT {unit:#x}: guarded read or arena shortage (1409B5640)"
+                )
             } else {
-                "Army name (Army+0x340 -> CNameGroupMember+0x60, 140C72F00) not recorded"
+                "DivisionStatus.naming not recorded".to_owned()
             };
             assert_eq!(
                 out.refusals,
@@ -601,6 +620,118 @@ fn raid_history_without_assigned_army_or_wing_keeps_native_empty_name_line() {
     );
     assert_eq!(out.text, "Raid history  [Root.GetTag]\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+#[test]
+fn raid_history_wing_falls_back_from_stale_army_and_preserves_language_refusal() {
+    use engine::raid_tooltip_operands::{
+        ARMY_RESOLVED, NAME, REFERENCES, WING_NAME, WING_RESOLVED,
+    };
+    let (mut fixture, _folder) = fixture(1);
+    let reference = 9 | 3 << 32;
+    let wing = 12 | 4 << 32;
+    let name = b"Recorded wing";
+    *fixture.frame.tables[TableId::Raids.index()] =
+        TableView::Complete(TableRows::Raids(vec![RaidRow {
+            id: 3,
+            reference_type: 9,
+            air_wing: wing,
+            phase: 4,
+            ..Default::default()
+        }]));
+    let values = [
+        (REFERENCES, 0, 0),
+        (REFERENCES, 1, wing as i64),
+        (NAME, ARMY_RESOLVED, 0),
+        (NAME, WING_RESOLVED, 1),
+        (WING_NAME, u32::MAX, name.len() as i64),
+    ];
+    let chunks = name.chunks(8).enumerate().map(|(index, bytes)| {
+        let mut packed = [0; 8];
+        packed[..bytes.len()].copy_from_slice(bytes);
+        (WING_NAME, index as u32, i64::from_le_bytes(packed))
+    });
+    *fixture.frame.tables[TableId::RaidTooltipOperands.index()] =
+        TableView::Complete(TableRows::RaidTooltipOperands(
+            values
+                .into_iter()
+                .chain(chunks)
+                .enumerate()
+                .map(|(ordinal, (kind, key, raw))| RaidTooltipOperandRow {
+                    raid: reference,
+                    ordinal: ordinal as u32,
+                    kind,
+                    key,
+                    raw,
+                })
+                .collect(),
+        ));
+    let body = "add_raid_history_entry=yes";
+    let out = fixture.render(
+        body,
+        &mut EventScopes::new(vec![EventScope::of(EventObject::Raid(reference))]),
+        Content::default(),
+    );
+    assert_eq!(out.text, "Raid history Recorded wing [Root.GetTag]\n");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    let stale_army = 44 | 2 << 32;
+    if let TableView::Complete(TableRows::Raids(rows)) =
+        &mut *fixture.frame.tables[TableId::Raids.index()]
+    {
+        rows[0].unit = stale_army;
+    }
+    if let TableView::Complete(TableRows::RaidTooltipOperands(rows)) =
+        &mut *fixture.frame.tables[TableId::RaidTooltipOperands.index()]
+    {
+        rows.iter_mut()
+            .find(|row| row.kind == REFERENCES && row.key == 0)
+            .unwrap()
+            .raw = stale_army as i64;
+    }
+    for census in [
+        TableView::Complete(TableRows::Divisions(Vec::new())),
+        TableView::Unavailable {
+            reason: "synthetic Army census unavailable".into(),
+        },
+    ] {
+        *fixture.frame.tables[TableId::Divisions.index()] = census;
+        let out = fixture.render(
+            body,
+            &mut EventScopes::new(vec![EventScope::of(EventObject::Raid(reference))]),
+            Content::default(),
+        );
+        assert_eq!(out.text, "Raid history Recorded wing [Root.GetTag]\n");
+        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    }
+    let operands = fixture.frame.tables[TableId::RaidTooltipOperands.index()].clone();
+    *fixture.frame.tables[TableId::RaidTooltipOperands.index()] = TableView::Unavailable {
+        reason: "synthetic raid witness unavailable".into(),
+    };
+    let out = fixture.render(
+        body,
+        &mut EventScopes::new(vec![EventScope::of(EventObject::Raid(reference))]),
+        Content::default(),
+    );
+    assert!(out.text.is_empty());
+    assert_eq!(out.refusals.len(), 1);
+    assert!(
+        out.refusals
+            .keys()
+            .next()
+            .unwrap()
+            .contains("synthetic Army census unavailable")
+    );
+    fixture.frame.tables[TableId::RaidTooltipOperands.index()] = operands;
+    std::sync::Arc::make_mut(&mut fixture.catalogue.localisation).language = "french".into();
+    let out = fixture.render(
+        body,
+        &mut EventScopes::new(vec![EventScope::of(EventObject::Raid(reference))]),
+        Content::default(),
+    );
+    assert!(out.text.is_empty());
+    assert_eq!(out.refusals, BTreeMap::from([(
+        "synthetic effect CAddRaidHistoryEntryEffect@?A0x8a0aef5d@NRaids: key add_raid_history_entry: raid wing name is text the game stored in english without its key, and the viewer's language is french".into(), 1
+    )]));
 }
 
 // Workshop 1521695605 common/on_actions/00_on_actions_global.txt:3104.

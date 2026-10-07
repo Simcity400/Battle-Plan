@@ -198,6 +198,15 @@ fn intel_uses_owned_state_existence_and_native_domain_order() {
     *fixture.frame.tables[TableId::ScriptVariables.index()] = TableView::Unavailable {
         reason: "synthetic gap".into(),
     };
+    // ResolveScriptCountryTag (140BA5D10) consults the native original-tag
+    // bucket before the intel description can reject a nonowning target.
+    *fixture.frame.tables[TableId::ReservedCountryNaming.index()] =
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            ReservedCountryNamingRow {
+                original_tag_buckets: Recorded::Value(Some(vec![vec![], vec![], vec![], vec![]])),
+                ..Default::default()
+            },
+        ]));
     assert_eq!(
         text(&fixture, "add_intel={target=BBB civilian_intel=amount}"),
         ""
@@ -205,12 +214,58 @@ fn intel_uses_owned_state_existence_and_native_domain_order() {
 }
 
 #[test]
+fn intel_nonowning_target_requires_its_native_original_tag_bucket() {
+    let mut fixture = fixture();
+    let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryCounterInputs.index()]
+    else {
+        unreachable!()
+    };
+    rows.iter_mut()
+        .find(|row| row.country == 200)
+        .unwrap()
+        .owned_state_count = 0;
+    for buckets in [Recorded::NotRecorded, Recorded::Value(None)] {
+        *fixture.frame.tables[TableId::ReservedCountryNaming.index()] =
+            TableView::Complete(TableRows::ReservedCountryNaming(vec![
+                ReservedCountryNamingRow {
+                    original_tag_buckets: buckets,
+                    ..Default::default()
+                },
+            ]));
+        let out = fixture.render(
+            "add_intel={target=BBB civilian_intel=1}",
+            &mut fresh(),
+            Content::default(),
+        );
+        assert!(out.text.is_empty());
+        assert_eq!(out.refusals.values().sum::<usize>(), 1);
+        assert!(
+            out.refusals
+                .keys()
+                .any(|why| why.contains("ReservedCountryNaming.original_tag_buckets")),
+            "{:?}",
+            out.refusals
+        );
+    }
+}
+
+#[test]
 fn truce_rounds_days_from_current_midnight_and_uses_native_date_text() {
     let mut fixture = fixture();
     fixture.frame.hour = engine::cdate::HOUR_EPOCH + 1936 * 8760 + 23;
+    fixture.catalogue.localisation = std::sync::Arc::new(
+        fixture
+            .catalogue
+            .localisation
+            .iter()
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .chain([("January".into(), "SyntheticJanuary".into())])
+            .collect(),
+    );
     assert_eq!(
         text(&fixture, "set_truce={target=BBB days=1.5}"),
-        "Truce beta/3 January, 1936"
+        "Truce beta/3 SyntheticJanuary, 1936"
     );
 }
 
@@ -251,6 +306,46 @@ fn imports_and_licenses_use_content_and_ignore_execution_only_fields() {
         );
         assert_eq!(out.text, expected, "{body}");
         assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    }
+}
+
+#[test]
+fn imports_and_licenses_resolve_reserved_country_names() {
+    let mut fixture = fixture();
+    *fixture.frame.tables[TableId::ReservedCountryNaming.index()] =
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            ReservedCountryNamingRow {
+                tag: b"BBB".to_vec(),
+                built: 7,
+                ..Default::default()
+            },
+        ]));
+    let resources = [installed_content::resources::Resource {
+        token: "syn_resource".into(),
+        icon_frame: Some(7),
+    }];
+    let names = installed_content::key_names::KeyNames::default();
+    for (body, expected) in [
+        (
+            "create_import={resource=syn_resource amount=4 exporter=0}",
+            "Import 4\u{13}resources_strip|7 /Alpha/Beta",
+        ),
+        (
+            "create_production_license={target=0 equipment={version_name=Raw}}",
+            "License beta/Raw\n",
+        ),
+    ] {
+        let out = fixture.render_native(
+            body,
+            &mut fresh(),
+            Content {
+                resources: Some(&resources),
+                key_names: Some(&names),
+                ..Default::default()
+            },
+        );
+        assert_eq!(out.text, expected, "{body}: {:?}", out.refusals);
+        assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals);
     }
 }
 

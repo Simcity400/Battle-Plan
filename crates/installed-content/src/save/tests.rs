@@ -80,6 +80,33 @@ fn country_cores_are_the_saved_state_ids_in_order() {
 }
 
 #[test]
+fn country_original_tag_preserves_conditional_presence_and_exact_scalar_bytes() {
+    let parse = |text: &[u8]| {
+        let doc = crate::parser::parse(text).unwrap();
+        parse_country(b"OWN", &doc.items)
+    };
+    assert_eq!(parse(b"").unwrap().original_tag, None);
+    assert_eq!(
+        parse(b"original_tag=OWN").unwrap().original_tag,
+        Some(b"OWN".to_vec())
+    );
+    assert_eq!(
+        parse(b"original_tag=OTHER").unwrap().original_tag,
+        Some(b"OTHER".to_vec())
+    );
+    assert_eq!(
+        parse(b"original_tag=\"\"").unwrap().original_tag,
+        Some(Vec::new())
+    );
+    for broken in [
+        b"original_tag=A original_tag=B".as_slice(),
+        b"original_tag={}",
+    ] {
+        assert!(parse(broken).is_err());
+    }
+}
+
+#[test]
 fn map_input_fields_preserve_literal_bytes_and_native_omissions() {
     let country = crate::parser::parse(b"cosmetic_tag=BRM_british").unwrap();
     assert_eq!(
@@ -900,6 +927,42 @@ fn division_supply_grace_parser_preserves_zero_signed_precision_and_absence() {
 }
 
 #[test]
+fn division_disrupted_supply_parser_keeps_positive_precision_and_omission() {
+    let unit = |fields: &str| {
+        division_save(&format!(
+            "division={{id={{id=1 type=51}} logical_country=SOV strength=1 organisation=2 {fields}}}"
+        ))
+    };
+    for (text, raw) in [("0.00001", 1), ("90071992547.40993", 9_007_199_254_740_993)] {
+        let saved = unit(&format!("disrupted_supply={text}")).unwrap();
+        let value = saved.divisions[&((1_u64 << 32) | 51)]
+            .presentation
+            .disrupted_supply
+            .as_ref()
+            .unwrap();
+        assert_eq!(value.raw, raw);
+        assert_eq!(value.lexeme, text.as_bytes());
+    }
+    let saved = unit("").unwrap();
+    assert!(
+        saved.divisions[&((1_u64 << 32) | 51)]
+            .presentation
+            .disrupted_supply
+            .is_none()
+    );
+    for fields in [
+        "disrupted_supply=0",
+        "disrupted_supply=-0.00001",
+        "disrupted_supply=x",
+        "disrupted_supply=0.000001",
+        "disrupted_supply={}",
+        "disrupted_supply=1 disrupted_supply=1",
+    ] {
+        assert!(unit(fields).is_err(), "{fields}");
+    }
+}
+
+#[test]
 fn division_explicit_invalid_optionals_are_not_treated_as_absent() {
     let prefix = "division={id={id=1 type=51} logical_country=SOV strength=0 organisation=0 ";
     for optional in [
@@ -1357,6 +1420,27 @@ fn air_wings_preserve_pool_and_override_countries_and_required_mission_fields() 
         .unwrap_err()
         .to_string();
     assert!(error.contains("air save tables: missing serialized air boolean"));
+}
+
+#[test]
+fn stored_air_wing_save_names_preserve_empty_missing_and_literal_text() {
+    for (field, expected) in [
+        ("", None),
+        ("name=\"\"", Some(&b""[..])),
+        (
+            "name=\"Wing %d [Root.GetTag]\"",
+            Some(&b"Wing %d [Root.GetTag]"[..]),
+        ),
+    ] {
+        let body = format!(
+            "strategic_air={{GER={{air_wing_pool={{id={{id=1 type=70}} air_base={{id=2 type=63}} air_wings={{id={{id=3 type=54}} count=1 tag=GER experience=0 equipment={{allow_zero_entries=no}} mission={{type=0}} {field}}}}}}}}}"
+        );
+        let saved = diplomacy_save("", &body).unwrap();
+        assert_eq!(
+            saved.air_wings[&((3_u64 << 32) | 54)].name.as_deref(),
+            expected
+        );
+    }
 }
 
 #[test]

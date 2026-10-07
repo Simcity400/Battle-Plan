@@ -2,10 +2,18 @@ use super::*;
 use replay::rows::*;
 
 fn frame() -> DecodedFrame {
-    let mut frame = crate::scope::tests::frame();
+    let mut frame = crate::scope::tests::positive_frame();
     for id in TableId::ALL {
         if matches!(&*frame.tables[id.index()], TableView::Unavailable { .. }) {
             *frame.tables[id.index()] = TableView::Complete(TableRows::empty(id));
+        }
+    }
+    if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *frame.tables[TableId::CountryAppearance.index()]
+    {
+        for row in rows {
+            row.original_tag_reference = Recorded::Value(Some(0));
+            row.original_tag = Recorded::Value(Some(Vec::new()));
         }
     }
     frame
@@ -22,7 +30,7 @@ fn rendered(
         frame,
         &catalogue.localisation,
         catalogue.scripted_content()?,
-        0,
+        1,
     );
     crate::catalogue::localised_in(&catalogue.localisation, key, &[], &context)
 }
@@ -46,7 +54,7 @@ fn entry_invocations_detect_cycles_and_render_finite_scope_changes() {
             .is_ok()
     );
     let f = frame();
-    let text = ScriptedText::new(&f, &catalogue.localisation, content, 0);
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
     for entry in ["SelfLoop", "Loop"] {
         let refusal = text.expand(&format!("[{entry}]")).unwrap_err();
         assert!(
@@ -63,7 +71,7 @@ fn entry_invocations_detect_cycles_and_render_finite_scope_changes() {
                 } else {
                     Link::Scope(at + 1)
                 },
-                ..EventScope::of(EventObject::Country(if at + 1 == count { 0 } else { 1 }))
+                ..EventScope::of(EventObject::Country(if at + 1 == count { 1 } else { 2 }))
             })
             .collect(),
     );
@@ -91,12 +99,12 @@ fn entry_invocations_refuse_growing_history_at_the_backstop_without_stack_overfl
         &f,
         &catalogue.localisation,
         catalogue.scripted_content().unwrap(),
-        1,
+        2,
     );
     // Each promotion appends a GER PREV node, ending at the original SOV scope.
     let unknown = EventScopes::new(vec![EventScope {
         prev: Link::Unknown,
-        ..EventScope::of(EventObject::Country(0))
+        ..EventScope::of(EventObject::Country(1))
     }]);
     for result in [text.expand("[Grow]"), text.expand_in("[Grow]", &unknown)] {
         let refusal = result.unwrap_err();
@@ -145,7 +153,7 @@ fn entry_invocations_guard_fresh_balance_contexts() {
             &f,
             &catalogue.localisation,
             catalogue.scripted_content().unwrap(),
-            0,
+            1,
         )
         .expand(text)
         .unwrap_err();
@@ -158,7 +166,7 @@ fn province_text_uses_native_members_name_precedence_and_recorded_perspective() 
     use installed_content::movement::{MovementMap, ProvinceTerrain};
     let (catalogue, _folder) = tests::catalogue(
         "entry = { name = Echo text = { localization_key = WRONG } }",
-        " GER_VICTORY_POINTS_5:0 \"Owner\"\n SOV_VICTORY_POINTS_5:0 \"Controller\"\n VICTORY_POINTS_5:0 \"Generic\"\n OLD_VICTORY_POINTS_5:0 \"Original\"\n RENAME:0 \"Renamed\"\n mod_terrain:0 \"terrain_alias\"\n terrain_alias:0 \"Cold\"\n WRONG:0 \"not bound\"\n",
+        " GER_VICTORY_POINTS_5:0 \"Owner\"\n SOV_VICTORY_POINTS_5:0 \"Controller\"\n VICTORY_POINTS_5:0 \"Generic\"\n OLD_VICTORY_POINTS_5:0 \"Original\"\n OR0_VICTORY_POINTS_5:0 \"Reserved state owner\"\n OR0_VICTORY_POINTS_6:0 \"Reserved original\"\n RENAME:0 \"Renamed\"\n mod_terrain:0 \"terrain_alias\"\n terrain_alias:0 \"Cold\"\n WRONG:0 \"not bound\"\n",
     );
     let content = catalogue.scripted_content().unwrap();
     let terrain = MovementMap::from_parts(&[
@@ -198,19 +206,70 @@ fn province_text_uses_native_members_name_precedence_and_recorded_perspective() 
             observer_country: 200,
         }],
     );
-    let scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(0))]);
+    let scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
     let render = |f: &DecodedFrame, province, value| {
-        ScriptedText::new(f, &catalogue.localisation, content, 0)
+        ScriptedText::new(f, &catalogue.localisation, content, 1)
             .expand_province_in(value, province, &scopes)
     };
     assert_eq!(render(&f, 5, "[GetName]/[Controller.GetTag]/[Terrain.GetName]/[Player.GetTag]/[ROOT.GetTag]/[Echo]/[GetID]").as_deref(),
         Ok("Owner/SOV/Cold/SOV/GER//"));
+    assert!(
+        render(&f, 6, "[GetName]")
+            .unwrap_err()
+            .contains("ReservedCountryNaming")
+    );
+    set::<tables::ReservedCountryNaming>(
+        &mut f,
+        vec![ReservedCountryNamingRow {
+            tag: b"ZZ0".to_vec(),
+            original_tag_reference: Recorded::Value(Some(0)),
+            original_tag: Recorded::Value(Some(Vec::new())),
+            ..Default::default()
+        }],
+    );
     assert_eq!(
         render(&f, 6, "[GetName]/[Terrain.GetName]").as_deref(),
         Ok("/")
     );
+    let TableView::Complete(TableRows::ReservedCountryNaming(rows)) =
+        &mut *f.tables[TableId::ReservedCountryNaming.index()]
+    else {
+        unreachable!()
+    };
+    // GetOriginalTagOrTag uses the independent getter even though the
+    // reserved name generator has no dynamic-only name_tag.
+    rows[0].original_tag_reference = Recorded::Value(Some(1));
+    rows[0].original_tag = Recorded::Value(Some(b"OR0".to_vec()));
+    assert_eq!(
+        render(&f, 6, "[GetName]/[Terrain.GetName]").as_deref(),
+        Ok("Reserved original/")
+    );
+    let mut state = f.complete::<tables::States>().unwrap()[0].clone();
+    state.owner = 0;
+    set::<tables::States>(&mut f, vec![state.clone()]);
+    assert_eq!(
+        render(&f, 5, "[GetName]").as_deref(),
+        Ok("Reserved state owner")
+    );
+    state.owner = 300;
+    set::<tables::States>(&mut f, vec![state.clone()]);
+    assert!(
+        render(&f, 5, "[GetName]")
+            .unwrap_err()
+            .contains("state owner's link 300 resolves to no country")
+    );
+    *f.tables[TableId::States.index()] = TableView::Unavailable {
+        reason: "state owner not sampled".into(),
+    };
+    assert!(
+        render(&f, 5, "[GetName]")
+            .unwrap_err()
+            .contains("state owner not sampled")
+    );
+    state.owner = 100;
+    set::<tables::States>(&mut f, vec![state]);
     assert_eq!(render(&f, 999, "[GetName]").as_deref(), Ok("NULL"));
-    for (country, observer_country) in [(100, 200), (0, 0)] {
+    for (country, observer_country) in [(100, 200), (0, 100)] {
         set::<tables::LocalPlayer>(
             &mut f,
             vec![LocalPlayerRow {
@@ -220,6 +279,16 @@ fn province_text_uses_native_members_name_precedence_and_recorded_perspective() 
         );
         assert_eq!(render(&f, 5, "[Player.GetTag]").as_deref(), Ok("GER"));
     }
+    // Raw null with no observer selection resolves the genuine reserved
+    // country, independently of the positive GER perspective above.
+    set::<tables::LocalPlayer>(
+        &mut f,
+        vec![LocalPlayerRow {
+            country: 0,
+            observer_country: 0,
+        }],
+    );
+    assert_eq!(render(&f, 5, "[Player.GetTag]").as_deref(), Ok("ZZ0"));
     set::<tables::ProvinceNames>(
         &mut f,
         vec![ProvinceNameRow {
@@ -241,8 +310,40 @@ fn province_text_uses_native_members_name_precedence_and_recorded_perspective() 
     else {
         unreachable!()
     };
-    appearance[0].name_tag = b"OLD".to_vec();
+    // A static country's generator gate can stay empty while the exact
+    // original-or-own getter qualifies its victory-point text with OLD.
+    appearance[0].original_tag_reference = Recorded::Value(Some(1));
+    appearance[0].original_tag = Recorded::Value(Some(b"OLD".to_vec()));
     assert_eq!(render(&f, 5, "[GetName]").as_deref(), Ok("Original"));
+    let TableView::Complete(TableRows::CountryAppearance(appearance)) =
+        &mut *f.tables[TableId::CountryAppearance.index()]
+    else {
+        unreachable!()
+    };
+    appearance[0].original_tag = Recorded::NotRecorded;
+    assert!(
+        render(&f, 5, "[GetName]")
+            .unwrap_err()
+            .contains("CountryAppearance.original_tag not recorded")
+    );
+    let TableView::Complete(TableRows::CountryAppearance(appearance)) =
+        &mut *f.tables[TableId::CountryAppearance.index()]
+    else {
+        unreachable!()
+    };
+    appearance[0].original_tag = Recorded::Value(None);
+    assert!(
+        render(&f, 5, "[GetName]")
+            .unwrap_err()
+            .contains("capture refused (1406DF830)")
+    );
+    let TableView::Complete(TableRows::CountryAppearance(appearance)) =
+        &mut *f.tables[TableId::CountryAppearance.index()]
+    else {
+        unreachable!()
+    };
+    appearance[0].original_tag_reference = Recorded::Value(Some(1));
+    appearance[0].original_tag = Recorded::Value(Some(b"OLD".to_vec()));
     *f.tables[TableId::ProvinceNames.index()] = TableView::Unavailable {
         reason: "test gap".into(),
     };
@@ -291,7 +392,7 @@ fn saved_globals_promote_text_and_missing_names_leave_its_context_unchanged() {
         ],
     );
     let content = catalogue.scripted_content().unwrap();
-    let text = ScriptedText::new(&f, &catalogue.localisation, content, 0);
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
     assert_eq!(
         text.expand("[chosen.GetTag]/[place.GetID]/[person.GetName]")
             .as_deref(),
@@ -302,7 +403,7 @@ fn saved_globals_promote_text_and_missing_names_leave_its_context_unchanged() {
         Ok("/")
     );
     set::<tables::GlobalSavedEventTargets>(&mut f, Vec::new());
-    let text = ScriptedText::new(&f, &catalogue.localisation, content, 0);
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
     assert_eq!(text.expand("[chosen.GetTag]").as_deref(), Ok(""));
 }
 
@@ -330,11 +431,11 @@ fn random_lists_use_raw_fixed5_seed_scope_identity_and_native_fast_paths() {
             .is_ok()
     );
     let f = frame();
-    let text = ScriptedText::new(&f, &catalogue.localisation, content, 0);
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
     assert_eq!(
         text.expand("[Default]|[Seeded]|[SOV.Seeded]|[Single]|[Zero]|[Empty]|[Ordinary]")
             .as_deref(),
-        Ok("C|C|B|A|||A")
+        Ok("C|B|B|A|||A")
     );
     // The default scope draws 54/60; a promoted object uses the second
     // constructor hash lane of 424242, drawing 57/60 (1410CDDF0).
@@ -344,12 +445,12 @@ fn random_lists_use_raw_fixed5_seed_scope_identity_and_native_fast_paths() {
     );
     let seeded = EventScopes::new(vec![EventScope {
         random_seed: 2,
-        ..EventScope::of(EventObject::Country(0))
+        ..EventScope::of(EventObject::Country(1))
     }]);
     assert_eq!(text.expand_in("[Default]", &seeded).as_deref(), Ok("A"));
     let missing = EventScopes::new(vec![EventScope {
         random_seed_refusal: Some("decision random-count is unrecorded"),
-        ..EventScope::of(EventObject::Country(0))
+        ..EventScope::of(EventObject::Country(1))
     }]);
     // CRandomLocList 140A9CD8A returns a sole member before seed/weights;
     // 140A9CF27 uses an explicit seed, 140A9CF9A/BD read the default lanes.
@@ -360,7 +461,7 @@ fn random_lists_use_raw_fixed5_seed_scope_identity_and_native_fast_paths() {
     assert_eq!(
         text.expand_in("[Seeded]|[Single]|[Zero]|[Empty]|[Ordinary]", &missing)
             .as_deref(),
-        Ok("C|A|||A")
+        Ok("B|A|||A")
     );
     // An event-scoped invocation preserves its lanes (1410CDDF0 cases 0-2),
     // while an object promotion constructs a known seed from 424242.
@@ -407,19 +508,19 @@ fn recorded_factory_counts_wrap_convert_and_drive_a_seeded_pick() {
             ..Default::default()
         }],
     );
-    let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 2);
     let evaluator = crate::triggers::Evaluator::new(text.world().unwrap(), None);
-    let scopes = crate::triggers::Scopes::of(crate::triggers::Scope::Country(1));
+    let scopes = crate::triggers::Scopes::of(crate::triggers::Scope::Country(2));
     assert_eq!(
         evaluator.scoped_value(b"num_of_controlled_factories", scopes),
         Ok(700_000)
     );
-    // (MAX + MAX + 9) wraps to 7; raw 700000 + slot 1*31 draws
-    // 1038583950, %60 = 30: subtract 30 then 10 to choose B (140A9CD70).
+    // (MAX + MAX + 9) wraps to 7; raw 700000 + slot 2*31 draws
+    // 152552670, %60 = 30: subtract 30 then 10 to choose B (140A9CD70).
     assert_eq!(text.expand("[Pick]").as_deref(), Ok("B"));
     drop(text);
     set::<tables::CountryFactories>(&mut f, Vec::new());
-    let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 2);
     assert!(
         text.expand("[Pick]")
             .unwrap_err()
@@ -429,7 +530,7 @@ fn recorded_factory_counts_wrap_convert_and_drive_a_seeded_pick() {
     *f.tables[TableId::CountryFactories.index()] = TableView::Unavailable {
         reason: "capture failed".into(),
     };
-    let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 2);
     assert!(
         text.expand("[Pick]")
             .unwrap_err()
@@ -450,9 +551,9 @@ fn scriptable_random_weights_use_the_unified_operands_and_ignore_modifier_condit
             .is_ok()
     );
     let f = frame();
-    let text = ScriptedText::new(&f, &catalogue.localisation, content, 0);
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
     let evaluator = crate::triggers::Evaluator::new(text.world().unwrap(), None);
-    let scopes = crate::triggers::Scopes::of(crate::triggers::Scope::Country(0));
+    let scopes = crate::triggers::Scopes::of(crate::triggers::Scope::Country(1));
     let member = |source: &str| installed_content::scripted_localisation::RandomMember {
         weight: 1_000_000,
         key: Vec::new(),
@@ -503,7 +604,7 @@ fn seeded_random_lists_use_canonical_slots_across_five_thousand_countries() {
     let mut f = frame();
     set::<tables::CountryLinks>(
         &mut f,
-        (0..5_000)
+        (1..=5_000)
             .map(|slot| CountryLinkRow {
                 id: 10_000 + slot,
                 canonical_slot: slot,
@@ -512,7 +613,7 @@ fn seeded_random_lists_use_canonical_slots_across_five_thousand_countries() {
     );
     set::<tables::Countries>(
         &mut f,
-        (0..5_000)
+        (1..=5_000)
             .map(|slot| CountryRow {
                 id: 10_000 + slot,
                 canonical_slot: slot,
@@ -525,9 +626,9 @@ fn seeded_random_lists_use_canonical_slots_across_five_thousand_countries() {
             })
             .collect(),
     );
-    let text = ScriptedText::new(&f, &catalogue.localisation, content, 0);
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
     let mut counts = [0; 3];
-    for slot in 0..5_000 {
+    for slot in 1..=5_000 {
         let scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(slot))]);
         let result = text.expand_in("[Pick]", &scopes).unwrap();
         counts[match result.as_str() {
@@ -985,7 +1086,7 @@ fn balance_names_selection_change_binding_and_icon_direction() {
         &f,
         &catalogue.localisation,
         catalogue.scripted_content().unwrap(),
-        0,
+        1,
     );
     assert_eq!(
         at.expand("[ROOT.GetBopTrendTextIcon]").unwrap(),
@@ -1121,10 +1222,10 @@ fn promoted_entry_binds_this_and_preserves_root_and_from() {
     assert_eq!(rendered(&catalogue, &frame(), "TEST").unwrap(), "pass|pass");
 }
 
-/// GER (slot 0), SOV (1) and ENG (2), each owning a state.
+/// GER (slot 1), SOV (2) and ENG (3), each owning a state.
 fn raid_frame() -> DecodedFrame {
     let mut f = frame();
-    let countries = [(100, 0, "GER"), (200, 1, "SOV"), (300, 2, "ENG")];
+    let countries = [(100, 1, "GER"), (200, 2, "SOV"), (300, 3, "ENG")];
     set::<tables::CountryLinks>(
         &mut f,
         countries
@@ -1193,13 +1294,13 @@ fn raid_text_follows_the_active_event_scope_through_chains_and_entries() {
             .is_ok()
     );
     let f = raid_frame();
-    let text = ScriptedText::new(&f, &catalogue.localisation, content, 0);
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
     let raid = EventScopes::new(vec![
         EventScope {
             from: Link::Scope(1),
-            ..EventScope::of(EventObject::Country(1))
+            ..EventScope::of(EventObject::Country(2))
         },
-        EventScope::of(EventObject::Country(2)),
+        EventScope::of(EventObject::Country(3)),
     ]);
     let expand = |text_: &str, scopes: &EventScopes| text.expand_in(text_, scopes);
     // Each keyword moves the active scope (141A81250); each bracket starts
@@ -1229,7 +1330,7 @@ fn raid_text_follows_the_active_event_scope_through_chains_and_entries() {
     // A scope whose own links the caller does not know stops a chain.
     let nested = EventScopes::new(vec![
         EventScope {
-            this: EventObject::Country(1),
+            this: EventObject::Country(2),
             root: Link::Scope(1),
             from: Link::Scope(2),
             prev: Link::Scope(1),
@@ -1238,7 +1339,7 @@ fn raid_text_follows_the_active_event_scope_through_chains_and_entries() {
             random_seed_refusal: None,
         },
         EventScope {
-            this: EventObject::Country(1),
+            this: EventObject::Country(2),
             root: Link::Unknown,
             from: Link::Unknown,
             prev: Link::Unknown,
@@ -1247,7 +1348,7 @@ fn raid_text_follows_the_active_event_scope_through_chains_and_entries() {
             random_seed_refusal: None,
         },
         EventScope {
-            this: EventObject::Country(2),
+            this: EventObject::Country(3),
             root: Link::Unknown,
             from: Link::Unknown,
             prev: Link::Unknown,
@@ -1314,7 +1415,7 @@ fn unknown_scope_parts_refuse_only_where_they_are_read() {
             ..Default::default()
         }],
     );
-    let text = ScriptedText::new(&f, &catalogue.localisation, content, 0);
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
     let unknown = |this| {
         EventScopes::new(vec![EventScope {
             this,
@@ -1326,7 +1427,7 @@ fn unknown_scope_parts_refuse_only_where_they_are_read() {
             random_seed_refusal: None,
         }])
     };
-    let sov = unknown(EventObject::Country(1));
+    let sov = unknown(EventObject::Country(2));
     assert_eq!(
         text.expand_in("[Always] [ThisOnly] [SOV.ThisOnly]", &sov)
             .as_deref(),
@@ -1379,7 +1480,7 @@ fn unknown_scope_parts_refuse_only_where_they_are_read() {
     *f.tables[TableId::Characters.index()] = TableView::Unavailable {
         reason: "test gap".into(),
     };
-    let text = ScriptedText::new(&f, &catalogue.localisation, content, 0);
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
     assert_eq!(
         text.expand_in("[THIS.64.GetID]", &leader).as_deref(),
         Ok("64")
@@ -1419,4 +1520,103 @@ fn promoted_character_entry_evaluates_in_a_character_scope() {
         "pass|fail|fail"
     );
     assert_eq!(rendered(&catalogue, &frame(), "OTHER").unwrap(), "");
+}
+
+#[test]
+fn ability_text_promotes_character_but_keeps_country_for_named_lookup_and_entries() {
+    let (catalogue, _folder) = tests::catalogue(
+        r#"entry={name=Mixed text={trigger={has_country_flag=x has_character_flag=x tag=SOV}
+            localization_key=YES} text={localization_key=NO}}"#,
+        " YES:0 \"both\"\n NO:0 \"missing\"\n",
+    );
+    let content = catalogue.scripted_content().unwrap();
+    assert!(
+        content
+            .environment()
+            .unwrap()
+            .inputs
+            .set(Ok(entries::EnvironmentInputs::synthetic()))
+            .is_ok()
+    );
+    let mut f = frame();
+    set::<tables::LexicalTokens>(
+        &mut f,
+        vec![
+            LexicalTokenRow {
+                token: 8,
+                literal: b"peer".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 900,
+                literal: b"x".to_vec(),
+            },
+        ],
+    );
+    set::<tables::Characters>(
+        &mut f,
+        vec![
+            CharacterRow {
+                id: 44,
+                country: 100,
+                name: b"Ability Leader".to_vec(),
+                ..Default::default()
+            },
+            CharacterRow {
+                id: 45,
+                country: 100,
+                name_token_id: 8,
+                name: b"Country Peer".to_vec(),
+                ..Default::default()
+            },
+        ],
+    );
+    set::<tables::UnitLeaders>(
+        &mut f,
+        vec![UnitLeaderRow {
+            id: 9,
+            reference_type: 3,
+            character_id: 44,
+            character_type: engine::ccharacter::REFERENCE_TYPE,
+            owner: 200,
+            ..Default::default()
+        }],
+    );
+    set::<tables::ScriptFlags>(
+        &mut f,
+        vec![
+            ScriptFlagRow {
+                scope_kind: 1,
+                scope_id: 100,
+                token: 900,
+                value: 1,
+                ..Default::default()
+            },
+            ScriptFlagRow {
+                scope_kind: 3,
+                scope_id: 44,
+                token: 900,
+                value: 1,
+                ..Default::default()
+            },
+        ],
+    );
+    let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
+    let graph = EventScopes::new(vec![EventScope::of(EventObject::CountryUnitLeader {
+        country: 1,
+        leader: 9 << 32 | 3,
+    })]);
+    // ROOT/FROM/PREV copy the same full scope, but 141A81250 chooses the
+    // character object first. 1410CF9C0 still searches active scope country.
+    assert_eq!(
+        text.expand_in(
+            "[ROOT.GetName]/[FROM.GetName]/[PREV.GetName]/[ROOT.peer.GetName]",
+            &graph
+        )
+        .as_deref(),
+        Ok("Ability Leader/Ability Leader/Ability Leader/Country Peer")
+    );
+    assert_eq!(
+        text.expand_in("[Mixed]/[GER.Mixed]", &graph).as_deref(),
+        Ok("both/missing")
+    );
 }

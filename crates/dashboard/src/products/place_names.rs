@@ -43,11 +43,12 @@ use ts_rs::TS;
 
 pub struct PlaceNames;
 
-const NAME_TABLES: [TableId; 7] = [
+const NAME_TABLES: [TableId; 8] = [
     TableId::Campaign,
     TableId::Countries,
     TableId::CountryLinks,
     TableId::CountryAppearance,
+    TableId::ReservedCountryNaming,
     TableId::Provinces,
     TableId::ProvinceNames,
     TableId::States,

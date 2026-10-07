@@ -28,3 +28,5 @@ path = "src/bin/dashboard-bridge.rs"
 [dev-dependencies]
 # Folder layers, so tests load localisation files as the game content does.
 installed-content = { workspace = true, features = ["test-support"] }
+crc32fast = "1"
+zstd = "0.13"

@@ -1,6 +1,95 @@
 use super::*;
 use crate::memory::SliceMemory;
 
+#[test]
+fn decision_random_items_preserve_full_store_and_signed_words_at_5000_countries() {
+    let mut world = ccountry::synthetic::World::new(IMAGE, 5_000, 0x1000);
+    for country in 1..=5_000 {
+        let owner = world.object(country);
+        let status = world.alloc(RANDOM_ITEMS + 16);
+        let items = world.alloc(RANDOM_ITEM_STRIDE * 2);
+        let definition = world.alloc(cdecision::TOKEN + 32);
+        world.u64(owner + ccountry::DECISION_STATUS, status as u64);
+        world.u64(status, (IMAGE + VTABLE_RVA) as u64);
+        world.u64(status + COUNTRY, owner as u64);
+        world.array(status + RANDOM_ITEMS, items, 2);
+        world.u64(definition, (IMAGE + cdecision::VTABLE_RVA) as u64);
+        world.put(definition + cdecision::TOKEN, b"test\xff");
+        world.u64(definition + cdecision::TOKEN + 16, 5);
+        world.u64(definition + cdecision::TOKEN + 24, 15);
+        for (ordinal, (count, target)) in [(i32::MIN, i32::MAX), (17, -1)].into_iter().enumerate() {
+            let entry = items + ordinal * RANDOM_ITEM_STRIDE;
+            world.u64(entry, (IMAGE + RANDOM_ITEM_VTABLE_RVA) as u64);
+            world.u64(entry + 8, definition as u64);
+            world.put(entry + 16, &count.to_le_bytes());
+            world.put(entry + 20, &target.to_le_bytes());
+        }
+    }
+    assert_eq!(
+        random_item_demand(&world.memory(), IMAGE, world.game_state()),
+        Ok(RandomItemDemand {
+            rows: 10_000,
+            bytes: 50_000
+        })
+    );
+    let mut rows = vec![RandomItemRow::default(); 10_000];
+    let mut tokens = vec![0; 50_000];
+    let walk = walk_random_items(
+        &world.memory(),
+        IMAGE,
+        world.game_state(),
+        &mut rows,
+        &mut tokens,
+    );
+    assert_eq!(walk.outcome, Outcome::Rows { len: 10_000 });
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(
+            (row.country, row.ordinal),
+            (index as u32 / 2 + 1, index as u32 % 2)
+        );
+        assert_eq!(
+            (row.count, row.target),
+            [(i32::MIN, i32::MAX), (17, -1)][index % 2]
+        );
+        assert_eq!(
+            &tokens[row.token_start..row.token_start + row.token_len],
+            b"test\xff"
+        );
+    }
+    let short = walk_random_items(
+        &world.memory(),
+        IMAGE,
+        world.game_state(),
+        &mut rows[..1],
+        &mut tokens[..5],
+    );
+    assert_eq!(
+        short.outcome,
+        Outcome::Truncated {
+            len: 1,
+            unread_rows: 9_999
+        }
+    );
+    assert_eq!(short.required_bytes, 50_000);
+    let status = crate::read::<u64>(&world.memory(), world.object(1) + ccountry::DECISION_STATUS)
+        .unwrap() as usize;
+    let items = crate::read::<u64>(&world.memory(), status + RANDOM_ITEMS).unwrap() as usize;
+    world.u64(items, 0);
+    assert_eq!(
+        walk_random_items(
+            &world.memory(),
+            IMAGE,
+            world.game_state(),
+            &mut rows,
+            &mut tokens
+        )
+        .outcome,
+        Outcome::Unavailable {
+            reason: "decision random-item vtable mismatch"
+        }
+    );
+}
+
 const IMAGE: usize = 0x0001_4000_0000;
 const COUNTRY_ADDRESS: usize = 0x1000;
 const STATUS_ADDRESS: usize = 0x2200;

@@ -95,9 +95,7 @@ impl Renderer<'_, '_, '_> {
                 "NIndustrialOrganisation::CTraitTooltipEffect"
             };
             // 1413978B0 appends one complete parenthetical to this header.
-            let Some(body) = self.char_mio_modifiers(&trait_, scopes, class)? else {
-                return Ok(String::new());
-            };
+            let body = self.char_mio_modifiers(&trait_, scopes, class);
             text.push_str(" ("); // 14270C624.
             text.push_str(&body);
             text.push(')'); // 14270BE94; even when the body is empty.
@@ -112,55 +110,16 @@ impl Renderer<'_, '_, '_> {
     // 140A3FB60(...,1): comma separator@14270EC00; no equipment-type or
     // organisation-name headings. 140634360 removes zero bonuses in stored
     // order. This raw body is appended AFTER the wrapper's scope expansion.
-    fn char_mio_modifiers(
-        &mut self,
-        trait_: &TraitName,
-        scopes: Scopes,
-        class: &str,
-    ) -> Result<Option<String>, String> {
-        let mut parts = Vec::new();
-        let mut refused = false;
-        for bonus in trait_.bonuses.iter().filter(|bonus| bonus.value != 0) {
-            if let Some(index) = installed_content::equipment::stat_index(bonus.name.as_bytes()) {
-                let (_, label, positive) = installed_content::equipment::STAT_METADATA[index];
-                let difference = format!("{label}_MOD_DIFF");
-                let key: &[u8] = if self.context.localisation.get(&difference).is_some() {
-                    difference.as_bytes()
-                } else if positive {
-                    b"STAT_MODIFIER_DIFF"
-                } else {
-                    b"STAT_MODIFIER_DIFF_NEG"
-                };
-                let label = self.char_native_text(label.as_bytes(), &[], scopes, false)?;
-                let value = self.char_native_text(
-                    key,
-                    &[("VALUE", Argument::Fixed5(bonus.value))],
-                    scopes,
-                    false,
-                )?;
-                parts.push(format!("{label}{value}")); // 140630A10 -> 1413D0370.
-            } else if installed_content::mio_traits::is_production_stat(&bonus.name) {
-                // 140630A10 converts fixed5 to Q15. 141483BF0 chooses colour
-                // and sign from Q15, then 142259470/1424B5FF0 use snprintf
-                // rounding at precision 2; the shared fixed5 formatter differs.
-                self.refuse(class, format!(
-                    "MIO production bonus {} needs shared Q15 percentage formatter (140630A10/141483A20/141483BF0/142259470/1424B5FF0)",
-                    bonus.name,
-                ));
-                refused = true;
-            }
-        }
-        let mut text = parts.join(", ");
+    fn char_mio_modifiers(&mut self, trait_: &TraitName, scopes: Scopes, class: &str) -> String {
+        let mut text = self.char_mio_bonus_list(&trait_.bonuses, scopes, class);
         let kept = if let Some(why) = &trait_.modifier_inheritance_refusal {
             self.refuse(class, why.clone());
-            refused = true;
             false
         } else {
             match self.char_trait_modifier_kept(&trait_.organisation_modifiers) {
                 Ok(kept) => kept,
                 Err(why) => {
                     self.refuse(class, why);
-                    refused = true;
                     false
                 }
             }
@@ -185,15 +144,118 @@ impl Renderer<'_, '_, '_> {
                 }
                 Err(why) => {
                     self.refuse(class, why);
-                    refused = true;
                 }
             }
         }
-        if refused {
-            return Ok(None);
-        }
-        Ok(Some(text.trim_matches([' ', '\t', '\n', '\r']).to_owned())) // 1424B7400; four bytes@142B7B148.
+        text.trim_matches([' ', '\t', '\n', '\r']).to_owned() // 1424B7400; four bytes@142B7B148.
     }
+
+    fn char_mio_bonus_list(
+        &mut self,
+        bonuses: &[installed_content::mio_traits::Bonus],
+        scopes: Scopes,
+        class: &str,
+    ) -> String {
+        let mut parts = Vec::new();
+        for bonus in bonuses.iter().filter(|bonus| bonus.value != 0) {
+            let part = (|| {
+                if let Some(index) = installed_content::equipment::stat_index(bonus.name.as_bytes()) {
+                    self.char_equipment_stat_difference(index, bonus.value, scopes)
+                } else if installed_content::mio_traits::is_production_stat(&bonus.name) {
+                    // ProductionStat constructor 140079F20 prefixes BONUS_ and
+                    // uppercases the native token; 141483A20 appends ': '.
+                    let key = format!("BONUS_{}", bonus.name.to_ascii_uppercase());
+                    let label = self.char_native_text(key.as_bytes(), &[], scopes, false)?;
+                    let bad_positive = matches!(
+                        bonus.name.as_str(),
+                        "production_cost_factor"
+                            | "production_resource_need_factor"
+                            | "production_resource_penalty_factor"
+                    ); // native flags 3, others 2.
+                    Ok(format!(
+                        "{label}: {}",
+                        mio_production_percent(bonus.value, bad_positive)
+                    ))
+                } else {
+                    Ok(String::new()) // 140630A10: no recognized bonus yields no text.
+                }
+            })();
+            match part {
+                Ok(text) if !text.is_empty() => parts.push(text),
+                Ok(_) => {}
+                Err(why) => self.refuse(class, why),
+            }
+        }
+        parts.join(", ")
+    }
+
+    // 140A3C380 walks the policy's grouped bonus map, then its modifier cache.
+    // The short form 140A3C1E0 trims and replaces literal LFs with ", ".
+    pub(in crate::effect_description) fn char_mio_policy_modifiers(
+        &mut self,
+        policy: &installed_content::industrial_organisations::policies::Policy,
+        scopes: Scopes,
+    ) -> String {
+        let class = "NIndustrialOrganisation::CUnlockPolicyTooltipEffect";
+        let mut parts = Vec::new();
+        for (group, bonuses) in &policy.groups {
+            let name = match self.localised(group, &[], scopes, false) {
+                Ok(name) => name,
+                Err(why) => {
+                    self.refuse(class, why);
+                    continue;
+                }
+            };
+            let body = self.char_mio_bonus_list(bonuses, scopes, class);
+            parts.push(format!("\u{11}Y{name}\u{11}! {body}")); // 142700920 space.
+        }
+        let mut text = parts.join(", ");
+        let kept = match self.char_trait_modifier_kept(&policy.organisation_modifiers) {
+            Ok(kept) => kept,
+            Err(why) => {
+                self.refuse(class, why);
+                false
+            }
+        };
+        if kept {
+            match self.modifier_description_with(
+                &policy.organisation_modifiers,
+                "",
+                ModifierListOptions {
+                    category_mask: u32::MAX,
+                    separator: ", ",
+                    ..Default::default()
+                },
+            ) {
+                Ok(body) => {
+                    if !text.is_empty() {
+                        text.push_str(", ");
+                    }
+                    text.push_str(&body);
+                }
+                Err(why) => self.refuse(class, why),
+            }
+        }
+        text.trim_matches([' ', '\t', '\n', '\r'])
+            .replace('\n', ", ")
+    }
+}
+
+// 140630A10 converts fixed5 to Q15 before 141483BF0 chooses sign/colour.
+// 142259470 wraps the magnitude's percent multiply, then 1424B5FF0 uses
+// the exact binary scale 2^-15 (14291F350) and snprintf %.2f (142A26C48).
+fn mio_production_percent(value: i64, bad_positive: bool) -> String {
+    let value = replay::fixed_point::fixed5_to_q15(value);
+    let (sign, colour) = match value.signum() {
+        1 => ('+', if bad_positive { 'R' } else { 'G' }),
+        -1 => ('-', if bad_positive { 'G' } else { 'R' }),
+        _ => (if bad_positive { '-' } else { '+' }, 'G'),
+    };
+    let percent = value.wrapping_abs().wrapping_mul(0x320000) >> 15;
+    format!(
+        "\u{11}{colour}{sign}{:.2}%\u{11}!",
+        percent as f64 / 32768.0
+    )
 }
 
 #[cfg(test)]

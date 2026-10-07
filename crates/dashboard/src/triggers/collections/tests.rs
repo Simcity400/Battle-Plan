@@ -126,7 +126,7 @@ fn unrecorded_subjects_refuse_country_and_all_subjects() {
 }
 
 #[test]
-fn collection_owned_order_is_needed_only_for_multiple_passing_paths() {
+fn format98_collections_select_first_passing_native_owned_and_controlled_state() {
     use replay::rows::StateRow;
     let mut f = frame(&[(100, 1, "AAA", 2, "", "")], &[]);
     *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
@@ -152,6 +152,13 @@ fn collection_owned_order_is_needed_only_for_multiple_passing_paths() {
             })
             .to_vec(),
     ));
+    let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *f.tables[TableId::CountryCounterInputs.index()]
+    else {
+        panic!("complete counters");
+    };
+    rows[0].owned_states = replay::rows::Recorded::Value(Some(vec![8, 7]));
+    rows[0].controlled_states = replay::rows::Recorded::Value(Some(vec![7, 8]));
     with_world(&f, "", Err("none"), |world| {
         let graph = Rc::new(RefCell::new(EventScopes::new(vec![EventScope::of(
             EventObject::Country(1),
@@ -170,22 +177,42 @@ fn collection_owned_order_is_needed_only_for_multiple_passing_paths() {
                 state
             );
         }
-        for operator in ["owned_states", "controlled_states"] {
+        for (operator, expected) in [
+            ("owned_states", Scope::State(8)),
+            ("controlled_states", Scope::State(7)),
+        ] {
             let spec = collection(&format!(
                 "input=game:scope operators={{{operator} limit={{always=yes}}}}"
             ));
-            let why = evaluator
-                .collection_representative(&spec, caller)
-                .unwrap_err();
-            assert!(
-                why.contains(if operator == "owned_states" {
-                    "owned_state_order"
-                } else {
-                    "controlled_state_order"
-                }),
-                "{why}"
+            assert_eq!(
+                evaluator
+                    .collection_representative(&spec, caller)
+                    .unwrap()
+                    .unwrap()
+                    .this,
+                expected
             );
         }
+    });
+    let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *f.tables[TableId::CountryCounterInputs.index()]
+    else {
+        panic!("complete counters");
+    };
+    rows[0].owned_states = replay::rows::Recorded::NotRecorded;
+    with_world(&f, "", Err("none"), |world| {
+        let graph = Rc::new(RefCell::new(EventScopes::new(vec![EventScope::of(
+            EventObject::Country(1),
+        )])));
+        let evaluator = Evaluator::new(world, None).with_event_scopes(graph);
+        let caller = evaluator.event_scopes(0).unwrap();
+        let spec = collection("input=game:scope operators={owned_states}");
+        assert!(
+            evaluator
+                .collection_representative(&spec, caller)
+                .unwrap_err()
+                .contains("CountryCounterInputs.owned_states")
+        );
     });
 }
 

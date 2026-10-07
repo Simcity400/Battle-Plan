@@ -89,7 +89,7 @@ impl Renderer<'_, '_, '_> {
             true,
         )?;
         let country = match scopes.this {
-            Scope::Country(country) => country,
+            Scope::Country(country) | Scope::CountryLeader { country, .. } => country,
             _ => 0,
         };
         let ruling = field(fields, "ruling_party")
@@ -156,6 +156,152 @@ impl Renderer<'_, '_, '_> {
                 b"EFFECT_DECLARE_WAR"
             },
             if annex { "TARGET" } else { "COUNTRY" },
+        )
+    }
+
+    pub(super) fn create_wargoal(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
+        // 14037DF80: resolve target, validate the type, test the owned roster,
+        // then localise COUNTRY/WARGOAL/TARGET, expand in caller scope, and LF.
+        let target = self
+            .country_target_field(item, "target")?
+            .map(|target| self.country_target(target, scopes))
+            .transpose()?
+            .flatten()
+            .unwrap_or(0);
+        let fields = children(item);
+        let Some(goal) = field(fields, "type").and_then(Item::value_keyword) else {
+            return Ok(String::new()); // Missing/quoted/numeric token is not a type.
+        };
+        let cached = self.context.text.content().effects()?;
+        let database = self
+            .context
+            .content
+            .wargoals
+            .or(cached.wargoals.as_ref())
+            .ok_or_else(|| self.content_gap("Wargoal definitions"))?;
+        let Some(goal) = database.find(goal.as_bytes())? else {
+            return Ok(String::new()); // LookupWargoalTypeByToken@140A2C5D0 null object.
+        };
+        let source = self.current_country(scopes)?;
+        if target == 0 || source == 0 {
+            return Err("create_wargoal needs reserved country zero diplomacy/name inputs (14037DF80/140D28650)".into());
+        }
+        let recorded = self.context.text.recorded();
+        let frame = self.context.text.frame();
+        let roster = frame
+            .complete::<tables::OwnedWargoals>()
+            .map_err(|why| why.to_string())?;
+        // 1403B1C60 -> 140A2C820: only the first generator is read. Other
+        // generator modes leave this explicit +0x130/+0x13C vector empty;
+        // BuildDescription does not execute their dynamic state selection.
+        let generator = fields.iter().find(|field| field.keyword_is("generator"));
+        for row in roster {
+            let owner = recorded.slot(row.country).ok_or_else(|| {
+                format!(
+                    "CountryLinks lacks OwnedWargoals owner {} (140D28650)",
+                    row.country
+                )
+            })?;
+            if owner != source {
+                continue;
+            }
+            // 140D28650 / FindInArray@1401B0F60: recipient is the target or
+            // one of its stored direct subjects, with native country aliases.
+            let recipient = if row.recipient == 0 {
+                0
+            } else {
+                recorded.slot(row.recipient).ok_or_else(|| {
+                    format!(
+                        "CountryLinks lacks OwnedWargoals recipient {} (140D28650)",
+                        row.recipient
+                    )
+                })?
+            };
+            if recipient != target {
+                let appearance = frame
+                    .complete::<tables::CountryAppearance>()
+                    .map_err(|why| why.to_string())?
+                    .iter()
+                    .find(|row| recorded.slot(row.country) == Some(target))
+                    .ok_or("CountryAppearance lacks target's ordered subjects (140D28650)")?;
+                let subjects = appearance.subjects.require("CountryAppearance.subjects")?;
+                let mut matches = false;
+                for raw in subjects {
+                    let subject = if *raw == 0 {
+                        0
+                    } else {
+                        recorded.slot(*raw as u32).ok_or_else(|| {
+                            format!("CountryLinks lacks ordered subject {raw} (140D28650)")
+                        })?
+                    };
+                    if subject == recipient {
+                        matches = true;
+                        break;
+                    }
+                }
+                if !matches {
+                    continue;
+                }
+            }
+            let token = self
+                .context
+                .world()?
+                .token(row.goal_type as u32)?
+                .ok_or_else(|| {
+                    format!(
+                        "LexicalTokens lacks owned wargoal type {} (140A2C5D0)",
+                        row.goal_type
+                    )
+                })?;
+            if installed_content::tokens::Token::c_str(token) != installed_content::tokens::Token::c_str(goal) {
+                continue;
+            }
+            // 1403A35A0: an empty existing state set covers any generator;
+            // otherwise every explicit claim must match a pointer (+0x48),
+            // with invalid authored state IDs resolving to null/recorded zero.
+            if row.states.is_empty() {
+                return Ok(String::new());
+            }
+            let mut covered = true;
+            for entry in generator
+                .and_then(|field| field.value.items())
+                .unwrap_or_default()
+            {
+                let id = installed_content::crt::scan_i32(entry.value.scalar().unwrap_or_default())
+                    .stored()
+                    .unwrap_or(0) as u32; // 1401F91B0 / 1424AB970.
+                let state = self.valid_state(id)?.map_or(0, |state| state.id);
+                if !row.states.contains(&state) {
+                    covered = false;
+                    break;
+                }
+            }
+            if covered {
+                return Ok(String::new());
+            }
+        }
+        if self
+            .context
+            .localisation
+            .get("EFFECT_CREATE_WARGOAL")
+            .is_none()
+        {
+            return Err(
+                "native localisation key EFFECT_CREATE_WARGOAL is not defined (14037DF80)".into(),
+            );
+        }
+        let source = self.country_name(source, false)?;
+        let target = self.country_name(target, false)?;
+        let goal = self.localised(goal, &[], scopes, false)?; // 140616BC0.
+        self.line(
+            b"EFFECT_CREATE_WARGOAL",
+            &[
+                ("COUNTRY", Argument::Text(&source)),
+                ("WARGOAL", Argument::Text(&goal)),
+                ("TARGET", Argument::Text(&target)),
+            ],
+            scopes,
+            true,
         )
     }
 
@@ -353,7 +499,8 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
     ) -> Result<String, String> {
         // 14037F730 / reader 1403B2390; country-zero gate precedes the factory.
-        if !matches!(scopes.this, Scope::Country(country) if country > 0) {
+        if !matches!(scopes.this, Scope::Country(country) | Scope::CountryLeader { country, .. } if country > 0)
+        {
             return Ok(String::new());
         }
         let Some(country) = self.country_target_field(item, "country")? else {
@@ -405,9 +552,8 @@ impl Renderer<'_, '_, '_> {
         let mut names = Vec::new();
         for name in ["enemy", "targeted_alliance"] {
             let Some(operand) = self.country_target_field(item, name)? else {
-                return Err(format!(
-                    "{name} is country zero, whose naming inputs are unrecorded (140379070/140BA5960)"
-                ));
+                names.push(self.country_name(0, false)?);
+                continue;
             };
             let value = installed_content::parser::c_string(scalar_operand(operand)?);
             if scope_selector(operand).is_some_and(|selector| {
@@ -441,7 +587,8 @@ impl Renderer<'_, '_, '_> {
                 let parsed = installed_content::scope::parse(text, false, self.context.text.recorded());
                 let selected = self.evaluator()?.enter_scope(&parsed, scopes)?;
                 match selected.map(|selected| (selected.this, selected)) {
-                    Some((Scope::Country(country), _)) if country > 0 => Some(country),
+                    Some((Scope::Country(country) | Scope::CountryLeader { country, .. }, _))
+                        if country > 0 => Some(country),
                     Some((Scope::State(state), selected)) if state != 0 && state != NULL_STATE => {
                         if self.valid_state(state)?.is_none() {
                             return Err(format!("invalid state {state}: native country/state-owner helper 14036C350 dereferences it"));
@@ -456,16 +603,12 @@ impl Renderer<'_, '_, '_> {
                     .map_err(|_| format!("{name} country specifier is not UTF-8 (140BA53F0)"))?;
                 if !installed_content::scope::Names::is_country(self.context.text.recorded(), text) {
                     return Err(format!(
-                        "{name} country specifier {text} is not defined by the content stack (1403AD690/140BA53F0); native country-zero naming cannot be described"
+                        "{name} country specifier {text} is not defined by the content stack (1403AD690/140BA53F0)"
                     ));
                 }
                 self.country_target(operand, scopes)?
             };
-            let Some(country) = country else {
-                return Err(format!(
-                    "{name} is country zero, whose naming inputs are unrecorded (140379070/140BA5960)"
-                ));
-            };
+            let country = country.unwrap_or(0); // 140379070 -> 140BA5960.
             names.push(self.country_name(country, false)?);
         }
         self.line(
@@ -677,7 +820,7 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         }
         let current = match scopes.this {
-            Scope::Country(country) => Some(country).filter(|country| *country > 0),
+            Scope::Country(country) | Scope::CountryLeader { country, .. } => Some(country).filter(|country| *country > 0),
             Scope::State(_) | Scope::Province(_) | Scope::Character(_) | Scope::Leader(_) => None,
             _ => return Err("autonomy description needs native CEventScope country +8; this projected scope does not expose it (140371210/140371620)".into()),
         };
@@ -779,7 +922,7 @@ impl Renderer<'_, '_, '_> {
         let frame = self.context.text.frame();
         let character = match scopes.this {
             Scope::Character(character) => character,
-            Scope::Leader(reference) => {
+            Scope::Leader(reference) | Scope::CountryLeader { leader: reference, .. } => {
                 let row = frame
                     .complete::<tables::UnitLeaders>()
                     .map_err(|why| why.to_string())?
@@ -931,7 +1074,8 @@ impl Renderer<'_, '_, '_> {
     pub(super) fn create_faction(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         // vf6 1404A8060 localises the raw value, unlike ParseScopeSelector readers.
         // vf7 1404AD3D0: no current country or empty stored name gives no text.
-        if !matches!(scopes.this, Scope::Country(country) if country > 0) {
+        if !matches!(scopes.this, Scope::Country(country) | Scope::CountryLeader { country, .. } if country > 0)
+        {
             return Ok(String::new());
         }
         let name = self.localised(
@@ -953,7 +1097,8 @@ impl Renderer<'_, '_, '_> {
 
     pub(super) fn create_faction_template(&self, scopes: Scopes) -> Result<String, String> {
         // 1404AD630 / 1404B1410: a positive country is required before using the template.
-        if !matches!(scopes.this, Scope::Country(country) if country > 0) {
+        if !matches!(scopes.this, Scope::Country(country) | Scope::CountryLeader { country, .. } if country > 0)
+        {
             return Ok(String::new());
         }
         Err("faction template content unavailable: native lookup 1404B1410 uses template database 143316B40 and 1404AD630 evaluates its declared NAME localisation expression at CFactionTemplate+0xD0; scalar and template/name/icon/color block forms require that cached content reader, including template existence (no recorded input is missing)".into())
@@ -961,7 +1106,11 @@ impl Renderer<'_, '_, '_> {
 
     fn current_faction(&self, scopes: Scopes) -> Result<Option<(u32, u64)>, String> {
         // GetScriptScopeFaction@141174150: no country gives no faction.
-        let Scope::Country(source) = scopes.this else {
+        let (Scope::Country(source)
+        | Scope::CountryLeader {
+            country: source, ..
+        }) = scopes.this
+        else {
             return Ok(None);
         };
         if source == 0 {

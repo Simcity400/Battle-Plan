@@ -299,7 +299,8 @@ fn load_json<P: Product>(
     let params: P::Params = serde_json::from_value(params)
         .map_err(|error| format!("Invalid {} request: {error}", P::KEY))?;
     P::validate(&params).map_err(str::to_owned)?;
-    let mut data = P::load(source, &params, context, cancelled).map_err(|error| error.to_string())?;
+    let mut data =
+        P::load(source, &params, context, cancelled).map_err(|error| error.to_string())?;
     source.append_content_warnings(data.warnings_mut());
     bounded_json(
         &Envelope {

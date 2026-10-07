@@ -436,7 +436,7 @@ fn name(
 
 /// 14054FE50: sign, number or yes/no, colour and postfix. `precision` is
 /// the caller's cap; `plus` forces a sign; `invert` flips good and bad.
-pub(super) fn value_text(
+pub(crate) fn value_text(
     row: &ModifierDefinitionRow,
     value: i64,
     precision: i32,

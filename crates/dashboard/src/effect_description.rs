@@ -22,6 +22,19 @@
 //!   recorded identities. `Renderer::{project_name(owner, id), raid_name(reference),
 //!   unit_name(reference), organisation_name(reference)}` returns native names
 //!   or a named missing-input error (140FCDDF0/140FD6260/140C72F00/140DA44C0).
+//! - `World::unit_status(reference)` supplies the retained `DivisionStatus.name`
+//!   and historical generator operands. `unit_names::army_name` shares the
+//!   native cached getter (140C72F00), exact literal provenance and stored-text
+//!   language guard with the viewer and recorded-unit products. Only historical
+//!   cache absence uses group/ordinal selection (1409B5640/1409B57C0), retaining
+//!   named legacy-allocation refusals (1409B4CE0/140AE3750).
+//!   `Content::division_names` caches the recorded stack's name groups.
+//! - `Renderer::unit_name(&self, reference: u64) -> Result<String, String>` is
+//!   `pub(super)`, the single entry point for all effect domains, including raid
+//!   divisions (pass `RaidRow.unit`) and full wing handles. Recorded AirWings
+//!   stored names use `scripted_text::stored_text`'s recording-language rule
+//!   (141454480/140F4B8F0/140F51FB0). An old format's absent name retains
+//!   `World::raid_wing_name`'s active-raid WING_NAME projection.
 //! - `World::has_template(country, name)` shares the exact recorded template
 //!   display-name comparison and content fallback (1406C29B0/140B91170).
 //! - `Content::{buildings, resources, max_railway_level}` supplies cached declared
@@ -32,6 +45,8 @@
 //!   each read once per stack by `CachedContent`, with reader notes retained.
 //! - `Content::state_categories` supplies declared category identities
 //!   (1413AFB60/1413AF3B0/1413AFAC0), cached once with reader notes retained.
+//! - `Content::wargoals` supplies declared wargoal-type identities
+//!   (140A2C690/140A2C5D0), cached once with reader notes retained.
 //! - `ScriptedText::{province_display_name, country_adjective}` shares effect
 //!   province naming (140E69320) and country adjective naming (140BA5560).
 //! - `Renderer::evaluator` is the shared trigger/variable/saved-target evaluator;
@@ -73,6 +88,11 @@
 //!   for repeated fields/defaults and index overrides (140535A10/14047AD60);
 //!   `encode_description_scope` retains shared object encoding (140537310).
 //!   `refuse_description_writer` invalidates unknown TLS mutations.
+//!   `Evaluator::begin_description_in(scopes)` initializes the outer TLS seed
+//!   from the recorded store and immediate THIS/FROM (1405354A0); nested calls
+//!   retain it. `description_random_temp(item, scopes)` consumes 140537810 RNG;
+//!   `description_supply_temp(item, scopes, minimum_trains)` lazily reads the
+//!   content minimum only for required trains (14047B0B0).
 //! - `Evaluator::{script_target_candidates, fresh_country_scope}` share native
 //!   CScriptTargets selection and fresh FROM-linked scorer scopes
 //!   (140C1C820/14047BB20); saved global tooltip targets use
@@ -96,8 +116,12 @@ use installed_content::{
 };
 use replay::rows::{GlobalSavedEventTargetRow, StateRow, tables};
 
+mod ability;
 mod characters;
+pub use ability::ability_description;
 mod diplomacy;
+mod doctrine_sources;
+pub use doctrine_sources::doctrine_tactic_sources;
 mod dispatch;
 mod empty;
 mod events;
@@ -105,8 +129,8 @@ mod lists;
 mod modifiers;
 mod numeric;
 mod politics;
-mod scopes;
 mod scope_names;
+mod scopes;
 mod states;
 mod technology;
 #[cfg(test)]
@@ -236,6 +260,8 @@ pub struct Content<'a> {
     pub equipment: Option<&'a installed_content::equipment::Database>,
     pub autonomy_states: Option<&'a installed_content::autonomy::AutonomyStates>,
     pub state_categories: Option<&'a installed_content::state_categories::Database>,
+    pub division_names: Option<&'a installed_content::division_names::Database>,
+    pub wargoals: Option<&'a installed_content::wargoals::Database>,
     pub gaps: Option<&'a BTreeMap<&'static str, String>>,
 }
 
@@ -266,6 +292,8 @@ pub struct CachedContent {
     equipment: Option<installed_content::equipment::Database>,
     autonomy_states: Option<installed_content::autonomy::AutonomyStates>,
     state_categories: Option<installed_content::state_categories::Database>,
+    division_names: Option<installed_content::division_names::Database>,
+    wargoals: Option<installed_content::wargoals::Database>,
     gaps: BTreeMap<&'static str, String>,
     pub notes: Vec<String>,
 }
@@ -286,12 +314,28 @@ impl CachedContent {
             .ok()
         }
         let mut gaps = BTreeMap::new();
-        let doctrines = keep(installed_content::doctrines::read(layers), "doctrines", &mut gaps);
+        let mut doctrines = keep(installed_content::doctrines::read(layers), "doctrines", &mut gaps);
         let decisions = keep(installed_content::decisions::read(layers), "decisions", &mut gaps);
         let defines = environment.defines();
-        let dynamic_modifiers = keep(installed_content::dynamic_modifiers::read(layers), "dynamic modifiers", &mut gaps);
-        let opinion_modifiers = keep(installed_content::opinion_modifiers::read(layers, defines), "opinion modifiers", &mut gaps);
-        let power_balances = keep(installed_content::power_balance::read_descriptions(layers), "power balances", &mut gaps);
+        if let Some(doctrines) = &mut doctrines {
+            doctrines.tactic_sources.default_reward_mastery =
+                defines.fixed5("NDoctrines", "DEFAULT_REWARD_MASTERY").ok();
+        }
+        let dynamic_modifiers = keep(
+            installed_content::dynamic_modifiers::read(layers),
+            "dynamic modifiers",
+            &mut gaps,
+        );
+        let opinion_modifiers = keep(
+            installed_content::opinion_modifiers::read(layers, defines),
+            "opinion modifiers",
+            &mut gaps,
+        );
+        let power_balances = keep(
+            installed_content::power_balance::read_descriptions(layers),
+            "power balances",
+            &mut gaps,
+        );
         let read_ideas = || {
             let officers = defines.strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")?;
             installed_content::ideas::read(layers, &officers)
@@ -314,13 +358,32 @@ impl CachedContent {
             "state categories",
             &mut gaps,
         );
+        let wargoals = keep(
+            installed_content::wargoals::read(layers),
+            "Wargoal definitions",
+            &mut gaps,
+        );
+        let division_names = keep(
+            installed_content::division_names::read_directories::<String>(
+                layers,
+                &installed_content::division_names::DIRECTORIES,
+            ),
+            "division name groups",
+            &mut gaps,
+        );
         let mut notes = doctrines
             .as_ref()
             .map(|db| db.notes.clone())
             .unwrap_or_default();
-        if let Some(database) = &dynamic_modifiers { notes.extend(database.notes.iter().cloned()); }
-        if let Some(database) = &opinion_modifiers { notes.extend(database.notes.iter().cloned()); }
-        if let Some(database) = &power_balances { notes.extend(database.notes.iter().cloned()); }
+        if let Some(database) = &dynamic_modifiers {
+            notes.extend(database.notes.iter().cloned());
+        }
+        if let Some(database) = &opinion_modifiers {
+            notes.extend(database.notes.iter().cloned());
+        }
+        if let Some(database) = &power_balances {
+            notes.extend(database.notes.iter().cloned());
+        }
         notes.extend(environment.catalogue_notes.iter().cloned());
         notes.extend(
             decisions
@@ -334,6 +397,13 @@ impl CachedContent {
         if let Some(database) = &state_categories {
             notes.extend(database.notes.iter().cloned());
         }
+        if let Some(database) = &wargoals {
+            notes.extend(database.notes.iter().cloned());
+        }
+        let division_names = division_names.map(|(database, warnings)| {
+            notes.extend(warnings);
+            database
+        });
         let autonomy_states = autonomy_states.map(|(states, warnings)| {
             notes.extend(warnings.into_iter().map(|(_, message)| message));
             states
@@ -379,7 +449,11 @@ impl CachedContent {
             notes.extend(database.notes.clone());
         }
         let country_scorers = key_names.as_ref().and_then(|names| {
-            keep(installed_content::country_scorers::read(layers, names), "country scorers", &mut gaps)
+            keep(
+                installed_content::country_scorers::read(layers, names),
+                "country scorers",
+                &mut gaps,
+            )
         });
         if let Some(database) = &country_scorers {
             notes.extend(database.notes.clone());
@@ -415,7 +489,9 @@ impl CachedContent {
         let characters = characters::CharacterContent::read(
             layers,
             environment,
-            advisor_templates.as_ref().ok_or_else(|| gaps["ideas"].clone()),
+            advisor_templates
+                .as_ref()
+                .ok_or_else(|| gaps["ideas"].clone()),
         );
         notes.extend(characters.notes.iter().cloned());
         Ok(Self {
@@ -442,6 +518,8 @@ impl CachedContent {
             equipment,
             autonomy_states,
             state_categories,
+            division_names,
+            wargoals,
             gaps,
             notes,
         })
@@ -468,6 +546,8 @@ impl CachedContent {
             equipment: self.equipment.as_ref(),
             autonomy_states: self.autonomy_states.as_ref(),
             state_categories: self.state_categories.as_ref(),
+            division_names: self.division_names.as_ref(),
+            wargoals: self.wargoals.as_ref(),
             gaps: Some(&self.gaps),
             events,
         }
@@ -492,7 +572,7 @@ pub struct Context<'c, 'f> {
     localisation: &'c Localisation,
     session: RefCell<Option<crate::triggers::VariableSession>>,
     nested_session: bool,
-    expansion: Option<&'c ExpansionScopes>,
+    expansion: Option<&'c ExpansionScopes<'c, 'f>>,
     perspective: u32,
     source: &'c str,
     content: Content<'c>,
@@ -519,7 +599,10 @@ impl<'c, 'f> Context<'c, 'f> {
     }
 
     fn world(&self) -> Result<&'c World<'f>, String> {
-        self.text.world()
+        match self.expansion.and_then(|scopes| scopes.world) {
+            Some(world) => Ok(world),
+            None => self.text.world(),
+        }
     }
 
     pub(crate) fn with_variable_session(
@@ -531,7 +614,7 @@ impl<'c, 'f> Context<'c, 'f> {
         self
     }
 
-    pub(crate) fn with_expansion_scopes(mut self, scopes: &'c ExpansionScopes) -> Self {
+    pub(crate) fn with_expansion_scopes(mut self, scopes: &'c ExpansionScopes<'c, 'f>) -> Self {
         self.expansion = Some(scopes);
         self
     }
@@ -682,11 +765,7 @@ fn scalar_operand(item: &Item) -> Result<&[u8], String> {
 
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     pub(super) fn tag(&self, country: u32) -> Result<&str, String> {
-        self.context
-            .text
-            .recorded()
-            .tag(country)
-            .ok_or_else(|| format!("Countries lacks tag for country {country}"))
+        self.context.text.country_tag(country)
     }
 
     pub(super) fn country_name(&self, country: u32, definite: bool) -> Result<String, String> {
@@ -695,7 +774,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
     pub(super) fn current_country(&self, scopes: Scopes) -> Result<u32, String> {
         match scopes.this {
-            Scope::Country(country) => Ok(country),
+            Scope::Country(country) | Scope::CountryLeader { country, .. } => Ok(country),
             _ => Err("current scope has no country (1405336C0)".into()),
         }
     }
@@ -717,7 +796,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     && row.token.eq_ignore_ascii_case(ideology)
             })
             .ok_or("PoliticalParties lacks FindPartyByIdeology result (140B980C0)")?;
-        self.context.text.party_name(party, self.tag(country)?, false)
+        self.context
+            .text
+            .party_name(party, self.tag(country)?, false)
     }
 
     pub(super) fn country_target(
@@ -737,8 +818,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             // These custom value/key readers own target outside KEY_READERS.
             if !token.is_some_and(|token| {
                 installed_content::effect_keys::is_own_field(token, b"target")
-                    || installed_content::effect_keys::class(token)
-                        .is_some_and(|(value_reader, key_reader)| {
+                    || installed_content::effect_keys::class(token).is_some_and(
+                        |(value_reader, key_reader)| {
                             value_reader == 0x1403A9C70 // Make puppet's value reader.
                                 || matches!(
                                     key_reader,
@@ -750,7 +831,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                                         | 0x14049E7D0 // Send equipment fraction.
                                         | 0x1403B6280 // Transfer units fraction.
                                 )
-                        })
+                        },
+                    )
             }) {
                 scalar_operand(item)?;
             }
@@ -769,7 +851,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             Some(Selected::Keyword(Selector::StateOccupier)) => {
                 let state = match scopes.this {
                     Scope::State(state) => state,
-                    Scope::Country(_) => return Ok(None),
+                    Scope::Country(_) | Scope::CountryLeader { .. } => return Ok(None),
                     _ => return Err("occupied selector needs native CEventScope.state_id +0xA8 (1405336C0); this projected scope does not expose that field".into()),
                 };
                 if self.valid_state(state)?.is_none() {
@@ -795,7 +877,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             Some(Selected::Keyword(selector)) => {
                 if let Some(target) = selector_scope(selector) {
                     match self.evaluator()?.enter(&target, scopes)? {
-                        Some(Scope::Country(country)) => Some(country),
+                        Some(Scope::Country(country) | Scope::CountryLeader { country, .. }) => {
+                            Some(country)
+                        }
                         Some(Scope::State(id)) if id != NULL_STATE => {
                             // 14052B6A0 returns the selected state's owner tag (+0xC8).
                             let state = self.valid_state(id)?.ok_or_else(|| {
@@ -836,7 +920,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         item: &'a Item,
         name: &str,
     ) -> Result<Option<&'a Item>, String> {
-        let fields = children(item).iter().filter(|field| field.keyword_is(name));
+        let mut fields = children(item).iter().filter(|field| field.keyword_is(name));
         let chains = item
             .keyword()
             .and_then(|key| installed_content::effect_keys::registered(&key.folded()))
@@ -856,7 +940,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 "repeated {name} fields retain CEffect +0x24 flags or appended scope-link selectors (140530BB0/1403B2390/1403AD690); auxiliary reader replay is unavailable"
             ));
         }
-        Ok(fields.last())
+        Ok(fields.next_back())
     }
 
     fn state_country_selector(
@@ -866,9 +950,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<Option<u32>, String> {
         match scopes.this {
             // 1405336C0 falls back to zero when no current state exists.
-            Scope::Country(_) | Scope::State(NULL_STATE) => Ok(None),
+            Scope::Country(_) | Scope::CountryLeader { .. } | Scope::State(NULL_STATE) => Ok(None),
             Scope::State(_) => Ok(match self.evaluator()?.enter(&Parsed::Keyword(keyword), scopes)? {
-                Some(Scope::Country(country)) => Some(country),
+                Some(Scope::Country(country) | Scope::CountryLeader { country, .. }) => Some(country),
                 _ => None,
             }),
             _ => Err("state owner/controller selector needs native CEventScope.state_id +0xA8 (1405336C0); this projected scope does not expose that field".into()),
@@ -954,7 +1038,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     | EventObject::UnitLeader(_)
                     | EventObject::Province(_)
                     | EventObject::CountryState { .. }
-                    | EventObject::IndustrialOrganisation(_) => {
+                    | EventObject::CountryUnitLeader { .. }
+                    | EventObject::IndustrialOrganisation(_)
+                    | EventObject::Combat => {
                         return Err(format!(
                             "saved effect target {}: projected {target:?} lacks CSavedEventTarget vf9 liveness for the state +0x08 / country +0x0C probe (14052FA10/1405302E0/14052BE50); core target projection plumbing pending",
                             String::from_utf8_lossy(name)
@@ -997,7 +1083,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                         }
                         // 140533D3C calls the capital getter, then falls through
                         // to 14052FA10 with zero; only the state branch returns it.
-                        Scope::Country(_) | Scope::State(NULL_STATE) => return Ok(0),
+                        Scope::Country(_) | Scope::CountryLeader { .. } | Scope::State(NULL_STATE) => return Ok(0),
                         _ => return Err("capital selector needs the native event scope's state/country fields (140533BE0); the projected scope does not expose them".into()),
                     }
                 } else {
@@ -1059,12 +1145,15 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     pub(super) fn evaluator(&self) -> Result<&Evaluator<'c, 'f>, String> {
         self.evaluator
             .get_or_init(|| {
-                let mut evaluator = Evaluator::new(self.context.world()?, None)
-                    .with_event_scopes(Rc::clone(&self.graph));
+                let mut evaluator = Evaluator::new(
+                    self.context.world()?,
+                    self.context.expansion.and_then(|scopes| scopes.combat),
+                )
+                .with_event_scopes(Rc::clone(&self.graph));
                 if let Some(session) = self.context.session.borrow().as_ref() {
                     evaluator = evaluator.with_variable_session(session);
                 }
-                evaluator.begin_description();
+                evaluator.begin_description_in(evaluator.event_scopes(0)?);
                 Ok(evaluator)
             })
             .as_ref()
@@ -1214,7 +1303,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.effect_class(item).is_some_and(|class| {
             matches!(
                 class.name,
-                "CForEachEffect" | "CForEffect" | "CWhileEffect" | "CSetPoliticalPartyEffect"
+                "CForEachEffect"
+                    | "CForEffect"
+                    | "CWhileEffect"
+                    | "CSetPoliticalPartyEffect"
                     | "CFindHighestLowestInArrayEffect<>"
             )
         })

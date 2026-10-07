@@ -92,7 +92,7 @@ fn temp_random_bare_scalar_keeps_the_counted_reader_refusal() {
 #[test]
 fn temp_modulo_caches_the_target_before_rhs_alias_mutations() {
     with_world(
-        &variables_frame(),
+        &positive_variables_frame(),
         "ALI = { original_tag = GER set_temp_variable = { n = 9 } }",
         Err("none"),
         |world| {
@@ -107,7 +107,7 @@ fn temp_modulo_caches_the_target_before_rhs_alias_mutations() {
                          modulo_temp_variable = { n = ALI.missing }
                          check_variable = { n = 9 }",
                         ),
-                        Scopes::of(Scope::Country(0)),
+                        Scopes::of(Scope::Country(1)),
                     )
                     .decided(),
                 Ok(true)
@@ -120,7 +120,7 @@ fn temp_modulo_caches_the_target_before_rhs_alias_mutations() {
 fn temp_variables_follow_order_across_scripted_triggers_and_scopes() {
     use installed_content::scripted_triggers::Template;
 
-    let frame = variables_frame();
+    let frame = positive_variables_frame();
     let mut triggers = TriggerNames::default();
     triggers.scripted.templates.insert(
         b"nested".to_vec(),
@@ -157,7 +157,7 @@ fn temp_variables_follow_order_across_scripted_triggers_and_scopes() {
     );
     assert_eq!(
         world
-            .evaluate(&script, Scopes::of(Scope::Country(0)))
+            .evaluate(&script, Scopes::of(Scope::Country(1)))
             .decided(),
         Ok(true)
     );
@@ -225,7 +225,7 @@ fn temp_variables_use_native_fixed5_arithmetic() {
 #[test]
 fn temp_variables_read_the_destination_after_rhs_alias_conditions() {
     with_world(
-        &variables_frame(),
+        &positive_variables_frame(),
         "ALI = { original_tag = GER set_temp_variable = { n = 7 }
             add_to_temp_variable = { hits = 1 } }",
         Err("none"),
@@ -243,7 +243,7 @@ fn temp_variables_read_the_destination_after_rhs_alias_conditions() {
                      check_variable = { hits = 2 }
                      check_variable = { temp_var:k5 = 1 }"
                     ),
-                    Scopes::of(Scope::Country(0))
+                    Scopes::of(Scope::Country(1))
                 ),
                 Eval::True
             );
@@ -304,41 +304,23 @@ fn temp_variables_keep_pending_writers_expressions_and_residuals_named() {
     let frame = variables_frame();
     with_world(&frame, "", Err("none"), |world| {
         let scopes = Scopes::of(Scope::Country(0));
-        for form in ["{ var = t min = 0 max = 1 }", "\"t\""] {
-            let name = "set_temp_variable_to_random";
-            let evaluator = Evaluator::new(world, None);
-            let script = format!(
-                "set_temp_variable = {{ t = 1 }} {name} = {form} check_variable = {{ t = 1 }}"
-            );
-            let Eval::Unknown(reasons) = evaluator.evaluate(&items(&script), scopes) else {
-                panic!("{script}");
-            };
-            assert!(reasons.len() >= 2, "{reasons:?}");
-            assert!(
-                reasons
-                    .iter()
-                    .any(|why| why.contains(REFUSED) && why.contains(name)),
-                "{reasons:?}"
-            );
-            assert!(
-                reasons
-                    .iter()
-                    .any(|why| why.contains("140537810") && why.contains("CVariables+8")),
-                "{reasons:?}"
-            );
-            assert!(
-                reasons
-                    .iter()
-                    .all(|why| !why.contains("unrecorded CVariables+8")),
-                "{reasons:?}"
-            );
-            assert!(
-                evaluator
-                    .scoped_value(b"t", scopes)
-                    .unwrap_err()
-                    .contains(name)
-            );
-        }
+        let evaluator = Evaluator::new(world, None);
+        let script = "set_temp_variable={t=1} set_temp_variable_to_random={var=t min=0 max=1} check_variable={t=1}";
+        let Eval::Unknown(reasons) = evaluator.evaluate(&items(script), scopes) else {
+            panic!("{script}");
+        };
+        assert!(
+            reasons
+                .iter()
+                .any(|why| why.contains("ScriptVariables.seed (CVariables+8)")),
+            "{reasons:?}"
+        );
+        assert!(
+            evaluator
+                .scoped_value(b"t", scopes)
+                .unwrap_err()
+                .contains("set_temp_variable_to_random")
+        );
         let why = world
             .evaluate(
                 &items("set_temp_variable = { var = t value = { value = 1 pow = 2 } }"),
@@ -369,5 +351,56 @@ fn temp_variables_keep_pending_writers_expressions_and_residuals_named() {
             "{why}"
         );
         assert_eq!(stale.scoped_value(b"ROOT.x", scopes), Ok(5 * ONE));
+    });
+}
+
+#[test]
+fn format98_random_temp_trigger_and_mtth_share_the_native_seed_context() {
+    let mut frame = variables_frame();
+    let TableView::Complete(TableRows::ScriptVariables(rows)) =
+        &mut *frame.tables[TableId::ScriptVariables.index()]
+    else {
+        panic!("complete variables");
+    };
+    for row in rows
+        .iter_mut()
+        .filter(|row| row.scope_kind == 1 && matches!(row.scope_id, 100 | 101))
+    {
+        row.seed = replay::rows::Recorded::Value(Some(37));
+    }
+    with_world(&frame, "", Err("none"), |world| {
+        let evaluator = Evaluator::new(world, None);
+        // Canonical slot 0 still carries raw country reference 100 here.
+        assert_eq!(
+            evaluator
+                .evaluate(
+                    &items("check_variable={random_seed=0.00037}"),
+                    Scopes::of(Scope::Country(0))
+                )
+                .decided(),
+            Ok(true)
+        );
+        let scopes = Scopes::of(Scope::Country(1));
+        assert_eq!(
+            evaluator
+                .evaluate(
+                    &items(
+                        "set_temp_variable_to_random={var=n min=2 max=4} check_variable={n=3.30754}"
+                    ),
+                    scopes
+                )
+                .decided(),
+            Ok(true)
+        );
+        // Each modifier consumes the next TLS fraction in one native MTTH context.
+        let fields = installed_content::parser::parse(
+            b"base=1 modifier={always=yes factor=random} modifier={always=yes factor=random}",
+        )
+        .unwrap()
+        .items;
+        assert_eq!(
+            evaluator.mean_time_to_happen("test", &fields, scopes),
+            Ok(38_783)
+        );
     });
 }

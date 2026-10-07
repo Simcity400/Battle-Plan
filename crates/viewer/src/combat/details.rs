@@ -2,8 +2,8 @@
 use super::{
     INLINE_FLAG, Selection, Values, Widget,
     binding::{
-        Bindings, FILL, FLAG, SPRITE, TEXT, TextIcons, builtin, country_flag, displayable, fill,
-        hide, text, token,
+        Bindings, FILL, FLAG, Flags, SPRITE, TEXT, TextIcons, builtin, country_flag, displayable,
+        fill, hide, text, token,
     },
     land_details::{Condition, conditions},
     template_icons,
@@ -31,7 +31,7 @@ pub(super) fn bind(
     document: &Document,
     frame: &DecodedFrame,
     selection: Selection,
-    flags: &BTreeMap<u32, String>,
+    flags: &Flags,
     vision: &Vision,
 ) -> io::Result<()> {
     match selection {
@@ -57,7 +57,7 @@ fn pictures(
     id: u64,
     terrain: &BTreeMap<u32, String>,
     has_sprite: &dyn Fn(&str) -> bool,
-    flags: &BTreeMap<u32, String>,
+    flags: &Flags,
 ) -> io::Result<()> {
     let details = rows::<tables::LandCombatDetails>(frame)?;
     let detail = details.rows().iter().find(|row| row.combat == id);
@@ -159,6 +159,8 @@ fn fraction(value: i64, maximum: i64) -> f32 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Unnamed {
     CustomNotText,
+    StoredText(String),
+    Unavailable(String),
     /// The name holds a control the native text layout does not draw ([`displayable`]).
     Control(String),
     /// CArmy's constructor 140C5DD30 builds its member with 1409B3070 (type
@@ -175,6 +177,8 @@ impl std::fmt::Display for Unnamed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::CustomNotText => f.write_str("the custom name is not UTF-8"),
+            Self::StoredText(reason) => f.write_str(reason),
+            Self::Unavailable(reason) => f.write_str(reason),
             Self::Control(reason) => write!(f, "the name holds {reason}"),
             Self::ForeignType(kind) => write!(
                 f,
@@ -189,20 +193,72 @@ impl std::fmt::Display for Unnamed {
 /// where the capture records one (with +0xA9 clear, or set and a null
 /// group), else the selected historical name of a type-zero member from the
 /// content's name groups.
-pub(crate) fn division_name(
+fn division_name(
     row: &LandCombatDivisionRow,
     names: &Database,
+    localisation: &Localisation,
+    recorded_language: &str,
 ) -> Result<String, Unnamed> {
-    if !row.name_custom.is_empty() {
-        return std::str::from_utf8(&row.name_custom)
-            .map(str::to_owned)
-            .map_err(|_| Unnamed::CustomNotText);
+    division_name_operands(
+        division_custom_name(
+            &row.name_custom,
+            row.name_programmatic,
+            &row.name_group,
+            localisation,
+            recorded_language,
+        )?,
+        row.name_type,
+        &row.name_group,
+        row.name_order,
+        row.name_ordered != 0,
+        names,
+    )
+}
+
+/// Player overrides are literals. Visible programmatic overrides are stored client text;
+/// a resolved group instead generates the name, even if an override was recorded.
+fn division_custom_name(
+    custom: &[u8],
+    programmatic: u8,
+    group: &[u8],
+    localisation: &Localisation,
+    recorded_language: &str,
+) -> Result<Option<String>, Unnamed> {
+    if custom.is_empty() || (programmatic != 0 && !group.is_empty()) {
+        return Ok(None);
     }
-    if row.name_type != 0 {
-        return Err(Unnamed::ForeignType(row.name_type));
+    if programmatic != 0 {
+        return dashboard::scripted_text::stored_text(
+            localisation,
+            recorded_language,
+            custom,
+            "programmatic division name",
+        )
+        .map(Some)
+        .map_err(Unnamed::StoredText);
+    }
+    std::str::from_utf8(custom)
+        .map(|name| Some(name.to_owned()))
+        .map_err(|_| Unnamed::CustomNotText)
+}
+
+/// Historical generator-operand name, before the retained native cache was recorded.
+fn division_name_operands(
+    custom: Option<String>,
+    kind: i32,
+    group: &[u8],
+    order: i32,
+    ordered: bool,
+    names: &Database,
+) -> Result<String, Unnamed> {
+    if let Some(custom) = custom {
+        return Ok(custom);
+    }
+    if kind != 0 {
+        return Err(Unnamed::ForeignType(kind));
     }
     names
-        .resolve(&row.name_group, row.name_order, row.name_ordered != 0)
+        .resolve(group, order, ordered)
         .map_err(Unnamed::Unresolved)
 }
 
@@ -212,8 +268,36 @@ fn shown_name(
     row: &LandCombatDivisionRow,
     names: &Database,
     icons: &impl TextIcons,
+    localisation: &Localisation,
+    recorded_language: &str,
 ) -> Result<String, Unnamed> {
-    division_name(row, names).and_then(|name| displayable(icons, name).map_err(Unnamed::Control))
+    division_name(row, names, localisation, recorded_language)
+        .and_then(|name| displayable(icons, name).map_err(Unnamed::Control))
+}
+
+/// The live getter returns the retained cache, not a freshly generated name.
+/// Only an explicitly unrecorded cache uses the old combat naming projection.
+fn shown_recorded_name(
+    row: &LandCombatDivisionRow,
+    status: Option<&replay::rows::DivisionStatusRow>,
+    status_gap: &str,
+    names: &Database,
+    icons: &impl TextIcons,
+    localisation: &Localisation,
+    recorded_language: &str,
+) -> Result<String, Unnamed> {
+    let status = status.ok_or_else(|| {
+        Unnamed::Unavailable(format!(
+            "DivisionStatus has no cached-name row for division {} ({status_gap})",
+            row.division
+        ))
+    })?;
+    if matches!(status.name, replay::rows::Recorded::NotRecorded) {
+        return shown_name(row, names, icons, localisation, recorded_language);
+    }
+    dashboard::unit_names::army_name(status, localisation, recorded_language, || Ok(names))
+        .map_err(Unnamed::Unavailable)
+        .and_then(|name| displayable(icons, name).map_err(Unnamed::Control))
 }
 
 /// One warning per cause for a combat's divisions whose names are
@@ -221,12 +305,11 @@ fn shown_name(
 fn unnamed_warnings<'a>(
     combat: u64,
     rows: impl Iterator<Item = &'a LandCombatDivisionRow>,
-    names: &Database,
-    icons: &impl TextIcons,
+    name: impl Fn(&LandCombatDivisionRow) -> Result<String, Unnamed>,
 ) -> Vec<String> {
     let mut causes: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for row in rows {
-        if let Err(cause) = shown_name(row, names, icons) {
+        if let Err(cause) = name(row) {
             causes.entry(cause.to_string()).or_default().push(format!(
                 "division {} (group {}, {} {})",
                 row.division,
@@ -580,7 +663,7 @@ fn land(
     document: &Document,
     frame: &DecodedFrame,
     id: u64,
-    flags: &BTreeMap<u32, String>,
+    flags: &Flags,
 ) -> io::Result<()> {
     let details = rows::<tables::LandCombatDetails>(frame)?;
     let detail = details.rows().iter().find(|r| r.combat == id);
@@ -604,7 +687,17 @@ fn land(
     };
     let bars = conditions(frame)?;
     let division_gap = absence(&rows::<tables::Divisions>(frame)?);
-    let status_gap = absence(&rows::<tables::DivisionStatus>(frame)?);
+    let statuses = rows::<tables::DivisionStatus>(frame)?;
+    let status_gap = absence(&statuses);
+    let statuses: BTreeMap<_, _> = statuses
+        .rows()
+        .iter()
+        .filter(|status| {
+            divisions.contains_key(&(0, status.division))
+                || divisions.contains_key(&(1, status.division))
+        })
+        .map(|status| (status.division, status))
+        .collect();
     let exiles = template_icons::Inputs::read(frame)?;
     let content = document.icons.combat.land_defines.as_ref();
     if let Err(reason) = content {
@@ -612,12 +705,19 @@ fn land(
     }
     let content = content.ok();
     let names = &document.icons.combat.division_names;
-    out.warnings.extend(unnamed_warnings(
-        id,
-        divisions.values().copied(),
-        names,
-        &document.icons.combat,
-    ));
+    let shown = |row: &LandCombatDivisionRow| {
+        shown_recorded_name(
+            row,
+            statuses.get(&row.division).copied(),
+            &status_gap,
+            names,
+            &document.icons.combat,
+            &document.names.localisation,
+            &document.recorded_language,
+        )
+    };
+    out.warnings
+        .extend(unnamed_warnings(id, divisions.values().copied(), shown));
     // Undecided entry flags and exile badges by widget and cause, with the
     // committed divisions each cause leaves undecided: one warning per cause.
     let mut undecided: BTreeMap<(&str, String), Vec<u64>> = BTreeMap::new();
@@ -680,7 +780,8 @@ fn land(
                     let flag = if committed {
                         let cause = match exiles.entry_owner(row) {
                             Ok(owner) => match flags.get(&owner) {
-                                Some(flag) => Ok(flag),
+                                Some(Ok(flag)) => Ok(flag),
+                                Some(Err(reason)) => Err(reason.clone()),
                                 None => Err(format!(
                                     "no combat flag resolves for its owner country {owner}"
                                 )),
@@ -700,7 +801,7 @@ fn land(
                     };
                     widgets = entry(
                         row,
-                        shown_name(row, names, &document.icons.combat).ok(),
+                        shown(row).ok(),
                         committed,
                         detail.map(|detail| {
                             if side == 0 {
@@ -1029,7 +1130,7 @@ fn naval(
     document: &Document,
     frame: &DecodedFrame,
     id: u64,
-    flags: &BTreeMap<u32, String>,
+    flags: &Flags,
     vision: &Vision,
 ) -> io::Result<()> {
     // 1417DA2F0 hides the controlling-player button when 1417D4650

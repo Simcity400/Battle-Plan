@@ -6,6 +6,7 @@ fn weather_suspension_none_is_distinct_from_zero_and_opaque_tags_are_strict() {
         dlc_mask: 0x1234,
         human_ai: 7,
         weather_suspend: crate::rows::Recorded::Value(None),
+        ..Default::default()
     };
     let after = SimulationFeatureRow {
         weather_suspend: crate::rows::Recorded::Value(Some([0, 0])),
@@ -23,7 +24,7 @@ fn weather_suspension_none_is_distinct_from_zero_and_opaque_tags_are_strict() {
         SimulationFeatureRow::decode_fields(0, &mut Decoder::new(&bytes)).unwrap(),
         after
     );
-    let tag = bytes.len() - 3;
+    let tag = bytes.len() - 4; // instant_decisions follows the opaque weather field.
     bytes[tag] = 2;
     assert!(SimulationFeatureRow::decode_fields(0, &mut Decoder::new(&bytes)).is_err());
     bytes[tag] = 1;

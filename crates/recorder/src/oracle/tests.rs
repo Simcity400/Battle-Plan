@@ -79,6 +79,10 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                     country: 102,
                     observer_country: 0,
                 }]));
+            tables[TableId::ReservedCountryNaming.index()] =
+                TableView::Complete(TableRows::ReservedCountryNaming(vec![
+                    replay::rows::ReservedCountryNamingRow::default(),
+                ]));
             for (index, table) in [
                 TableView::Complete(TableRows::Clock(vec![ClockRow {
                     hour,
@@ -703,6 +707,7 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
         max_supply: Some(Decimal::parse(b"0").unwrap()),
         army_current_supply_ratio: Some(Decimal::parse(b"0").unwrap()),
         strategic_redeployment: true,
+        disrupted_supply: None,
         division_name: None,
         acclimatization: Some(save::Acclimatization {
             entries: vec![(b"hot_climate".to_vec(), Decimal::parse(b"8483.76").unwrap())],
@@ -723,6 +728,7 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
     };
     let status = DivisionStatusRow {
         division: id,
+        supply: replay::rows::Recorded::NotRecorded,
         entrenchment: 1,
         entrenchment_cap: -100,
         acclimatization_maximum: Some(save::Acclimatization::OMITTED_MAXIMUM_RAW),
@@ -864,6 +870,7 @@ fn division_supply_grace_oracle_requires_unconditional_save_fields_and_keeps_old
         division: id,
         supply_grace_maximum: Recorded::Value(9_007_199_254_740_993),
         supply_grace_remaining: Recorded::Value(-1_234_567),
+        supply: Recorded::NotRecorded,
         ..Default::default()
     };
     *frame.tables[TableId::DivisionStatus.index()] =
@@ -950,6 +957,7 @@ fn division_status_naming_oracle_checks_generator_operands_and_absence() {
             TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
                 division: id,
                 naming,
+                supply: Recorded::NotRecorded,
                 ..Default::default()
             }]));
     };
@@ -2824,6 +2832,7 @@ fn air_sortie_oracle_compares_the_saved_penalty_and_checks_operand_keys() {
     saved.air_wings.insert(
         wing,
         save::AirWing {
+            name: None,
             id: wing,
             owner: b"GER".to_vec(),
             country_override: b"---".to_vec(),
@@ -2996,9 +3005,11 @@ fn air_sortie_oracle_compares_the_saved_penalty_and_checks_operand_keys() {
 fn air_and_naval_oracle_compares_native_values_and_slot_identity() {
     let (mut frame, mut saved, membership, equipment) = fixture();
     let wing = (1_u64 << 32) | 54;
+    let wing_name = b"Stored wing name".to_vec();
     saved.air_wings.insert(
         wing,
         save::AirWing {
+            name: Some(wing_name.clone()),
             id: wing,
             owner: b"GER".to_vec(),
             country_override: b"---".to_vec(),
@@ -3014,7 +3025,7 @@ fn air_and_naval_oracle_compares_native_values_and_slot_identity() {
     let ace = (7_u64 << 32) | 4713;
     saved.air.wings.push(save::air::Wing {
         id: wing,
-        name: None,
+        name: Some(wing_name.clone()),
         accidents: None,
         experience: Decimal::parse(b"0").unwrap(),
         equipment: save::air::EquipmentPool {
@@ -3028,6 +3039,7 @@ fn air_and_naval_oracle_compares_native_values_and_slot_identity() {
             base_range_raw: 0,
             ace,
             id: wing,
+            name: replay::rows::Recorded::Value(Some(wing_name)),
             owner: 102,
             country_override: 0,
             air_base: 63,

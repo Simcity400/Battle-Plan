@@ -17,6 +17,7 @@ fn fixture(
             "common/defines/test.lua",
             "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
         ),
+        ("common/units/synthetic.txt", "sub_units={syn_unit={}}"),
         (
             "common/bop/test.txt",
             bop.unwrap_or(
@@ -50,6 +51,7 @@ fn fixture(
                 " CAN_CREATE_FACTIONS:0 \"Create factions\"\n CAN_JOIN_FACTIONS:0 \"Join factions\"\n",
                 " ACTIVATION:0 \"[ROOT.GetTag] activated\"\n NEXT:0 \"Next effect\"\n",
                 " ONE:0 \"x\"\n",
+                " syn_unit:0 \"Unit\"\n SUBUNIT_BONUS_HEADER:0 \"$ICON$$NAME$\"\n",
                 " LOOP:0 \"[ROOT.GetActiveRangeActivationEffect]\"\n ENTRY_BODY:0 \"[ROOT.GetActiveRangeActivationEffect]\"\n ENTRY_TOOLTIP:0 \"[BalanceEntry]\"\n",
                 " SOV:0 \"Other\"\n EFFECT_CONTEXT_COUNTRY:0 \"@$TAG$$COUNTRY$\"\n",
                 " POLITICS_ADD_POLITICAL_POWER:0 \"PP$VAL|0$\"\n",
@@ -60,7 +62,7 @@ fn fixture(
             ),
         ),
     ]);
-    let mut frame = crate::scope::tests::frame();
+    let mut frame = crate::scope::tests::positive_frame();
     *frame.tables[TableId::PowerBalances.index()] =
         TableView::Complete(TableRows::PowerBalances(vec![PowerBalanceRow {
             balance: b"balance".to_vec(),
@@ -104,13 +106,44 @@ fn fixture(
 }
 
 #[test]
+fn nested_balance_effects_keep_the_viewer_nato_preference() {
+    let (catalogue, _folder, frame) = fixture(Some(
+        "balance={range={id=active on_activate={add_unit_bonus={syn_unit={}}}}}",
+    ));
+    let content = catalogue.scripted_content().unwrap();
+    let effects = content.effects().unwrap();
+    let items = installed_content::parser::parse(b"custom_effect_tooltip=ENTRY_TOOLTIP")
+        .unwrap()
+        .items;
+    for nato in [false, true] {
+        let text =
+            ScriptedText::new(&frame, &catalogue.localisation, content, 1).with_nato_counters(nato);
+        let context = crate::effect_description::Context::new(
+            &text,
+            &catalogue.localisation,
+            0,
+            "synthetic border event",
+            effects.view(None),
+        );
+        let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
+        let out = crate::effect_description::describe(&items, &context, &mut scopes);
+        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+        let frame = if nato { 2 } else { 1 };
+        assert_eq!(
+            out.text,
+            format!("Activate:\n\u{13}GFX_syn_unit_icon_small|{frame} Unit\n")
+        );
+    }
+}
+
+#[test]
 fn balance_effect_sessions_keep_nesting_active_history_and_large_stack() {
     let (catalogue, _folder, frame) = fixture(Some(
         "balance={range={id=active on_activate={custom_effect_tooltip=LOOP}}}",
     ));
     let content = catalogue.scripted_content().unwrap();
-    let text = ScriptedText::new(&frame, &catalogue.localisation, content, 0);
-    let graph = EventScopes::new(vec![EventScope::of(EventObject::Country(0))]);
+    let text = ScriptedText::new(&frame, &catalogue.localisation, content, 1);
+    let graph = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
     let mut scopes = ExpansionScopes::new(&graph);
     scopes.on_large_stack = true;
     scopes.fresh_depth.set(MAX_SCRIPTED_NESTING);
@@ -119,7 +152,7 @@ fn balance_effect_sessions_keep_nesting_active_history_and_large_stack() {
         .items;
     // This bounded first assertion fails safely on the old head, before recursion.
     let why = text
-        .active_range_effects(&effects, &mut Vec::new(), 0, "guard", &scopes)
+        .active_range_effects(&effects, &mut Vec::new(), 1, "guard", &scopes)
         .unwrap_err();
     assert!(why.contains("native stack exhaustion"), "{why}");
     scopes.fresh_depth.set(MAX_SCRIPTED_NESTING - 1);
@@ -137,7 +170,7 @@ fn balance_effect_sessions_keep_nesting_active_history_and_large_stack() {
         .items;
     let mut refused = Vec::new();
     assert_eq!(
-        text.active_range_effects(&effects, &mut refused, 0, "guard", &scopes)
+        text.active_range_effects(&effects, &mut refused, 1, "guard", &scopes)
             .unwrap(),
         ""
     );
@@ -156,7 +189,7 @@ fn balance_effect_sessions_keep_nesting_active_history_and_large_stack() {
         &frame,
         &catalogue.localisation,
         catalogue.scripted_content().unwrap(),
-        0,
+        1,
     );
     // The entry's cursor remains in the carried arena when the effect appends a
     // fresh graph. Its repeated effective context must be recognized immediately.
@@ -179,7 +212,7 @@ fn custom_only_balance_effects_do_not_require_world_or_environment() {
             .set(Err("synthetic unavailable environment".into()))
             .is_ok()
     );
-    let text = ScriptedText::new(&frame, &catalogue.localisation, content, 0);
+    let text = ScriptedText::new(&frame, &catalogue.localisation, content, 1);
     assert_eq!(
         text.expand("[ROOT.GetActiveRangeActivationEffect]"),
         Ok("Activate:\nGER activated\nNext effect\n".into())
@@ -214,11 +247,11 @@ fn balance_context_headers_use_the_viewing_country() {
         members[0].country = 200;
     }
     for (perspective, expected) in [
-        (0, "Activate:\n\u{12}SOVOther Next effect\n"),
-        (1, "Activate:\nNext effect\n"),
+        (1, "Activate:\n\u{12}SOVOther Next effect\n"),
+        (2, "Activate:\nNext effect\n"),
     ] {
         let text = ScriptedText::new(&frame, &catalogue.localisation, content, perspective);
-        let graph = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
+        let graph = EventScopes::new(vec![EventScope::of(EventObject::Country(2))]);
         assert_eq!(
             text.expand_in("[ROOT.GetActiveRangeActivationEffect]", &graph),
             Ok(expected.into())
@@ -235,7 +268,7 @@ fn description(
         frame,
         &catalogue.localisation,
         catalogue.scripted_content()?,
-        0,
+        1,
     );
     crate::catalogue::localised_in(
         &catalogue.localisation,
@@ -342,10 +375,10 @@ fn active_range_effect_refusals_are_named_and_counted() {
     ));
     let error = description(&catalogue, &frame, "GetActiveRangeActivationEffect").unwrap_err();
     for name in [
-        "4 unsupported effect descriptions",
+        "3 unsupported effect descriptions",
         "unported",
         "other",
-        "fmt|value",
+        "formatter fmt requires core registry callback",
         "bound localisation",
     ] {
         assert!(error.contains(name), "{error}");
@@ -353,6 +386,15 @@ fn active_range_effect_refusals_are_named_and_counted() {
     assert_eq!(
         description(&catalogue, &frame, "GetActiveRangeDeactivationEffect").unwrap(),
         ""
+    );
+    // The native bound-localisation reader accepts a localization_key block
+    // (14238F670); it is independent of the unsupported formatter callback.
+    let (catalogue, _folder, frame) = fixture(Some(
+        "balance={range={id=active on_activate={custom_effect_tooltip={localization_key=KEY}}}}",
+    ));
+    assert_eq!(
+        description(&catalogue, &frame, "GetActiveRangeActivationEffect").unwrap(),
+        "Activate:\nKEY\n"
     );
 }
 

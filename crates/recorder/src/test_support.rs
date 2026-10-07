@@ -84,6 +84,9 @@ pub(crate) fn allocation_records() -> Vec<replay::spool::Record> {
                     TableId::AirSortieModifierMetadata => {
                         TableRows::AirSortieModifierMetadata(vec![Default::default()])
                     }
+                    TableId::ReservedCountryNaming => {
+                        TableRows::ReservedCountryNaming(vec![Default::default()])
+                    }
                     table => TableRows::empty(table),
                 };
                 TableUpdate::Snapshot(rows)

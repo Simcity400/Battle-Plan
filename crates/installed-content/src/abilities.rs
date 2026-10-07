@@ -1,4 +1,4 @@
-//! The sprite each ability definition gives the map counter's ability grid.
+//! Ability descriptions and sprites from the recorded content stack.
 //!
 //! `CAbility::CAbility` (140FF44E0) starts from `GFX_ability_<token>`;
 //! `CAbility::parse_key` (140FF5EC0) replaces that base with `icon`. Its
@@ -7,15 +7,13 @@
 //! only the ability token; the sprite is resolved here from the content stack.
 
 use crate::key_names::KeyNames;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io,
-};
+use std::{collections::BTreeMap, io};
 
 use crate::{
     ResolvedLayers,
     fields::{block, invalid},
-    modifiers,
+    modifiers::{self, Modifiers},
+    parser::Item,
     parser::native::{self, Shape},
     scope::ScopeKind,
 };
@@ -29,21 +27,44 @@ const DEFAULT_TOKEN_KEY: &[u8] = b"none";
 pub struct AbilitySprites {
     /// Ability token to the `GFX_...` sprite its map-counter child shows.
     pub by_token: BTreeMap<Vec<u8>, String>,
+    /// The first exact-name definition in the native database roster
+    /// (140606A40 / lookup 140606930).
+    pub definitions: BTreeMap<Vec<u8>, Definition>,
     /// Native reading notes and counted deferred effect warnings, with
     /// file/line context when loaded through the recorded stack.
     pub warnings: Vec<crate::Diagnostic>,
+}
+
+/// The authored operands consumed by CAbility::BuildDescription (140FF5220).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Definition {
+    /// ReadStringInto fields +0x248 / +0x268. Constructor defaults are the
+    /// declaration's token and that token followed by `_desc` (140FF44E0).
+    pub name: Vec<u8>,
+    pub description: Vec<u8>,
+    /// Country, leader and unit CModifier accumulators, in native display order.
+    pub modifiers: [Modifiers; 3],
+    /// +0x538 pointer roster, first encounter order.
+    pub adjusters: Vec<crate::unit_leader::Adjuster>,
+    /// One-time, hourly and daily CEffect child arrays. Repeated blocks append
+    /// through CEffect::ReadScript, with the type's current scope mask.
+    pub effects: [Vec<Item>; 3],
 }
 
 impl AbilitySprites {
     pub fn sprite(&self, token: &[u8]) -> Option<&str> {
         self.by_token.get(token).map(String::as_str)
     }
+
+    pub fn definition(&self, token: &[u8]) -> Option<&Definition> {
+        self.definitions.get(token)
+    }
 }
 
 fn apply_with_terrain(
     input: &[u8],
     sprites: &mut AbilitySprites,
-    terrains: &BTreeSet<Vec<u8>>,
+    terrains: &BTreeMap<Vec<u8>, Vec<u8>>,
     names: &KeyNames,
 ) -> io::Result<Vec<crate::Diagnostic>> {
     /// Each declaration is a new CAbility (140606A40 -> 140FF44E0), its
@@ -121,7 +142,7 @@ fn apply_with_terrain(
                     matches!(
                         key.as_slice(),
                         b"night" | b"amphibious" | b"river" | b"fort" | b"snow"
-                    ) || terrains.contains(&key)
+                    ) || terrains.contains_key(&key)
                 }) =>
             {
                 let key = field.keyword().unwrap_or_default();
@@ -164,30 +185,114 @@ fn apply_with_terrain(
         .filter(|item| item.keyword_is("ability"))
     {
         for item in block(&root.value, "ability")? {
-            let token = item
-                .key
-                .as_deref()
-                .filter(|token| !token.is_empty())
-                .ok_or_else(|| invalid("ability has no token"))?;
+            // 140606A40 constructs the declaration name using strlen on the
+            // current key's text, independently of its quoted token kind.
+            let token = crate::parser::c_string(
+                item.key
+                    .as_deref()
+                    .ok_or_else(|| invalid("ability has no token"))?,
+            );
             let name =
                 std::str::from_utf8(token).map_err(|_| invalid("ability token is not UTF-8"))?;
             let fields = block(&item.value, "ability definition")?;
             let mut base = format!("GFX_ability_{name}");
-            for icon in fields.iter().filter(|item| item.keyword_is("icon")) {
-                let value = icon
-                    .value
-                    .read_str()
-                    .map_err(|error| invalid(format!("ability {name} icon: {error}")))?;
-                if value.is_empty() || value == "{" {
-                    return Err(invalid(format!(
-                        "ability {name} icon {value:?} is not a supported sprite name"
-                    )));
+            let mut definition = Definition {
+                name: token.to_vec(),
+                description: [token, b"_desc"].concat(),
+                ..Default::default()
+            };
+            for field in fields {
+                if field.keyword_is("name") || field.keyword_is("desc") {
+                    let value = field.value.read_string().ok_or_else(|| {
+                        invalid(format!("ability {name} display key is not a string"))
+                    })?;
+                    if field.keyword_is("name") {
+                        definition.name = value.to_vec();
+                    } else {
+                        definition.description = value.to_vec();
+                    }
+                } else if field.keyword_is("icon") {
+                    let value = field
+                        .value
+                        .read_str()
+                        .map_err(|error| invalid(format!("ability {name} icon: {error}")))?;
+                    if value.is_empty() || value == "{" {
+                        return Err(invalid(format!(
+                            "ability {name} icon {value:?} is not a supported sprite name"
+                        )));
+                    }
+                    base = value.to_owned();
+                } else if let Some(slot) =
+                    ["country_modifiers", "leader_modifiers", "unit_modifiers"]
+                        .iter()
+                        .position(|key| field.keyword_is(key))
+                {
+                    for entry in field.value.items().unwrap_or_default() {
+                        if slot == 2 {
+                            let adjuster_key = entry.keyword().and_then(|key| {
+                                let key = key.folded();
+                                if matches!(
+                                    key.as_slice(),
+                                    b"night" | b"amphibious" | b"river" | b"fort" | b"snow"
+                                ) {
+                                    Some(key)
+                                } else {
+                                    terrains.get(&key).cloned()
+                                }
+                            });
+                            if let Some(key) = adjuster_key {
+                                let key = String::from_utf8(key)
+                                    .map_err(|_| invalid("ability adjuster token is not UTF-8"))?;
+                                let index = definition
+                                    .adjusters
+                                    .iter()
+                                    .position(|old| old.key == key)
+                                    .unwrap_or_else(|| {
+                                        definition.adjusters.push(crate::unit_leader::Adjuster {
+                                            key,
+                                            ..Default::default()
+                                        });
+                                        definition.adjusters.len() - 1
+                                    });
+                                let adjuster = &mut definition.adjusters[index];
+                                for component in entry.value.items().unwrap_or_default() {
+                                    let target = match component
+                                        .keyword()
+                                        .map(|key| key.folded())
+                                        .as_deref()
+                                    {
+                                        Some(b"attack") => &mut adjuster.attack,
+                                        Some(b"defence") => &mut adjuster.defence,
+                                        Some(b"movement") => &mut adjuster.movement,
+                                        _ => continue,
+                                    };
+                                    if let Some(value) = modifiers::read_fixed5(component) {
+                                        *target = value;
+                                    }
+                                }
+                                continue;
+                            }
+                        }
+                        definition.modifiers[slot].read(entry);
+                    }
+                } else if let Some(slot) = ["one_time_effect", "hourly_effect", "daily_effect"]
+                    .iter()
+                    .position(|key| field.keyword_is(key))
+                {
+                    definition.effects[slot]
+                        .extend(field.value.items().unwrap_or_default().iter().cloned());
                 }
-                base = value.to_owned();
             }
+            // Every duplicate is parsed, but lookup 140606930 stops at the
+            // first exact-length/byte match rather than replacing its object.
             sprites
                 .by_token
-                .insert(token.to_vec(), format!("{base}_animated"));
+                .entry(token.to_vec())
+                .or_insert_with(|| format!("{base}_animated"));
+            sprites
+                .definitions
+                .entry(token.to_vec())
+                .or_insert(definition);
         }
     }
     Ok(document
@@ -199,7 +304,8 @@ fn apply_with_terrain(
 
 /// Every effective `common/abilities/*.txt` in the byte order the database
 /// loader enumerates them (the same folder scan as `common/buildings`); a later
-/// definition of a token replaces an earlier one.
+/// definition remains in the native roster, whose lookup keeps the first exact
+/// name. Later definitions are still parsed and retain their diagnostics.
 pub fn read(layers: &ResolvedLayers) -> io::Result<AbilitySprites> {
     let mut paths: Vec<String> = layers
         .paths()
@@ -214,7 +320,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<AbilitySprites> {
     let terrains = crate::terrain::read_definitions(layers)?
         .categories
         .into_iter()
-        .map(|category| category.name.to_ascii_lowercase())
+        .map(|category| (category.name.to_ascii_lowercase(), category.name))
         .collect();
     let mut sprites = AbilitySprites::default();
     let names = layers.key_names()?;
@@ -237,7 +343,7 @@ mod tests {
         let notes = apply_with_terrain(
             b"ability = { a = { duration = { x = 1 } } }",
             &mut AbilitySprites::default(),
-            &BTreeSet::new(),
+            &BTreeMap::new(),
             &KeyNames::default(),
         )
         .unwrap();
@@ -250,7 +356,7 @@ mod tests {
     }
 
     fn apply(input: &[u8], sprites: &mut AbilitySprites) -> io::Result<()> {
-        let notes = apply_with_terrain(input, sprites, &BTreeSet::new(), &KeyNames::default())?;
+        let notes = apply_with_terrain(input, sprites, &BTreeMap::new(), &KeyNames::default())?;
         sprites.warnings.extend(notes);
         Ok(())
     }
@@ -296,11 +402,11 @@ mod tests {
     }
 
     #[test]
-    fn a_later_definition_replaces_the_token_and_a_malformed_icon_fails() {
+    fn lookup_keeps_the_first_exact_token_and_later_malformed_fields_still_fail() {
         let mut sprites = AbilitySprites::default();
         apply(b"ability={ special={ icon=GFX_old } }", &mut sprites).unwrap();
         apply(b"ability={ special={ icon=GFX_new } }", &mut sprites).unwrap();
-        assert_eq!(sprites.sprite(b"special"), Some("GFX_new_animated"));
+        assert_eq!(sprites.sprite(b"special"), Some("GFX_old_animated"));
         assert!(
             apply(
                 b"ability={ special={ icon={ selected=GFX_new } } }",
@@ -312,7 +418,10 @@ mod tests {
 
     #[test]
     fn repeated_adjusters_are_read_again_only_on_the_default_token() {
-        let terrains = BTreeSet::from([b"none".to_vec(), b"plains".to_vec()]);
+        let terrains = BTreeMap::from([
+            (b"none".to_vec(), b"none".to_vec()),
+            (b"plains".to_vec(), b"plains".to_vec()),
+        ]);
         let sprite = |text: &[u8]| {
             let mut sprites = AbilitySprites::default();
             apply_with_terrain(text, &mut sprites, &terrains, &KeyNames::default()).unwrap();
@@ -337,7 +446,7 @@ mod tests {
         assert_eq!(
             sprite(b"ability={a={unit_modifiers={night={}}} a={unit_modifiers={night={}} icon=custom}}")
                 .as_deref(),
-            Some("custom_animated")
+            Some("GFX_ability_a_animated")
         );
         // A terrain named `none` is read twice when new (141001790, then
         // 140FF5EC0), and again when repeated: the second read takes the
@@ -364,7 +473,7 @@ mod tests {
             character={type=army_leader daily_effect={remove_unit_leader_role={@hidden=7 character=fixture}} icon=@hidden}
             reset={type=army_leader type=country end_effect={remove_unit_leader_role={@after=5 character=fixture}} icon=@after}
         }
-    "#, &mut sprites, &BTreeSet::new(), &KeyNames::default()).unwrap();
+    "#, &mut sprites, &BTreeMap::new(), &KeyNames::default()).unwrap();
         assert_eq!(sprites.sprite(b"before"), Some("3_animated"));
         assert_eq!(sprites.sprite(b"character"), Some("@hidden_animated"));
         assert_eq!(sprites.sprite(b"reset"), Some("5_animated"));
@@ -372,5 +481,75 @@ mod tests {
             !notes.iter().any(|note| note.1.contains("Deferred effect")),
             "{notes:?}"
         );
+    }
+
+    #[test]
+    fn description_keeps_native_accumulators_adjusters_and_appended_effect_order() {
+        let mut catalog = AbilitySprites::default();
+        let terrains = BTreeMap::from([(b"synthetic".to_vec(), b"SYNTHETIC".to_vec())]);
+        apply_with_terrain(
+            br#"ability={ a={
+                name=FIRST name=LAST "name"=IGNORED desc=BODY
+                country_modifiers={political_power_gain=0.1}
+                country_modifiers={political_power_gain=0.2 custom_modifier_tooltip=TIP}
+                leader_modifiers={attack_bonus_against=0.3}
+                unit_modifiers={synthetic={attack=0.4 attack=bad defence=0.5} movement_speed=0.6}
+                one_time_effect={custom_effect_tooltip=FIRST}
+                one_time_effect={custom_effect_tooltip=SECOND}
+                hourly_effect={custom_effect_tooltip=HOURLY}
+                daily_effect={custom_effect_tooltip=DAILY}
+                end_effect={custom_effect_tooltip=END}
+            }}"#,
+            &mut catalog,
+            &terrains,
+            &KeyNames::default(),
+        )
+        .unwrap();
+        let definition = catalog.definition(b"a").unwrap();
+        assert_eq!(definition.name, b"LAST");
+        assert_eq!(definition.description, b"BODY");
+        assert_eq!(definition.modifiers[0].values[0].value, 20_000);
+        assert_eq!(definition.modifiers[0].tooltips(), ["TIP"]);
+        assert_eq!(definition.modifiers[1].values[0].value, 30_000);
+        assert_eq!(definition.modifiers[2].values[0].value, 60_000);
+        assert_eq!(
+            definition.adjusters,
+            [crate::unit_leader::Adjuster {
+                key: "SYNTHETIC".into(),
+                attack: 40_000,
+                defence: 50_000,
+                movement: 0,
+            }]
+        );
+        assert_eq!(definition.effects[0].len(), 2);
+        assert_eq!(
+            definition.effects[0][0].value.read_string(),
+            Some(b"FIRST".as_slice())
+        );
+        assert_eq!(
+            definition.effects[0][1].value.read_string(),
+            Some(b"SECOND".as_slice())
+        );
+        assert_eq!(
+            definition.effects[1][0].value.read_string(),
+            Some(b"HOURLY".as_slice())
+        );
+        assert_eq!(
+            definition.effects[2][0].value.read_string(),
+            Some(b"DAILY".as_slice())
+        );
+    }
+
+    #[test]
+    fn description_defaults_and_duplicate_lookup_preserve_exact_case() {
+        let mut catalog = AbilitySprites::default();
+        apply(
+            b"ability={a={name=FIRST} a={name=LATER} A={name=UPPER}}",
+            &mut catalog,
+        )
+        .unwrap();
+        assert_eq!(catalog.definition(b"a").unwrap().name, b"FIRST");
+        assert_eq!(catalog.definition(b"a").unwrap().description, b"a_desc");
+        assert_eq!(catalog.definition(b"A").unwrap().name, b"UPPER");
     }
 }

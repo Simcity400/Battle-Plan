@@ -74,6 +74,7 @@ fn fixture() -> (Fixture, Folder) {
             character: 7,
             country: 100,
             ideology: 17,
+            current_ideology: Recorded::Value(Some(Some(17))),
         }]));
     *fixture.frame.tables[TableId::PoliticalParties.index()] =
         TableView::Complete(TableRows::PoliticalParties(vec![PoliticalPartyRow {
@@ -365,10 +366,11 @@ fn country_helper_equipment_uses_native_stat_labels_and_polarity() {
 
 #[test]
 fn targeted_trait_uses_country_prefix_and_default_mask() {
+    // 14238C1A0 stores the authored flag marker as control byte 0x12.
     assert_render(
         "add_country_leader_trait=syn_targeted",
         &mut character(),
-        "country+<Current>\n    \u{11}HTargeted\u{11}!\n  - @BBB/Beta: Power: \u{11}G+0.20\u{11}!\n\nEND",
+        "country+<Current>\n    \u{11}HTargeted\u{11}!\n  - \u{12}BBB/Beta: Power: \u{11}G+0.20\u{11}!\n\nEND",
     );
 }
 
@@ -384,7 +386,7 @@ fn targeted_trait_keeps_raw_prefix_separator_and_empty_target_scope() {
                 .char_country_trait_description_with_prefix(b"syn_targeted_multi", scopes, "|/|")
                 .unwrap()
                 .unwrap(),
-            "@BBB/Beta: Power: \u{11}G+0.20\u{11}!|/|@BBB/Beta: Cost: \u{11}R-0.10\u{11}!|/|Power: \u{11}G+0.30\u{11}!\nRaw [Root.GetTag]\n",
+            "\u{12}BBB/Beta: Power: \u{11}G+0.20\u{11}!|/|\u{12}BBB/Beta: Cost: \u{11}R-0.10\u{11}!|/|Power: \u{11}G+0.30\u{11}!\nRaw [Root.GetTag]\n",
         );
     });
 }
@@ -442,7 +444,7 @@ fn trait_native_masks_keep_high_categories_only_in_primary_blocks() {
                 .char_country_trait_description_with_prefix(b"syn_targeted_multi", scopes, "|/|")
                 .unwrap()
                 .unwrap(),
-            "@BBB/Beta: Cost: \u{11}R-0.10\u{11}!|/|Raw [Root.GetTag]\n",
+            "\u{12}BBB/Beta: Cost: \u{11}R-0.10\u{11}!|/|Raw [Root.GetTag]\n",
         );
     });
 }
@@ -603,10 +605,12 @@ fn conditional_unit_catalogue_preserves_shared_token_ambiguity() {
             },
         ]));
     *fixture.frame.tables[TableId::ModifierDefinitions.index()] =
-        TableView::Complete(TableRows::ModifierDefinitions(vec![ModifierDefinitionRow {
-            token: 41,
-            ..Default::default()
-        }]));
+        TableView::Complete(TableRows::ModifierDefinitions(vec![
+            ModifierDefinitionRow {
+                token: 41,
+                ..Default::default()
+            },
+        ]));
     fixture.with_renderer(&mut country(), Content::default(), |renderer| {
         assert!(
             renderer

@@ -262,6 +262,28 @@ pub(super) fn compare_scientists(
             continue;
         };
         compared += 1;
+        if let Some(active) = report.recorded(
+            &actual.active,
+            "Scientists.active",
+            format!("{label}.active"),
+        ) {
+            match active {
+                Some(active) => {
+                    equal(
+                        report,
+                        format!("{label}.active"),
+                        *active != 0,
+                        saved.active,
+                    );
+                    if *active > 1 {
+                        report.limitation("CScientist::vf2@1413F7B60 saves +0x130 as Boolean truth; nonzero byte magnitude is not serialized", format!("{label}.active"));
+                    }
+                }
+                None => {
+                    report.difference(format!("{label}.active"), "capture refused", saved.active)
+                }
+            }
+        }
         // The roster country and CCharacter +0x68 are two different native
         // fields; the save carries only the second one.
         equal(

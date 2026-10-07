@@ -660,6 +660,20 @@ fn run(
     if let Some(rows) = crate::country_scale::observe_country_intel(&memory, base) {
         sizing.extended.raise_for_country_intel(rows);
     }
+    if let Ok(Some(bytes)) = crate::country_scale::observe_air_wing_names(&memory, base) {
+        crate::country_scale::note_air_wing_name_bytes(bytes);
+        sizing.map.raise_for_air_wing_names(bytes);
+    }
+    if let Ok(Some(demand)) = crate::country_scale::observe_railway_gun_names(&memory, base) {
+        crate::country_scale::note_railway_gun_names(demand);
+        sizing.extended.railway_guns.raise_for_names(demand);
+    }
+    if let Ok(Some(demand)) = crate::country_scale::observe_attrition_inputs(&memory, base) {
+        sizing
+            .extended
+            .division_presentation
+            .raise_for_attrition(demand);
+    }
     if let Some(demand) = crate::country_scale::observe_raid_arenas(&memory, base) {
         sizing.extended.raise_for_raid_arenas(demand);
     }
@@ -1371,6 +1385,12 @@ struct RegistryWatch {
     regions: usize,
     last_intel: Option<Instant>,
     intel_rows: usize,
+    last_air_wing_names: Option<Instant>,
+    air_wing_names: usize,
+    last_railway_gun_names: Option<Instant>,
+    railway_gun_names: engine::railway_gun_counter_inputs::NameDemand,
+    last_attrition_inputs: Option<Instant>,
+    attrition_inputs: engine::attrition_modifier_breakdown::Demand,
     last_raids: Option<Instant>,
     raids: crate::country_scale::RaidArenas,
     last_characters: Option<Instant>,
@@ -1453,6 +1473,84 @@ impl RegistryWatch {
             self.intel_rows = rows;
             rows
         })
+    }
+
+    fn poll_air_wing_names(
+        &mut self,
+        memory: &impl engine::Memory,
+        base: usize,
+    ) -> Result<Option<usize>, &'static str> {
+        if self
+            .last_air_wing_names
+            .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
+        {
+            return Ok(None);
+        }
+        self.last_air_wing_names = Some(Instant::now());
+        let Some(bytes) = crate::country_scale::observe_air_wing_names(memory, base)? else {
+            return Ok(None);
+        };
+        Ok((bytes > self.air_wing_names).then(|| {
+            self.air_wing_names = bytes;
+            bytes
+        }))
+    }
+
+    fn poll_railway_gun_names(
+        &mut self,
+        memory: &impl engine::Memory,
+        base: usize,
+    ) -> Result<Option<engine::railway_gun_counter_inputs::NameDemand>, &'static str> {
+        if self
+            .last_railway_gun_names
+            .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
+        {
+            return Ok(None);
+        }
+        self.last_railway_gun_names = Some(Instant::now());
+        let Some(demand) = crate::country_scale::observe_railway_gun_names(memory, base)? else {
+            return Ok(None);
+        };
+        Ok((demand.rows > self.railway_gun_names.rows
+            || demand.bytes > self.railway_gun_names.bytes
+            || demand.named_bonuses > self.railway_gun_names.named_bonuses
+            || demand.supply_origins > self.railway_gun_names.supply_origins)
+            .then(|| {
+                self.railway_gun_names.rows = self.railway_gun_names.rows.max(demand.rows);
+                self.railway_gun_names.bytes = self.railway_gun_names.bytes.max(demand.bytes);
+                self.railway_gun_names.named_bonuses = self
+                    .railway_gun_names
+                    .named_bonuses
+                    .max(demand.named_bonuses);
+                self.railway_gun_names.supply_origins = self
+                    .railway_gun_names
+                    .supply_origins
+                    .max(demand.supply_origins);
+                self.railway_gun_names
+            }))
+    }
+
+    fn poll_attrition_inputs(
+        &mut self,
+        memory: &impl engine::Memory,
+        base: usize,
+    ) -> Result<Option<engine::attrition_modifier_breakdown::Demand>, &'static str> {
+        if self
+            .last_attrition_inputs
+            .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
+        {
+            return Ok(None);
+        }
+        self.last_attrition_inputs = Some(Instant::now());
+        let Some(demand) = crate::country_scale::observe_attrition_inputs(memory, base)? else {
+            return Ok(None);
+        };
+        let raised = self.attrition_inputs.max(demand);
+        if raised == self.attrition_inputs {
+            return Ok(None);
+        }
+        self.attrition_inputs = raised;
+        Ok(Some(raised))
     }
 
     /// Larger raid arena demand than any seen, at most every
@@ -2069,6 +2167,68 @@ fn spool_loop(
                     &mut map_capacities,
                     &mut extended_capacities,
                 );
+            }
+        }
+        match registry.poll_air_wing_names(&live, shared.base) {
+            Ok(Some(bytes)) => {
+                crate::country_scale::note_air_wing_name_bytes(bytes);
+                decode::presize_air_wing_names();
+                let before = map_capacities;
+                map_capacities.raise_for_air_wing_names(bytes);
+                if map_capacities != before {
+                    grow_idle_frames(
+                        shared,
+                        &mut capacities,
+                        &mut map_capacities,
+                        &mut extended_capacities,
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                processor.observe_input_demand_error(reason);
+                last_warning = Some(reason);
+            }
+        }
+        match registry.poll_railway_gun_names(&live, shared.base) {
+            Ok(Some(demand)) => {
+                crate::country_scale::note_railway_gun_names(demand);
+                let before = extended_capacities;
+                extended_capacities.railway_guns.raise_for_names(demand);
+                if extended_capacities != before {
+                    grow_idle_frames(
+                        shared,
+                        &mut capacities,
+                        &mut map_capacities,
+                        &mut extended_capacities,
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                processor.observe_input_demand_error(reason);
+                last_warning = Some(reason);
+            }
+        }
+        match registry.poll_attrition_inputs(&live, shared.base) {
+            Ok(Some(demand)) => {
+                let before = extended_capacities;
+                extended_capacities
+                    .division_presentation
+                    .raise_for_attrition(demand);
+                if extended_capacities != before {
+                    grow_idle_frames(
+                        shared,
+                        &mut capacities,
+                        &mut map_capacities,
+                        &mut extended_capacities,
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                processor.observe_input_demand_error(reason);
+                last_warning = Some(reason);
             }
         }
         if let Some(demand) = registry.poll_raids(&live, shared.base) {

@@ -463,9 +463,9 @@ pub(super) fn title(
 
 /// The tag 140E68E30 qualifies a province's victory point key with, through
 /// CCountry::GetOriginalTagOrTag (1406DF830), which takes the original tag
-/// (+0x130C) when it is positive. CountryAppearance.name_tag records that
-/// original tag, empty when it is not positive (engine::ccountry, whose
-/// recorder cites the writers). The country is the province's state owner
+/// (+0x130C) when it is positive. The independent original-only suffix
+/// plus the country's own tag supplies the getter, without the name generator's dynamic gate.
+/// The country is the province's state owner
 /// (CState+0xC8), resolved by resolve_country_reference (140BA56A0): a null
 /// link is country index 0, any other its canonical slot (140BA6240). A
 /// province without a state takes ConstructCountryLinkFromCountryIndex(0)
@@ -516,39 +516,9 @@ fn vp_tag(
         };
         (format!("state {state}'s owner (slot {slot})"), slot)
     };
-    let countries = rows::<tables::Countries>(frame)?;
-    let Some(country) = countries
-        .rows()
-        .iter()
-        .find(|country| country.canonical_slot == slot)
-    else {
-        return Ok(Err(if countries.is_complete() {
-            format!("{subject} has no Countries row")
-        } else {
-            format!("the Countries table is incomplete this hour, so {subject} has no tag")
-        }));
-    };
-    let appearance = rows::<tables::CountryAppearance>(frame)?;
-    let tag = match appearance
-        .rows()
-        .iter()
-        .find(|row| row.country == country.id)
-    {
-        Some(row) if !row.name_tag.is_empty() => &row.name_tag,
-        Some(_) => &country.tag,
-        None => {
-            return Ok(Err(if appearance.is_complete() {
-                format!(
-                    "{subject} has no CountryAppearance row, so its original tag (CCountry+0x130C) is unknown"
-                )
-            } else {
-                format!(
-                    "the CountryAppearance table is incomplete this hour, so the original tag (CCountry+0x130C) of {subject} is unknown"
-                )
-            }));
-        }
-    };
-    Ok(String::from_utf8(tag.clone()).map_err(|_| format!("{subject}'s tag is not UTF-8")))
+    Ok(installed_content::country_names::original_or_own_tag(frame, slot)
+        .map(str::to_owned)
+        .map_err(|reason| format!("{subject}: {reason}")))
 }
 
 #[cfg(test)]

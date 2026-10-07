@@ -635,7 +635,11 @@ impl Retained {
                             .place_regions(*place, &regions)
                             .into_iter()
                             .zip(prepared.hovers)
-                            .map(|(region, hit)| Hover { order, region, ..hit }),
+                            .map(|(region, hit)| Hover {
+                                order,
+                                region,
+                                ..hit
+                            }),
                     );
                 }
             }
@@ -964,12 +968,18 @@ pub(super) fn window_name(selection: Selection) -> &'static str {
 
 fn hover_regions(root: &Element, regions: &[Region], values: &Values) -> Vec<Hover> {
     let indexed = bound_values(root, values);
+    // CStandardGridBoxItem forwards its provider through the entry container
+    // (CTacticsListEntry141C5A870). Children with their own handler keep it.
+    let provider = values.get("").filter(|widget| widget.hover_owned);
     // CInstantTextObject::HitTest@1422D8240 rejects the constructor's
     // always-transparent bit (1422B50A0 -> 1422D7A00), even with a handler.
     let mut transparent = BTreeSet::new();
     let mut pending = vec![root];
     while let Some(element) = pending.pop() {
-        if element.text_box().is_some_and(|text| text.always_transparent) {
+        if element
+            .text_box()
+            .is_some_and(|text| text.always_transparent)
+        {
             transparent.insert(element.path.as_str());
         }
         pending.extend(element.nested());
@@ -981,10 +991,20 @@ fn hover_regions(root: &Element, regions: &[Region], values: &Values) -> Vec<Hov
             if transparent.contains(region.path.as_str()) {
                 return None;
             }
-            let widget = indexed.get(region.path.as_str())?;
+            let widget = indexed
+                .get(region.path.as_str())
+                .copied()
+                .filter(|widget| {
+                    widget.hover_owned
+                        || widget.tooltip.is_some()
+                        || widget.tooltip_description.is_some()
+                        || widget.tooltip_shortcut.is_some()
+                })
+                .or(provider)?;
             if widget.tooltip.is_none()
                 && widget.tooltip_description.is_none()
                 && widget.tooltip_shortcut.is_none()
+                && !(provider.is_some() && widget.hover_owned)
             {
                 return None;
             }

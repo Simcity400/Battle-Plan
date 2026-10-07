@@ -256,6 +256,7 @@ pub(super) fn append(
     viewer: u32,
     links: &BTreeMap<u32, u32>,
     border: &LandBorderWarInputs,
+    nato: bool,
     tooltip: &mut Tooltip,
 ) -> Result<(), String> {
     let Some(mine) = tail_side(border, viewer, links)? else {
@@ -298,7 +299,7 @@ pub(super) fn append(
     let scripted = document
         .scripted
         .as_ref()
-        .map(|content| ScriptedText::new(frame, loc, content, viewer));
+        .map(|content| ScriptedText::new(frame, loc, content, viewer).with_nato_counters(nato));
     let event = |id: &[u8], index: usize, enemy_win: bool| {
         let result = (|| {
             let event = icons.border_events.get(id)?;

@@ -11,6 +11,151 @@ use replay::{
 const NO_TRAITS: Result<&LeaderTraits, &str> = Err("outside this fixture");
 
 #[test]
+fn current_leader_ideology_compares_by_signed_map_order() {
+    use replay::rows::CountryLeaderRoleRow;
+    let (mut frame, mut pack, country) = fixture();
+    let manager = pack.manager.as_mut().unwrap();
+    manager
+        .characters
+        .get_mut(&handle(73, u32::MAX))
+        .unwrap()
+        .country_leaders = vec![
+        saved::CountryLeader {
+            ideology: b"rewritten".to_vec(),
+            id: None,
+            traits: Vec::new(),
+        },
+        saved::CountryLeader {
+            ideology: b"second".to_vec(),
+            id: None,
+            traits: Vec::new(),
+        },
+    ];
+    let links = BTreeMap::from([(102, &country)]);
+    let tokens = BTreeMap::from([(41, b"rewritten".as_slice()), (42, b"second".as_slice())]);
+    let mut rows = vec![
+        CountryLeaderRoleRow {
+            character: u32::MAX,
+            country: 102,
+            ideology: 20,
+            current_ideology: Recorded::Value(Some(Some(42))),
+        },
+        CountryLeaderRoleRow {
+            character: u32::MAX,
+            country: 102,
+            ideology: -7,
+            current_ideology: Recorded::Value(Some(Some(41))),
+        },
+    ];
+    *frame.tables[TableId::CountryLeaderRoles.index()] =
+        TableView::Complete(TableRows::CountryLeaderRoles(rows.clone()));
+    let mut report = Report::default();
+    compare_country_leader_roles(&frame, manager, &links, &tokens, &mut report).unwrap();
+    assert!(report.differences.is_empty());
+    rows[1].current_ideology = Recorded::Value(Some(Some(42)));
+    *frame.tables[TableId::CountryLeaderRoles.index()] =
+        TableView::Complete(TableRows::CountryLeaderRoles(rows.clone()));
+    compare_country_leader_roles(&frame, manager, &links, &tokens, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains("/-7.current_ideology"));
+    rows[1].current_ideology = Recorded::Value(Some(None));
+    *frame.tables[TableId::CountryLeaderRoles.index()] =
+        TableView::Complete(TableRows::CountryLeaderRoles(rows.clone()));
+    let mut report = Report::default();
+    compare_country_leader_roles(&frame, manager, &links, &tokens, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains("native null ideology"));
+    rows[1].current_ideology = Recorded::Value(None);
+    *frame.tables[TableId::CountryLeaderRoles.index()] =
+        TableView::Complete(TableRows::CountryLeaderRoles(rows.clone()));
+    let mut report = Report::default();
+    compare_country_leader_roles(&frame, manager, &links, &tokens, &mut report).unwrap();
+    assert!(report.differences.is_empty());
+    assert!(
+        report
+            .limitations
+            .contains_key("current country-leader ideology unavailable from native capture")
+    );
+    rows[1].current_ideology = Recorded::NotRecorded;
+    *frame.tables[TableId::CountryLeaderRoles.index()] =
+        TableView::Complete(TableRows::CountryLeaderRoles(rows));
+    let mut report = Report::default();
+    compare_country_leader_roles(&frame, manager, &links, &tokens, &mut report).unwrap();
+    assert!(report.differences.is_empty());
+    assert!(
+        report
+            .limitations
+            .contains_key("CountryLeaderRoles.current_ideology not recorded")
+    );
+}
+
+#[test]
+fn advisor_tooltip_keys_check_content_without_withholding_existing_fields() {
+    use replay::rows::{AdvisorRoleRow, CharacterRoleTraitRow};
+    let (mut frame, mut pack, country) = fixture();
+    let manager = pack.manager.as_mut().unwrap();
+    manager
+        .characters
+        .get_mut(&handle(73, u32::MAX))
+        .unwrap()
+        .advisors = vec![saved::Advisor {
+        slot: None,
+        idea: None,
+        traits: vec![b"synthetic".to_vec()],
+    }];
+    let traits = leader_traits(
+        "leader_traits={synthetic={custom_modifier_tooltip=SYN_A custom_modifier_tooltip=SYN_B}}",
+    );
+    let tokens = BTreeMap::from([(31, b"synthetic".as_slice())]);
+    let links = BTreeMap::from([(102, &country)]);
+    let mut row = AdvisorRoleRow {
+        character: u32::MAX,
+        country: 102,
+        tooltip_keys: Recorded::Value(Some(vec![b"SYN_B".to_vec(), b"SYN_A".to_vec()])),
+        ..Default::default()
+    };
+    *frame.tables[TableId::CharacterRoleTraits.index()] =
+        TableView::Complete(TableRows::CharacterRoleTraits(vec![
+            CharacterRoleTraitRow {
+                character: u32::MAX,
+                kind: CharacterRoleTraitRow::ADVISOR,
+                role: 0,
+                tokens: vec![31],
+                definitions: vec![1],
+            },
+        ]));
+    let run = |frame: &DecodedFrame| {
+        let mut report = Report::default();
+        compare_advisors(frame, manager, &links, &tokens, Ok(&traits), &mut report).unwrap();
+        report
+    };
+    *frame.tables[TableId::AdvisorRoles.index()] =
+        TableView::Complete(TableRows::AdvisorRoles(vec![row.clone()]));
+    let report = run(&frame);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(
+        report.compared_tables["AdvisorRoles.tooltip_keys (content membership)"],
+        2
+    );
+    row.tooltip_keys = Recorded::Value(Some(vec![b"unknown".to_vec()]));
+    *frame.tables[TableId::AdvisorRoles.index()] =
+        TableView::Complete(TableRows::AdvisorRoles(vec![row.clone()]));
+    assert_eq!(run(&frame).differences.len(), 1);
+    *frame.tables[TableId::CharacterRoleTraits.index()] = TableView::Unavailable {
+        reason: "unreadable".into(),
+    };
+    let report = run(&frame);
+    assert!(report.differences.is_empty());
+    assert_eq!(report.compared_tables["AdvisorRoles"], 1);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("lacks CharacterRoleTraits"))
+    );
+}
+
+#[test]
 fn advisor_modifier_cache_distinguishes_not_recorded_from_native_unavailable() {
     use replay::rows::{AdvisorModifierCache, AdvisorRoleRow};
     let (mut frame, mut pack, country) = fixture();
@@ -49,7 +194,15 @@ fn advisor_modifier_cache_distinguishes_not_recorded_from_native_unavailable() {
         };
         rows[0].modifier_cache = cache;
         let mut report = Report::default();
-        compare_advisors(&frame, manager, &links, &mut report).unwrap();
+        compare_advisors(
+            &frame,
+            manager,
+            &links,
+            &BTreeMap::new(),
+            NO_TRAITS,
+            &mut report,
+        )
+        .unwrap();
         assert!(report.differences.is_empty());
         assert_eq!(report.compared_tables["AdvisorRoles"], 1);
         assert_eq!(report.limitations[reason].len(), 1);
@@ -107,6 +260,7 @@ fn operative_codename_oracle_checks_both_hosts_and_saved_omissions() {
                     }),
                     ..Default::default()
                 }],
+                captured: Vec::new(),
                 recruitment: None,
                 cryptology: None,
             }),
@@ -572,6 +726,7 @@ fn role_traits_and_operative_references_compare_with_the_save() {
         traits: vec![b"captain".to_vec()],
     }];
     saved.scientist = Some(saved::Scientist {
+        active: false,
         traits: Some(vec![b"inventor".to_vec()]),
         skills: Vec::new(),
     });
@@ -599,6 +754,7 @@ fn role_traits_and_operative_references_compare_with_the_save() {
                 character: u32::MAX,
                 country: 102,
                 ideology: 20,
+                ..Default::default()
             },
         ]));
     *frame.tables[TableId::AdvisorRoles.index()] =
@@ -751,6 +907,7 @@ fn missing_extra_and_byte_different_role_traits_are_differences() {
                 character: u32::MAX,
                 country: 102,
                 ideology: 20,
+                ..Default::default()
             },
         ]));
     let leader = Row {

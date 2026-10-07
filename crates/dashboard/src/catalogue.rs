@@ -1161,12 +1161,12 @@ pub(crate) mod tests {
                 "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
             ),
         ]);
-        let frame = crate::scope::tests::frame();
+        let frame = crate::scope::tests::positive_frame();
         let scripted = crate::scripted_text::ScriptedText::new(
             &frame,
             &catalogue.localisation,
             catalogue.scripted_content().unwrap(),
-            0,
+            1,
         );
         let cut = format!("a{}", "é".repeat(0xC00));
         let arguments = [("VALUE", Argument::Text(&cut))];

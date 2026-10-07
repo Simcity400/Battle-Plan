@@ -169,21 +169,36 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .require("AdvisorRoles.modifier_cache")?
             .as_ref()
             .ok_or("AdvisorRoles.modifier_cache unavailable (CAdvisor+0x1B0)")?;
-        // 14128C8E0 calls raw 14054E050: precision 2, full mask, unit scale.
-        let numeric = self.cached_modifier_description_with(
-            &cache.entries,
-            "",
-            ModifierListOptions {
-                category_mask: u32::MAX,
-                ..Default::default()
-            },
-        )?;
         let class = if show {
             "CShowIdeasTooltipEffect"
         } else if remove {
             "CRemoveIdeasEffect"
         } else {
             "CAddIdeasEffect"
+        };
+        // 14128C8E0 calls raw 14054E050: stored numbers and occupied tooltip
+        // slots, precision 2, full mask, unit scale. Older/unavailable keys
+        // leave the numeric fragment readable and retain a counted refusal.
+        let numeric = match role
+            .tooltip_keys
+            .require("AdvisorRoles.tooltip_keys")
+            .and_then(|keys| {
+                keys.as_ref().ok_or_else(|| {
+                    "AdvisorRoles.tooltip_keys capture unavailable (CAdvisor+0x218)".to_owned()
+                })
+            }) {
+            Ok(_) => self.advisor_cache_description(role)?,
+            Err(why) => {
+                self.refuse(class, why);
+                self.cached_modifier_description_with(
+                    &cache.entries,
+                    "",
+                    ModifierListOptions {
+                        category_mask: u32::MAX,
+                        ..Default::default()
+                    },
+                )?
+            }
         };
         let (mut details, targets) = match self.advisor_idea_fragments(character, role, scopes) {
             Ok(fragments) => fragments,
@@ -196,12 +211,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         details.push_str(&numeric);
         newline(&mut details);
         details.push_str(&targets);
-        self.refuse(
-            class,
-            "advisor cached tooltip keys +0x218 unrecorded until format 99".into(),
-        );
         // 14128BE00: trim, LF -> comma, colon cleanup, four/two spaces -> one.
-        let details = clean_modifiers(&details).replace("  ", " ");
+        let details = clean_modifiers(&details, true).replace("  ", " ");
         let name = self.effect_character_name(character)?;
         // 14128C670 always uses the detailed wrapper and appends LF;
         // scope expansion belongs to the add/remove caller, not this helper.

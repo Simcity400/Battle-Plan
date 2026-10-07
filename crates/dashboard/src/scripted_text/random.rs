@@ -29,13 +29,18 @@ fn draw(seed: u32) -> i32 {
 
 /// Scoped draw used by decision highlight@14071C840.
 pub(crate) fn scoped_draw(seed: u32, counter: u32) -> i32 {
+    (scoped_word(seed, counter) & 0x7fff_ffff) as i32
+}
+
+/// The full mixed word, also used by the TLS seed update (1403B7C30).
+pub(crate) fn scoped_word(seed: u32, counter: u32) -> u32 {
     let a = counter;
     let b = seed;
     let value = a.wrapping_sub(b.wrapping_mul(0x4ad6_85b3));
     let value = (value ^ (value >> 8)).wrapping_add(0x68e3_1da4);
     let value = ((value << 8) ^ value).wrapping_mul(0x1b56_c4e9);
     let value = (value ^ (value >> 8)).wrapping_mul(0x92d6_8ca2);
-    ((value ^ (value >> 8)) & 0x7fff_ffff) as i32
+    value ^ (value >> 8)
 }
 
 /// The one-member fast path reads no weight or seed. Otherwise all weights
@@ -70,7 +75,7 @@ impl<'a> ScriptedText<'a> {
     pub(super) fn random_key<'r>(
         &self,
         list: &'r RandomList,
-        bound: &ExpansionScopes,
+        bound: &ExpansionScopes<'_, 'a>,
         at: usize,
         scopes: crate::triggers::Scopes,
         evaluator: Option<&Evaluator<'_, 'a>>,
@@ -85,11 +90,12 @@ impl<'a> ScriptedText<'a> {
                 .iter()
                 .any(|member| !member.modifiers.is_empty())
         {
-            Some(bound.evaluator(self.world()?, temps))
+            Some(bound.evaluator(self, temps)?)
         } else {
             None
         };
         let evaluator = evaluator.or(fallback.as_ref());
+        let mut seeded = None;
         let index = pick(
             list.members.len(),
             // An evaluator exists whenever a member has modifiers.
@@ -100,16 +106,18 @@ impl<'a> ScriptedText<'a> {
                 )),
             },
             || {
-                if list.seed.is_empty() {
+                if !list
+                    .seed
+                    .iter()
+                    .any(|field| field.value.scalar().is_some_and(|text| !text.is_empty()))
+                {
                     return bound.scope(at).require_random_seed();
                 }
-                let seeded;
+                // Create this only after a positive total needs the seed,
+                // and retain any tag-alias trigger writes for the selected text.
                 let evaluator = match evaluator {
                     Some(evaluator) => evaluator,
-                    None => {
-                        seeded = bound.evaluator(self.world()?, temps);
-                        &seeded
-                    }
+                    None => &*seeded.insert(bound.evaluator(self, temps)?),
                 };
                 // 140A9CF27 uses an explicit seed without reading +0x0C;
                 // 140A9CF9A/140A9CFBD read the default only without that operand.
@@ -118,12 +126,11 @@ impl<'a> ScriptedText<'a> {
                     None => bound.scope(at).require_random_seed(),
                 }
             },
-        )?;
-        if bound.session.borrow().is_some()
-            && let Some(evaluator) = evaluator
-        {
+        );
+        if let Some(evaluator) = evaluator.or(seeded.as_ref()) {
             bound.session.replace(Some(evaluator.variable_session()));
         }
+        let index = index?;
         Ok(index.map(|i| list.members[i].key.as_slice()))
     }
 }

@@ -137,7 +137,7 @@ impl Renderer<'_, '_, '_> {
     // GetCountryTagOrStateOwner 14052B6A0, used by all three focus describers.
     fn politics_focus_country(&self, scopes: Scopes) -> Result<u32, String> {
         match scopes.this {
-            Scope::Country(country) => Ok(country),
+            Scope::Country(country) | Scope::CountryLeader { country, .. } => Ok(country),
             Scope::State(state) => self
                 .context
                 .world()?
@@ -222,7 +222,9 @@ impl Renderer<'_, '_, '_> {
         let country = self.politics_focus_country(scopes)?;
         let name = self.politics_focus_name(id, definition, country)?;
         let who = self.country_name(country, false)?; // 140BA5960.
-        if action == 0 && let Some(tooltip) = field(children(item), "originator_name") {
+        if action == 0
+            && let Some(tooltip) = field(children(item), "originator_name")
+        {
             // +0x80 is CBoundLocalization (1403B1040 -> 1402F19A0), not ReadString.
             // The corpus reaches scalar keys; blocks need the core bound formatter.
             let tooltip = tooltip.value.scalar().ok_or(
@@ -307,7 +309,7 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        let Scope::Country(country) = scopes.this else {
+        let (Scope::Country(country) | Scope::CountryLeader { country, .. }) = scopes.this else {
             return empty::describe();
         };
         if country == 0 {
@@ -353,9 +355,7 @@ impl Renderer<'_, '_, '_> {
             .map_err(Clone::clone)?
             .group(id)?
             .ok_or_else(|| {
-                format!(
-                    "technology-sharing group {id} is absent from recorded content (1413BCF50)"
-                )
+                format!("technology-sharing group {id} is absent from recorded content (1413BCF50)")
             })?;
         let name = self.localised(group.name.as_bytes(), &[], scopes, true)?;
         let country = self.country_name(country, false)?;

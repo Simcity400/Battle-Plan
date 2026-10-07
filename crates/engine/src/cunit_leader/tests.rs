@@ -41,6 +41,59 @@ const SECOND_TRAIT: usize = 0x3400;
 const TRAIT_ARRAY: usize = 0x6000;
 const XP_ARRAY: usize = 0x7000;
 
+#[test]
+fn formation_reference_is_an_independent_army_category_operand() {
+    struct Word {
+        value: Option<u64>,
+        reads: Cell<usize>,
+    }
+    impl Memory for Word {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.reads.set(self.reads.get() + 1);
+            assert_eq!(address, ADDRESS + carmy_leader::FORMATION_REFERENCE);
+            assert_eq!(output.len(), 8);
+            if let Some(value) = self.value {
+                output.copy_from_slice(&value.to_le_bytes());
+                true
+            } else {
+                output[0] = 255;
+                false
+            }
+        }
+    }
+    let mut memory = Word {
+        value: Some(0),
+        reads: Cell::new(0),
+    };
+    for kind in [KIND_BASE, KIND_NAVY, KIND_OPERATIVE] {
+        assert_eq!(
+            read_formation_reference(&memory, ADDRESS, kind, 0),
+            Ok(None)
+        );
+    }
+    for category in [-1, 2, i32::MIN, i32::MAX] {
+        assert_eq!(
+            read_formation_reference(&memory, ADDRESS, KIND_ARMY, category),
+            Ok(None)
+        );
+    }
+    assert_eq!(memory.reads.get(), 0);
+    for value in [0, 53, u64::MAX, (7 << 32) | 53] {
+        memory.value = Some(value);
+        for category in [0, 1] {
+            assert_eq!(
+                read_formation_reference(&memory, ADDRESS, KIND_ARMY, category),
+                Ok(Some(value))
+            );
+        }
+    }
+    memory.value = None;
+    assert_eq!(
+        read_formation_reference(&memory, ADDRESS, KIND_ARMY, 1),
+        Err("unit leader formation reference unreadable")
+    );
+}
+
 fn u64_at(bytes: &mut [u8], at: usize, value: u64) {
     bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
 }

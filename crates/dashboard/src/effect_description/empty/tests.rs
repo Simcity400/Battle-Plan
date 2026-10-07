@@ -114,10 +114,8 @@ fn native_empty_containers_keep_child_refusals_once() {
         );
         assert_eq!(out.text, "PP2\n");
         assert_eq!(out.refusals.values().sum::<usize>(), 1);
-        assert!(
-            out.refusals.keys().all(|why| {
-                why.contains("NInternationalMarket::CMultiplePurchaseContractTargetEffect")
-            })
-        );
+        assert!(out.refusals.keys().all(|why| {
+            why.contains("NInternationalMarket::CMultiplePurchaseContractTargetEffect")
+        }));
     }
 }

@@ -59,6 +59,80 @@ fn fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
     (frame, pack, country)
 }
 
+#[test]
+fn format99_rosters_compare_order_and_exact_values_for_5000_countries() {
+    use replay::rows::{DecisionRandomItemRow, TimedIdeaRow};
+    let (mut frame, _, _) = fixture();
+    let mut input = String::from("countries={");
+    let mut countries = Vec::new();
+    let mut ideas = Vec::new();
+    let mut random = Vec::new();
+    for id in 1..=5_000 {
+        input.push_str(&format!("T{id}={{politics={{timed_idea={{idea=repeat days=-1}} timed_idea={{idea=repeat days=0}}}} decision_status={{random_item={{decision=inactive count=-2147483648 target=-1}} random_item={{decision=inactive count=0 target=7}}}}}}"));
+        countries.push(CountryRow {
+            id,
+            tag: format!("T{id}").into_bytes(),
+            ..Default::default()
+        });
+        for (ordinal, days) in [(0, -1), (1, 0)] {
+            ideas.push(TimedIdeaRow {
+                country: id,
+                ordinal,
+                token: b"repeat".to_vec(),
+                days,
+            });
+        }
+        for (ordinal, count, target) in [(0, i32::MIN, u32::MAX), (1, 0, 7)] {
+            random.push(DecisionRandomItemRow {
+                country: id,
+                ordinal,
+                token: b"inactive".to_vec(),
+                count,
+                target,
+            });
+        }
+    }
+    input.push('}');
+    let pack = saved::parse(&installed_content::parser::parse(input.as_bytes()).unwrap().items).unwrap();
+    let links = countries
+        .iter()
+        .map(|country| (country.id, country))
+        .collect();
+    *frame.tables[TableId::TimedIdeas.index()] = TableView::Complete(TableRows::TimedIdeas(ideas));
+    *frame.tables[TableId::DecisionRandomItems.index()] =
+        TableView::Complete(TableRows::DecisionRandomItems(random));
+    let mut report = Report::default();
+    compare_timed_ideas(&frame, &pack, &links, &mut report).unwrap();
+    compare_decision_random_items(&frame, &pack, &links, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["TimedIdeas"], 10_000);
+    assert_eq!(report.compared_tables["DecisionRandomItems"], 10_000);
+    let TableView::Complete(TableRows::TimedIdeas(ideas)) =
+        &mut *frame.tables[TableId::TimedIdeas.index()]
+    else {
+        unreachable!()
+    };
+    ideas[0].days = 0;
+    let TableView::Complete(TableRows::DecisionRandomItems(random)) =
+        &mut *frame.tables[TableId::DecisionRandomItems.index()]
+    else {
+        unreachable!()
+    };
+    random[0].target = 7;
+    random[1].count = 1;
+    let mut report = Report::default();
+    compare_timed_ideas(&frame, &pack, &links, &mut report).unwrap();
+    compare_decision_random_items(&frame, &pack, &links, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 2);
+    let TableView::Complete(TableRows::DecisionRandomItems(random)) =
+        &mut *frame.tables[TableId::DecisionRandomItems.index()]
+    else {
+        unreachable!()
+    };
+    random[0].ordinal = 3;
+    assert!(compare_decision_random_items(&frame, &pack, &links, &mut Report::default()).is_err());
+}
+
 /// Saved status N is canonical slot N's (140D6C880, 140D6A7B0). Every
 /// census country needs its captured row, empty or not; only a status
 /// whose slot is outside the census may be missing from the recording,

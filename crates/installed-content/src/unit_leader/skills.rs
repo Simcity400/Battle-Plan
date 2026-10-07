@@ -176,7 +176,8 @@ impl Skills {
             }
             if category != 4 {
                 if let Some(component) = component {
-                    self.components.insert((component, category, level), modifiers);
+                    self.components
+                        .insert((component, category, level), modifiers);
                 } else {
                     self.costs.insert((category, level), cost);
                 }

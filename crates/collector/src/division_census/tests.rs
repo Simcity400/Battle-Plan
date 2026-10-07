@@ -153,6 +153,9 @@ fn roster_overflow_counts_every_country_and_grows_in_one_step() {
     let inputs = census.unit_inputs().unwrap();
     assert_eq!(inputs.outcome(), Outcome::Rows { len: total });
     assert_eq!(inputs.seeds().len(), total);
+    for (index, seed) in inputs.seeds().iter().enumerate() {
+        assert_eq!(seed.country_ordinal, Some(index as u32 % PER));
+    }
     let intel = inputs.intel_sources();
     assert_eq!(intel.outcome, Outcome::Rows { len: total });
     for (index, entry) in intel.entries.iter().enumerate() {

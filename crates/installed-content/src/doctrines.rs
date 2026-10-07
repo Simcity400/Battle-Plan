@@ -1,4 +1,4 @@
-//! Doctrine folder display names (1409BEFF0, 1409BEE60), through the content stack.
+//! Doctrine names and tactic-source inventories, through the content stack.
 
 use crate::{
     ResolvedLayers,
@@ -12,7 +12,9 @@ use crate::{
 use std::{collections::BTreeMap, io};
 
 mod names;
+mod sources;
 pub use names::Name;
+pub use sources::{DefinitionSources, RewardSource, TacticSources};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Folder {
@@ -26,6 +28,7 @@ pub struct Database {
     pub grand: BTreeMap<Token, Name>,
     pub sub: BTreeMap<Token, Name>,
     pub tracks: BTreeMap<Token, Name>,
+    pub tactic_sources: TacticSources,
     /// Technology descriptions share this already cached family database.
     pub technologies: Option<crate::technology::Catalog>,
     pub notes: Vec<String>,
@@ -34,10 +37,18 @@ pub struct Database {
 
 impl Database {
     pub fn name(&self, kind: u8, token: &[u8]) -> Result<Option<&Name>, String> {
-        if let Some(why) = &self.unread { return Err(why.clone()); }
-        let entries = match kind { 0 => &self.grand, 1 => &self.sub, _ => &self.tracks };
+        if let Some(why) = &self.unread {
+            return Err(why.clone());
+        }
+        let entries = match kind {
+            0 => &self.grand,
+            1 => &self.sub,
+            _ => &self.tracks,
+        };
         let name = entries.get(&Token::c_str(token));
-        if let Some(why) = name.and_then(|name| name.refusal.as_ref()) { return Err(why.clone()); }
+        if let Some(why) = name.and_then(|name| name.refusal.as_ref()) {
+            return Err(why.clone());
+        }
         Ok(name)
     }
 
@@ -165,7 +176,9 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
             database.notes.extend(catalog.notes.iter().cloned());
             database.technologies = Some(catalog);
         }
-        Err(why) => database.notes.push(format!("Technology description catalogue unavailable: {why}")),
+        Err(why) => database.notes.push(format!(
+            "Technology description catalogue unavailable: {why}"
+        )),
     }
     Ok(database)
 }

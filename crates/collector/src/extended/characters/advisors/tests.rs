@@ -55,6 +55,14 @@ fn cache_for(bytes: &[u8]) -> Cache {
     Cache::with_modifier_demand(demand)
 }
 fn assert_fresh(cache: &Section, bytes: &[u8]) {
+    for entry in &cache.current.entries {
+        for row in &cache.current.rows[entry.rows.clone()] {
+            // Definition-only reads retain the end of their slot bytes even
+            // though the independently captured modifier span is unrecorded.
+            assert_eq!(row.modifier_start, row.slot_start + row.slot_len);
+            assert!(row.modifier_start >= entry.bytes.start);
+        }
+    }
     let mut captured = Captured::with_capacities(&Capacities::default());
     let direct = walk_family(
         &kit::memory(bytes),
@@ -67,11 +75,16 @@ fn assert_fresh(cache: &Section, bytes: &[u8]) {
     assert_eq!(cache.result.outcome, direct.outcome);
     assert_eq!(cache.result.bytes_len, direct.bytes_len);
     assert_eq!(cache.result.required_bytes, direct.required_bytes);
+    // Both hourly suffixes are compared by the complete outer-cache tests.
     let definition = |row: &cadvisor::Row| cadvisor::Row {
         modifier_start: 0,
         modifier_len: 0,
         modifier_recorded: false,
         modifier_failure: None,
+        tooltip_start: 0,
+        tooltip_len: 0,
+        tooltip_recorded: false,
+        tooltip_failure: None,
         ..*row
     };
     assert_eq!(
@@ -91,11 +104,14 @@ fn assert_fresh(cache: &Section, bytes: &[u8]) {
 }
 
 fn assert_outer_fresh(cache: &Cache, bytes: &[u8]) {
+    assert_outer_matches(cache, &kit::memory(bytes));
+}
+fn assert_outer_matches(cache: &Cache, memory: &impl Memory) {
     let mut captured = Captured::with_capacities(&Capacities::default());
     cache.decode(&mut captured);
     let mut direct = Captured::with_capacities(&Capacities::default());
     let expected = walk_family(
-        &kit::memory(bytes),
+        memory,
         IMAGE,
         ADDRESS,
         direct.family().select(PART_MASKS[2]),
@@ -256,6 +272,56 @@ fn fresh_cache_spans_survive_definition_relocation_and_faults() {
 }
 
 #[test]
+fn tooltip_shortage_preserves_later_numeric_caches() {
+    use super::super::tests::{SECOND_ADVISOR, two_advisor_fixture};
+    let bytes = two_advisor_fixture(true);
+    let rows = [kit::ADV_ROLE, SECOND_ADVISOR].map(|pointer| cadvisor::Row {
+        pointer: ADDRESS + pointer,
+        ..Default::default()
+    });
+    for capacity in [32, 40, 49] {
+        let mut modifiers = Modifiers::with_demand(cadvisor::ModifierDemand {
+            rows: 2,
+            bytes: capacity,
+            tooltip_bytes: 0,
+        });
+        modifiers.bytes.truncate(capacity);
+        modifiers.capture(&kit::memory(&bytes), rows.iter());
+        assert_eq!(modifiers.failure, None);
+        assert_eq!(modifiers.required_rows, 2);
+        assert_eq!(modifiers.required_bytes, 49);
+        for (index, span) in modifiers.spans[..2].iter().enumerate() {
+            assert!(span.recorded);
+            assert_eq!(span.start, index * 16);
+            assert_eq!(
+                &modifiers.bytes[span.start + 8..span.start + 16],
+                &if index == 0 { -17_i64 } else { 19_i64 }.to_le_bytes()
+            );
+            assert_eq!(
+                span.tooltip_recorded,
+                capacity >= if index == 0 { 40 } else { 49 }
+            );
+            if !span.tooltip_recorded {
+                assert_eq!(
+                    span.tooltip_failure,
+                    Some(cadvisor::TOOLTIP_CAPACITY_REASON)
+                );
+            }
+        }
+        assert_eq!(
+            modifiers.shortfall,
+            if capacity == 32 {
+                2
+            } else if capacity == 40 {
+                1
+            } else {
+                0
+            }
+        );
+    }
+}
+
+#[test]
 fn modifier_header_sums_grow_for_5000_countries_without_a_cap() {
     use super::super::tests::array;
     let mut bytes = kit::mapped_fixture();
@@ -316,6 +382,7 @@ fn modifier_header_sums_grow_for_5000_countries_without_a_cap() {
         2,
     );
     let mut presized = Modifiers::with_demand(cadvisor::ModifierDemand {
+        tooltip_bytes: 0,
         rows: 5_000,
         bytes: 5_000 * 32,
     });
@@ -454,10 +521,8 @@ fn planned_control_failures_keep_first_fault_and_recover_with_fresh_data() {
         warm(&mut cache, &bytes, &observer);
         let source = WaveMemory::new(&bytes, Some(fault));
         cache.capture(&source, context(), &observer, None);
-        assert!(
-            matches!(cache.result.outcome, Outcome::Unavailable { .. }),
-            "{fault:x}"
-        );
+        let reference = WaveMemory::new(&bytes, Some(fault));
+        assert_outer_matches(&cache, &reference);
         assert_eq!(
             source
                 .reads
@@ -465,10 +530,27 @@ fn planned_control_failures_keep_first_fault_and_recover_with_fresh_data() {
                 .iter()
                 .filter(|&&(a, n)| (a..a + n).contains(&fault))
                 .count(),
-            1,
+            reference
+                .reads
+                .borrow()
+                .iter()
+                .filter(|&&(a, n)| (a..a + n).contains(&fault))
+                .count(),
             "{fault:x}"
         );
-        assert!(cache.sections.iter().all(|section| !section.valid));
+        if matches!(cache.result.outcome, Outcome::Unavailable { .. }) {
+            assert!(cache.sections.iter().all(|section| !section.valid));
+        } else {
+            // Appended tooltip faults do not invalidate observed definitions.
+            assert!(cache.sections.iter().all(|section| section.valid));
+            let mut captured = Captured::with_capacities(&Capacities::default());
+            cache.decode(&mut captured);
+            assert!(
+                captured.advisors.rows.rows[..cache.result.outcome.len()]
+                    .iter()
+                    .any(|row| row.tooltip_failure.is_some())
+            );
+        }
     }
 }
 
@@ -833,4 +915,76 @@ fn fresh_control_faults_and_dirty_role_faults_never_reuse_stale_success() {
         assert_eq!(fault.attempts.get(), 1);
         assert!(!cache.valid);
     }
+}
+
+#[test]
+fn tooltip_keys_stay_fresh_under_definition_reuse_and_shortfalls_keep_roles() {
+    let mut bytes = super::super::tests::section_fixture();
+    let table = kit::ADV_ROLE + cadvisor::TOOLTIP_KEYS + 8;
+    pointer(&mut bytes, table, 0x8b00);
+    put(&mut bytes, table + 8, 1_u32.to_le_bytes());
+    put(&mut bytes, table + 12, 3_u32.to_le_bytes());
+    put(&mut bytes, 0x8b04, [1]);
+    literal(&mut bytes, 0x8b08, b"first");
+    let observer = Observer::new();
+    let mut cache = cache_for(&bytes);
+    warm(&mut cache, &bytes, &observer);
+    literal(&mut bytes, 0x8b08, b"later");
+    cache.capture(&kit::memory(&bytes), context(), &observer, None);
+    assert_eq!(cache.counts.planned, 2);
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    cache.decode(&mut captured);
+    let TableView::Complete(TableRows::AdvisorRoles(rows)) = captured.advisors_table() else {
+        panic!("tooltip capture keeps roles");
+    };
+    assert_eq!(
+        rows[0].tooltip_keys,
+        replay::rows::Recorded::Value(Some(vec![b"later".to_vec()]))
+    );
+    cache.modifiers.bytes.clear();
+    cache.capture(&kit::memory(&bytes), context(), &observer, None);
+    cache.decode(&mut captured);
+    let TableView::Complete(TableRows::AdvisorRoles(rows)) = captured.advisors_table() else {
+        panic!("tooltip capacity shortfall keeps roles");
+    };
+    assert_eq!(rows[0].idea, b"idea");
+    assert_eq!(rows[0].tooltip_keys, replay::rows::Recorded::Value(None));
+    assert_eq!(
+        captured.advisors.rows.rows[0].tooltip_failure,
+        Some(cadvisor::TOOLTIP_CAPACITY_REASON)
+    );
+    cache.grow();
+    cache.capture(&kit::memory(&bytes), context(), &observer, None);
+    assert_outer_fresh(&cache, &bytes);
+}
+
+#[test]
+fn tooltip_storage_grows_from_exact_demand_at_5000_countries() {
+    let mut bytes = kit::mapped_fixture();
+    let table = kit::ADV_ROLE + cadvisor::TOOLTIP_KEYS + 8;
+    pointer(&mut bytes, table, 0x8b00);
+    put(&mut bytes, table + 8, 1_u32.to_le_bytes());
+    put(&mut bytes, table + 12, 3_u32.to_le_bytes());
+    put(&mut bytes, 0x8b04, [1]);
+    literal(&mut bytes, 0x8b08, b"key");
+    let rows: Vec<_> = (1..=5_000)
+        .map(|country| cadvisor::Row {
+            pointer: ADDRESS + kit::ADV_ROLE,
+            country,
+            ..Default::default()
+        })
+        .collect();
+    let mut modifiers = Modifiers::with_demand(cadvisor::ModifierDemand::default());
+    modifiers.capture(&kit::memory(&bytes), rows.iter());
+    assert_eq!(modifiers.required_rows, 5_000);
+    assert_eq!(modifiers.required_bytes, 5_000 * 11);
+    modifiers.grow();
+    modifiers.capture(&kit::memory(&bytes), rows.iter());
+    assert_eq!(modifiers.shortfall, 0);
+    assert_eq!(modifiers.len, 5_000 * 11);
+    assert!(
+        modifiers.spans[..5_000]
+            .iter()
+            .all(|row| row.tooltip_recorded)
+    );
 }

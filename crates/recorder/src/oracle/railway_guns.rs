@@ -141,6 +141,27 @@ fn compare_saved(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
             report.difference(&label, "absent", "present");
             continue;
         };
+        match &row.name {
+            replay::rows::Recorded::NotRecorded => report.limitation(
+                "stored railway gun name not recorded by this format",
+                format!("{label}.name"),
+            ),
+            replay::rows::Recorded::Value(None) => report.difference(
+                format!("{label}.name: guarded read or name arena refusal"),
+                "unavailable",
+                &saved.name,
+            ),
+            replay::rows::Recorded::Value(Some(name)) => {
+                // BF7010 omits empty names. 1424AF5A0 emits a C string;
+                // post-NUL captured suffixes remain differences, never trimmed.
+                check(
+                    report,
+                    &format!("{label}.name"),
+                    (!name.is_empty()).then_some(name.as_slice()),
+                    saved.name.as_deref(),
+                );
+            }
+        }
         for (field, raw, expected) in [
             (
                 "roster_owner",
@@ -257,6 +278,7 @@ mod tests {
             logical_owner: 101,
             province: 2,
             subunit_token: 1,
+            name: replay::rows::Recorded::Value(Some(Vec::new())),
             // Native route cells are raw; nothing here requires known provinces.
             alternate_path: vec![u32::MAX],
             ..Default::default()
@@ -295,6 +317,7 @@ mod tests {
     fn saved_gun() -> save::RailwayGun {
         save::RailwayGun {
             id: GUN,
+            name: None,
             roster_owner: b"GER".to_vec(),
             logical_owner: b"GER".to_vec(),
             expeditionary_owner: None,
@@ -416,6 +439,41 @@ mod tests {
         let mut report = Report::default();
         compare_saved(&frame, &save, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1);
+    }
+
+    #[test]
+    fn saved_names_compare_all_bytes_empty_omission_and_capture_failures() {
+        let differences = |actual, saved| {
+            let frame = with(|row| row.name = actual);
+            let (_, mut save, _, _) = super::super::tests::fixture();
+            save.railway_guns.insert(
+                GUN,
+                save::RailwayGun {
+                    name: saved,
+                    ..saved_gun()
+                },
+            );
+            let mut report = Report::default();
+            compare_saved(&frame, &save, &mut report).unwrap();
+            report.differences
+        };
+        use replay::rows::Recorded::{NotRecorded, Value};
+        let name = vec![0xff, b'\\', b'"', b'G'];
+        assert!(differences(Value(Some(name.clone())), Some(name)).is_empty());
+        assert!(differences(Value(Some(Vec::new())), None).is_empty());
+        assert!(differences(NotRecorded, None).is_empty());
+        for (actual, saved) in [
+            (Value(None), None),
+            (Value(Some(Vec::new())), Some(Vec::new())),
+            (Value(Some(b"G".to_vec())), None),
+            // The native C-string writer truncates; the captured suffix is
+            // still a save difference rather than a waived/truncated capture.
+            (Value(Some(vec![b'G', 0, b'!'])), Some(b"G".to_vec())),
+        ] {
+            let found = differences(actual, saved);
+            assert_eq!(found.len(), 1, "{found:?}");
+            assert!(found[0].contains("name"), "{found:?}");
+        }
     }
 
     /// W2: a spawned gun supporting two combats saves both in its reference

@@ -281,6 +281,17 @@ pub(super) fn release_focus_job(mut job: FocusJob) {
     }
 }
 
+/// Exclusive spool-thread sizing of idle jobs after live name demand grows.
+pub(crate) fn presize_air_wing_names() {
+    if let Ok(mut pool) = AIR_WING_JOB_POOL.lock() {
+        for job in pool.iter_mut() {
+            if job.grow_for_next() {
+                job.grow();
+            }
+        }
+    }
+}
+
 /// Take reusable storage, or return an empty job without allocating on pool miss.
 pub fn acquire_air_wing_job() -> AirWingJob {
     pop_job(&AIR_WING_JOB_POOL)

@@ -212,6 +212,15 @@ pub fn states(
 /// ORs into every country's AI verdict; the console and debug UI toggle it.
 pub const HUMAN_AI_RVA: usize = 0x0331_7269;
 
+/// Removal delay@14071E7D0 reads this byte; console@1402928D0 toggles it.
+pub const INSTANT_DECISIONS_RVA: usize = 0x0331_7263;
+
+pub fn instant_decisions(memory: &impl Memory, base: usize) -> Result<u8, &'static str> {
+    base.checked_add(INSTANT_DECISIONS_RVA)
+        .and_then(|address| read(memory, address))
+        .ok_or("instant decisions byte unreadable")
+}
+
 /// The `human_ai` byte.
 pub fn human_ai(memory: &impl Memory, base: usize) -> Result<u8, &'static str> {
     base.checked_add(HUMAN_AI_RVA)

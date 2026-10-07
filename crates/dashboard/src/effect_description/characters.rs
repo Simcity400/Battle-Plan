@@ -65,7 +65,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<Option<&'f CharacterRow>, String> {
         let id = match scope {
             Scope::Character(id) => id,
-            Scope::Leader(reference) => {
+            Scope::Leader(reference)
+            | Scope::CountryLeader {
+                leader: reference, ..
+            } => {
                 let Some(row) = self
                     .character_table::<tables::UnitLeaders>()?
                     .iter()
@@ -100,7 +103,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 return Ok(Some(character));
             }
             let named_country = match scopes.root {
-                Scope::Country(country) if country > 0 => Some(country),
+                Scope::Country(country) | Scope::CountryLeader { country, .. } if country > 0 => {
+                    Some(country)
+                }
                 // 140536BB0 chooses a ROOT with a positive state-owner tag,
                 // but then requires that scope's own +8 country to be positive.
                 Scope::State(state) if state != NULL_STATE && state != 0 => {
@@ -113,13 +118,15 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                         None
                     } else {
                         match scopes.this {
-                            Scope::Country(country) => Some(country),
+                            Scope::Country(country) | Scope::CountryLeader { country, .. } => {
+                                Some(country)
+                            }
                             _ => None,
                         }
                     }
                 }
                 _ => match scopes.this {
-                    Scope::Country(country) => Some(country),
+                    Scope::Country(country) | Scope::CountryLeader { country, .. } => Some(country),
                     _ => None,
                 },
             };

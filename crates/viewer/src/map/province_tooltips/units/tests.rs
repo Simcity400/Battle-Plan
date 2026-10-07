@@ -159,13 +159,7 @@ fn counter_members_use_the_shared_summary_without_other_province_units() {
     let prepared = prepare_members(&frame, &[1, 3], &canonical, &vision).unwrap();
     assert_eq!(
         summary_prepared(
-            &content,
-            &frame,
-            &prepared,
-            &canonical,
-            &vision,
-            &loc,
-            false,
+            &content, &frame, &prepared, &canonical, &vision, &loc, false,
         )
         .unwrap(),
         "4\u{13}unit_Foot_icon_small|1 "
@@ -175,13 +169,7 @@ fn counter_members_use_the_shared_summary_without_other_province_units() {
     assert_eq!(
         province,
         summary_prepared(
-            &content,
-            &frame,
-            &prepared,
-            &canonical,
-            &vision,
-            &loc,
-            false,
+            &content, &frame, &prepared, &canonical, &vision, &loc, false,
         )
         .unwrap()
     );

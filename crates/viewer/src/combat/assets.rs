@@ -126,6 +126,7 @@ impl Assets {
         warnings.extend(sprite_warnings(
             &self.gui,
             &shortcut_assets(&self.native_windows).sprites,
+            false, // missing_textures above already reports these textures.
         ));
         for name in &assets.fonts {
             let Some(font) = self.gui.font(name) else {
@@ -365,7 +366,11 @@ fn prepared_size(
     }
 }
 
-fn sprite_warnings(gui: &GuiResources, names: &BTreeSet<Vec<u8>>) -> Vec<String> {
+fn sprite_warnings(
+    gui: &GuiResources,
+    names: &BTreeSet<Vec<u8>>,
+    report_textures: bool,
+) -> Vec<String> {
     let mut warnings = Vec::new();
     for name in names {
         let display = String::from_utf8_lossy(name);
@@ -382,7 +387,7 @@ fn sprite_warnings(gui: &GuiResources, names: &BTreeSet<Vec<u8>>) -> Vec<String>
                     kind.name()
                 ));
             }
-        } else if let Some(why) = info.missing {
+        } else if report_textures && let Some(why) = info.missing {
             warnings.push(format!(
                 "Combat UI: sprite {display}: {why} (1 missing_texture)."
             ));
@@ -396,12 +401,13 @@ fn sprite_warnings(gui: &GuiResources, names: &BTreeSet<Vec<u8>>) -> Vec<String>
                 "Combat UI: sprite {display}: noOfFrames is {} (1 negative_frame_count).",
                 info.frames
             ));
-        } else if gui
-            .sheet(name)
-            .is_none_or(|sheet| sheet.texture == NO_TEXTURE)
-            || gui
-                .mask(name)
-                .is_some_and(|sheet| sheet.texture == NO_TEXTURE)
+        } else if report_textures
+            && (gui
+                .sheet(name)
+                .is_none_or(|sheet| sheet.texture == NO_TEXTURE)
+                || gui
+                    .mask(name)
+                    .is_some_and(|sheet| sheet.texture == NO_TEXTURE))
         {
             warnings.push(format!("Combat UI: sprite {display} requires loaded base and secondary textures (1 missing_texture)."));
         }
@@ -783,7 +789,7 @@ impl Assets {
             gui.load_lazy_plain(layers, name.as_bytes())
                 .map_err(super::invalid)?;
         }
-        warnings.extend(sprite_warnings(&gui, &resident.sprites));
+        warnings.extend(sprite_warnings(&gui, &resident.sprites, true));
         warnings.extend(gui.uncovered_note("Combat UI"));
         let reader = Arc::clone(shared);
         let decode = interface.decode;

@@ -99,6 +99,7 @@ fn compare_pack(
     attempt!("Politics", compare_politics);
     attempt!("Politics.ruling_party", compare_ruling_party);
     attempt!("ActiveIdeas", compare_ideas);
+    attempt!("TimedIdeas", compare_timed_ideas);
     attempt!("Focus", compare_focus);
     attempt!("CompletedFocuses", compare_completed_focuses);
     attempt!("Research", compare_research);
@@ -112,6 +113,7 @@ fn compare_pack(
     }
     attempt!("DecisionCounts", compare_decision_counts);
     attempt!("Decisions", compare_decisions);
+    attempt!("DecisionRandomItems", compare_decision_random_items);
     attempt!("DynamicModifiers", compare_modifiers);
     attempt!("PreferredTactics", compare_tactics);
     attempt!("CountryTacticUnlocks", compare_tactic_unlocks);
@@ -382,6 +384,98 @@ fn check_ordinals(values: impl IntoIterator<Item = u32>) -> io::Result<()> {
             ));
         }
     }
+    Ok(())
+}
+
+/// 140BA12D0 preserves timed-roster order; 140BA1580 saves stored days.
+fn compare_timed_ideas(
+    frame: &DecodedFrame,
+    pack: &saved::Pack,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut captured = BTreeMap::<&[u8], BTreeMap<u32, (&[u8], i32)>>::new();
+    for row in complete::<tables::TimedIdeas>(frame)? {
+        let (tag, _) = country(pack, links, row.country)?;
+        let token = literal(report, &label(tag, "timed_idea"), &row.token);
+        if captured
+            .entry(tag)
+            .or_default()
+            .insert(row.ordinal, (token, row.days))
+            .is_some()
+        {
+            return Err(invalid("duplicate timed-idea ordinal"));
+        }
+    }
+    let mut count = 0;
+    for (tag, country) in &pack.countries {
+        let actual = captured.remove(tag.as_slice()).unwrap_or_default();
+        check_ordinals(actual.keys().copied())?;
+        let expected = country
+            .politics
+            .as_ref()
+            .map(|politics| politics.timed_ideas.as_slice())
+            .unwrap_or_default();
+        equal(
+            report,
+            label(tag, "timed_idea.ordered_tokens_and_days"),
+            actual.values().copied().collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|idea| (idea.token.as_slice(), idea.days))
+                .collect::<Vec<_>>(),
+        );
+        count += actual.len().min(expected.len());
+    }
+    report.compared("TimedIdeas", count);
+    Ok(())
+}
+
+/// 14072BE70/14072C2E0 save every random-item entry, including inactive ones.
+fn compare_decision_random_items(
+    frame: &DecodedFrame,
+    pack: &saved::Pack,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut captured = BTreeMap::<&[u8], BTreeMap<u32, (&[u8], i32, u32)>>::new();
+    for row in complete::<tables::DecisionRandomItems>(frame)? {
+        let (tag, _) = country(pack, links, row.country)?;
+        let token = literal(
+            report,
+            &label(tag, "decision_status.random_item"),
+            &row.token,
+        );
+        if captured
+            .entry(tag)
+            .or_default()
+            .insert(row.ordinal, (token, row.count, row.target))
+            .is_some()
+        {
+            return Err(invalid("duplicate decision random-item ordinal"));
+        }
+    }
+    let mut count = 0;
+    for (tag, country) in &pack.countries {
+        let actual = captured.remove(tag.as_slice()).unwrap_or_default();
+        check_ordinals(actual.keys().copied())?;
+        let expected = country
+            .decisions
+            .as_ref()
+            .map(|decisions| decisions.random_items.as_slice())
+            .unwrap_or_default();
+        equal(
+            report,
+            label(tag, "decision_status.random_item.ordered_entries"),
+            actual.values().copied().collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|item| (item.token.as_slice(), item.count, item.target as u32))
+                .collect::<Vec<_>>(),
+        );
+        count += actual.len().min(expected.len());
+    }
+    report.compared("DecisionRandomItems", count);
     Ok(())
 }
 

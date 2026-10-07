@@ -476,6 +476,10 @@ impl Fixture {
 }
 impl Memory for Fixture {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        if address == IMAGE + cgame_state::SINGLETON_RVA && destination.len() == 8 {
+            destination.copy_from_slice(&(STATE as u64).to_le_bytes());
+            return true;
+        }
         if address == IMAGE + engine::creference_registry::LOW_ROOTS_RVA + 8
             && destination.len() == 8
         {

@@ -498,6 +498,16 @@ fn state_content_descriptions_use_cached_native_names() {
 #[test]
 fn state_content_province_display_uses_native_fallbacks() {
     let mut fixture = Fixture::new();
+    if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
+    {
+        // VP naming@140E68E30 asks the state's owner for GetOriginalTagOrTag.
+        // This owner has no original reference; +0x130C zero selects its own tag.
+        rows.iter_mut()
+            .find(|row| row.country == 100)
+            .unwrap()
+            .original_tag_reference = Recorded::Value(Some(0));
+    }
     fixture.catalogue.localisation = fixture
         .catalogue
         .localisation
@@ -586,6 +596,42 @@ fn state_content_province_display_uses_native_fallbacks() {
     );
     assert_eq!(out.text, "SetVP EMPTY/2");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    for (reference, reason) in [
+        (
+            Recorded::NotRecorded,
+            "CountryAppearance.original_tag_reference not recorded",
+        ),
+        (
+            Recorded::Value(None),
+            "CountryAppearance.original_tag_reference capture refused",
+        ),
+    ] {
+        if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+            &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
+        {
+            rows.iter_mut()
+                .find(|row| row.country == 100)
+                .unwrap()
+                .original_tag_reference = reference;
+        }
+        let out = fixture.render(
+            "set_victory_points={province=1 value=-2.5}",
+            &mut EventScopes::new(vec![EventScope::of(C(1))]),
+            Content::default(),
+        );
+        assert!(out.text.is_empty(), "{:?}", out.refusals);
+        assert_eq!(
+            out.refusals.values().sum::<usize>(),
+            1,
+            "{:?}",
+            out.refusals
+        );
+        assert!(
+            out.refusals.keys().any(|why| why.contains(reason)),
+            "{:?}",
+            out.refusals
+        );
+    }
 }
 
 #[test]
@@ -602,6 +648,84 @@ fn state_effect_zero_keeps_native_target() {
         assert_eq!(out.text, expected, "{body}: {:?}", out.refusals);
         assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals);
     }
+}
+
+#[test]
+fn reserved_country_names_describe_reached_omitted_country_operands() {
+    let mut fixture = Fixture::new();
+    fixture.catalogue.localisation = fixture
+        .catalogue
+        .localisation
+        .iter()
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .chain(
+            [
+                ("ZERO", "Reserved"),
+                ("ZERO_DEF", "the reserved"),
+                ("ZERO_ADJ", "reservedish"),
+                (
+                    "EFFECT_ADD_RESISTANCE_TARGET",
+                    "Target $VALUE$/$OCCUPIER$/$OCCUPIED$",
+                ),
+                ("EFFECT_GIVE_RESOURCE_RIGHTS", "Rights $RECEIVER$/$STATE$"),
+                ("EFFECT_SET_STATE_OWNER_TO", "Owner $COUNTRY$"),
+                ("EFFECT_CREATE_RAILWAY_GUN", "Gun $OWNER$"),
+                ("EFFECT_ADD_TO_WAR", "War $COUNTRY1$/$COUNTRY2$"),
+            ]
+            .map(|(key, value)| (key.into(), value.into())),
+        )
+        .collect::<Localisation>()
+        .into();
+    Arc::make_mut(&mut fixture.catalogue.localisation).language = "english".into();
+    *fixture.frame.tables[TableId::ReservedCountryNaming.index()] =
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            ReservedCountryNamingRow {
+                tag: b"ZERO".to_vec(),
+                built: 7,
+                ..Default::default()
+            },
+        ]));
+    for (body, object, expected) in [
+        (
+            "add_resistance_target=5",
+            S(1),
+            "Target \u{11}R+5.0%\u{11}!/\u{12}ZERO The reserved/\u{12}ZERO The reserved\n",
+        ),
+        (
+            "give_resource_rights={state=1}",
+            C(1),
+            "Rights the reserved/One\n",
+        ),
+        ("set_state_owner_to=0", S(1), "Owner Reserved\n"),
+        ("create_railway_gun={location=999}", C(0), "Gun reservedish"),
+        ("add_to_war={}", C(1), "War Reserved/Reserved\n"),
+    ] {
+        let mut scopes = EventScopes::new(vec![EventScope::of(object)]);
+        let out = fixture.render(body, &mut scopes, Content::default());
+        assert_eq!(out.text, expected, "{body}: {:?}", out.refusals);
+        assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals);
+    }
+    if let TableView::Complete(TableRows::ReservedCountryNaming(rows)) =
+        &mut *fixture.frame.tables[TableId::ReservedCountryNaming.index()]
+    {
+        rows[0].built = 0;
+    }
+    let mut scopes = EventScopes::new(vec![EventScope::of(S(1))]);
+    let out = fixture.render("add_resistance_target=5", &mut scopes, Content::default());
+    assert_eq!(
+        out.text,
+        "Target \u{11}R+5.0%\u{11}!/\u{12}ZERO /\u{12}ZERO \n"
+    );
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    *fixture.frame.tables[TableId::ReservedCountryNaming.index()] = TableView::Unavailable {
+        reason: "format 98".into(),
+    };
+    let out = fixture.render("add_resistance_target=5", &mut scopes, Content::default());
+    assert!(
+        out.refusals
+            .keys()
+            .any(|why| why.contains("ReservedCountryNaming"))
+    );
 }
 
 #[test]
@@ -667,6 +791,15 @@ fn country_effect_state_links_use_recorded_owner() {
 #[test]
 fn native_states_branches() {
     let mut fixture = Fixture::new();
+    if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
+    {
+        // VP descriptions reach the owner's original-or-own getter@1406DF830.
+        rows.iter_mut()
+            .find(|row| row.country == 100)
+            .unwrap()
+            .original_tag_reference = Recorded::Value(Some(0));
+    }
     fixture.catalogue.localisation = fixture
         .catalogue
         .localisation
@@ -934,8 +1067,24 @@ fn native_states_branches() {
             "Resistance \u{11}G-1.2%\u{11}!\n",
             None,
         ),
-        ("add_compliance=0", S(1), "", Some("142257CE0")),
-        ("add_resistance=ROOT", S(1), "", Some("142257CE0")),
+        (
+            "add_compliance=0",
+            S(1),
+            "Compliance \u{11}Y+0.0%\u{11}!\n",
+            None,
+        ),
+        (
+            "add_resistance=0",
+            S(1),
+            "Resistance \u{11}Y+0.0%\u{11}!\n",
+            None,
+        ),
+        (
+            "add_resistance=ROOT",
+            S(1),
+            "Resistance \u{11}Y+0.0%\u{11}!\n",
+            None,
+        ),
         ("set_compliance=1.25", S(1), "SetCompliance 1.2%\n", None),
         ("set_resistance=-1.25", S(1), "SetResistance -1.2%\n", None),
         ("set_compliance=ROOT", S(1), "SetCompliance 0.0%\n", None),
@@ -1072,25 +1221,25 @@ fn native_states_branches() {
             "add_resistance_target={}",
             S(1),
             "",
-            Some("marked-name tag for country 0"),
+            Some("ReservedCountryNaming"),
         ),
         (
             "add_resistance_target=5",
             S(1),
             "",
-            Some("marked-name tag for country 0"),
+            Some("ReservedCountryNaming"),
         ),
         (
             "add_resistance_target={amount=1 occupied=AAA}",
             S(1),
             "",
-            Some("marked-name tag for country 0"),
+            Some("ReservedCountryNaming"),
         ),
         (
             "add_resistance_target={amount=1 occupier=BBB}",
             S(1),
             "",
-            Some("marked-name tag for country 0"),
+            Some("ReservedCountryNaming"),
         ),
         (
             "add_resistance_target={amount=1 occupied=AAA occupier=BBB}",
@@ -1111,10 +1260,19 @@ fn native_states_branches() {
             None,
         ),
         (
-            "add_resistance_target={amount=var:syn occupied=event_target:syn_country occupier=controller days=var:syn}",
+            "add_resistance_target={amount=var:syn occupied=event_target:syn_country occupier=AAA days=var:syn}",
             S(1),
             "Target \u{11}R+2.4%\u{11}!/\u{12}AAA Alpha/\u{12}BBB Beta/2 [This.GetName] (2 days [This.GetName])\n",
             None,
+        ),
+        // ReadEffect@14031B3B0 fills CScopedVariable operands; Own@1403144B0
+        // calls EvaluateCountryTag@140536ED0. Unlike start_resistance's country
+        // selector, this reads the state's computed `controller` builtin.
+        (
+            "add_resistance_target={amount=var:syn occupied=event_target:syn_country occupier=controller days=var:syn}",
+            S(1),
+            "",
+            Some("controller is a built-in game variable of state 1"),
         ),
         (
             "add_resistance_target={amount=-92233720368547.75808 occupied=AAA occupier=BBB}",
@@ -1132,7 +1290,7 @@ fn native_states_branches() {
             "add_resistance_target={amount=1 days=random occupied=AAA occupier=BBB}",
             S(1),
             "",
-            Some("random draws from the store's random state"),
+            Some("ScriptVariables.seed (CVariables+8)"),
         ),
         (
             "add_resistance_target={amount=0 add_political_power=1}",
@@ -1308,7 +1466,7 @@ fn native_states_branches() {
             "give_resource_rights={state=1}",
             C(1),
             "",
-            Some("invalid receiver"),
+            Some("ReservedCountryNaming"),
         ),
         ("remove_resource_rights=0", S(1), "", None),
         ("remove_resource_rights=THIS", S(1), "End One\n", None),

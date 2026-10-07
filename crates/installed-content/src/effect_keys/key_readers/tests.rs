@@ -10,7 +10,13 @@ fn daily_mastery_selectors_are_native_own_fields() {
     let item = crate::parser::parse(b"add_daily_mastery={amount=0.5 name=synthetic days=100 track=mod_track folder=mod_folder grand_doctrine=mod_grand sub_doctrine=mod_sub track_index=2}").unwrap().items.remove(0);
     let fields = crate::effect_keys::description_fields(&item).unwrap();
     assert_eq!(fields.len(), 0);
-    for key in [b"track".as_slice(), b"folder", b"grand_doctrine", b"sub_doctrine", b"track_index"] {
+    for key in [
+        b"track".as_slice(),
+        b"folder",
+        b"grand_doctrine",
+        b"sub_doctrine",
+        b"track_index",
+    ] {
         assert!(crate::effect_keys::is_own_field(0x4199, key));
     }
 }

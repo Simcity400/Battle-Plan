@@ -18,14 +18,18 @@ const PROPERTIES: [&str; 13] = [
     "GetActiveRangeDeactivationEffect",
 ];
 
-impl ScriptedText<'_> {
+pub(super) fn is_property_exact(name: &str) -> bool {
+    PROPERTIES.contains(&name)
+}
+
+impl<'a> ScriptedText<'a> {
     fn active_range_effects(
         &self,
         effects: &[installed_content::parser::Item],
         refused: &mut Vec<String>,
         slot: u32,
         name: &str,
-        scopes: &ExpansionScopes,
+        scopes: &ExpansionScopes<'_, 'a>,
     ) -> Result<String, String> {
         if effects.is_empty() {
             return Ok(String::new());
@@ -75,7 +79,7 @@ impl ScriptedText<'_> {
         record: &replay::rows::PowerBalanceRow,
         name: &str,
         which: usize,
-        scopes: &ExpansionScopes,
+        scopes: &ExpansionScopes<'_, 'a>,
     ) -> Result<String, String> {
         let definitions = self
             .frame
@@ -268,7 +272,7 @@ impl ScriptedText<'_> {
         &self,
         slot: u32,
         name: &str,
-        scopes: &ExpansionScopes,
+        scopes: &ExpansionScopes<'_, 'a>,
     ) -> Result<Option<String>, String> {
         let Some(which) = PROPERTIES.iter().position(|p| named(p, name)) else {
             return Ok(None);

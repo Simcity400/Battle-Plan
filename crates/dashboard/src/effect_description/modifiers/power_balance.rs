@@ -191,7 +191,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .and_then(installed_content::parser::read_bool)
             .unwrap_or(false);
         let value = explicit
-            .map(|item| installed_content::modifiers::stored(item))
+            .map(installed_content::modifiers::stored)
             .unwrap_or(if defaults {
                 definition.initial_value
             } else {

@@ -24,8 +24,8 @@ Readable older recordings keep unchanged field prefixes. Products count a named 
 |---|---|
 | `source.rs` | One opened recording: replay bytes, metadata, resolved game content and each product's per-source cache. |
 | `catalogue.rs` | Content facts every product shares, read once per source, folders and game language: the localisation (the same parse country naming uses, from `content::localisation`; every text goes through the shared game localiser in `installed_content::localisation`; a refusal, such as a scripted expression or a control plain text cannot show, is kept apart from a missing key and noted by reason and key for the product warnings) and interface sprites, with the native GUI registry and client decode settings shared by products, plus the texture decoding, within a budget, and PNG encoding every image reply uses. |
-| `triggers.rs` | The one trigger evaluator: raid, combat-tactic, scripted-localisation, equipment-graphics pool and adjacency-rule triggers decided from one recorded hour. Each key is dispatched as `CTrigger::LoadKey` does (`installed_content::trigger_keys`), each coded trigger checked against its class's accepted scopes first. Only the children LoadKey adds count: a key that names nothing adds none, `else`/`else_if` attach to the last `if` added, and `World::has_children` is the emptiness test every consumer reads. A key names a character by the content's character templates; scope keys resolve through `scope.rs`, and deeper links use the caller's `EventScopes` graph when supplied; flattened callers still refuse a link they cannot describe. Tag aliases resolve as `AliasResolve` does (`triggers/aliases.rs`). Script variable operands (`check_variable`, `has_variable`, `var:` keys, variable counts, country and state operands, arrays and tag alias variables) are evaluated as `CScopedVariable::Evaluate` does over the recorded `ScriptVariables` stores (`triggers/variables.rs`); unreproduced built-in game variables, random draws, unsupported temp writers and outside-context residual temps are refused by name. A combat scope's own triggers come from its caller (`Combat`). A caller without a country uses `Scopes::empty`, the default event scope: no carried objects, and THIS/ROOT/FROM/PREV all empty. Scope-masked triggers are false there; country-tag scopes resolve normally over the recorded World. A context trigger targeting an empty scope is false by its own mask, including an empty ROOT block. What the recording cannot answer is `Eval::Unknown` with its reason. |
-| `scope.rs` | Script scope targets resolved over one recorded hour (`RecordedScopes`), including the faction leader from `FactionMembers` order for triggers and scripted text, with `_CountriesForOriginalTags` derived from the branch (`scope/original_tags.rs`). |
+| `triggers.rs` | The one trigger evaluator: raid, combat-tactic, scripted-localisation, equipment-graphics pool and adjacency-rule triggers decided from one recorded hour. Each key is dispatched as `CTrigger::LoadKey` does (`installed_content::trigger_keys`), each coded trigger checked against its class's accepted scopes first. Only the children LoadKey adds count: a key that names nothing adds none, `else`/`else_if` attach to the last `if` added, and `World::has_children` is the emptiness test every consumer reads. A key names a character by the content's character templates; scope keys resolve through `scope.rs`, and deeper links use the caller's `EventScopes` graph when supplied; flattened callers still refuse a link they cannot describe. Tag aliases resolve as `AliasResolve` does (`triggers/aliases.rs`). Script variable operands (`check_variable`, `has_variable`, `var:` keys, variable counts, country and state operands, arrays and tag alias variables) are evaluated as `CScopedVariable::Evaluate` does over the recorded `ScriptVariables` stores (`triggers/variables.rs`); unreproduced built-in game variables, unsupported temp writers and outside-context residual temps are refused by name. A combat scope's own triggers come from its caller (`Combat`). A caller without a country uses `Scopes::empty`, the default event scope: no carried objects, and THIS/ROOT/FROM/PREV all empty. Scope-masked triggers are false there; country-tag scopes resolve normally over the recorded World. A context trigger targeting an empty scope is false by its own mask, including an empty ROOT block. What the recording cannot answer is `Eval::Unknown` with its reason. |
+| `scope.rs` | Script scope targets resolved over one recorded hour (`RecordedScopes`), including the faction leader from `FactionMembers` order for triggers and scripted text, with exact recorded `_CountriesForOriginalTags` buckets and physical country-array order (`scope/original_tags.rs`). |
 | `metadata.rs` | Branch ranges, gaps and the first readable country catalogue, and the helpers every product shares: frame checks, a tag's country this hour (`tagged_country`: found, absent, or unresolved when the links cannot tell which country holds it; `tagged_countries` gives every tag's in one pass), a raw link's canonical slot (`link_slot`), one consecutive-hour country identity check (`IdentityTrack`, used by segment histories through `country_history::observe_identity`) and which hours read a daily table (`slot_read`: its cadence slot hour, or a timed walk within its slot on a forced full hour; CountryIntel requires its own measured walk and is no evidence for its slot peers, as in the fresh-save oracle; a product dating values by their read uses it). |
 | [cryptology.rs](src/cryptology.rs) | Native cipher thresholds, full-decryption predicate and progress meter frames, shared with viewer raid tooltips. |
 | `products/` | One module per data product, registered once in `products/mod.rs`. Helpers products share sit beside them, such as `resources.rs` (recorded resources in the game's order, named and pictured through the content stack for every resource product). |
@@ -43,8 +43,10 @@ Readable older recordings keep unchanged field prefixes. Products count a named 
 Faction names share [faction_names.rs](src/faction_names.rs) with scripted
 text and effect descriptions: `CFaction::display_name@140D77360` copies a
 nonempty literal unchanged in the recording language (another viewer language
-refuses it through `stored_text`), else resolves the recorded hour's template
-token through `LexicalTokens` and the recorded content stack's bound localisation.
+refuses it through `stored_text`). With an empty literal, a recorded null template
+returns empty text without reading content or the lexical dictionary; a nonnull
+template resolves through `LexicalTokens` and the recorded content stack's bound
+localisation. Unread template inputs retain their named refusal.
 Naming, scripted text and diplomacy effect descriptions resolve through
 `faction_names.rs` and the content stack's lazy native `Catalog` cache
 (`ResolvedLayers::faction_templates`); character effect descriptions keep their
@@ -64,6 +66,27 @@ refused with the transport-budget reason. Evicting a cached branch only causes
 a full rescan.
 
 Border-event descriptions share the evaluator's caller-owned `EventScopes` graph and active variable session. Scope switches preserve ROOT, FROM and PREV links and both native seed words. Description-only targets are stored by scope identity: saving follows ROOT, lookup follows FROM, and outer completion clears only terminal-FROM tooltip targets and global tooltip targets. `has_event_target` reads saved targets only. Scripted-localisation conditions and variable operands use the same graph and session. `num_owned_states` reads `CountryCounterInputs`; `has_template` compares native display-name bytes, resolving the recorded fallback key through the recording language and template country. Template names retain their recorded daily freshness. `any_owned_state` derives nonempty owned membership from `States` and `Provinces`; order-sensitive predicates refuse the unrecorded native roster order.
+
+Locked-tactic doctrine sources share
+[doctrine_sources.rs](src/effect_description/doctrine_sources.rs). Each available
+trigger uses a fresh country scope. Source order and duplicate occurrences come
+from the cached content inventory; track names use the shared unscoped bound
+localiser, and reward mastery includes preceding rewards. Independent source
+fragments survive named failures; an unproven empty list retains its refusal.
+
+[unit_names.rs](src/unit_names.rs) shares the native cached Army-name getter
+across UNIT descriptions, counters and combat entries. A recorded cache,
+including empty text, is authoritative; read failures do not substitute generated
+names. Only historical cache absence consults the captured generator operands
+and lazy content database. Literal overrides with proved matching bytes can be
+shown in any language; other stored text keeps the recording-language guard.
+
+[Ability descriptions](src/effect_description/ability.rs) reuse the content's
+ability definitions and the shared modifier, adjuster and effect formatters.
+The caller supplies a fresh country/commander carrier with both native scope
+bits. Each getter follows its own native priority: text promotion and Tag use
+leader-first resolution, while country variables and context headers select the country.
+Effect sessions and independent failures retain their ordinary shared contracts.
 
 ## Products
 
@@ -260,7 +283,7 @@ A refusal for want of room says nothing of the product: the frontend tries it ag
 
 ## Types
 
-Rust owns the generated frontend types. Use the shared [build commands](../../AGENTS.md#build-commands):
+Rust owns the generated frontend types. Use the shared [build commands](../../AGENTS.md#keep-these-guarantees):
 
 ```powershell
 bash tools/build-slot.sh "dev/dashboard" "cargo run -p dashboard --bin export-types"
@@ -340,11 +363,17 @@ back to the full roster only if no prioritized state passes. Country, faction, s
 and script-array rosters retain their native recorded or content order. Missing
 country neighbor/occupied rosters, division roster order and scientist
 activity produce named refusals rather than invented values. Owned/core/controlled
-states and army/navy/operative leaders derive recorded membership; only two or
-more passing targets need the missing order. Owned membership is checked against
-the recorded count. Original-tag lists
-refuse ambiguous order; party-leader selection refuses the unrecorded current
-role ideology; without the mandatory ideology predicate it returns empty.
+states and army/navy leaders use the exact ordered `CountryCounterInputs` arrays.
+Owned-controlled selection filters the owned array without reordering; combined
+unit leaders walk army then navy, without operatives. The native global army
+selector repeats the caller's ordered roster for each other existing country
+(`140338900`). Collection owned/controlled operators select their first successful
+path in those same recorded arrays. Missing or unreadable arrays refuse; no
+membership-derived order is substituted. Operatives use their recorded membership
+ordinals. Original-tag lists
+refuse ambiguous order; party-leader selection compares the recorded current
+role ideology independently of its map key. A missing current ideology remains
+unknown; without the mandatory ideology predicate the selector returns empty.
 
 MIO selectors use the recorded roster and reference handles,
 the shared evaluator's organisation scopes, and the content's own or directly
@@ -383,9 +412,19 @@ completion cleanup; a combined scope saves its state before its country.
 Temporary country scorers load through the recorded content stack, reuse shared
 CScriptTargets/MTTH evaluation and retain native highest/sorted tie order.
 Array target filters run before the next indexed value is evaluated. Temporary
-random ranges refuse the unreproduced scoped-variable RNG context except for
-native reversed-range no-ops. Temporary supply truck/train totals remain named,
-counted operand-evaluation refusals; unknown supply types store native zero. Scorer dynamic
+random ranges consume the recorded `ScriptVariables.seed`, with native THIS/FROM
+hashes, TLS seed mixing and integer flooring (`1405354A0` / `140537810` /
+`14047B530`). Descriptions, nested checks and MTTH modifiers share their outer
+TLS context; iterator RNG remains independent. Seed failures are retained until
+consumed, so ordinary text and reversed-range no-ops remain usable. Unknown
+writers do not silently restart the generator. Temporary supply operands use
+`TrainInventory`'s allocated trucks, raw required trucks and required trains,
+with native ceiling/narrowing and the content's strict `NSupply.MIN_TRAIN_REQUIREMENT`
+gate. These cover every reached supply-temp form in the surveyed stacks. Actual
+trains (`CCountrySupplySystem+0x110`) remain a named refusal: neither the scalar
+nor a proven equivalent is recorded, and that subform has zero surveyed reach.
+Unknown supply types store native zero. Older/unavailable seeds and supply fields
+retain named refusals. Scorer dynamic
 tails and state-target modes are named refusals with no reached temporary
 scorer form in the audited corpus.
 
@@ -415,7 +454,8 @@ template-deletion port. Template changes, unit destruction and organization use
 the shared UNIT carrier. Null units retain native empty text; organization uses
 the raw scoped value without expansion or LF. Template lookup shares the trigger
 evaluator's exact display-name comparison and uses the division's logical owner.
-Descriptions needing a unit name retain the shared cached-name recording refusal.
+Descriptions needing a unit name share the cached Army-name formatter and
+stored wing text, with field-local historical and language refusals.
 Experience and manpower, template locks/caps/recruiting, unit and ship creation,
 navy and unit transfers, equipment fractions, raid damage, design bonuses and
 equipment-stat bonuses preserve their native operands, key
@@ -424,9 +464,10 @@ content roster and selected-country localisation. Unit-location admission uses
 the shared evaluator, cached state content and recorded province/access inputs.
 Production, stockpile, equipment variants, ship destruction, equipment transfers
 and subsidies use the cached complete equipment database and native type/module
-lookups. Conditional variant version checks, nonempty unit bonuses needing
-counter preferences, seller-trigger descriptions, and unrecorded unit names or
-non-army unit identities retain named, counted refusals. No content
+lookups. Variant version checks require their recorded version byte. Unit bonuses
+use the shared native formatter and viewer counter preference. Seller-trigger
+descriptions, missing legacy name-allocation inputs and unsupported unit naming
+forms retain named, counted refusals. No content
 database is reread by a description leaf.
 
 The D2 empty family dispatches all assigned native classes to empty own text
@@ -483,15 +524,16 @@ then tries VP text and the state name. Country adjectives reuse country naming.
 State-category descriptions also retain native validity and empty branches,
 using the cached content database `1413AFAC0`.
 
-Named, counted form refusals remain for zero colored-percent formatting,
-marked country names, tag-selected building targets, provincial removal's
+Named, counted form refusals remain for marked country names,
+tag-selected building targets, provincial removal's
 unexposed land flag, strategic-location templates and computed/filtered railway
 paths (`140E7E560`). Differing building declarations
 and unresolved signed resource frames retain content refusals. State-less
 province display needs the unrecorded strategic-region pointer and instance
-name; country-zero naming/adjective/capital inputs also remain absent. Native
+name; country-zero capital inputs also remain absent. Reserved-country names
+and adjectives use their dedicated recorded singleton. Native
 null dereferences, uninitialised operands and unsupported auxiliary forms are
-refused precisely. No recording format or acquisition changes are made.
+refused precisely.
 
 Effect conditions and values share the trigger evaluator and its full scope
 graph. Description-only targets save through terminal ROOT and look up through
@@ -508,8 +550,10 @@ modifier values use the same scoped-variable session, and opinion/static
 modifier catalogues come from the recorded content stack. Balance-of-power
 effects read their values, sides and ordered range identities from the replay;
 range transitions use the native strict interval probe and numeric modifier
-difference. Timed-idea modification/swaps require the unrecorded timed roster
-and remaining days and retain named, counted refusals. Advisor-backed add/remove/
+difference. Timed-idea modifications and swaps use the recorded ordered roster
+and remaining days; historical field absence refuses only dependent fragments.
+Idea swaps share numeric, research, rule, targeted and equipment differential
+formatters. Advisor-backed add/remove/
 show idea descriptions use the recorded AvailableAdvisors order before the
 CountryRetiredCharacters order (`1410D69C0`); the primary compares exact idea
 bytes, the fallback compares folded names (`140F8A630`). Multi-idea forms name
@@ -520,9 +564,17 @@ mask (`14128C670`/`14128C8E0`/`14054E050`). Research, equipment and targeted
 fragments resolve through the content stack and recorded role traits; content
 failures remain named without discarding the numeric fragment. Stored numeric
 caches are never rebuilt from authored modifiers or current traits. The cached
-tooltip-key table still contributes the named, counted refusal
-`advisor cached tooltip keys +0x218 unrecorded until format 99`; older,
-unavailable or absent caches are distinct refusals, never empty blocks.
+tooltip-key table keeps its recorded occupied-slot order and exact key bytes.
+Historical absence and current capture failures remain distinct, named refusals;
+numeric cache fragments remain available independently.
+
+Bound custom tooltips share the GUI bound-localisation tree reader. Each node
+keeps its own scope expansion and callback arguments; idea and technology
+callbacks reuse their ordinary description helpers. Unit bonuses share one
+sub-unit/category formatter, including terrain and equipment-stat lines. Their
+unit icons follow the viewer's NATO choice through the scripted-text instance,
+including nested balance-of-power descriptions.
+
 Fixed5 numeric leaves share one formatting template, with native rounding,
 truncation, integer clamping and newline rules selected per class. Mines refuse
 the unrecorded strategic-region instance name. Corpus-zero classes and ambiguous
@@ -546,9 +598,9 @@ Balance context headers use the viewing country's perspective.
 
 `opinion@target` evaluates its country target in the native callback scope and reads the directed cached opinion from RelationOpinions, at that table's daily slice cadence. A missing nonzero row in a complete table means zero; country zero uses an unrecorded reserved relation slot and remains a named refusal. `num_owned_controlled_states` counts nonempty owned states whose recorded controller is the same country, including country aliases. Both callbacks precede stored keys; unavailable inputs remain unknown. MIO and special-project variable callbacks, outside-context residual temps and other unreproduced built-ins remain named, counted refusals.
 
-Trigger-local temp assignment, addition, subtraction, multiplication, division, clamp, round and modulo execute in order over one evaluation's store ([variables/temps.rs](src/triggers/variables/temps.rs)). Nested checks share it; the next outer check clears it (1405354A0 / 140544190 / 140535830). A destination is inserted before its RHS, then read after the RHS and any alias conditions. Modulo (14047B280) instead caches the floored, signed32 target before its RHS, rounds the divisor to signed32, skips a negative target's RHS and preserves RHS mutations for a nonpositive divisor. The selected localisation's `random_list` weights and seed use that same evaluator. Arithmetic wraps at 64 bits before fixed5 division, round sends halves away from zero, zero division preserves the destination, and clamp applies max before min. Existing native trigger/effect readers supply the parsed items; no parallel reader is used. Core `CExpression` arithmetic is supported; other operators and repeated nonliteral operand reads remain named refusals. The separate `[?...]` text formatter remains unported.
+Trigger-local temp assignment, addition, subtraction, multiplication, division, clamp, round and modulo execute in order over one evaluation's store ([variables/temps.rs](src/triggers/variables/temps.rs)). Nested checks share it; the next outer check clears it (1405354A0 / 140544190 / 140535830). A destination is inserted before its RHS, then read after the RHS and any alias conditions. Modulo (14047B280) instead caches the floored, signed32 target before its RHS, rounds the divisor to signed32, skips a negative target's RHS and preserves RHS mutations for a nonpositive divisor. The selected localisation's `random_list` weights and seed use that same evaluator. Arithmetic wraps at 64 bits before fixed5 division, round sends halves away from zero, zero division preserves the destination, and clamp applies max before min. Existing native trigger/effect readers supply the parsed items; no parallel reader is used. Core `CExpression` arithmetic is supported; other operators and repeated nonliteral operand reads remain named refusals. The numeric `[?...]` form is implemented in [numeric.rs](src/scripted_text/numeric.rs). It evaluates in the bracket's event scope and shares the existing localisation formatter's directives, truncation and empty-output fallback. Known temporary writes retain their native context boundaries; unavailable residual state stays unknown. Unimplemented property, flag-age and character forms retain named refusals.
 
-`set_temp_variable_to_random` remains a named, counted refusal: its TLS scoped-variable RNG context and draws (1405354A0 / 140537810, called by 14047B530) are not reproduced from the recorded CVariables+8 seed and scope/root hashes (140536DF0 / 140529EE0). The native effect reader's ambiguous bare scalar also retains its counted `Deferred effect` refusal (14047EF60 / 140481030). `randomize_temp_variable` is effect-only (registrar 14001BE20), so direct trigger bodies keep native invalid-key dispatch. Its own description (140176EE0, invoked by 140532780) is empty and never executes the setter; an actual effect-execution consumer is not ported. Its executor (1403452E0) draws from CEventScope+0x0C/+0x10 via 14039D050 or 1403A82C0 / 1424DB9D0, with the constructor seed derivation used by `random_list`. Neither random form uses the global game RNG. No outside-context residual temp history is inferred.
+`set_temp_variable_to_random` reproduces the TLS scoped-variable RNG context and draws (1405354A0 / 140537810, called by 14047B530) from `ScriptVariables.seed` and the native immediate THIS/FROM hashes (140536DF0 / 140529EE0). Older recordings and failed seed captures retain named refusals; nested checks share the outer seed. The native effect reader's ambiguous bare scalar also retains its counted `Deferred effect` refusal (14047EF60 / 140481030). `randomize_temp_variable` is effect-only (registrar 14001BE20), so direct trigger bodies keep native invalid-key dispatch. Its own description (140176EE0, invoked by 140532780) is empty and never executes the setter; an actual effect-execution consumer is not ported. Its executor (1403452E0) draws from CEventScope+0x0C/+0x10 via 14039D050 or 1403A82C0 / 1424DB9D0, with the constructor seed derivation used by `random_list`. Neither random form uses the global game RNG. No outside-context residual temp history is inferred.
 
 Explicit province text contexts use recorded province names, state ownership and perspective, with terrain from the recorded content stack. The native event scope cannot carry a province, and province text objects do not bind scripted entries.
 

@@ -154,8 +154,10 @@ Every refused occurrence is stored as a line name plus reason and counted;
 independent lines remain visible. The viewer diagnostics expose these counts. A
 raid whose operands were unreadable when recorded has a single `UNREADABLE`
 row; its operand and naming lines are refused, and other raids keep theirs.
-The selected active raid wing name (`1414536D0` -> `140F4B8F0`) uses the
-shared `dashboard::scripted_text::stored_text` rule, also used by ship names.
+The selected active raid wing name (`1414536D0` -> `140F4B8F0`) prefers
+AirWings' stored name when recorded. A refused name stays refused; older
+recordings retain the active-raid WING_NAME projection. Both paths use
+`dashboard::scripted_text::stored_text`, also used by ship names.
 `140F48F90` passes a null selected-number pointer to `140AE3750` (assembly
 `140F4903F`); the `140AE2990`/`140AE49D0` fallback chooses against the used-name
 registry. Both generators and player rename `141932C30` use `140F51FB0`, which
@@ -169,8 +171,10 @@ Capacity 15 selects inline storage; larger capacity selects the heap pointer
 (`140F51FB0`). Live length must fit capacity; the reader checks pointer and
 arithmetic, copies length plus terminator in one payload read when rows fit,
 and validates the terminator. No chosen name-length cap is imposed. The
-existing hourly non-ended raid walk captures only the native selected wing
-(army before wing). Its existing row buffer grows off-thread from full demand;
+AirWings walk captures all wings' stored text in a live-sized arena; a name
+read or arena failure leaves the old columns available and counts a refusal.
+The non-ended raid walk also keeps its native selected-wing projection (army
+before wing). That row buffer grows off-thread from full demand;
 a shortage keeps a readable prefix and withholds the incomplete table.
 
 The existing string layout carries the name in its own operand family: length
@@ -191,10 +195,14 @@ saved `name` (`CAirWing::vf2@140F539B0`, secondary+988 = primary+998).
 `CWriter::WriteString@1424ADF40` -> `1424AF5A0` escapes backslashes and quotes
 with `String_ReplaceAllCString@1424B7F40`; the
 [save parser](../../../../../installed-content/src/save/air.rs) decodes both. Missing
-saved text differs from an empty name. Duplicate selected saved IDs produce a
-counted difference while other raids remain comparable. Capture failures are
-named limitations; saved naming inputs, provenance and language have no
-independent comparator. The native writer stops at an embedded NUL; a stored
+saved text differs from an empty name: `140F539B0` writes the name key even
+when empty outside checksum mode. The
+[AirWings oracle](../../../../../recorder/src/oracle/military.rs) compares every
+captured name byte-exact, including saved key presence, and counts capture
+refusals as differences; old absent fields are not compared. Duplicate selected
+saved IDs produce a counted difference while other raids remain comparable.
+The packed raid operand comparison reports capture failures as named limitations;
+saved naming inputs, provenance and language have no independent comparator. The native writer stops at an embedded NUL; a stored
 length extending beyond it produces a real save difference, never a waiver.
 Regional air scores, runtime success operands and definition pointer order also
 have no text-save counterpart. Other irrecoverable naming cases remain

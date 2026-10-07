@@ -4,8 +4,16 @@ use super::*;
 fn targeted_modifiers_keep_the_original_scoped_operand_and_absent_target() {
     for (body, tag, operand) in [
         ("tag=bBb attack=1", Some("BBB"), Some(b"bBb".as_slice())),
-        ("tag=event_target:MixedCase attack=1", None, Some(b"event_target:MixedCase".as_slice())),
-        ("tag=var:MixedCase tag=global.MixedCase attack=1", Some("GLOBAL.MIXEDCASE"), Some(b"global.MixedCase".as_slice())),
+        (
+            "tag=event_target:MixedCase attack=1",
+            None,
+            Some(b"event_target:MixedCase".as_slice()),
+        ),
+        (
+            "tag=var:MixedCase tag=global.MixedCase attack=1",
+            Some("GLOBAL.MIXEDCASE"),
+            Some(b"global.MixedCase".as_slice()),
+        ),
         ("attack=1", None, None),
     ] {
         let items = crate::parser::parse(body.as_bytes()).unwrap().items;

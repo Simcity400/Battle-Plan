@@ -253,7 +253,7 @@ pub(super) fn bind(
     document: &Document,
     frame: &DecodedFrame,
     selection: Selection,
-    flags: &std::collections::BTreeMap<u32, String>,
+    flags: &super::binding::Flags,
 ) -> io::Result<()> {
     let has_sprite = |name: &str| document.icons.combat.has_sprite(name);
     let leaders = rows::<tables::UnitLeaders>(frame);

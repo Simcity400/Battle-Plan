@@ -14,7 +14,7 @@ no recorded bytes.
 
 ## Record a campaign
 
-Use the shared [build commands](../../AGENTS.md#build-commands):
+Use the shared [build commands](../../AGENTS.md#keep-these-guarantees):
 
 ```powershell
 bash tools/build-slot.sh "dev/recorder" "cargo build -p recorder -p collector --release"
@@ -66,7 +66,7 @@ Provinces skips owner, state assignment and omitted-controller inference where m
 
 History effects are read, never executed by the oracle. `Deferred effect` means an unported native token reader, rather than an engine execution result: `CEffect::ReadScript@140534280` invokes effect key readers, including `CIfEffect@141385BA0`. The history loader (`14158F190`, `14158F3B0`) queues commands by date (`140A2DFD0`, `140A2E010`); `ResetGame@1401A5120` runs history execution (`140A2E2C0`, `14152DC70`), which applies them in state scope. The conditional, strategic-location, remove-building and add-victory-points readers follow their own native consumption, so those supported forms leave no deferred-reader diagnostic. The strategic-location appliers (`140E6C990`, `1409D3A60`) change maximum-level bonuses (`CBuilding +0x1E8`), which factory level sums (`140E4FC10`) do not read; those bonuses and location metadata need separate runtime evidence. Conditional effects and `remove_building` can change actual levels; none of their authored levels is a comparison input. Owners and controllers come from saved states (`1409D4040`, owner-equivalent omission only), factory levels from saved buildings, and province victory points from saved provinces (`140E6CA90`, omitted only at zero). Thus post-setup values compare even when history differs from its initial authored values. SupplyNodes checks province references and the recorded internal census; its unsaved simulation caches remain a named limitation. StateCores independently compares the sampled state slices with the saved countries' cores (`14070C580`); it does not need map membership. Unevaluated history outcomes have no membership guarantee. Unsupported readers exclude their affected states by name and count; they never waive a difference in a compared row.
 
-The [modifier breakdown oracle](src/oracle/modifier_breakdowns.rs) checks reserve trees against the recorded combat source joins and balance trees against the save's ordered static modifier names, including duplicates. Cached structure, display bytes and getter values are runtime-only limitations. Fresh-save comparison, smoke, live hover text and capture cost remain unverified.
+The [modifier breakdown oracle](src/oracle/modifier_breakdowns.rs) checks reserve trees against the recorded combat source joins and balance trees against the save's ordered static modifier names, including duplicates. Cached structure, display bytes and getter values are runtime-only limitations. The coordinated vanilla fresh-save and 124-hour smoke checks passed for the compared fields; matched live hover text and capture cost remain separate acceptance checks.
 
 The country writer saves neither colour object, so CountryAppearance's UI colour has no save counterpart: the oracle states it as a limitation ([map_inputs.rs](src/oracle/map_inputs.rs)), and validating it needs a matched-hour screenshot of a counter plate in country-colour mode.
 
@@ -130,7 +130,7 @@ separately coordinated format change.
 
 After the first recorded hour, `status.json.fixed_layout.state` should be `verified`; `refused` names every mismatch in `layout_failures` and lists each withheld table family in `refusals`, and `unverified` means no check has completed yet. A mismatch anywhere in the built-in modifier layout withholds every table that reads a fixed modifier key. Refused tables are unavailable in the recording with the reason preserved. Text saves cannot certify the native modifier layout, so the live status and the synthetic mismatch tests cover it.
 
-Check each changed crate with the shared [build commands](../../AGENTS.md#build-commands). `tools/smoke.ps1` is the existing end-to-end driver; inspect its help before use. It requires coordinated game ownership, the selected local save, an isolated text-save user directory, matching continue selection, calibrated UI settings and a new output directory. It drives the game separately from the passive recorder, then checks finalization, the oracle and reference renders. Follow the shared [capture and scratch storage rules](../../AGENTS.md#files-and-documentation).
+Check each changed crate with the shared [build commands](../../AGENTS.md#keep-these-guarantees). `tools/smoke.ps1` is the existing end-to-end driver; inspect its help before use. It requires coordinated game ownership, the selected local save, an isolated text-save user directory, matching continue selection, calibrated UI settings and a new output directory. It drives the game separately from the passive recorder, then checks finalization, the oracle and reference renders. Follow the shared [capture and scratch storage rules](../../AGENTS.md#files-and-documentation).
 
 Follow the shared [measurement rules](../../AGENTS.md#keep-these-guarantees); keep cold work separate from steady state. Report actual game-hours per second, callback p95, memory, encoded size and finalization time. The established targets are at least 95% of non-recorder throughput and at most 16 ms p95 per game hour; replay readiness within 30 seconds and a campaign below 1 GB, with 50 MB as a size goal. These are targets, not a statement that this branch meets them.
 
@@ -149,8 +149,23 @@ difference when the recording contains that operand. Older recordings retain
 an absent operand and the oracle states that limitation. Division naming uses
 the combat oracle's shared operand comparison against `division_name` and the
 selected template's `division_names_group`; the save does not certify a stale
-localized name cache. Fresh-save agreement and smoke remain coordinated live
-checks.
+localized name cache. The coordinated vanilla fresh-save and 124-hour smoke
+checks passed for these saved operands.
+
+The division supply footer's disruption compares exactly with positive saved
+`disrupted_supply`; an omitted value checks only that captured disruption is
+nonpositive. A failed native scalar capture remains a difference, while an
+older recording's absent field remains a named limitation. Asked/received
+amounts, demand pairs, origins and the fresh attrition calculation's runtime
+operands are not serialized; the oracle reports them as unverified and matched
+native hovers must check their displayed values and breakdowns.
+
+The [orders-group comparator](src/oracle/pass_inputs.rs) checks saved HQ and
+naval-invasion-source distances exactly when nonnegative, including zero.
+Omission certifies only a negative value, not its magnitude. The active leader
+formation reference and the template's formation-division count have no saved
+counterpart; ability late-join and communications arithmetic require matched
+native hovers. These runtime limitations do not waive any saved-field difference.
 
 Invasion path costs read runtime diplomacy state that text saves omit: the route unit owner's slot-zero war operands and co-belligerent targets in InvasionPreparations. The oracle lists these as runtime-only; it compares the invasion census and preparation, and the roster fallback unit as CountryCounterInputs.first_division. A passing fresh-save oracle therefore needs the coordinated movement oracle and matched invasion screenshots to establish route fidelity.
 
@@ -184,8 +199,9 @@ their existing daily freshness rules. A border war beginning between decision pa
 authored decision token and is not recorded. The ordered subject roster on
 CountryAppearance has no save counterpart: `CDiplomacyStatus::Serialize@140D32BD0`
 does not save its `+0x170` array. Saved relations cannot certify that array's
-order, repeats or raw reference words. Fresh-save agreement, smoke and live
-border-effect text remain unverified until the coordinated game run.
+order, repeats or raw reference words. The coordinated vanilla fresh-save and
+124-hour smoke checks passed for the compared fields. Live border-effect text
+remains a separate acceptance check.
 
 The [country roster oracle](src/oracle/country_rosters.rs) compares owned wargoals
 in diplomacy's saved `available_wargoals` reference order, joining dynamically
@@ -215,3 +231,25 @@ missing metadata and missing captured seeds remain named limitations.
 TrainInventory's allocated trucks and required truck/train caches have no save
 counterpart. The saved truck roster cannot certify the stored allocated total,
 and hourly caches do not establish the operands of a daily logistics balance.
+
+The effect-input oracle compares TimedIdeas' ordered tokens and stored days,
+DecisionRandomItems' complete ordered store, CapturedOperativeReferences' ordered
+full references, OccupationSettings' occupied-country order, DivisionStatus's
+country roster position, Scientists' active truth and CountryLeaderRoles' current
+ideology through signed role-map order. The timed-idea and agency-captured save
+key spellings still need the coordinated fresh-save witness. Advisor tooltip
+keys receive a content membership check; occupied-slot order and refresh history
+are not saved. The MIO policy and neighbor caches, instant-decision console byte,
+captured-reference resolved owner and reserved-country naming operands have named
+save limitations. Ordinary-country original-tag bytes and presence compare
+exactly with the save writer's signed-positive emission gate, independently of
+the generator's dynamic tag gate, including positive originals with empty text.
+The exact raw reference and alias identity, stored original-tag bucket order and
+full physical country-array identity and order are not emitted as save operands
+and retain named limitations. The native country save census omits the reserved
+country, so its original-tag inputs and signed owned-state count remain named
+save limitations.
+A passing synthetic comparison does not certify their live
+values. Run the existing requested-refresh oracle and smoke workflow above for
+the coordinated validation; carried roster samples follow the shared read-hour
+rules.

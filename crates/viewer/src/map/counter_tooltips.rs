@@ -1,5 +1,11 @@
 //! Normal land-counter tooltip: 1418C00D0 -> 140C6AC80. Missing reached inputs are refused.
 
+mod ability;
+mod attrition;
+mod children;
+mod railway_gun;
+mod supply;
+
 use std::{collections::BTreeMap, sync::Arc};
 
 use installed_content::{
@@ -50,6 +56,7 @@ impl Cache {
             && Arc::ptr_eq(vision, held_vision)
             && let Some((held, held_nato, text)) = &self.held
             && *held_nato == nato
+            && held.control == hover.control
             && held.members == hover.members
             && held.timing == hover.timing
             && held.coarse == hover.coarse
@@ -73,7 +80,7 @@ fn refuse(out: &mut Tooltip, line: &str, reason: impl Into<String>) {
         .or_default() += 1;
 }
 
-/// A diagnostics export visits each drawn counter's hover once, without needing a pointer.
+/// A diagnostics export visits each presented counter control, without needing a pointer.
 pub fn count_refusals(tooltips: impl IntoIterator<Item = Tooltip>) -> BTreeMap<String, usize> {
     let mut refused = BTreeMap::new();
     for tooltip in tooltips {
@@ -104,10 +111,16 @@ fn append(
 }
 
 struct Context<'a> {
+    nato: bool,
+    content: Option<&'a document::Content>,
+    dig_in_factor: Result<i64, String>,
     loc: &'a Localisation,
+    recorded_language: &'a str,
     icons: &'a dyn TextIcons,
     names: &'a installed_content::division_names::Database,
     units: &'a Result<units::Content, String>,
+    supply_grace: Result<i32, String>,
+    comms_max_distance: Result<i32, String>,
     frame: &'a DecodedFrame,
     vision: &'a Vision,
     links: Result<&'a [CountryLinkRow], String>,
@@ -133,6 +146,29 @@ impl<'a> Context<'a> {
         rows.binary_search_by_key(&id, |row| row.id)
             .map(|i| &rows[i])
             .map_err(|_| format!("Divisions division {id} is absent"))
+    }
+
+    fn orders_group(&self, handle: u64) -> Result<&'a replay::rows::OrdersGroupRow, String> {
+        let rows = self
+            .frame
+            .complete::<tables::OrdersGroups>()
+            .map_err(|e| e.to_string())?;
+        rows.binary_search_by_key(&handle, |row| row.handle)
+            .map(|index| &rows[index])
+            .map_err(|_| format!("OrdersGroups group {handle} is absent"))
+    }
+
+    fn group_input(
+        &self,
+        handle: u64,
+    ) -> Result<&'a replay::rows::OrdersGroupCounterInputRow, String> {
+        let rows = self
+            .frame
+            .complete::<tables::OrdersGroupCounterInputs>()
+            .map_err(|e| e.to_string())?;
+        rows.binary_search_by_key(&handle, |row| row.group)
+            .map(|index| &rows[index])
+            .map_err(|_| format!("OrdersGroupCounterInputs group {handle} is absent"))
     }
 
     fn status(&self, id: u64) -> Result<&'a DivisionStatusRow, String> {
@@ -226,20 +262,11 @@ impl<'a> Context<'a> {
     }
 
     fn single_header(&self, id: u64) -> Result<String, String> {
-        let rows = self
-            .frame
-            .complete::<tables::LandCombatDivisions>()
-            .map_err(|e| {
-                format!(
-                    "division {id} name operands are unrecorded outside LandCombatDivisions: {e}"
-                )
-            })?;
-        let row = rows.iter().find(|row| row.division == id).ok_or_else(|| {
-            format!("division {id} name operands are unrecorded outside LandCombatDivisions")
-        })?;
-        // Both callers use GetName@140C72F00's +60 cache; the combat reader renders its operands.
+        let status = self.status(id)?;
         let name =
-            crate::combat::details::division_name(row, self.names).map_err(|e| e.to_string())?;
+            dashboard::unit_names::army_name(status, self.loc, self.recorded_language, || {
+                Ok(self.names)
+            })?;
         let division = self.division(id)?;
         // 140C6CCA0 uses the roster country; 1406F3A00 picks its red/yellow control.
         let owner = self.slot(division.roster_owner)?;
@@ -306,34 +333,78 @@ impl<'a> Context<'a> {
         .map(|text| format!("{text}\n"))
     }
 
-    fn hq_gaps(&self, out: &mut Tooltip, candidates: &[u64]) {
+    fn leader_name(&self, handle: u64) -> Result<String, String> {
+        let leaders = self
+            .frame
+            .complete::<tables::UnitLeaders>()
+            .map_err(|e| e.to_string())?;
+        let leader = leaders
+            .iter()
+            .find(|row| u64::from(row.id) << 32 | u64::from(row.reference_type) == handle)
+            .ok_or_else(|| format!("UnitLeaders leader {handle} is absent"))?;
+        dashboard::scripted_text::stored_text(
+            self.loc,
+            self.recorded_language,
+            &leader.inherited_text_b,
+            "unit leader name",
+        )
+    }
+
+    fn hq(&self, out: &mut Tooltip, candidates: &[u64]) {
         for &id in candidates {
-            let result: Result<bool, String> = (|| {
+            let result: Result<
+                (String, Option<&replay::rows::OrdersGroupCounterInputRow>),
+                String,
+            > = (|| {
                 let division = self.division(id)?;
                 if division.orders_group == 0 {
-                    return Ok(false);
+                    return Ok((String::new(), None));
                 }
-                let groups = self
-                    .frame
-                    .complete::<tables::OrdersGroups>()
-                    .map_err(|e| e.to_string())?;
-                let group = groups
-                    .binary_search_by_key(&division.orders_group, |row| row.handle)
-                    .map(|i| &groups[i])
-                    .map_err(|_| {
-                        format!("OrdersGroups group {} is absent", division.orders_group)
-                    })?;
-                Ok(group.leader != 0 && group.hq_provider == id)
+                let group = self.orders_group(division.orders_group)?;
+                if group.leader == 0 || group.hq_provider != id {
+                    return Ok((String::new(), None));
+                }
+                let input = self.group_input(group.handle)?;
+                let distance = input
+                    .hq_distance
+                    .require("OrdersGroupCounterInputs.hq_distance")?
+                    .ok_or("OrdersGroupCounterInputs.hq_distance was unreadable when recorded")?;
+                let maximum = self.comms_max_distance.as_ref().map_err(Clone::clone)?;
+                let name = self.leader_name(group.leader)?;
+                let key = if distance >= *maximum {
+                    "UNIT_LEADER_FRONT_MAX_DISTANCE_TOOLTIP"
+                } else if distance < 1 {
+                    "UNIT_LEADER_TOOLTIP"
+                } else {
+                    "UNIT_LEADER_FRONT_DISTANCE_TOOLTIP"
+                };
+                let text = localise(
+                    self.loc,
+                    key,
+                    &[
+                        ("NAME", Arg::Text(&name)),
+                        ("DISTANCE", Arg::Int32(distance)),
+                    ],
+                )?;
+                Ok((text, Some(input)))
             })();
             match result {
-                Ok(true) => refuse(
-                    out,
-                    "HQ leader",
-                    format!(
-                        "division {id} leader distance (COrdersGroup+1C4, 1418C00D0) is unrecorded"
-                    ),
-                ),
-                Ok(false) => (),
+                Ok((text, Some(input))) if !text.is_empty() => {
+                    if !out.title.is_empty() && !out.title.ends_with('\n') {
+                        out.title.push('\n');
+                    }
+                    append(out, self, false, "HQ leader", Ok(text));
+                    if input.withdrawing != 0 {
+                        let suffix = input.leader_enroute_days
+                            .require("OrdersGroupCounterInputs.leader_enroute_days")
+                            .and_then(|days| days.ok_or_else(|| "OrdersGroupCounterInputs.leader_enroute_days was unreadable when recorded".to_owned()))
+                            .and_then(|days| localise(self.loc, if days == 1 {
+                                "UNIT_LEADER_WITHDRAWING_SUFFIX_SINGULAR"
+                            } else { "UNIT_LEADER_WITHDRAWING_SUFFIX" }, &[("DAYS", Arg::Int32(days))]));
+                        append(out, self, false, "HQ leader withdrawing", suffix);
+                    }
+                }
+                Ok(_) => (),
                 Err(reason) => refuse(out, "HQ leader", reason),
             }
         }
@@ -446,34 +517,101 @@ fn statistics(
     Ok(text)
 }
 
-fn next_hours(
-    members: &[(u64, u32, &DivisionMovementRow, &Timing)],
-) -> Result<Option<i32>, String> {
+fn next_hours(members: &[(u64, u32, u32, &Timing)]) -> Result<Option<i32>, String> {
     let Some(&(id, province, _, timing)) = members.first() else {
         return Ok(None);
     };
     let kind = timing
         .kind
-        .ok_or_else(|| format!("division {id} stack kind is unavailable"))?;
+        .ok_or_else(|| format!("unit {id} stack kind is unavailable"))?;
     let mut minimum = None;
-    for &(id, location, movement, timing) in members {
-        if location != province || movement.path_total as i32 <= 0 {
+    for &(id, location, path_total, timing) in members {
+        if location != province || path_total as i32 <= 0 {
             return Ok(None);
         }
         let other = timing
             .kind
-            .ok_or_else(|| format!("division {id} stack kind is unavailable"))?;
+            .ok_or_else(|| format!("unit {id} stack kind is unavailable"))?;
         if other != kind {
             return Ok(None);
         }
         let remaining = timing
             .next
-            .ok_or_else(|| format!("division {id} first-edge ETA is unavailable"))?;
+            .ok_or_else(|| format!("unit {id} first-edge ETA is unavailable"))?;
         // 140BE8C70 -> 140BECF90 -> 14047BDE0 ceilings each first edge.
         let hours = engine::cunit::eta_hours(remaining) as i32;
         minimum = Some(minimum.map_or(hours, |previous: i32| previous.min(hours)));
     }
     Ok(minimum.filter(|&hours| hours > 0))
+}
+
+fn next_location(loc: &Localisation, hours: Option<i32>) -> Result<String, String> {
+    let Some(hours) = hours else {
+        return Ok(String::new());
+    };
+    let text = if hours / 24 == 0 {
+        localise(
+            loc,
+            "UNIT_COUNTER_MOVE_HOURS",
+            &[("HOURS", Arg::Int32(hours))],
+        )?
+    } else {
+        localise(
+            loc,
+            "UNIT_COUNTER_MOVE_DAYS_HOURS",
+            &[
+                ("DAYS", Arg::Int32(hours / 24)),
+                ("HOURS", Arg::Int32(hours % 24)),
+            ],
+        )?
+    };
+    Ok(format!("{text}\n\n"))
+}
+
+fn supply(
+    context: &Context<'_>,
+    known: &[(&DivisionRow, &DivisionStatusRow)],
+) -> Result<String, String> {
+    // 140C6C3E0 uses one getter; 140C6A690 averages known members with fixed5 division.
+    let values = known
+        .iter()
+        .map(|(_, status)| {
+            let historical = || {
+                "maximum and remaining supply grace (CArmy+600/+610, 140C78780) are unrecorded"
+                    .to_owned()
+            };
+            let maximum = *status
+                .supply_grace_maximum
+                .require("DivisionStatus.supply_grace_maximum")
+                .map_err(|_| historical())?;
+            if maximum < 1 {
+                return Ok(0);
+            }
+            let remaining = *status
+                .supply_grace_remaining
+                .require("DivisionStatus.supply_grace_remaining")
+                .map_err(|_| historical())?;
+            let grace = context.supply_grace.as_ref().map_err(Clone::clone)?;
+            Ok(counter_status::effective_supply(
+                status.supply_ratio,
+                maximum,
+                remaining,
+                *grace,
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let Some(value) = counter_inputs::member_mean(values) else {
+        return Ok(String::new());
+    };
+    if value >= counter_status::FIXED {
+        return Ok(String::new());
+    }
+    localise(
+        context.loc,
+        "ARMY_UNIT_SUPPLY",
+        &[("VALUE", Arg::Fixed5(value))],
+    )
+    .map(|text| format!("{text}\n"))
 }
 
 pub fn build(
@@ -484,10 +622,16 @@ pub fn build(
     nato: bool,
 ) -> Tooltip {
     let context = Context {
+        nato,
+        content: Some(content),
+        dig_in_factor: content.counters.dig_in_factor.clone(),
         loc: &content.names.localisation,
+        recorded_language: &content.recorded_language,
         icons: &content.icons.combat,
         names: &content.icons.combat.division_names,
         units: &content.province_hover.units,
+        supply_grace: content.counters.supply_grace.clone(),
+        comms_max_distance: content.counters.comms_max_distance.clone(),
         frame,
         vision,
         links: frame
@@ -498,13 +642,13 @@ pub fn build(
 }
 
 fn build_context(context: &Context<'_>, input: &CounterHover, nato: bool) -> Tooltip {
+    if let Some(out) = children::specific(context, input) {
+        return out;
+    }
     let mut out = Tooltip::default();
     if input.railway_gun {
-        refuse(
-            &mut out,
-            "railway gun",
-            "railway-gun branch of 1418C00D0 is not ported",
-        );
+        out = railway_gun::build(context, input);
+        children::append(context, input, &mut out);
         return out;
     }
     if input.members.is_empty() {
@@ -528,7 +672,7 @@ fn build_context(context: &Context<'_>, input: &CounterHover, nato: bool) -> Too
                     "intel header",
                     counts(context.loc, known.len() as i32, unknown, true),
                 );
-                context.hq_gaps(&mut out, &known);
+                context.hq(&mut out, &known);
             }
             Err(reason) => refuse(&mut out, "intel header/stat eligibility", reason),
         }
@@ -570,6 +714,9 @@ fn build_context(context: &Context<'_>, input: &CounterHover, nato: bool) -> Too
                 );
             }
             let next = (|| {
+                if input.members.len() != input.timing.len() {
+                    return Err("division member timing is unavailable".into());
+                }
                 let members = input
                     .members
                     .iter()
@@ -577,29 +724,10 @@ fn build_context(context: &Context<'_>, input: &CounterHover, nato: bool) -> Too
                     .map(|(&id, timing)| {
                         let division = context.division(id)?;
                         let movement = context.movement(id)?;
-                        Ok((id, division.province, movement, timing))
+                        Ok((id, division.province, movement.path_total, timing))
                     })
                     .collect::<Result<Vec<_>, String>>()?;
-                let Some(hours) = next_hours(&members)? else {
-                    return Ok(String::new());
-                };
-                let text = if hours / 24 == 0 {
-                    localise(
-                        context.loc,
-                        "UNIT_COUNTER_MOVE_HOURS",
-                        &[("HOURS", Arg::Int32(hours))],
-                    )?
-                } else {
-                    localise(
-                        context.loc,
-                        "UNIT_COUNTER_MOVE_DAYS_HOURS",
-                        &[
-                            ("DAYS", Arg::Int32(hours / 24)),
-                            ("HOURS", Arg::Int32(hours % 24)),
-                        ],
-                    )?
-                };
-                Ok(format!("{text}\n\n"))
+                next_location(context.loc, next_hours(&members)?)
             })();
             append(&mut out, context, true, "next location", next);
         }
@@ -683,16 +811,16 @@ fn build_context(context: &Context<'_>, input: &CounterHover, nato: bool) -> Too
                     context,
                     true,
                     "organisation/strength",
-                    values.and_then(|values| {
-                        statistics(context.loc, input.members.len() == 1, &values)
+                    values.as_ref().map_err(Clone::clone).and_then(|values| {
+                        statistics(context.loc, input.members.len() == 1, values)
                     }),
                 );
-                // 140C78780 first returns zero when max grace<=0;
-                // no received ratio decides this missing gate.
-                refuse(
+                append(
                     &mut out,
+                    context,
+                    true,
                     "supply",
-                    "maximum and remaining supply grace (CArmy+600/+610, 140C78780) are unrecorded",
+                    values.and_then(|values| supply(context, &values)),
                 );
             }
             let composition = prepared.and_then(|prepared| {
@@ -711,20 +839,11 @@ fn build_context(context: &Context<'_>, input: &CounterHover, nato: bool) -> Too
         }
         Err(reason) => refuse(&mut out, "intel header/stat eligibility", reason),
     }
-    context.hq_gaps(&mut out, &[first]);
-    if let Ok(first) = context.division(first)
-        && first.province != 0
-        && input.members.iter().all(|&id| {
-            context
-                .division(id)
-                .is_ok_and(|division| division.province == first.province)
-        })
-    {
-        refuse(
-            &mut out,
-            "selection hints",
-            "native selected-unit history and click actions (141E6AB00 -> 140C72F60) are unavailable in replay",
-        );
+    context.hq(&mut out, &[first]);
+    children::append(context, input, &mut out);
+    // Header fragments terminate their lines; the painter supplies the newline before its divider.
+    if !out.body.is_empty() && out.title.ends_with('\n') {
+        out.title.pop();
     }
     out
 }
@@ -735,16 +854,16 @@ mod tests {
     use crate::map::{test_frame, test_put as put};
     use replay::rows::{
         ClockRow, CountryAppearanceRow, CountryLinkRow, CountryRow, DivisionTemplateIconRow,
-        DivisionTemplateRow, LandCombatDivisionRow, LexicalTokenRow, PoliticsRow, TableRows,
-        TemplateSubunit,
+        DivisionTemplateRow, LandCombatDivisionRow, LexicalTokenRow, NameOperands, PoliticsRow,
+        Recorded, TableRows, TemplateSubunit,
     };
-    use std::collections::BTreeMap;
 
     fn loc() -> Localisation {
         [
             ("CURRENT_ORGANIZATION", "org $CUR|0$/$MAX|0$"),
             ("UNIT_AVERAGE_ORG", "avg org $VALUE|%0$"),
             ("UNIT_AVERAGE_STR", "str $VALUE|%0$"),
+            ("ARMY_UNIT_SUPPLY", "supply $VALUE|%0$"),
             ("UNKNOWN_ARMY_DESC", "hidden $UNKNOWN$"),
             ("KNOWN_ARMY_DESC", "known $KNOWN$"),
             ("COARSE_COUNTER_UNKNOWN_UNITS", "unknown"),
@@ -827,6 +946,23 @@ mod tests {
                         maximum_organisation: 2_000_000,
                         maximum_hit_points: 1_000_000,
                         strength_factor: 50_000,
+                        // This baseline exercises historical missing-grace refusals;
+                        // a recorded zero maximum instead proves native zero supply.
+                        supply_grace_maximum: Recorded::NotRecorded,
+                        supply_grace_remaining: Recorded::NotRecorded,
+                        name: if named {
+                            Recorded::Value(Some(b"Guard".to_vec()))
+                        } else {
+                            Recorded::NotRecorded
+                        },
+                        naming: if named {
+                            Recorded::Value(Some(NameOperands {
+                                custom: b"Guard".to_vec(),
+                                ..Default::default()
+                            }))
+                        } else {
+                            Recorded::NotRecorded
+                        },
                         ..Default::default()
                     })
                     .collect(),
@@ -846,18 +982,7 @@ mod tests {
                     .collect(),
             ),
         );
-        put(
-            &mut frame,
-            TableRows::LandCombatDivisions(if named {
-                vec![LandCombatDivisionRow {
-                    division: 1,
-                    name_custom: b"Guard".to_vec(),
-                    ..Default::default()
-                }]
-            } else {
-                vec![]
-            }),
-        );
+        put(&mut frame, TableRows::LandCombatDivisions(vec![]));
         put(
             &mut frame,
             TableRows::DivisionTemplates(
@@ -918,10 +1043,16 @@ mod tests {
         let units = units::Content::load(&defines, Ok(&subunits));
         let names = installed_content::division_names::Database::default();
         let context = Context {
+            nato: false,
+            content: None,
+            dig_in_factor: Err("unused".into()),
             loc: &loc,
+            recorded_language: &loc.language,
             icons: &crate::combat::binding::NoIcons,
             names: &names,
             units: &units,
+            supply_grace: Ok(4),
+            comms_max_distance: Ok(100),
             frame,
             vision,
             links: frame
@@ -938,6 +1069,7 @@ mod tests {
         build_context(
             &context,
             &CounterHover {
+                control: crate::map::counters::CounterControl::Normal,
                 rect: [0.0; 4],
                 members: members.to_vec().into(),
                 coarse,
@@ -952,19 +1084,207 @@ mod tests {
     }
 
     #[test]
+    fn status_cached_name_is_authoritative_even_when_combat_has_a_name() {
+        let mut frame = frame(true);
+        put(
+            &mut frame,
+            TableRows::LandCombatDivisions(vec![LandCombatDivisionRow {
+                division: 1,
+                name_custom: b"Stale combat name".to_vec(),
+                ..Default::default()
+            }]),
+        );
+        let vision = Vision::sharing(1, []);
+        let named = tooltip(&frame, &[1], false, false, &vision);
+        assert!(named.title.contains("Guard"));
+        assert!(!named.title.contains("Stale"));
+        let mut status = frame.complete::<tables::DivisionStatus>().unwrap().to_vec();
+        status[0].naming = Recorded::Value(None);
+        put(&mut frame, TableRows::DivisionStatus(status.clone()));
+        assert!(
+            tooltip(&frame, &[1], false, false, &vision)
+                .title
+                .contains("Guard")
+        );
+        // A current cache failure cannot substitute usable generator operands.
+        status[0].name = Recorded::Value(None);
+        status[0].naming = Recorded::Value(Some(NameOperands {
+            custom: b"Generator name".to_vec(),
+            ..Default::default()
+        }));
+        put(&mut frame, TableRows::DivisionStatus(status));
+        assert!(
+            tooltip(&frame, &[1], false, false, &vision)
+                .title
+                .is_empty()
+        );
+        for naming in [
+            Recorded::NotRecorded,
+            Recorded::Value(None),
+            Recorded::Value(Some(NameOperands {
+                custom: vec![0xff],
+                ..Default::default()
+            })),
+        ] {
+            let mut status = frame.complete::<tables::DivisionStatus>().unwrap().to_vec();
+            status[0].name = Recorded::NotRecorded;
+            status[0].naming = naming;
+            put(&mut frame, TableRows::DivisionStatus(status));
+            let out = tooltip(&frame, &[1], false, false, &vision);
+            assert!(out.title.is_empty());
+            assert_eq!(
+                out.refused
+                    .iter()
+                    .filter(|(reason, _)| reason.starts_with("counter division name:"))
+                    .map(|(_, count)| count)
+                    .sum::<usize>(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn programmatic_status_names_respect_the_recording_language() {
+        let vision = Vision::sharing(1, []);
+        let mut frame = frame(true);
+        let mut status = frame.complete::<tables::DivisionStatus>().unwrap().to_vec();
+        status[0].name = Recorded::Value(Some(b"Stored Guard".to_vec()));
+        status[0].naming = Recorded::Value(Some(NameOperands {
+            custom: b"Stored Guard".to_vec(),
+            programmatic: 1,
+            ..Default::default()
+        }));
+        put(&mut frame, TableRows::DivisionStatus(status.clone()));
+        let mut loc = loc();
+        loc.language = "french".into();
+        let names = installed_content::division_names::Database::default();
+        let units = Err("synthetic composition is unavailable".into());
+        let build = |frame: &DecodedFrame, recorded_language| {
+            let context = Context {
+                nato: false,
+                content: None,
+                dig_in_factor: Err("unused".into()),
+                loc: &loc,
+                recorded_language,
+                icons: &crate::combat::binding::NoIcons,
+                names: &names,
+                units: &units,
+                supply_grace: Ok(4),
+                comms_max_distance: Ok(100),
+                frame,
+                vision: &vision,
+                links: frame
+                    .complete::<tables::CountryLinks>()
+                    .map_err(|e| e.to_string()),
+            };
+            build_context(
+                &context,
+                &CounterHover {
+                    control: crate::map::counters::CounterControl::Normal,
+                    rect: [0.0; 4],
+                    members: vec![1].into(),
+                    timing: vec![Timing {
+                        next: None,
+                        kind: None,
+                    }]
+                    .into(),
+                    remaining: None,
+                    ours: true,
+                    coarse: false,
+                    hidden: false,
+                    railway_gun: false,
+                },
+                false,
+            )
+        };
+        let foreign = build(&frame, "english");
+        assert!(foreign.title.is_empty());
+        assert_eq!(
+            foreign
+                .refused
+                .iter()
+                .filter(|(reason, _)| reason.starts_with("counter division name:")
+                    && reason.contains("stored in english"))
+                .map(|(_, count)| count)
+                .sum::<usize>(),
+            1,
+        );
+        assert!(build(&frame, "french").title.contains("Stored Guard"));
+        if let Recorded::Value(Some(naming)) = &mut status[0].naming {
+            naming.programmatic = 0;
+        }
+        put(&mut frame, TableRows::DivisionStatus(status));
+        assert!(build(&frame, "english").title.contains("Stored Guard"));
+    }
+
+    #[test]
+    fn supply_line_uses_grace_and_known_stack_average_and_refuses_historical_gaps() {
+        let vision = Vision::sharing(1, []);
+        let mut frame = frame(true);
+        let mut status = frame.complete::<tables::DivisionStatus>().unwrap().to_vec();
+        for row in &mut status {
+            row.supply_ratio = 20_000;
+            row.supply_grace_maximum = Recorded::Value(400_000);
+            row.supply_grace_remaining = Recorded::Value(200_000);
+        }
+        status[1].supply_ratio = 100_000;
+        put(&mut frame, TableRows::DivisionStatus(status.clone()));
+        let single = tooltip(&frame, &[1], false, false, &vision);
+        assert!(single.body.contains("str 50%\nsupply 50%\n"));
+        let stack = tooltip(&frame, &[1, 2], false, false, &vision);
+        assert!(stack.body.contains("supply 75%\n"));
+        assert!(
+            !single
+                .refused
+                .keys()
+                .any(|key| key.starts_with("counter supply:"))
+        );
+        assert!(
+            !stack
+                .refused
+                .keys()
+                .any(|key| key.starts_with("counter supply:"))
+        );
+        status[0].supply_grace_remaining = Recorded::Value(400_000);
+        put(&mut frame, TableRows::DivisionStatus(status.clone()));
+        for members in [&[1][..], &[1, 2][..]] {
+            let full = tooltip(&frame, members, false, false, &vision);
+            assert!(!full.body.contains("supply "));
+            assert!(
+                !full
+                    .refused
+                    .keys()
+                    .any(|key| key.starts_with("counter supply:"))
+            );
+        }
+        status[0].supply_grace_remaining = Recorded::NotRecorded;
+        put(&mut frame, TableRows::DivisionStatus(status.clone()));
+        let historical = tooltip(&frame, &[1], false, false, &vision);
+        let reason = "counter supply: maximum and remaining supply grace \
+                      (CArmy+600/+610, 140C78780) are unrecorded";
+        assert!(!historical.body.contains("supply "));
+        assert_eq!(historical.refused[reason], 1);
+        status[0].supply_grace_maximum = Recorded::Value(0);
+        put(&mut frame, TableRows::DivisionStatus(status));
+        let no_grace = tooltip(&frame, &[1], false, false, &vision);
+        assert!(no_grace.body.contains("supply 0%\n"));
+        assert!(!no_grace.refused.contains_key(reason));
+    }
+
+    #[test]
     fn single_tooltip_orders_native_lines_without_a_date_or_unrecorded_name() {
         let vision = Vision::sharing(1, []);
         let named = tooltip(&frame(true), &[1], false, false, &vision);
         assert_eq!(
             named.title,
-            "unit \u{11}HGuard\u{11}! (\u{11}YAlpha\u{11}!)\n"
+            "unit \u{11}HGuard\u{11}! (\u{11}YAlpha\u{11}!)"
         );
         assert_eq!(
             named.body,
             "arrival 1d 5h\nnext 2h\n\norg 10/20\nstr 50%\n2\u{13}unit_Foot_icon_small|1 "
         );
-        assert_eq!(named.refused.len(), 3);
-        assert_eq!(named.refused.values().copied().sum::<usize>(), 3);
+        assert_eq!(named.refused.len(), 2);
+        assert_eq!(named.refused.values().copied().sum::<usize>(), 2);
         assert_eq!(
             named
                 .refused
@@ -992,8 +1312,7 @@ mod tests {
                 .map(|(_, &count)| count),
             Some(1)
         );
-        let reason = "counter division name: division 1 name operands are unrecorded \
-                      outside LandCombatDivisions";
+        let reason = "counter division name: DivisionStatus.naming not recorded";
         crate::app::tests::assert_diagnostics(
             || crate::app::tooltip_warning_lines(&unnamed.refused).collect(),
             &[format!("Tooltip: 1 × {reason}")],
@@ -1008,7 +1327,7 @@ mod tests {
         let frame = frame(false);
         let vision = Vision::sharing(1, []);
         let detailed = tooltip(&frame, &[1, 2], false, false, &vision);
-        assert_eq!(detailed.title, "1 Second Alpha\n1 First Alpha\n");
+        assert_eq!(detailed.title, "1 Second Alpha\n1 First Alpha");
         assert_eq!(
             detailed.body,
             "arrival 1d 5h\nnext 2h\n\navg org 50%\nstr 50%\n4\u{13}unit_Foot_icon_small|1 "
@@ -1042,23 +1361,30 @@ mod tests {
     }
 
     #[test]
-    fn railway_gun_hovers_refuse_their_branch_once_before_division_inputs() {
+    fn railway_gun_hovers_name_the_missing_census_before_division_inputs() {
         let frame = test_frame(600);
         let loc = loc();
         let vision = Vision::sharing(1, []);
         let names = installed_content::division_names::Database::default();
         let units = Err("unused".into());
         let context = Context {
+            nato: false,
+            content: None,
+            dig_in_factor: Err("unused".into()),
             loc: &loc,
+            recorded_language: &loc.language,
             icons: &crate::combat::binding::NoIcons,
             names: &names,
             units: &units,
+            supply_grace: Ok(4),
+            comms_max_distance: Ok(100),
             frame: &frame,
             vision: &vision,
             links: Err("unavailable".into()),
         };
         for coarse in [false, true] {
             let hover = CounterHover {
+                control: crate::map::counters::CounterControl::Normal,
                 rect: [0.0; 4],
                 members: vec![1].into(),
                 timing: vec![].into(),
@@ -1071,20 +1397,299 @@ mod tests {
             let out = build_context(&context, &hover, false);
             assert_eq!(out.title, "");
             assert_eq!(out.body, "");
-            assert_eq!(
-                out.refused,
-                BTreeMap::from([(
-                    "counter railway gun: railway-gun branch of 1418C00D0 is not ported".into(),
-                    1
-                )])
-            );
-            let refused = count_refusals([out]);
-            crate::app::tests::assert_diagnostics(
-                || crate::app::tooltip_warning_lines(&refused).collect(),
-                &["Tooltip: 1 × counter railway gun: railway-gun branch of 1418C00D0 is not ported"
-                    .into()],
-            );
+            assert_eq!(out.refused.len(), 1);
+            let (reason, count) = out.refused.iter().next().unwrap();
+            assert!(reason.contains("RailwayGunCounterInputs"), "{reason}");
+            assert_eq!(*count, 1);
         }
+    }
+
+    fn railway_tooltip(
+        frame: &DecodedFrame,
+        members: &[u64],
+        coarse: bool,
+        vision: &Vision,
+        loc: &Localisation,
+    ) -> Tooltip {
+        let names = installed_content::division_names::Database::default();
+        let units = Err("unused division content".into());
+        let context = Context {
+            nato: false,
+            content: None,
+            dig_in_factor: Err("unused".into()),
+            loc,
+            recorded_language: "english",
+            icons: &crate::combat::binding::NoIcons,
+            names: &names,
+            units: &units,
+            supply_grace: Err("unused division supply".into()),
+            comms_max_distance: Err("unused HQ".into()),
+            frame,
+            vision,
+            links: frame
+                .complete::<tables::CountryLinks>()
+                .map_err(|e| e.to_string()),
+        };
+        build_context(
+            &context,
+            &CounterHover {
+                control: crate::map::counters::CounterControl::Normal,
+                rect: [0.0; 4],
+                members: members.to_vec().into(),
+                timing: vec![
+                    Timing {
+                        next: Some(100_001),
+                        kind: Some(17)
+                    };
+                    members.len()
+                ]
+                .into(),
+                coarse,
+                hidden: false,
+                railway_gun: true,
+                remaining: None,
+                ours: true,
+            },
+            false,
+        )
+    }
+
+    fn railway_loc() -> Localisation {
+        let mut loc: Localisation = [
+            ("AAA", "Alpha"),
+            ("BBB", "Beta"),
+            ("RAILWAY_GUN_HEADER_SINGLE", "gun $NAME$ $COUNTRY$"),
+            ("RAILWAY_GUN_HEADER_MULTIPLE", "$COUNT$ guns $COUNTRY$"),
+            ("UNKNOWN_RAILWAY_GUN_DESC", "hidden guns\n"),
+            ("KNOWN_RAILWAY_GUN_DESC", "known $KNOWN$\n"),
+            ("COARSE_COUNTER_UNKNOWN_UNITS", "unknown"),
+            ("COARSE_COUNTER_KNOWN_UNITS", "partly known"),
+            ("COARSE_COUNTER_RAILWAY_GUNS_DESC", "$RAILWAY_GUNS$ guns"),
+            ("UNIT_AVERAGE_STR", "str $VALUE|%0$"),
+            ("UNIT_COUNTER_MOVE_HOURS", "next $HOURS$h"),
+            ("UNIT_COUNTER_MOVE_DAYS_HOURS", "next $DAYS$d $HOURS$h"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value.into()))
+        .collect();
+        loc.language = "english".into();
+        loc
+    }
+
+    fn railway_row(
+        gun: u64,
+        name: &[u8],
+        strength: i64,
+    ) -> replay::rows::RailwayGunCounterInputRow {
+        replay::rows::RailwayGunCounterInputRow {
+            gun,
+            roster_owner: 11,
+            province: 3,
+            name: Recorded::Value(Some(name.to_vec())),
+            current_strength: strength,
+            maximum_strength: 10,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn railway_gun_headers_and_strength_use_their_own_recorded_rows() {
+        let mut frame = frame(false);
+        *frame.tables[replay::rows::TableId::Divisions.index()] =
+            replay::frame::TableView::Unavailable {
+                reason: "unused division census".into(),
+            };
+        put(
+            &mut frame,
+            TableRows::RailwayGunCounterInputs(vec![
+                railway_row(1, "Gün #1".as_bytes(), 5),
+                railway_row(2, b"Second", 10),
+            ]),
+        );
+        let loc = railway_loc();
+        let vision = Vision::sharing(1, []);
+        let single = railway_tooltip(&frame, &[1], false, &vision, &loc);
+        assert_eq!(
+            (single.title.as_str(), single.body.as_str()),
+            ("gun Gün #1 Alpha", "str 50%")
+        );
+        assert!(single.refused.is_empty(), "{:?}", single.refused);
+        let multiple = railway_tooltip(&frame, &[2, 1], false, &vision, &loc);
+        assert_eq!(
+            (multiple.title.as_str(), multiple.body.as_str()),
+            ("2 guns Alpha", "str 75%")
+        );
+        assert!(multiple.refused.is_empty(), "{:?}", multiple.refused);
+        let coarse = railway_tooltip(&frame, &[1, 2], true, &vision, &loc);
+        assert_eq!(
+            (coarse.title.as_str(), coarse.body.as_str()),
+            ("2 guns\n", "")
+        );
+        assert!(coarse.refused.is_empty(), "{:?}", coarse.refused);
+    }
+
+    #[test]
+    fn railway_gun_mixed_intel_keeps_first_member_name_and_only_known_strength() {
+        let mut frame = frame(false);
+        let mut first = railway_row(1, b"Foreign", 1);
+        first.roster_owner = 22;
+        put(
+            &mut frame,
+            TableRows::RailwayGunCounterInputs(vec![first, railway_row(2, b"Known", 9)]),
+        );
+        let mut countries = frame.complete::<tables::Countries>().unwrap().to_vec();
+        countries.push(CountryRow {
+            id: 22,
+            canonical_slot: 2,
+            tag: b"BBB".to_vec(),
+            ..Default::default()
+        });
+        put(&mut frame, TableRows::Countries(countries));
+        put(
+            &mut frame,
+            TableRows::CountryLinks(vec![
+                CountryLinkRow {
+                    id: 11,
+                    canonical_slot: 1,
+                },
+                CountryLinkRow {
+                    id: 22,
+                    canonical_slot: 2,
+                },
+            ]),
+        );
+        put(
+            &mut frame,
+            TableRows::CountryAppearance(vec![
+                CountryAppearanceRow {
+                    country: 11,
+                    ..Default::default()
+                },
+                CountryAppearanceRow {
+                    country: 22,
+                    ..Default::default()
+                },
+            ]),
+        );
+        put(
+            &mut frame,
+            TableRows::Politics(vec![
+                PoliticsRow {
+                    country: 11,
+                    ..Default::default()
+                },
+                PoliticsRow {
+                    country: 22,
+                    ..Default::default()
+                },
+            ]),
+        );
+        let loc = railway_loc();
+        let vision = Vision::sharing(1, []);
+        let mixed = railway_tooltip(&frame, &[1, 2], false, &vision, &loc);
+        assert_eq!(
+            (mixed.title.as_str(), mixed.body.as_str()),
+            ("hidden guns\nknown 1\ngun Foreign Beta", "str 90%")
+        );
+        assert!(mixed.refused.is_empty(), "{:?}", mixed.refused);
+        let coarse = railway_tooltip(&frame, &[1, 2], true, &vision, &loc);
+        assert_eq!(
+            (coarse.title.as_str(), coarse.body.as_str()),
+            ("partly known\n1 guns\n", "")
+        );
+        let unknown = railway_tooltip(&frame, &[1], false, &vision, &loc);
+        assert_eq!(
+            (unknown.title.as_str(), unknown.body.as_str()),
+            ("hidden guns\n", "")
+        );
+        assert!(unknown.refused.is_empty(), "{:?}", unknown.refused);
+    }
+
+    #[test]
+    fn railway_gun_name_failures_preserve_strength_and_empty_names_cross_languages() {
+        let mut frame = frame(false);
+        let vision = Vision::sharing(1, []);
+        let mut loc = railway_loc();
+        for name in [
+            Recorded::NotRecorded,
+            Recorded::Value(None),
+            Recorded::Value(Some(vec![0xff])),
+        ] {
+            let mut row = railway_row(1, b"unused", 5);
+            row.name = name;
+            put(&mut frame, TableRows::RailwayGunCounterInputs(vec![row]));
+            let text = railway_tooltip(&frame, &[1], false, &vision, &loc);
+            assert_eq!((text.title.as_str(), text.body.as_str()), ("", "str 50%"));
+            assert_eq!(text.refused.values().copied().sum::<usize>(), 1);
+        }
+        put(
+            &mut frame,
+            TableRows::RailwayGunCounterInputs(vec![railway_row(1, b"Stored", 5)]),
+        );
+        loc.language = "french".into();
+        let foreign = railway_tooltip(&frame, &[1], false, &vision, &loc);
+        assert_eq!(foreign.body, "str 50%");
+        assert!(foreign.title.is_empty());
+        assert!(
+            foreign
+                .refused
+                .keys()
+                .any(|key| key.contains("stored in english"))
+        );
+        put(
+            &mut frame,
+            TableRows::RailwayGunCounterInputs(vec![railway_row(1, b"", 5)]),
+        );
+        let empty = railway_tooltip(&frame, &[1], false, &vision, &loc);
+        assert_eq!(empty.title, "gun  Alpha");
+        assert!(empty.refused.is_empty(), "{:?}", empty.refused);
+    }
+
+    #[test]
+    fn railway_gun_movement_precedes_strength_and_checks_only_first_target() {
+        let mut frame = frame(false);
+        let vision = Vision::sharing(1, []);
+        let loc = railway_loc();
+        let mut first = railway_row(1, b"First", 5);
+        first.ordinary_path = vec![4];
+        let mut other = railway_row(2, b"Other", 10);
+        other.ordinary_path = vec![4];
+        other.target = 4;
+        put(
+            &mut frame,
+            TableRows::RailwayGunCounterInputs(vec![first.clone(), other.clone()]),
+        );
+        let moving = railway_tooltip(&frame, &[1, 2], false, &vision, &loc);
+        assert_eq!(moving.body, "next 2h\n\nstr 75%");
+        assert_eq!(moving.refused.len(), 1);
+        assert!(
+            moving
+                .refused
+                .keys()
+                .next()
+                .unwrap()
+                .contains("client-UI path-cache")
+        );
+        other.ordinary_path.clear();
+        put(
+            &mut frame,
+            TableRows::RailwayGunCounterInputs(vec![first.clone(), other.clone()]),
+        );
+        let stationary_member = railway_tooltip(&frame, &[1, 2], false, &vision, &loc);
+        assert_eq!(stationary_member.body, "str 75%");
+        assert_eq!(stationary_member.refused.len(), 1);
+        first.target = 4;
+        put(
+            &mut frame,
+            TableRows::RailwayGunCounterInputs(vec![first, other]),
+        );
+        let targeted_first = railway_tooltip(&frame, &[1, 2], false, &vision, &loc);
+        assert_eq!(targeted_first.body, "str 75%");
+        assert!(
+            targeted_first.refused.is_empty(),
+            "{:?}",
+            targeted_first.refused
+        );
     }
 
     #[test]
@@ -1141,10 +1746,16 @@ mod tests {
         let names = installed_content::division_names::Database::default();
         let units = Err("unused".into());
         let context = Context {
+            nato: false,
+            content: None,
+            dig_in_factor: Err("unused".into()),
             loc: &loc,
+            recorded_language: &loc.language,
             icons: &crate::combat::binding::NoIcons,
             names: &names,
             units: &units,
+            supply_grace: Ok(4),
+            comms_max_distance: Ok(100),
             frame: &frame,
             vision: &vision,
             links: frame
@@ -1170,12 +1781,12 @@ mod tests {
                 .map(|(_, &count)| count),
             Some(1)
         );
-        assert_eq!(detailed.refused.len(), 3);
+        assert_eq!(detailed.refused.len(), 2);
         assert!(
             detailed
                 .refused
                 .keys()
-                .any(|key| key.contains("selection hints"))
+                .all(|key| !key.contains("selection hints"))
         );
         let coarse = tooltip(&frame, &[1], true, false, &vision);
         assert_eq!(coarse.title, "");
@@ -1289,10 +1900,16 @@ mod tests {
                 loc()
             };
             let context = Context {
+                nato: false,
+                content: None,
+                dig_in_factor: Err("unused".into()),
                 loc: &loc,
+                recorded_language: &loc.language,
                 icons: &crate::combat::binding::NoIcons,
                 names: &names,
                 units: &units,
+                supply_grace: Ok(4),
+                comms_max_distance: Ok(100),
                 frame: &frame,
                 vision: &vision,
                 links: frame
@@ -1300,6 +1917,7 @@ mod tests {
                     .map_err(|e| e.to_string()),
             };
             let hover = CounterHover {
+                control: crate::map::counters::CounterControl::Normal,
                 rect: [0.0; 4],
                 members: vec![1].into(),
                 timing: vec![Timing {
@@ -1361,17 +1979,8 @@ mod tests {
 
     #[test]
     fn next_location_minimum_requires_members_location_kind_and_routes_to_agree() {
-        let first = DivisionMovementRow {
-            path_total: 1,
-            path: vec![2],
-            ..Default::default()
-        };
-        let mut second = DivisionMovementRow {
-            path_total: 1,
-            path: vec![9],
-            target: 9,
-            ..Default::default()
-        };
+        let first = 1;
+        let mut second = 1;
         let a = Timing {
             next: Some(100_001),
             kind: Some(2),
@@ -1381,28 +1990,28 @@ mod tests {
             kind: Some(2),
         };
         assert_eq!(
-            next_hours(&[(1, 3, &first, &a), (2, 3, &second, &b)]).unwrap(),
+            next_hours(&[(1, 3, first, &a), (2, 3, second, &b)]).unwrap(),
             Some(2)
         );
         b.next = Some(0);
         assert_eq!(
-            next_hours(&[(1, 3, &first, &a), (2, 3, &second, &b)]).unwrap(),
+            next_hours(&[(1, 3, first, &a), (2, 3, second, &b)]).unwrap(),
             None
         );
         b.next = Some(500_000);
         b.kind = Some(8);
         assert_eq!(
-            next_hours(&[(1, 3, &first, &a), (2, 3, &second, &b)]).unwrap(),
+            next_hours(&[(1, 3, first, &a), (2, 3, second, &b)]).unwrap(),
             None
         );
         b.kind = Some(2);
-        second.path_total = 0;
+        second = 0;
         assert_eq!(
-            next_hours(&[(1, 3, &first, &a), (2, 3, &second, &b)]).unwrap(),
+            next_hours(&[(1, 3, first, &a), (2, 3, second, &b)]).unwrap(),
             None
         );
         assert_eq!(
-            next_hours(&[(1, 3, &first, &a), (2, 4, &first, &b)]).unwrap(),
+            next_hours(&[(1, 3, first, &a), (2, 4, first, &b)]).unwrap(),
             None
         );
     }

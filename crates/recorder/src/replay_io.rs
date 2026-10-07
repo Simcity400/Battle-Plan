@@ -1527,6 +1527,9 @@ mod tests {
         use crate::test_support::{
             ALLOCATION_CAMPAIGN, allocation_records, allocation_test_directory,
         };
+        use replay::rows::RowCodec;
+
+        let format = FormatVersion::read(94).unwrap();
         let root = allocation_test_directory("compatibility-format94-spool");
         let session = root.join("session");
         let campaign = session.join(std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap());
@@ -1534,16 +1537,105 @@ mod tests {
         fs::create_dir_all(&campaign).unwrap();
         let mut spool = Vec::new();
         for record in allocation_records() {
-            let mut envelope = replay::spool::encode_record(&record).unwrap();
-            // Populated fixture tables are unchanged since this contract; the changed
-            // tables have empty snapshots with identical wire framing.
-            envelope[4..6].copy_from_slice(&94_u16.to_le_bytes());
+            let mut envelope = if let Record::Frame(frame) = &record {
+                // Construct the historical stream directly: its table timings and
+                // updates omit tables introduced later. Clock and Campaign have
+                // unchanged row contracts; other tables are explicitly unavailable.
+                let mut bytes = vec![0; replay::spool::RECORD_HEADER_BYTES];
+                bytes[..4].copy_from_slice(&replay::spool::RECORD_MAGIC);
+                bytes.push(2);
+                bytes.extend_from_slice(&frame.branch.to_le_bytes());
+                bytes.extend_from_slice(&frame.hour.to_le_bytes());
+                bytes.push(u8::from(frame.keyframe));
+                bytes.extend_from_slice(&frame.metrics.total_ns.to_le_bytes());
+                for table in TableId::ALL {
+                    if table.last_change().present(format.version()) {
+                        bytes.extend_from_slice(
+                            &frame.metrics.table_ns[table.index()].to_le_bytes(),
+                        );
+                    }
+                }
+                bytes.extend_from_slice(&frame.metrics.pool_bytes.to_le_bytes());
+                bytes.extend_from_slice(&frame.metrics.dropped_frames.to_le_bytes());
+                for table in TableId::ALL {
+                    if !table.last_change().present(format.version()) {
+                        continue;
+                    }
+                    match &frame.tables[table.index()] {
+                        TableUpdate::Snapshot(TableRows::Clock(rows)) => {
+                            assert_eq!(rows.len(), 1);
+                            bytes.push(0);
+                            bytes.extend_from_slice(&1_u32.to_le_bytes());
+                            bytes.push(0); // Singleton key difference is still a zero varint.
+                            rows[0].encode_fields(&mut bytes).unwrap();
+                        }
+                        TableUpdate::Snapshot(TableRows::Campaign(rows)) => {
+                            assert_eq!(rows.len(), 1);
+                            bytes.push(0);
+                            bytes.extend_from_slice(&1_u32.to_le_bytes());
+                            bytes.push(0); // Singleton key difference is still a zero varint.
+                            rows[0].encode_fields(&mut bytes).unwrap();
+                        }
+                        _ => {
+                            bytes.push(4);
+                            replay::codec::put_string(&mut bytes, "not read by historical fixture")
+                                .unwrap();
+                        }
+                    }
+                }
+                let payload = &bytes[replay::spool::RECORD_HEADER_BYTES..];
+                let length = u32::try_from(payload.len()).unwrap();
+                // CRC32/IEEE for this handcrafted fixture; the spool's sealer is private.
+                let mut crc = !0_u32;
+                for &byte in payload {
+                    crc ^= u32::from(byte);
+                    for _ in 0..8 {
+                        crc = (crc >> 1) ^ (0xEDB8_8320 & 0_u32.wrapping_sub(crc & 1));
+                    }
+                }
+                bytes[6..10].copy_from_slice(&length.to_le_bytes());
+                bytes[10..14].copy_from_slice(&(!crc).to_le_bytes());
+                bytes
+            } else {
+                // These control and identity layouts are unchanged at this version.
+                replay::spool::encode_record(&record).unwrap()
+            };
+            envelope[4..6].copy_from_slice(&format.version().to_le_bytes());
             spool.extend(envelope);
         }
         let recovered = recover_prefix(&spool);
         assert!(recovered.damage.is_none(), "{:?}", recovered.damage);
         assert_eq!(recovered.format.unwrap().version(), 94);
         assert_eq!(recovered.valid_bytes, spool.len());
+        let frames: Vec<_> = recovered
+            .records
+            .iter()
+            .filter_map(|record| match record {
+                Record::Frame(frame) => Some(frame),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(frames.len(), 3);
+        let mut decoder = FrameDecoder::new();
+        for (frame, hour) in frames.into_iter().zip(2..=4) {
+            let decoded = decoder.apply(frame).unwrap();
+            assert_eq!(decoded.hour, hour);
+            let clocks = decoded.complete::<tables::Clock>().unwrap();
+            assert_eq!(clocks[0].hour, hour);
+            assert_eq!(clocks[0].play_session_started_at, 19);
+            assert_eq!(
+                decoded.complete::<tables::Campaign>().unwrap()[0].id,
+                ALLOCATION_CAMPAIGN
+            );
+            assert_eq!(
+                *decoded.tables[TableId::ReservedCountryNaming.index()],
+                TableView::Unavailable {
+                    reason: format
+                        .table_refusal(TableId::ReservedCountryNaming)
+                        .unwrap()
+                }
+            );
+        }
         let spool_path = campaign.join("spool.0000.h4s");
         fs::write(&spool_path, &spool).unwrap();
         let (paths, issues) = finalize_session_outcome(&session, &output).unwrap();
@@ -2613,6 +2705,11 @@ mod tests {
                     }
                     TableId::AirSortieModifierMetadata => {
                         TableUpdate::Snapshot(TableRows::AirSortieModifierMetadata(vec![
+                            Default::default(),
+                        ]))
+                    }
+                    TableId::ReservedCountryNaming => {
+                        TableUpdate::Snapshot(TableRows::ReservedCountryNaming(vec![
                             Default::default(),
                         ]))
                     }

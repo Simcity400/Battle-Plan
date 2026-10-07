@@ -21,7 +21,7 @@ pub type Hour = i32;
 pub type SessionId = u64;
 pub type BranchId = u64;
 /// The recording version this build writes. Reader history lives beside TableId.
-pub const FORMAT_VERSION: u16 = rows::compatibility::RECORDER_INPUTS_FORMAT;
+pub const FORMAT_VERSION: u16 = rows::compatibility::EFFECT_INPUTS_FORMAT;
 pub const KEYFRAME_INTERVAL: u32 = 720;
 
 #[cfg(test)]

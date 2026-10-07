@@ -9,7 +9,53 @@ pub(super) fn fixture() -> Fixture {
         ("EFFECT_REMOVE_IDEA", "Remove $NAME$"),
         ("EFFECT_SHOW_IDEA_TOOLTIP", "$NAME$"),
         ("EFFECT_SHOW_IDEA_TOOLTIP_DETAILED", "$NAME$:\n$DESC$"),
+        ("EFFECT_SWAP_IDEAS_REPLACE", "Replace $REMOVE$/$ADD$"),
+        (
+            "EFFECT_SWAP_IDEAS_REPLACE_AND_SET_DURATION",
+            "Replace set $REMOVE$/$ADD$/$DAYS$",
+        ),
+        (
+            "EFFECT_SWAP_IDEAS_REPLACE_AND_CLEAR_DURATION",
+            "Replace clear $REMOVE$/$ADD$",
+        ),
+        (
+            "EFFECT_SWAP_IDEAS_REPLACE_AND_ADD_DURATION",
+            "Replace duration $REMOVE$/$ADD$/$DAYS_MODIFIED$/$DAYS$",
+        ),
+        ("EFFECT_SWAP_IDEAS_MODIFY", "Modify $REMOVE$"),
+        (
+            "EFFECT_SWAP_IDEAS_MODIFY_AND_SET_DURATION",
+            "Modify set $REMOVE$/$DAYS$",
+        ),
+        (
+            "EFFECT_SWAP_IDEAS_MODIFY_AND_CLEAR_DURATION",
+            "Modify clear $REMOVE$",
+        ),
+        (
+            "EFFECT_SWAP_IDEAS_MODIFY_AND_ADD_DURATION",
+            "Modify duration $REMOVE$/$DAYS_MODIFIED$/$DAYS$",
+        ),
+        (
+            "EFFECT_SWAP_IDEAS_TARGETED_MODIFIERS",
+            "$COUNTRY$:\n$MODIFIER$",
+        ),
+        ("TRIGGER_FULLFILLED_PREFIX", "yes"),
+        ("TRIGGER_UNFULLFILLED_PREFIX", "no"),
+        ("CAN_SEND_VOLUNTEERS", "Volunteers"),
+        ("RULE_DESC", "Rule [$DESC$]"),
+        ("synthetic_equipment", "Equipment"),
+        ("STAT_ARMY_SOFT_ATTACK", "Soft"),
+        ("STAT_ARMY_HARD_ATTACK", "Hard"),
+        ("STAT_MODIFIER_DIFF", " ($VALUE|%0$)"),
         ("EFFECT_REMOVE_IDEAS_WITH_TRAIT", "$COUNTRY$ loses $TRAIT$"),
+        (
+            "EFFECT_MODIFY_TIMED_IDEA_INCREASE",
+            "Increase $IDEA$/$TIME_DESC$/$DATE$/$DESC$",
+        ),
+        (
+            "EFFECT_MODIFY_TIMED_IDEA_DECREASE",
+            "Decrease $IDEA$/$TIME_DESC$/$DATE$/$DESC$",
+        ),
         ("POLITICAL_RESEARCH_BONUS_ENTRY", "$CATEGORY$: $FACTOR|%0$"),
         ("industry_research", "Industry"),
         ("SECOND_IDEA", "Second"),
@@ -69,6 +115,9 @@ pub(super) fn fixture() -> Fixture {
             )
             .collect(),
     );
+    // These synthetic stored strings were recorded in this declared language.
+    std::sync::Arc::make_mut(&mut fixture.catalogue.localisation).language =
+        fixture.catalogue.recorded_language.clone();
     *fixture.frame.tables[TableId::LexicalTokens.index()] =
         TableView::Complete(TableRows::LexicalTokens(
             ["attack", "defense"]
@@ -164,7 +213,7 @@ fn separator_joins_numeric_lines_without_changing_custom_tooltip_lf() {
 }
 
 #[test]
-fn default_wrapper_uses_the_same_native_options() {
+fn default_options_format_native_modifier_order_and_tooltip() {
     let fixture = fixture();
     let modifiers = installed_content::modifiers::values(
         &installed_content::parser::parse(b"defense=2 attack=1 custom_modifier_tooltip=TIP")
@@ -173,16 +222,12 @@ fn default_wrapper_uses_the_same_native_options() {
     );
     fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
         let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
-        let text = renderer.modifier_list(&modifiers, ">", scopes).unwrap();
+        let text = renderer
+            .modifier_list_with(&modifiers, ">", scopes, ModifierListOptions::default())
+            .unwrap();
         assert_eq!(
             text,
             "> Attack: \u{11}G+1.00\u{11}!\n> Defense: \u{11}G+2.00\u{11}!\ntip"
-        );
-        assert_eq!(
-            text,
-            renderer
-                .modifier_list_with(&modifiers, ">", scopes, ModifierListOptions::default())
-                .unwrap()
         );
     });
 }
@@ -465,8 +510,80 @@ fn idea_targeted_operands_keep_case_and_resolve_in_the_native_empty_scope() {
 }
 
 #[test]
+fn bound_idea_names_use_fresh_country_carrier_and_details_keep_caller_scope() {
+    use crate::scripted_text::{EventObject, EventScope, EventScopes, Link};
+    let mut fixture = fixture();
+    fixture.catalogue.localisation = std::sync::Arc::new(
+        fixture
+            .catalogue
+            .localisation
+            .iter()
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .chain([
+                ("NAME".into(), "Fresh [Root.GetTag]/[This.GetTag]".into()),
+                (
+                    "DETAIL".into(),
+                    "Detail [Root.GetTag]/[This.GetName]".into(),
+                ),
+                ("ZZ0_SYN_IDEA".into(), "Zero spirit".into()),
+            ])
+            .collect(),
+    );
+    // These synthetic stored strings were recorded in this declared language.
+    std::sync::Arc::make_mut(&mut fixture.catalogue.localisation).language =
+        fixture.catalogue.recorded_language.clone();
+    *fixture.frame.tables[TableId::ReservedCountryNaming.index()] =
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            ReservedCountryNamingRow {
+                tag: b"ZZ0".to_vec(),
+                ..Default::default()
+            },
+        ]));
+    let file = installed_content::ideas::parse_ideas(
+        b"ideas={country={OWN_IDEA={name=NAME modifier={custom_modifier_tooltip=DETAIL}} SYN_IDEA={modifier={custom_modifier_tooltip=DETAIL}}}}",&[],&Default::default());
+    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = installed_content::names::NameLists::default();
+    let content = Content {
+        ideas: Some(&ideas),
+        name_lists: Some(&names),
+        ..Default::default()
+    };
+    for (this, token, expected) in [
+        (
+            EventObject::Country(1),
+            "OWN_IDEA",
+            "Fresh AAA/AAA:\nDetail BBB/Alpha\n",
+        ),
+        (
+            EventObject::State(1),
+            "OWN_IDEA",
+            "Fresh ZZ0/ZZ0:\nDetail BBB/One\n",
+        ),
+        (
+            EventObject::State(1),
+            "SYN_IDEA",
+            "Zero spirit:\nDetail BBB/One\n",
+        ),
+    ] {
+        let mut selected = EventScope::of(this);
+        selected.root = Link::Scope(1);
+        let mut scopes = EventScopes::new(vec![selected, EventScope::of(EventObject::Country(2))]);
+        let result = fixture.render(
+            &format!("custom_effect_tooltip=idea_desc|{token}"),
+            &mut scopes,
+            content,
+        );
+        assert!(result.refusals.is_empty(), "{:?}", result.refusals);
+        assert_eq!(result.text, expected);
+    }
+}
+
+#[test]
 fn timed_idea_reuses_research_details_and_missing_duration_is_named() {
-    let fixture = fixture();
+    let mut fixture = fixture();
+    *fixture.frame.tables[TableId::TimedIdeas.index()] = TableView::Unavailable {
+        reason: "timed ideas not recorded".into(),
+    };
     let ideas = ideas();
     let names = installed_content::names::NameLists::default();
     let content = Content {
@@ -501,9 +618,363 @@ fn timed_idea_reuses_research_details_and_missing_duration_is_named() {
                 .keys()
                 .next()
                 .unwrap()
-                .contains("CPoliticalStatus timed ideas")
+                .contains("TimedIdeas")
         );
     }
+}
+
+#[test]
+fn format99_timed_idea_uses_first_stored_days_and_native_component_floors() {
+    let mut fixture = fixture();
+    fixture.frame.hour = engine::cdate::HOUR_EPOCH + 1936 * 8760;
+    fixture.catalogue.localisation = std::sync::Arc::new(
+        fixture
+            .catalogue
+            .localisation
+            .iter()
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .chain([("January".into(), "SyntheticJanuary".into())])
+            .collect(),
+    );
+    // These synthetic stored strings were recorded in this declared language.
+    std::sync::Arc::make_mut(&mut fixture.catalogue.localisation).language =
+        fixture.catalogue.recorded_language.clone();
+    *fixture.frame.tables[TableId::TimedIdeas.index()] =
+        TableView::Complete(TableRows::TimedIdeas(vec![
+            TimedIdeaRow {
+                country: 100,
+                ordinal: 2,
+                token: b"SYN_IDEA".to_vec(),
+                days: 99,
+            },
+            TimedIdeaRow {
+                country: 100,
+                ordinal: 0,
+                token: b"SYN_IDEA".to_vec(),
+                days: 5,
+            },
+        ]));
+    let ideas = ideas();
+    let names = installed_content::names::NameLists::default();
+    let content = Content {
+        ideas: Some(&ideas),
+        name_lists: Some(&names),
+        ..Default::default()
+    };
+    for (body, prefix) in [
+        (
+            "modify_timed_idea={idea=SYN_IDEA days=2.9 years=0.9 months=0.9}",
+            "Increase Spirit/2 days/8 SyntheticJanuary, 1936/",
+        ),
+        (
+            "modify_timed_idea={idea=SYN_IDEA days=-1.2}",
+            "Decrease Spirit//4 SyntheticJanuary, 1936/",
+        ),
+    ] {
+        let description = fixture.render(body, &mut fresh(), content);
+        assert!(
+            description.refusals.is_empty(),
+            "{:?}",
+            description.refusals
+        );
+        assert_eq!(
+            description.text,
+            format!("{prefix}Industry: 10%,  Attack: \u{11}G+1.00\u{11}!")
+        );
+    }
+    let description = fixture.render(
+        "swap_ideas={remove_idea=SYN_IDEA add_idea=SECOND_IDEA add_days=-6}",
+        &mut fresh(),
+        content,
+    );
+    assert_eq!(description.text, "Remove Spirit\n");
+    assert!(
+        description.refusals.is_empty(),
+        "{:?}",
+        description.refusals
+    );
+    *fixture.frame.tables[TableId::TimedIdeas.index()] =
+        TableView::Complete(TableRows::TimedIdeas(Vec::new()));
+    let description = fixture.render(
+        "modify_timed_idea={idea=SYN_IDEA days=2}",
+        &mut fresh(),
+        content,
+    );
+    assert!(description.text.is_empty() && description.refusals.is_empty());
+}
+
+#[test]
+fn timed_components_keep_native_floor_intermediate_wrap() {
+    for (value, expected) in [
+        (-120_000, -2),
+        (290_000, 2),
+        (-100_000, -1),
+        (i64::MIN, -702_313_053),
+        (i64::MAX, -702_313_053),
+    ] {
+        assert_eq!(timed_component_integer(value), expected, "{value}");
+    }
+}
+
+#[test]
+fn modify_timed_idea_keeps_spaced_colon_comma_that_add_timed_cleans() {
+    let mut fixture = fixture();
+    fixture.frame.hour = engine::cdate::HOUR_EPOCH + 1936 * 8760;
+    fixture.catalogue.localisation = std::sync::Arc::new(
+        fixture
+            .catalogue
+            .localisation
+            .iter()
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .chain([
+                ("COLON_TIP".into(), "HEADER: \nBODY".into()),
+                ("January".into(), "January".into()),
+            ])
+            .collect(),
+    );
+    // These synthetic stored strings were recorded in this declared language.
+    std::sync::Arc::make_mut(&mut fixture.catalogue.localisation).language =
+        fixture.catalogue.recorded_language.clone();
+    *fixture.frame.tables[TableId::TimedIdeas.index()] =
+        TableView::Complete(TableRows::TimedIdeas(vec![TimedIdeaRow {
+            country: 100,
+            token: b"SYN_IDEA".to_vec(),
+            days: 5,
+            ..Default::default()
+        }]));
+    let file = installed_content::ideas::parse_ideas(
+        b"ideas={country={SYN_IDEA={modifier={custom_modifier_tooltip=COLON_TIP}}}}",
+        &[],
+        &Default::default(),
+    );
+    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = installed_content::names::NameLists::default();
+    let content = Content {
+        ideas: Some(&ideas),
+        name_lists: Some(&names),
+        ..Default::default()
+    };
+    for (body, expected) in [
+        (
+            "add_timed_idea={idea=SYN_IDEA days=2}",
+            "Timed Spirit for 2 days (HEADER: BODY).\n",
+        ),
+        (
+            "modify_timed_idea={idea=SYN_IDEA days=2}",
+            "Increase Spirit/2 days/8 January, 1936/HEADER: , BODY",
+        ),
+    ] {
+        let result = fixture.render(body, &mut fresh(), content);
+        assert_eq!(result.text, expected);
+        assert!(result.refusals.is_empty(), "{:?}", result.refusals);
+    }
+}
+
+#[test]
+fn swap_ideas_uses_display_name_and_native_duration_branches() {
+    let mut fixture = fixture();
+    let names = installed_content::names::NameLists::default();
+    for (same, old, extra, expected) in [
+        (false, -1, "", "Replace OLD/NEW"),
+        (false, -1, "days=2", "Replace set OLD/NEW/2"),
+        (false, 5, "days=-1", "Replace clear OLD/NEW"),
+        (false, 5, "days=8", "Replace duration OLD/NEW/3/8"),
+        (true, 5, "days=5", "Modify OLD"),
+        (true, -1, "days=2", "Modify set OLD/2"),
+        (true, 5, "days=-1", "Modify clear OLD"),
+        (true, 5, "add_days=1.5 days=99", "Modify duration OLD/2/7"),
+    ] {
+        let source = format!(
+            "ideas={{country={{A={{name=OLD}} B={{name={}}}}}}}",
+            if same { "OLD" } else { "NEW" }
+        );
+        let file = installed_content::ideas::parse_ideas(source.as_bytes(), &[], &Default::default());
+        let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+        *fixture.frame.tables[TableId::TimedIdeas.index()] =
+            TableView::Complete(TableRows::TimedIdeas(vec![TimedIdeaRow {
+                country: 100,
+                ordinal: 0,
+                token: b"A".to_vec(),
+                days: old,
+            }]));
+        let result = fixture.render(
+            &format!("swap_ideas={{remove_idea=A add_idea=B {extra}}}"),
+            &mut fresh(),
+            Content {
+                ideas: Some(&ideas),
+                name_lists: Some(&names),
+                ..Default::default()
+            },
+        );
+        assert_eq!(result.text, format!("{expected}\n\n"));
+        assert!(result.refusals.is_empty(), "{:?}", result.refusals);
+    }
+}
+
+#[test]
+fn swap_ideas_differentials_keep_numeric_research_rules_and_equipment_order() {
+    let fixture = fixture();
+    let source = b"ideas={country={A={name=OLD modifier={attack=1} research_bonus={industry=0.1} equipment_bonus={synthetic_equipment={soft_attack=0.05}}} B={name=NEW modifier={attack=2 defense=0.5} research_bonus={industry=0.3} rule={can_send_volunteers=yes override={7=RULE_DESC}} equipment_bonus={synthetic_equipment={soft_attack=0.1 hard_attack=0.2}}}}}";
+    let file = installed_content::ideas::parse_ideas(source, &[], &Default::default());
+    assert!(file.refused.is_none(), "{:?}", file.refused);
+    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = installed_content::names::NameLists::default();
+    let result = fixture.render(
+        "swap_ideas={remove_idea=A add_idea=B}",
+        &mut fresh(),
+        Content {
+            ideas: Some(&ideas),
+            name_lists: Some(&names),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        result.text,
+        concat!(
+            // Raw 14054E050 copies the fixture's leading label spaces.
+            "Replace OLD/NEW\n Attack: \u{11}G+1.00\u{11}!\n Defense: \u{11}G+0.50\u{11}!\n",
+            "Industry: 20%\n\nRule [yes Volunteers]\n\n",
+            "\u{11}YEquipment\u{11}!: \n    Soft (5%)\n    Hard (20%)\n\n\n"
+        )
+    );
+    assert!(result.refusals.is_empty(), "{:?}", result.refusals);
+}
+
+#[test]
+fn swap_ideas_targeted_blocks_use_first_match() {
+    let fixture = fixture();
+    let source = b"ideas={country={A={name=OLD targeted_modifier={tag=BBB attack=0.2}} B={name=NEW modifier={defense=1} targeted_modifier={tag=BBB attack=0.7} targeted_modifier={tag=BBB attack=99}}}}";
+    let file = installed_content::ideas::parse_ideas(source, &[], &Default::default());
+    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = installed_content::names::NameLists::default();
+    let content = Content {
+        ideas: Some(&ideas),
+        name_lists: Some(&names),
+        ..Default::default()
+    };
+    let result = fixture.render(
+        "swap_ideas={remove_idea=A add_idea=B}",
+        &mut fresh(),
+        content,
+    );
+    assert_eq!(
+        result.text,
+        "Replace OLD/NEW\n Defense: \u{11}G+1.00\u{11}!\nBeta:\n     Attack: \u{11}G+0.50\u{11}!\n\n"
+    );
+    assert!(result.refusals.is_empty(), "{:?}", result.refusals);
+}
+
+#[test]
+fn swap_ideas_targeted_first_match_skips_unreached_variable_operands() {
+    let mut fixture = fixture();
+    let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *fixture.frame.tables[TableId::Countries.index()]
+    else {
+        unreachable!()
+    };
+    rows.retain(|row| row.canonical_slot <= 2);
+    let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryLinks.index()]
+    else {
+        unreachable!()
+    };
+    rows.retain(|row| row.canonical_slot <= 2);
+    *fixture.frame.tables[TableId::ScriptVariables.index()] = TableView::Unavailable {
+        reason: "unreached target variable".into(),
+    };
+    let source = b"ideas={country={A={name=OLD targeted_modifier={} targeted_modifier={tag=AAA} targeted_modifier={tag=BBB attack=0.2} targeted_modifier={tag=var:missing}} B={name=NEW targeted_modifier={} targeted_modifier={tag=AAA defense=0.1} targeted_modifier={tag=BBB attack=0.7} targeted_modifier={tag=var:missing}}}}";
+    let file = installed_content::ideas::parse_ideas(source, &[], &Default::default());
+    assert!(file.refused.is_none(), "{:?}", file.refused);
+    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = installed_content::names::NameLists::default();
+    let result = fixture.render(
+        "swap_ideas={remove_idea=A add_idea=B}",
+        &mut fresh(),
+        Content {
+            ideas: Some(&ideas),
+            name_lists: Some(&names),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        result.text,
+        "Replace OLD/NEW\nAlpha:\n     Defense: \u{11}G+0.10\u{11}!\nBeta:\n     Attack: \u{11}G+0.50\u{11}!\n\n"
+    );
+    assert!(result.refusals.is_empty(), "{:?}", result.refusals);
+}
+
+#[test]
+fn swap_ideas_keeps_available_fragments_when_numeric_definitions_are_unavailable() {
+    let mut fixture = fixture();
+    let source = b"ideas={country={A={name=OLD} B={name=NEW modifier={defense=1} rule={can_send_volunteers=yes}}}}";
+    let file = installed_content::ideas::parse_ideas(source, &[], &Default::default());
+    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = installed_content::names::NameLists::default();
+    *fixture.frame.tables[TableId::ModifierDefinitions.index()] = TableView::Unavailable {
+        reason: "numeric definitions unavailable".into(),
+    };
+    let result = fixture.render(
+        "swap_ideas={remove_idea=A add_idea=B}",
+        &mut fresh(),
+        Content {
+            ideas: Some(&ideas),
+            name_lists: Some(&names),
+            ..Default::default()
+        },
+    );
+    assert_eq!(result.text, "Replace OLD/NEW\nyes Volunteers\n\n\n");
+    assert_eq!(result.refusals.values().sum::<usize>(), 1);
+    assert!(
+        result
+            .refusals
+            .keys()
+            .next()
+            .unwrap()
+            .contains("numeric definitions unavailable")
+    );
+}
+
+#[test]
+fn swap_ideas_numeric_accumulator_drops_source_hidden_flags_children_and_tooltips() {
+    let fixture = fixture();
+    let source = b"ideas={country={A={name=OLD modifier={attack=0.5}} B={name=NEW modifier={hidden_modifier={attack=1} added_modifier={defense=99} custom_modifier_tooltip=TIP}}}}";
+    let file = installed_content::ideas::parse_ideas(source, &[], &Default::default());
+    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = installed_content::names::NameLists::default();
+    let result = fixture.render(
+        "swap_ideas={remove_idea=A add_idea=B}",
+        &mut fresh(),
+        Content {
+            ideas: Some(&ideas),
+            name_lists: Some(&names),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        result.text,
+        "Replace OLD/NEW\n Attack: \u{11}G+0.50\u{11}!\n\n"
+    );
+    assert!(result.refusals.is_empty(), "{:?}", result.refusals);
+}
+
+#[test]
+fn swap_ideas_rule_reset_keeps_native_blank_lines() {
+    let fixture = fixture();
+    let source = b"ideas={country={A={name=OLD rule={can_send_volunteers=yes}} B={name=NEW}}}";
+    let file = installed_content::ideas::parse_ideas(source, &[], &Default::default());
+    let ideas = installed_content::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
+    let names = installed_content::names::NameLists::default();
+    let result = fixture.render(
+        "swap_ideas={remove_idea=A add_idea=B}",
+        &mut fresh(),
+        Content {
+            ideas: Some(&ideas),
+            name_lists: Some(&names),
+            ..Default::default()
+        },
+    );
+    assert_eq!(result.text, "Replace OLD/NEW\n\n\n\n");
+    assert!(result.refusals.is_empty(), "{:?}", result.refusals);
 }
 
 #[test]

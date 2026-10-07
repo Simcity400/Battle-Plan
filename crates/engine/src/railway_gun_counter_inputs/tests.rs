@@ -1,5 +1,5 @@
 use super::*;
-use crate::{cland_combat, cland_combatant, memory::SliceMemory, reference_bucket};
+use crate::{carmy, cland_combat, cland_combatant, memory::SliceMemory, reference_bucket};
 
 const STATE: usize = 0x1000;
 const COUNTRIES: usize = 0x2000;
@@ -332,6 +332,580 @@ fn outcome(bytes: Vec<u8>, fault: Option<usize>) -> Outcome {
     capture(bytes, fault, &mut [Row::default(); 1], &mut [0; 3]).outcome
 }
 
+fn stored_name(bytes: &mut [u8], gun: usize, text: &[u8], heap: usize) {
+    let descriptor = gun + NAME;
+    let capacity = if text.len() <= 15 { 15 } else { text.len() };
+    let source = if capacity == 15 {
+        descriptor
+    } else {
+        put64(bytes, descriptor, heap as u64);
+        heap
+    };
+    put(bytes, source, text);
+    bytes[source + text.len()] = 0;
+    put64(bytes, descriptor + 16, text.len() as u64);
+    put64(bytes, descriptor + 24, capacity as u64);
+}
+
+struct EtaFixture {
+    memory: MemoryFixture,
+    reads: std::cell::RefCell<Vec<(usize, usize)>>,
+}
+
+impl Memory for EtaFixture {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        self.reads.borrow_mut().push((address, output.len()));
+        if self.memory.fault == Some(address) {
+            return false;
+        }
+        if address == creference_registry::LOW_ROOTS_RVA + 70 * 8 && output.len() == 8 {
+            output.copy_from_slice(&0x11000_u64.to_le_bytes());
+            return true;
+        }
+        // Live native defines, independent from content's static movement map.
+        if address == 0x0331_bfe0 && output.len() == 4 {
+            output.copy_from_slice(&5_i32.to_le_bytes());
+            return true;
+        }
+        for (define, value) in [
+            (0x0331_d0e8, 400_000_i64),
+            (0x0331_d688, 200_000),
+            (0x0331_9050, -50_000),
+        ] {
+            if address == define && output.len() == 8 {
+                output.copy_from_slice(&value.to_le_bytes());
+                return true;
+            }
+        }
+        self.memory.copy(address, output)
+    }
+}
+
+fn eta_fixture() -> EtaFixture {
+    const NEXT_DEFINITION: usize = DEFINITION + 0x100;
+    const PAIRS: usize = 0xfa00;
+    let mut bytes = standing();
+    array(&mut bytes, GUN + cunit::ORDINARY_ROUTE_DATA, ORDINARY, 1);
+    put(&mut bytes, ORDINARY, &2_u32.to_le_bytes());
+    put64(
+        &mut bytes,
+        TO + cprovince::DEFINITION,
+        NEXT_DEFINITION as u64,
+    );
+    put(
+        &mut bytes,
+        NEXT_DEFINITION + province_definition::ID,
+        &2_u32.to_le_bytes(),
+    );
+    bytes[DEFINITION + province_definition::TERRAIN_FLAGS] = 1;
+    bytes[NEXT_DEFINITION + province_definition::TERRAIN_FLAGS] = 1;
+    array(&mut bytes, RAIL_INFO + rail_info::NEIGHBOR_PAIRS, PAIRS, 1);
+    put(&mut bytes, PAIRS, &2_u32.to_le_bytes());
+    put(&mut bytes, PAIRS + 4, &5_i32.to_le_bytes());
+    put(
+        &mut bytes,
+        RAIL_BUILDING + cbuilding::LEVEL,
+        &5_i16.to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        RAIL_BUILDING + cbuilding::HEALTHY_LEVEL,
+        &5_i16.to_le_bytes(),
+    );
+    put64(&mut bytes, GUN + carmy::MOVEMENT_NUMERATOR, 12_345);
+    put64(&mut bytes, GUN + 0x400, 100_000);
+    put64(&mut bytes, GUN + 0x410, 50_000);
+    stored_name(&mut bytes, GUN, &[0xff, 0, b'G'], 0);
+    EtaFixture {
+        memory: MemoryFixture { bytes, fault: None },
+        reads: Default::default(),
+    }
+}
+
+#[test]
+fn tooltip_suffixes_preserve_prefixes_and_independent_fragments() {
+    use crate::cunit_supply_inputs::{self as supply, Failure, Origin};
+    const SECOND_GUN: usize = 0x10000;
+    const FIRST_ORIGINS: usize = 0x10500;
+    const SECOND_ORIGINS: usize = 0x10600;
+    let mut image = eta_fixture();
+    let second = image.memory.bytes[GUN..GUN + 0x450].to_vec();
+    put(&mut image.memory.bytes, SECOND_GUN, &second);
+    // The tiny registry helper uses undisplaced buckets; keep these distinct.
+    let second_handle = (7 << 32) | 4713;
+    put64(
+        &mut image.memory.bytes,
+        SECOND_GUN + cunit::HANDLE,
+        second_handle,
+    );
+    registry(
+        &mut image.memory.bytes,
+        TABLE,
+        BUCKETS,
+        &[(GUN_HANDLE, GUN + 0x10), (second_handle, SECOND_GUN + 0x10)],
+    );
+    array(
+        &mut image.memory.bytes,
+        COUNTRY + ccountry::RAILWAY_UNITS,
+        ROSTER,
+        2,
+    );
+    put64(&mut image.memory.bytes, ROSTER + 8, SECOND_GUN as u64);
+    for (gun, origins, count) in [(GUN, FIRST_ORIGINS, 2), (SECOND_GUN, SECOND_ORIGINS, 1)] {
+        put64(&mut image.memory.bytes, gun + supply::ASKED, 700_000);
+        put64(&mut image.memory.bytes, gun + supply::RECEIVED, 300_000);
+        array(
+            &mut image.memory.bytes,
+            gun + supply::ORIGINS,
+            origins,
+            count,
+        );
+    }
+    for (address, province, requested, received) in [
+        (FIRST_ORIGINS, 1_i32, 100_000_i64, 50_000_i64),
+        (FIRST_ORIGINS + supply::ORIGIN_STRIDE, 1, -100, 0),
+        (SECOND_ORIGINS, 2, 200_000, 75_000),
+    ] {
+        put(
+            &mut image.memory.bytes,
+            address + supply::ORIGIN_PROVINCE,
+            &province.to_le_bytes(),
+        );
+        put64(
+            &mut image.memory.bytes,
+            address + supply::ORIGIN_REQUESTED,
+            requested as u64,
+        );
+        put64(
+            &mut image.memory.bytes,
+            address + supply::ORIGIN_RECEIVED,
+            received as u64,
+        );
+    }
+    assert_eq!(name_demand(&image, 0, STATE).unwrap().supply_origins, 3);
+    put64(&mut image.memory.bytes, GUN + 0x338, (8 << 32) | 70);
+    image.memory.fault = Some(creference_registry::LOW_ROOTS_RVA + 70 * 8);
+    assert_eq!(
+        name_demand(&image, 0, STATE).unwrap(),
+        NameDemand {
+            rows: 2,
+            bytes: 6,
+            named_bonuses: 0,
+            supply_origins: 3,
+        }
+    );
+    put64(&mut image.memory.bytes, GUN + 0x338, 0);
+    let mut output = [Row::default(); 2];
+    let mut paths = [0; 2];
+    let mut name_storage = [0; 6];
+    let mut guns = [(0, 0); 2];
+    let mut named = [];
+    let mut layout = None;
+    let mut origins = [Origin::default(); 3];
+    for (fault, origin_capacity) in [
+        (None, 3),
+        (Some(GUN + carmy::MOVEMENT_NUMERATOR), 3),
+        (Some(GUN + 0x410), 3),
+        (Some(GUN + NAME + 16), 3),
+        (Some(GUN + supply::ASKED), 3),
+        (Some(GUN + supply::ORIGINS), 3),
+        (Some(FIRST_ORIGINS + supply::ORIGIN_REQUESTED), 3),
+        (None, 1),
+    ] {
+        image.memory.fault = fault;
+        image.reads.borrow_mut().clear();
+        let mut names = NameArena {
+            bytes: &mut name_storage,
+            used: 0,
+            required: 0,
+            failures: 0,
+        };
+        let mut scratch = TooltipScratch {
+            guns: &mut guns,
+            named: crate::railway_gun_speed::NamedBonuses {
+                pointers: &mut named,
+                required: 0,
+            },
+            layout: &mut layout,
+            supply_origins: &mut origins[..origin_capacity],
+            supply_origins_len: 0,
+            required_supply_origins: 0,
+        };
+        let walked = walk_with_tooltip_inputs(
+            &image,
+            0,
+            STATE,
+            &mut output,
+            &mut paths,
+            &mut cunit::FirstCombatMemo::new(2),
+            &mut names,
+            &mut scratch,
+        );
+        assert_eq!(walked.outcome, Outcome::Rows { len: 2 });
+        assert_eq!((output[0].gun, output[1].gun), (GUN_HANDLE, second_handle));
+        assert_eq!(
+            output[1].eta,
+            Some(EtaOperands {
+                numerator: 12_345,
+                current_speed: 600_000
+            })
+        );
+        assert_eq!(
+            output[0].eta,
+            if matches!(fault, Some(address) if address == GUN + carmy::MOVEMENT_NUMERATOR || address == GUN + 0x410)
+            {
+                None
+            } else {
+                output[1].eta
+            }
+        );
+        assert!(output[1].name.is_some());
+        assert_eq!(output[0].name.is_none(), fault == Some(GUN + NAME + 16));
+        assert_eq!(
+            output[0].supply.is_none(),
+            fault == Some(GUN + supply::ASKED)
+        );
+        if let Some(first) = output[0].supply {
+            assert_eq!((first.asked, first.received), (700_000, 300_000));
+            assert_eq!(
+                first.origins_len,
+                if origin_capacity == 1 {
+                    Err(Failure::OriginsCapacity { required: 2 })
+                } else if fault == Some(GUN + supply::ORIGINS)
+                    || fault == Some(FIRST_ORIGINS + supply::ORIGIN_REQUESTED)
+                {
+                    Err(Failure::Unreadable)
+                } else {
+                    Ok(2)
+                }
+            );
+            assert_eq!(output[0].supply_failure, first.origins_len.err());
+        }
+        let second = output[1].supply.unwrap();
+        assert_eq!(
+            (second.asked, second.received, second.origins_len),
+            (700_000, 300_000, Ok(1))
+        );
+        let start = output[1].supply_origins_start;
+        assert_eq!(
+            scratch.supply_origins[start],
+            Origin {
+                province: 2,
+                requested: 200_000,
+                received: 75_000
+            }
+        );
+        if origin_capacity == 1 {
+            assert_eq!(scratch.required_supply_origins, 3);
+        }
+        let reads = image.reads.borrow();
+        let last_name = reads
+            .iter()
+            .position(|row| *row == (SECOND_GUN + NAME + 16, 8))
+            .unwrap();
+        let eta_start = reads
+            .iter()
+            .position(|row| *row == (GUN + carmy::MOVEMENT_NUMERATOR, 8))
+            .unwrap();
+        assert!(last_name < eta_start);
+        let last_eta = reads
+            .iter()
+            .position(|row| *row == (SECOND_GUN + 0x410, 8))
+            .unwrap();
+        let supply_start = reads
+            .iter()
+            .position(|row| *row == (GUN + supply::ASKED, 8))
+            .unwrap();
+        assert!(last_eta < supply_start);
+        assert_eq!(scratch.guns, &[(0, 0); 2]);
+    }
+}
+
+#[test]
+fn initial_eta_named_bonus_sizing_uses_live_headers_without_reading_bonus_payloads() {
+    const VARIANT: usize = 0x10000;
+    const NAMED_HANDLES: usize = 0x11800;
+    let mut image = eta_fixture();
+    let handle = (8_u64 << 32) | crate::cequipment_variant::REFERENCE_TYPE as u64;
+    put64(&mut image.memory.bytes, GUN + 0x338, handle);
+    put64(
+        &mut image.memory.bytes,
+        VARIANT,
+        crate::cequipment_variant::VTABLE_RVA as u64,
+    );
+    put64(
+        &mut image.memory.bytes,
+        VARIANT + crate::cequipment_variant::TYPE,
+        handle,
+    );
+    array(&mut image.memory.bytes, VARIANT + 0xe8, NAMED_HANDLES, 129);
+    array(
+        &mut image.memory.bytes,
+        GUN + crate::cunit_supply_inputs::ORIGINS,
+        0x10800,
+        17,
+    );
+    registry(
+        &mut image.memory.bytes,
+        0x11000,
+        0x11100,
+        &[(handle, VARIANT)],
+    );
+    assert_eq!(
+        name_demand(&image, 0, STATE).unwrap(),
+        NameDemand {
+            rows: 1,
+            bytes: 3,
+            named_bonuses: 129,
+            supply_origins: 17,
+        }
+    );
+    assert!(
+        !image
+            .reads
+            .borrow()
+            .iter()
+            .any(|(address, _)| *address == NAMED_HANDLES)
+    );
+    assert!(
+        !image
+            .reads
+            .borrow()
+            .iter()
+            .any(|(address, _)| *address == 0x10800 + crate::cunit_supply_inputs::ORIGIN_REQUESTED)
+    );
+    image.memory.fault = Some(VARIANT + 0xe8);
+    assert_eq!(
+        name_demand(&image, 0, STATE).unwrap(),
+        NameDemand {
+            rows: 1,
+            bytes: 3,
+            named_bonuses: 0,
+            supply_origins: 17,
+        }
+    );
+    image.memory.fault = Some(GUN + crate::cunit_supply_inputs::ORIGINS);
+    assert_eq!(
+        name_demand(&image, 0, STATE).unwrap(),
+        NameDemand {
+            rows: 1,
+            bytes: 3,
+            named_bonuses: 129,
+            supply_origins: 0,
+        }
+    );
+}
+
+#[test]
+fn stored_names_preserve_all_bytes_and_fail_independently_of_old_operands() {
+    for text in [
+        &b""[..],
+        &[0xff, 0, b'G'][..],
+        &b"a heap railway gun name"[..],
+    ] {
+        let mut bytes = fixture();
+        stored_name(&mut bytes, GUN, text, 0x10000);
+        let mut old = [Row::default(); 1];
+        let mut old_paths = [0; 3];
+        let old_walk = capture(bytes.clone(), None, &mut old, &mut old_paths);
+        for (capacity, fault) in [(text.len(), None), (0, Some(GUN + NAME + 16)), (0, None)] {
+            let mut storage = vec![0; capacity];
+            let mut arena = NameArena {
+                bytes: &mut storage,
+                used: 0,
+                required: 0,
+                failures: 0,
+            };
+            let mut rows = [Row::default(); 1];
+            let mut paths = [0; 3];
+            let walked = walk_with_names(
+                &MemoryFixture {
+                    bytes: bytes.clone(),
+                    fault,
+                },
+                0,
+                STATE,
+                &mut rows,
+                &mut paths,
+                &mut cunit::FirstCombatMemo::new(4),
+                &mut arena,
+            );
+            assert_eq!(walked, old_walk);
+            assert_eq!(paths, old_paths);
+            let name = rows[0].name.take();
+            assert_eq!(rows, old);
+            if fault.is_some() || capacity < text.len() {
+                assert_eq!(name, None);
+                assert_eq!(arena.failures, 1);
+            } else {
+                assert_eq!(name, Some((0, text.len())));
+                assert_eq!(&arena.bytes[..arena.used], text);
+                assert_eq!(arena.failures, 0);
+            }
+            assert_eq!(arena.required, if fault.is_some() { 0 } else { text.len() });
+        }
+        let memory = MemoryFixture { bytes, fault: None };
+        assert_eq!(
+            name_demand(&memory, 0, STATE).unwrap(),
+            NameDemand {
+                rows: 1,
+                bytes: text.len(),
+                named_bonuses: 0,
+                supply_origins: 0,
+            }
+        );
+    }
+}
+
+#[test]
+fn names_count_full_demand_even_when_the_route_or_row_arena_is_short() {
+    let mut bytes = fixture();
+    stored_name(&mut bytes, GUN, b"full name demand", 0x10000);
+    let memory = MemoryFixture { bytes, fault: None };
+    let mut arena = NameArena {
+        bytes: &mut [],
+        used: 0,
+        required: 0,
+        failures: 0,
+    };
+    let walked = walk_with_names(
+        &memory,
+        0,
+        STATE,
+        &mut [],
+        &mut [],
+        &mut cunit::FirstCombatMemo::new(4),
+        &mut arena,
+    );
+    assert!(matches!(
+        walked.outcome,
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: 1
+        }
+    ));
+    assert_eq!((arena.used, arena.required, arena.failures), (0, 16, 0));
+}
+
+#[test]
+fn stored_name_presizing_covers_every_gun_in_a_5000_country_roster() {
+    const COUNT: usize = 5000;
+    const SLOT_ARRAY: usize = 0x20000;
+    const LINK_ARRAY: usize = 0x30000;
+    const RECORDS: usize = 0x40000;
+    const REGISTRY: usize = 0x2000000;
+    const MASK: usize = 8191;
+    let mut bytes = vec![0; REGISTRY + (MASK + 256) * reference_bucket::STRIDE];
+    array(
+        &mut bytes,
+        STATE + cgame_state::COUNTRIES,
+        SLOT_ARRAY,
+        (COUNT + 1) as u32,
+    );
+    array(
+        &mut bytes,
+        STATE + cgame_state::COUNTRY_LINKS,
+        LINK_ARRAY,
+        (COUNT + 1) as u32,
+    );
+    put64(
+        &mut bytes,
+        TABLE + creference_registry::ENTRIES,
+        REGISTRY as u64,
+    );
+    put(
+        &mut bytes,
+        TABLE + creference_registry::COUNT,
+        &(COUNT as u32).to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        TABLE + creference_registry::MASK,
+        &(MASK as u32).to_le_bytes(),
+    );
+    let mut max_distance = 1;
+    for id in 1..=COUNT {
+        let country = RECORDS + (id - 1) * 0x1000;
+        let gun = country + 0x400;
+        let roster = country + 0x300;
+        put64(&mut bytes, SLOT_ARRAY + id * 8, country as u64);
+        put(&mut bytes, LINK_ARRAY + id * 4, &(id as u32).to_le_bytes());
+        put64(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+        put(
+            &mut bytes,
+            country + ccountry::ID,
+            &(id as u32).to_le_bytes(),
+        );
+        array(&mut bytes, country + ccountry::RAILWAY_UNITS, roster, 1);
+        put64(&mut bytes, roster, gun as u64);
+        put64(&mut bytes, gun, crailway_gun::VTABLE_RVA as u64);
+        put64(
+            &mut bytes,
+            gun + 0x10,
+            crailway_gun::SECONDARY_VTABLE_RVA as u64,
+        );
+        put(&mut bytes, gun + cunit::CLASS, &13_u32.to_le_bytes());
+        let handle = ((id as u64) << 32) | 4713;
+        put64(&mut bytes, gun + cunit::HANDLE, handle);
+        put(
+            &mut bytes,
+            gun + cunit::ROSTER_OWNER,
+            &(id as u32).to_le_bytes(),
+        );
+        stored_name(&mut bytes, gun, &[0xff, b'G', b'!'], 0);
+        let hash = handle
+            .rotate_left(32)
+            .wrapping_mul(creference_registry::HASH_MULTIPLIER);
+        let mut index = (((hash >> 32) as u32 ^ hash as u32) as usize) & MASK;
+        let mut distance = 1_u8;
+        let mut entry = (handle, (gun + 0x10) as u64);
+        loop {
+            let cell = REGISTRY + index * reference_bucket::STRIDE;
+            let resident = bytes[cell + reference_bucket::DISTANCE];
+            if resident < distance {
+                let displaced = (
+                    u64::from_le_bytes(
+                        bytes[cell + reference_bucket::TYPE..cell + reference_bucket::TYPE + 8]
+                            .try_into()
+                            .unwrap(),
+                    ),
+                    u64::from_le_bytes(
+                        bytes[cell + reference_bucket::OBJECT..cell + reference_bucket::OBJECT + 8]
+                            .try_into()
+                            .unwrap(),
+                    ),
+                );
+                bytes[cell + reference_bucket::DISTANCE] = distance;
+                put64(&mut bytes, cell + reference_bucket::TYPE, entry.0);
+                put64(&mut bytes, cell + reference_bucket::OBJECT, entry.1);
+                max_distance = max_distance.max(distance);
+                if resident == 0 {
+                    break;
+                }
+                entry = displaced;
+                distance = resident;
+            }
+            index += 1;
+            distance = distance.checked_add(1).unwrap();
+        }
+    }
+    let overflow_distance = (MASK + 1).trailing_zeros() as u8 + 2;
+    assert!(max_distance <= overflow_distance + 1);
+    bytes[TABLE + creference_registry::OVERFLOW_DISTANCE] = overflow_distance;
+    bytes[REGISTRY
+        + (MASK + 1 + overflow_distance as usize) * reference_bucket::STRIDE
+        + reference_bucket::DISTANCE] = 255;
+    assert_eq!(
+        name_demand(&MemoryFixture { bytes, fault: None }, 0, STATE).unwrap(),
+        NameDemand {
+            rows: COUNT,
+            bytes: COUNT * 3,
+            named_bonuses: 0,
+            supply_origins: 0,
+        }
+    );
+}
+
 #[test]
 fn captures_the_roster_gun_motion_and_first_combat_without_map_entity_state() {
     let mut rows = [Row::default(); 1];
@@ -373,6 +947,11 @@ fn captures_the_roster_gun_motion_and_first_combat_without_map_entity_state() {
             ordinary_len: 2,
             alternate_start: 2,
             alternate_len: 1,
+            name: None,
+            eta: None,
+            supply: None,
+            supply_origins_start: 0,
+            supply_failure: None,
         }
     );
     assert_eq!(paths, [2, 1, 1]);

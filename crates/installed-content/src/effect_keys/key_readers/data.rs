@@ -1567,6 +1567,7 @@ pub(super) const KEY_READERS: &[(u32, KeyReader)] = &[
     (0x2749, READER_140496450),                  // add_scientist_level, 140496450
     (0x274A, READER_140496490),                  // add_scientist_xp, 140496490
     (0x274E, READER_14031BFE0),                  // remove_building, 14031BFE0
+    (0x2753, READER_1402F6D70),                  // every_active_scientist, 1402F6D70
     (0x2754, READER_1402F6ED0),                  // random_active_scientist, 1402F6ED0
     (0x275C, READER_1403ADCF0),                  // every_country, 1403ADCF0
     (0x2762, READER_1403AE630),                  // random_country, 1403AE630

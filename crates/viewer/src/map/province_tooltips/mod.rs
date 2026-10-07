@@ -58,6 +58,17 @@ impl Content {
         }
     }
 
+    /// Native border power getter for the unit attrition hover (1409C8D50).
+    pub(crate) fn border_ratio(
+        &self,
+        frame: &DecodedFrame,
+        country: u32,
+        state: u32,
+        links: &BTreeMap<u32, u32>,
+    ) -> Result<i64, String> {
+        border::ratio(self, frame, country, state, links)
+    }
+
     pub fn warnings(&self) -> Vec<String> {
         let mut warnings = match &self.units {
             Ok(units) => units.warnings().to_vec(),

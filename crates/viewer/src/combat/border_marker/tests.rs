@@ -435,7 +435,7 @@ fn border_marker_empty_enemy_description_has_no_enemy_heading_and_counts_failure
 }
 
 #[test]
-fn covered_event_keeps_text_and_operative_reader_refusal_still_suppresses_it() {
+fn covered_events_keep_supported_operative_text_and_refuse_missing_scoped_readers() {
     let root = std::env::temp_dir().join(format!(
         "hoi4-covered-border-events-{}-{:?}",
         std::process::id(),
@@ -445,7 +445,7 @@ fn covered_event_keeps_text_and_operative_reader_refusal_still_suppresses_it() {
     std::fs::create_dir_all(root.join("events")).unwrap();
     std::fs::write(
         root.join("events/synthetic.txt"),
-        b"add_namespace=s country_event={id=s.1 immediate={custom_effect_tooltip=TEXT}} operative_leader_event={id=s.2 title=TITLE}",
+        b"add_namespace=s country_event={id=s.1 immediate={custom_effect_tooltip=TEXT}} operative_leader_event={id=s.2 immediate={custom_effect_tooltip=TEXT}} operative_leader_event={id=s.3 title=TITLE option={name=A hidden_effect={remove_unit_leader_role={character=fixture}}}}",
     )
     .unwrap();
     let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
@@ -477,12 +477,23 @@ fn covered_event_keeps_text_and_operative_reader_refusal_still_suppresses_it() {
             &NoIcons,
             &loc,
         );
+        assert_eq!(text.body, "TEXT\n");
+        assert!(text.refused.is_empty());
+        let text = event_description(
+            &events.get(b"s.3").unwrap(),
+            false,
+            &describe,
+            &mut graph,
+            &render,
+            &NoIcons,
+            &loc,
+        );
         assert!(text.body.is_empty());
         assert_eq!(text.refused.values().sum::<usize>(), 1);
         assert!(
             text.refused
                 .keys()
-                .any(|key| key.contains("operative_leader_event"))
+                .any(|key| key.contains("scoped-object parser helper"))
         );
     });
 }

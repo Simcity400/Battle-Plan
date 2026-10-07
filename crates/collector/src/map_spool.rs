@@ -48,7 +48,12 @@ pub(crate) fn table_inputs(
             &captured.naval_combat_participants,
             projection.as_deref_mut(),
         ),
-        air_wings(&captured.air_wings, projection.as_deref_mut()),
+        air_wings(
+            &captured.air_wings,
+            &captured.air_wing_names,
+            captured.air_wing_names_len,
+            projection.as_deref_mut(),
+        ),
         army_orders(
             &captured.orders.rows,
             &captured.orders.geometry,
@@ -325,30 +330,69 @@ fn naval_participants(
 
 fn air_wings(
     captured: &CaptureRows<cair_wing::Row>,
+    names: &[u8],
+    names_len: usize,
     projection: Option<&mut Projection<'_>>,
 ) -> TableInput {
-    scalar_table::<tables::AirWings, _>(
+    let rows = match source(captured, captured.outcome) {
+        Ok(rows) => rows,
+        Err(failure) => return failure,
+    };
+    let names = names.get(..names_len);
+    // Invalid name spans refuse this field only, retaining the old columns.
+    let name = |row: &cair_wing::Row| {
+        names.and_then(|bytes| row.name.and_then(|(start, len)| range(bytes, start, len)))
+    };
+    let scalar = |row: &cair_wing::Row| AirWingRow {
+        id: row.id,
+        owner: row.owner,
+        country_override: row.country_override,
+        air_base: row.air_base,
+        base_override: row.base_override,
+        planes: row.planes,
+        mission_mask: row.mission_mask,
+        mission_region: row.mission_region,
+        base_range_raw: row.base_range_raw,
+        ace: row.ace,
+        mission_active: row.mission_active,
+        eligibility_veto: row.eligibility_veto,
+        eligibility_counter: row.eligibility_counter,
+        eligibility_limit: row.eligibility_limit,
+        attached_orders_group: row.attached_orders_group,
+        pool_ordinal: row.pool_ordinal,
+        name: replay::rows::Recorded::Value(None),
+    };
+    project_table::<tables::AirWings, _>(
         projection,
         captured.outcome,
-        &captured.rows,
+        rows,
         |row| u128::from(row.id),
+        |row, previous| {
+            row.id == previous.id
+                && row.owner == previous.owner
+                && row.country_override == previous.country_override
+                && row.air_base == previous.air_base
+                && row.base_override == previous.base_override
+                && row.planes == previous.planes
+                && row.mission_mask == previous.mission_mask
+                && row.mission_region == previous.mission_region
+                && row.base_range_raw == previous.base_range_raw
+                && row.ace == previous.ace
+                && row.mission_active == previous.mission_active
+                && row.eligibility_veto == previous.eligibility_veto
+                && row.eligibility_counter == previous.eligibility_counter
+                && row.eligibility_limit == previous.eligibility_limit
+                && row.attached_orders_group == previous.attached_orders_group
+                && row.pool_ordinal == previous.pool_ordinal
+                && matches!(&previous.name, replay::rows::Recorded::Value(value) if value.as_deref() == name(row))
+        },
         |row| AirWingRow {
-            id: row.id,
-            owner: row.owner,
-            country_override: row.country_override,
-            air_base: row.air_base,
-            base_override: row.base_override,
-            planes: row.planes,
-            mission_mask: row.mission_mask,
-            mission_region: row.mission_region,
-            base_range_raw: row.base_range_raw,
-            ace: row.ace,
-            mission_active: row.mission_active,
-            eligibility_veto: row.eligibility_veto,
-            eligibility_counter: row.eligibility_counter,
-            eligibility_limit: row.eligibility_limit,
-            attached_orders_group: row.attached_orders_group,
-            pool_ordinal: row.pool_ordinal,
+            name: replay::rows::Recorded::Value(
+                name(row).map(|bytes| {
+                    engine::allocation::owned_vec(engine::allocation::copy_vec(bytes))
+                }),
+            ),
+            ..scalar(row)
         },
     )
 }
@@ -423,6 +467,34 @@ fn tables(captured: &MapCaptured) -> [TableView; 10] {
 mod tests {
     use super::*;
     use replay::rows::TableRows;
+
+    #[test]
+    fn stored_air_wing_name_projection_preserves_bytes_and_refuses_only_bad_spans() {
+        let mut captured = fixture();
+        captured.air_wing_names = vec![0xff, 0, b'W'];
+        captured.air_wing_names_len = 3;
+        for (span, expected) in [
+            (Some((0, 3)), Some(vec![0xff, 0, b'W'])),
+            (Some((3, 0)), Some(Vec::new())),
+            (Some((2, 2)), None),
+            (None, None),
+        ] {
+            captured.air_wings.rows[0].name = span;
+            let TableView::Complete(TableRows::AirWings(rows)) = sampled(air_wings(
+                &captured.air_wings,
+                &captured.air_wing_names,
+                captured.air_wing_names_len,
+                None,
+            )) else {
+                panic!("complete wing census")
+            };
+            assert_eq!(rows[0].name, replay::rows::Recorded::Value(expected));
+            assert_eq!(
+                (rows[0].planes, rows[0].owner, rows[0].id),
+                (i32::MIN, u32::MAX, u64::MAX)
+            );
+        }
+    }
 
     #[test]
     fn native_projection_preserves_all_map_fields_and_current_arena_failures() {
@@ -620,6 +692,7 @@ mod tests {
                 eligibility_counter: i32::MIN,
                 eligibility_limit: i32::MAX,
                 attached_orders_group: Some(u64::MAX),
+                name: None,
             }],
         );
         set(
@@ -724,6 +797,7 @@ mod tests {
                 eligibility_counter: i32::MIN,
                 eligibility_limit: i32::MAX,
                 attached_orders_group: Some(u64::MAX),
+                name: replay::rows::Recorded::Value(None),
             }]),
             TableRows::ArmyOrders(vec![ArmyOrderRow {
                 owner_group: u64::MAX,

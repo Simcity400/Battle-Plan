@@ -1,6 +1,44 @@
 use super::*;
 
 #[test]
+fn a_refused_flag_preserves_known_naval_counts_and_other_country_flags() {
+    let reason = "country 7 original tag is not recorded".to_owned();
+    let flags = Flags::from([(7, Err(reason.clone())), (8, Ok("BBB".to_owned()))]);
+    let mut out = Bindings::default();
+    for side in 0..2 {
+        let mut values = Values::new();
+        descriptions(&mut out, &mut values, 7, 3, side, 56.0, &flags);
+        let (count, flag) = if side == 0 {
+            ("desc_right", "desc_left")
+        } else {
+            ("desc_left", "desc_right")
+        };
+        assert_eq!(values[count].text.as_deref(), Some("3"));
+        assert!(!values[count].hidden);
+        assert!(values[flag].hidden);
+        assert!(values[flag].text.is_none());
+    }
+    let missing = NavalResultShip {
+        owner: 7,
+        ..Default::default()
+    };
+    let known = NavalResultShip {
+        owner: 8,
+        ..Default::default()
+    };
+    let mut values = Values::new();
+    text(&mut values, "number", "2");
+    result_flags(&mut out, &mut values, &[&missing, &known], &flags);
+    assert_eq!(values["number"].text.as_deref(), Some("2"));
+    assert!(values["country_flag_left"].hidden);
+    assert!(values["country_flag_left"].flag.is_none());
+    assert_eq!(values["country_flag_right"].flag.as_deref(), Some("BBB"));
+    assert!(!values["country_flag_right"].hidden);
+    assert!(values["country_flag_center"].hidden);
+    assert_eq!(out.refused().get(&reason), Some(&3));
+}
+
+#[test]
 fn forward_land_and_carrier_air_share_the_native_group_rule() {
     let make = |source| NavalCombatPlane {
         source: 0,

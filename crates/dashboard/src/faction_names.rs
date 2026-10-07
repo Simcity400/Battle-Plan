@@ -11,13 +11,15 @@ use replay::{
 };
 use std::{collections::BTreeMap, sync::OnceLock};
 
-/// Spell the template operand recorded at this hour. Lexer tokens are sorted
-/// by token in the wire table, so each faction lookup is logarithmic.
+/// Spell the template operand recorded at this hour. A null template needs no
+/// dictionary; unread tokens remain errors. Lexer tokens are sorted by token.
 pub(crate) fn template_spelling(
     frame: &DecodedFrame,
     token: Option<u32>,
-) -> Result<String, String> {
-    let token = token.ok_or_else(|| "Faction template is not recorded".to_owned())?;
+) -> Result<Option<String>, String> {
+    let Some(token) = token else {
+        return Ok(None);
+    };
     let lexical = frame
         .complete::<tables::LexicalTokens>()
         .map_err(|reason| format!("LexicalTokens is not recorded completely: {reason}"))?;
@@ -25,15 +27,17 @@ pub(crate) fn template_spelling(
         .binary_search_by_key(&token, |row| row.token)
         .map_err(|_| format!("Faction template token {token} has no LexicalTokens spelling"))?;
     String::from_utf8(lexical[index].literal.clone())
+        .map(Some)
         .map_err(|_| format!("Faction template token {token} is not UTF-8"))
 }
 
 /// `CFaction::display_name@140D77360` copies a nonempty literal unchanged;
-/// otherwise `1404A7A00` resolves the template's bound name (`+0xD0`).
+/// otherwise `1404A7A00` resolves the template's bound name (`+0xD0`). A recorded
+/// null template returns empty text without reading content or lexer tokens.
 /// The bound scalar may be a key or text: the localiser copies undefined keys.
 pub(crate) fn name(
     literal: &[u8],
-    template: Result<&str, String>,
+    template: Result<Option<&str>, String>,
     templates: Result<&Catalog, String>,
     localisation: &Localisation,
     recorded_language: &str,
@@ -47,7 +51,9 @@ pub(crate) fn name(
             "faction name (140D77360)",
         );
     }
-    let token = template?;
+    let Some(token) = template? else {
+        return Ok(String::new());
+    };
     let bound = templates?
         .get(token)?
         .ok_or_else(|| format!("Faction template {token:?} is not in the recorded content"))?;
@@ -266,7 +272,7 @@ mod tests {
         );
         let loc = loaded("l_english:\n ROOT:0 \"$FIRST$ / $SECOND$\"\n CHILD:0 \"Pact $ID$\"\n");
         let mut reads = Vec::new();
-        let name = name(b"", Ok("pact"), Ok(&db), &loc, "english", |token| {
+        let name = name(b"", Ok(Some("pact")), Ok(&db), &loc, "english", |token| {
             reads.push(token.to_vec());
             Ok(Some(if token == b"first" { 31 } else { 47 }))
         });
@@ -281,7 +287,11 @@ mod tests {
              empty={name={ignored=value}} missing={name={localization_key=ROOT ID=token:absent}}",
         );
         let loc = loaded("l_english:\n ROOT:0 \"Pact $ID$\"\n");
-        let resolved = |token| name(b"", Ok(token), Ok(&db), &loc, "english", |_| Ok(Some(99)));
+        let resolved = |token| {
+            name(b"", Ok(Some(token)), Ok(&db), &loc, "english", |_| {
+                Ok(Some(99))
+            })
+        };
         assert!(
             resolved("token")
                 .unwrap_err()
@@ -294,9 +304,38 @@ mod tests {
         );
         assert!(resolved("empty").unwrap_err().contains("has no bound name"));
         assert!(
-            name(b"", Ok("missing"), Ok(&db), &loc, "english", |_| Ok(None))
-                .unwrap_err()
-                .contains("token absent is absent from LexicalTokens")
+            name(b"", Ok(Some("missing")), Ok(&db), &loc, "english", |_| Ok(
+                None
+            ))
+            .unwrap_err()
+            .contains("token absent is absent from LexicalTokens")
+        );
+    }
+
+    #[test]
+    fn a_recorded_null_template_is_empty_but_unread_template_inputs_remain_errors() {
+        let loc = loaded("l_english:\n");
+        assert_eq!(
+            name(
+                b"",
+                Ok(None),
+                Err("content gap".into()),
+                &loc,
+                "english",
+                |_| { panic!("a null template must not read lexer tokens") }
+            ),
+            Ok(String::new()),
+        );
+        assert_eq!(
+            name(
+                b"",
+                Err("dictionary gap".into()),
+                Err("content gap".into()),
+                &loc,
+                "english",
+                |_| panic!("unread template input must stop before arguments"),
+            ),
+            Err("dictionary gap".into()),
         );
     }
 

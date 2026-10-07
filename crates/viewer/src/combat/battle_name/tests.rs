@@ -93,13 +93,15 @@ fn candidates_are_the_regions_states_in_first_appearance_order() {
 }
 
 /// 140E68E30 qualifies with the state owner's original tag or tag
-/// (1406DF830), from CountryAppearance.name_tag, never the current tag of
-/// a dynamic country; missing rows are refused by table.
+/// (1406DF830), from its independent exact suffix; missing rows are refused.
 #[test]
 fn the_victory_point_tag_is_the_state_owners_original_tag() {
     use replay::{
         frame::TableView,
-        rows::{CountryAppearanceRow, CountryLinkRow, CountryRow, StateRow, TableId, TableRows},
+        rows::{
+            CountryAppearanceRow, CountryLinkRow, CountryRow, Recorded, ReservedCountryNamingRow,
+            StateRow, TableId, TableRows,
+        },
     };
     let mut frame = DecodedFrame {
         branch: 0,
@@ -157,17 +159,20 @@ fn the_victory_point_tag_is_the_state_owners_original_tag() {
         vp_tag(&frame, 7, &states, true)
             .unwrap()
             .unwrap_err()
-            .starts_with("the CountryAppearance table is incomplete this hour")
+            .contains("CountryAppearance is incomplete this hour")
     );
     *frame.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(vec![
             CountryAppearanceRow {
                 country: 70,
-                name_tag: b"CHI".to_vec(),
+                original_tag_reference: Recorded::Value(Some(1)),
+                original_tag: Recorded::Value(Some(b"CHI".to_vec())),
                 ..Default::default()
             },
             CountryAppearanceRow {
                 country: 80,
+                original_tag_reference: Recorded::Value(Some(0)),
+                original_tag: Recorded::Value(Some(Vec::new())),
                 ..Default::default()
             },
         ]));
@@ -177,8 +182,7 @@ fn the_victory_point_tag_is_the_state_owners_original_tag() {
         vp_tag(&frame, 9, &states, true).unwrap(),
         Err("state 9 has no States row".into())
     );
-    // No state: the country at index 0 (140BA4BB0), here without an
-    // original tag; a null owner link resolves there too (140BA56A0).
+    // No state and a null owner link resolve the separate reserved zero object.
     let states = [
         states[0].clone(),
         StateRow {
@@ -187,31 +191,38 @@ fn the_victory_point_tag_is_the_state_owners_original_tag() {
             ..Default::default()
         },
     ];
-    assert_eq!(
-            vp_tag(&frame, 0, &states, true).unwrap(),
-            Err("the country at index 0, which a province without a state qualifies with (140BA4BB0) has no Countries row".into())
-        );
-    let TableView::Complete(TableRows::Countries(countries)) =
-        &mut *frame.tables[TableId::Countries.index()]
-    else {
-        unreachable!()
-    };
-    countries.push(CountryRow {
-        id: 1,
-        canonical_slot: 0,
-        tag: b"REB".to_vec(),
-        ..Default::default()
-    });
-    let TableView::Complete(TableRows::CountryAppearance(appearance)) =
-        &mut *frame.tables[TableId::CountryAppearance.index()]
-    else {
-        unreachable!()
-    };
-    appearance.push(CountryAppearanceRow {
-        country: 1,
-        ..Default::default()
-    });
+    assert!(
+        vp_tag(&frame, 0, &states, true)
+            .unwrap()
+            .unwrap_err()
+            .contains("ReservedCountryNaming")
+    );
+    *frame.tables[TableId::ReservedCountryNaming.index()] =
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            ReservedCountryNamingRow {
+                tag: b"ZERO".to_vec(),
+                original_tag_reference: Recorded::Value(Some(1)),
+                original_tag: Recorded::Value(Some(b"REB".to_vec())),
+                ..Default::default()
+            },
+        ]));
     assert_eq!(vp_tag(&frame, 0, &states, true).unwrap(), Ok("REB".into()));
+    assert_eq!(vp_tag(&frame, 5, &states, true).unwrap(), Ok("REB".into()));
+    if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *frame.tables[TableId::CountryAppearance.index()]
+    {
+        rows[0].original_tag = Recorded::NotRecorded;
+    }
+    assert!(
+        vp_tag(&frame, 7, &states, true)
+            .unwrap()
+            .unwrap_err()
+            .contains("CountryAppearance.original_tag not recorded")
+    );
+    // Reserved success stays independent of unavailable positive-country rows.
+    *frame.tables[TableId::Countries.index()] = TableView::Unavailable {
+        reason: "unrelated positive roster".into(),
+    };
     assert_eq!(vp_tag(&frame, 5, &states, true).unwrap(), Ok("REB".into()));
 }
 

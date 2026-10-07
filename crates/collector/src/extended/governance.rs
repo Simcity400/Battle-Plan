@@ -23,7 +23,7 @@ use replay::{
 };
 use std::mem::size_of;
 
-pub const N: usize = 23;
+pub const N: usize = 25;
 
 pub const TABLES: [TableId; N] = [
     TableId::Focus,
@@ -49,6 +49,8 @@ pub const TABLES: [TableId; N] = [
     TableId::ResearchModifiers,
     TableId::PartyLeaders,
     TableId::PowerBalanceModifierBreakdowns,
+    TableId::TimedIdeas,
+    TableId::DecisionRandomItems,
 ];
 /// Name, local cost anchor and local members. Reports sum member ticks;
 /// physically shared walks charge their anchor once and leave followers zero.
@@ -72,6 +74,8 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
         18,
         &[18, 19, 20],
     ),
+    ("Timed ideas", 23, &[23]),
+    ("Decision random counts", 24, &[24]),
 ];
 
 /// Callback-local inputs for an exclusively owned governance acquisition.
@@ -97,6 +101,8 @@ pub struct Capacities {
     definition_text: usize,
     party_text: usize,
     idea_text: usize,
+    timed_idea_text: usize,
+    random_item_text: usize,
     decision_text: usize,
     modifier_text: usize,
     modifier_values: usize,
@@ -117,12 +123,14 @@ impl Default for Capacities {
         Self {
             rows: [
                 512, 8192, 32768, 2048, 4096, 512, 2048, 16384, 512, 8192, 4096, 512, 128, 1024,
-                128, 512, 1024, 512, 2048, 4096, 16384, 2048, 0,
+                128, 512, 1024, 512, 2048, 4096, 16384, 2048, 0, 0, 0,
             ],
             focus_text: 131072,
             definition_text: 262144,
             party_text: 32768,
             idea_text: 262144,
+            timed_idea_text: 0,
+            random_item_text: 0,
             decision_text: 262144,
             modifier_text: 131072,
             modifier_values: 16384,
@@ -141,6 +149,18 @@ impl Default for Capacities {
     }
 }
 impl Capacities {
+    pub(crate) fn raise_for_effect_inputs(
+        &mut self,
+        timed: cpolitical_status::IdeaDemand,
+        random: cdecision_status::RandomItemDemand,
+    ) {
+        use crate::country_scale::{raise, rows};
+        raise(&mut self.rows[23], rows(timed.rows, 1));
+        raise(&mut self.rows[24], rows(random.rows, 1));
+        raise(&mut self.timed_idea_text, rows(timed.bytes, 1));
+        raise(&mut self.random_item_text, rows(random.bytes, 1));
+    }
+
     /// One row per canonical country for Focus, Politics, DecisionCounts and
     /// the preferred-tactic table; PoliticalParties (and its country arena)
     /// one per country and ideology group, ResearchSlots and ResearchInputs
@@ -191,6 +211,8 @@ pub struct Captured {
     parties: CaptureRows<cpolitical_party::Row>,
     party_leaders: CaptureRows<cpolitical_party::LeaderRow>,
     ideas: CaptureRows<cpolitical_status::IdeaRow>,
+    timed_ideas: CaptureRows<cpolitical_status::TimedIdeaRow>,
+    random_items: CaptureRows<cdecision_status::RandomItemRow>,
     counts: CaptureRows<CountryRow<cdecision_status::Counts>>,
     decisions: CaptureRows<cdecision_status::Row>,
     modifiers: CaptureRows<cdynamic_modifier_container::Row>,
@@ -208,6 +230,8 @@ pub struct Captured {
     definition_text: Arena<u8>,
     party_text: Arena<u8>,
     idea_text: Arena<u8>,
+    timed_idea_text: Arena<u8>,
+    random_item_text: Arena<u8>,
     decision_text: Arena<u8>,
     modifier_text: Arena<u8>,
     modifier_values: Arena<i64>,
@@ -458,6 +482,8 @@ impl Captured {
             definition_text: 0,
             party_text: 0,
             idea_text: 0,
+            timed_idea_text: 0,
+            random_item_text: 0,
             decision_text: 0,
             modifier_text: 0,
             modifier_values: 0,
@@ -487,6 +513,8 @@ impl Captured {
             parties: CaptureRows::new(capacity.rows[6]),
             party_leaders: CaptureRows::new(capacity.rows[21]),
             ideas: CaptureRows::new(capacity.rows[7]),
+            timed_ideas: CaptureRows::new(capacity.rows[23]),
+            random_items: CaptureRows::new(capacity.rows[24]),
             counts: CaptureRows::new(capacity.rows[8]),
             decisions: CaptureRows::new(capacity.rows[9]),
             effect_tokens: Arena::new(capacity.effect_tokens),
@@ -511,6 +539,8 @@ impl Captured {
             definition_text: Arena::new(capacity.definition_text),
             party_text: Arena::new(capacity.party_text),
             idea_text: Arena::new(capacity.idea_text),
+            timed_idea_text: Arena::new(capacity.timed_idea_text),
+            random_item_text: Arena::new(capacity.random_item_text),
             decision_text: Arena::new(capacity.decision_text),
             modifier_text: Arena::new(capacity.modifier_text),
             modifier_values: Arena::new(capacity.modifier_values),
@@ -595,6 +625,8 @@ impl Captured {
             research_modifiers = 20,
             research_inputs = 18,
             party_leaders = 21,
+            timed_ideas = 23,
+            random_items = 24,
         );
         self.breakdown_outcome = Outcome::Unavailable { reason };
         CaptureReport::default()
@@ -609,6 +641,8 @@ impl Captured {
         self.politics.reset();
         self.parties.reset();
         self.ideas.reset();
+        self.timed_ideas.reset();
+        self.random_items.reset();
         self.counts.reset();
         self.decisions.reset();
         self.effect_tokens.reset();
@@ -634,6 +668,8 @@ impl Captured {
         self.definition_text.reset();
         self.party_text.reset();
         self.idea_text.reset();
+        self.timed_idea_text.reset();
+        self.random_item_text.reset();
         self.decision_text.reset();
         self.modifier_text.reset();
         self.modifier_values.reset();
@@ -654,6 +690,8 @@ impl Captured {
             + self.politics.allocated_bytes()
             + self.parties.allocated_bytes()
             + self.ideas.allocated_bytes()
+            + self.timed_ideas.allocated_bytes()
+            + self.random_items.allocated_bytes()
             + self.counts.allocated_bytes()
             + self.decisions.allocated_bytes()
             + self.effect_tokens.allocated_bytes()
@@ -693,6 +731,8 @@ impl Captured {
             + self.definition_text.allocated_bytes()
             + self.party_text.allocated_bytes()
             + self.idea_text.allocated_bytes()
+            + self.timed_idea_text.allocated_bytes()
+            + self.random_item_text.allocated_bytes()
             + self.decision_text.allocated_bytes()
             + self.modifier_text.allocated_bytes()
             + self.modifier_values.allocated_bytes()
@@ -715,6 +755,8 @@ impl Captured {
         self.politics.grow(&mut capacity.rows[5]);
         self.parties.grow(&mut capacity.rows[6]);
         self.ideas.grow(&mut capacity.rows[7]);
+        self.timed_ideas.grow(&mut capacity.rows[23]);
+        self.random_items.grow(&mut capacity.rows[24]);
         self.counts.grow(&mut capacity.rows[8]);
         self.decisions.grow(&mut capacity.rows[9]);
         self.effect_tokens.grow(&mut capacity.effect_tokens);
@@ -741,6 +783,8 @@ impl Captured {
         self.definition_text.grow(&mut capacity.definition_text);
         self.party_text.grow(&mut capacity.party_text);
         self.idea_text.grow(&mut capacity.idea_text);
+        self.timed_idea_text.grow(&mut capacity.timed_idea_text);
+        self.random_item_text.grow(&mut capacity.random_item_text);
         self.decision_text.grow(&mut capacity.decision_text);
         self.modifier_text.grow(&mut capacity.modifier_text);
         self.modifier_values.grow(&mut capacity.modifier_values);
@@ -778,6 +822,8 @@ impl Captured {
             self.research_modifiers.outcome,
             self.party_leaders.outcome,
             self.breakdown_outcome,
+            self.timed_ideas.outcome,
+            self.random_items.outcome,
         ]
     }
 
@@ -931,6 +977,45 @@ impl Captured {
         let _reads = read_accounting::table(TABLES[22]);
         self.capture_breakdowns(memory, base, game_state);
         ticks[22] = elapsed(started);
+        for index in [23, 24] {
+            if !walk[index] {
+                let outcome = Outcome::Unavailable {
+                    reason: replay::cadence::SKIPPED_REASON,
+                };
+                if index == 23 {
+                    self.timed_ideas.outcome = outcome;
+                } else {
+                    self.random_items.outcome = outcome;
+                }
+                continue;
+            }
+            let _reads = read_accounting::table(TABLES[index]);
+            let started = qpc();
+            if index == 23 {
+                let result = cpolitical_status::walk_timed_ideas(
+                    memory,
+                    base,
+                    game_state,
+                    &mut self.timed_ideas.rows,
+                    &mut self.timed_idea_text.first,
+                );
+                self.timed_ideas.outcome = result.outcome;
+                self.timed_idea_text.len = result.bytes_len;
+                self.timed_idea_text.required = result.required_bytes;
+            } else {
+                let result = cdecision_status::walk_random_items(
+                    memory,
+                    base,
+                    game_state,
+                    &mut self.random_items.rows,
+                    &mut self.random_item_text.first,
+                );
+                self.random_items.outcome = result.outcome;
+                self.random_item_text.len = result.bytes_len;
+                self.random_item_text.required = result.required_bytes;
+            }
+            ticks[index] = elapsed(started);
+        }
         ticks
     }
     fn capture_breakdowns(&mut self, memory: &impl Memory, base: usize, state: usize) {
@@ -1715,6 +1800,8 @@ impl Captured {
         let focus = &self.focus_text.first[..self.focus_text.len];
         let parties = &self.party_text.first[..self.party_text.len];
         let ideas = &self.idea_text.first[..self.idea_text.len];
+        let timed_ideas = &self.timed_idea_text.first[..self.timed_idea_text.len];
+        let random_items = &self.random_item_text.first[..self.random_item_text.len];
         let decisions = &self.decision_text.first[..self.decision_text.len];
         let modifiers = &self.modifier_text.first[..self.modifier_text.len];
         let values = &self.modifier_values.first[..self.modifier_values.len];
@@ -2081,6 +2168,27 @@ impl Captured {
                 },
             )),
             wrap(self.breakdowns_table()),
+            wrap(view::<tables::TimedIdeas, _>(
+                &self.timed_ideas,
+                |r| valid(timed_ideas, r.token_start, r.token_len),
+                |r| rows::TimedIdeaRow {
+                    country: r.country,
+                    ordinal: r.ordinal,
+                    token: copy_span(timed_ideas, r.token_start, r.token_len),
+                    days: r.days,
+                },
+            )),
+            wrap(view::<tables::DecisionRandomItems, _>(
+                &self.random_items,
+                |r| valid(random_items, r.token_start, r.token_len),
+                |r| rows::DecisionRandomItemRow {
+                    country: r.country,
+                    ordinal: r.ordinal,
+                    token: copy_span(random_items, r.token_start, r.token_len),
+                    count: r.count,
+                    target: r.target as u32,
+                },
+            )),
         ]
     }
 }

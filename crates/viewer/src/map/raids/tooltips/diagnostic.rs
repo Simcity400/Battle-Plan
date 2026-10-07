@@ -577,7 +577,7 @@ impl Context<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::raids::tests::{assets, frame as base_frame, put};
+    use crate::map::raids::tests::{assets, positive_frame as base_frame, put};
     use replay::rows::{
         CountryAppearanceRow, LexicalTokenRow, PoliticsRow, RaidCooldownRow, RaidCountryRow,
         RaidTooltipOperandRow,
@@ -637,7 +637,7 @@ mod tests {
             loc: &loc,
             recorded_language: &loc.language,
             scripted_content: &Err("no scripted content in this test".into()),
-            ours: 0,
+            ours: 2,
             countries: installed_content::country_names::CountryNames::read(frame, &loc),
             flag_exists: &|_| true,
             scripted: Default::default(),
@@ -725,7 +725,7 @@ mod tests {
         put::<tables::RaidCountries>(
             &mut frame,
             vec![RaidCountryRow {
-                canonical_slot: 0,
+                canonical_slot: 2,
                 country: 10,
                 used_types: vec![100],
                 ..Default::default()
@@ -741,7 +741,7 @@ mod tests {
                 .into_iter()
                 .enumerate()
                 .map(|(ordinal, days)| RaidCooldownRow {
-                    owner_slot: 0,
+                    owner_slot: 2,
                     ordinal: ordinal as u32,
                     raid_type: 100,
                     scope: scope.clone(),
@@ -753,7 +753,7 @@ mod tests {
             let (result, lines) = context.conditions(
                 &kind,
                 &scope,
-                Scopes::of(Scope::Country(0)),
+                Scopes::of(Scope::Country(2)),
                 true,
                 Some(Ok(Some(1))),
             );
@@ -779,12 +779,12 @@ mod tests {
             assert_eq!(lines[10].1.as_deref(), Ok("Source country"));
             assert!(lines.iter().all(|(_, text)| text.is_ok()), "{lines:?}");
             let (_, preparation) =
-                context.conditions(&kind, &scope, Scopes::of(Scope::Country(0)), false, None);
+                context.conditions(&kind, &scope, Scopes::of(Scope::Country(2)), false, None);
             assert_eq!(preparation.len(), 8);
             let (_, no_source) = context.conditions(
                 &kind,
                 &scope,
-                Scopes::of(Scope::Country(0)),
+                Scopes::of(Scope::Country(2)),
                 true,
                 Some(Ok(None)),
             );
@@ -812,7 +812,7 @@ mod tests {
                 context.conditions(
                     &kind,
                     &RaidScope::default(),
-                    Scopes::of(Scope::Country(0)),
+                    Scopes::of(Scope::Country(2)),
                     true,
                     None
                 ),
@@ -825,7 +825,7 @@ mod tests {
                 context.conditions(
                     &kind,
                     &RaidScope::default(),
-                    Scopes::of(Scope::Country(0)),
+                    Scopes::of(Scope::Country(2)),
                     true,
                     None
                 ),

@@ -28,6 +28,161 @@ fn base() -> (DecodedFrame, Save) {
 }
 
 #[test]
+fn hq_distance_oracle_compares_zero_positive_and_negative_save_omission() {
+    let (mut frame, mut save) = base();
+    let group = (7 << 32) | 53;
+    set(
+        &mut frame,
+        TableRows::OrdersGroups(vec![replay::rows::OrdersGroupRow {
+            handle: group,
+            ..Default::default()
+        }]),
+    );
+    for (actual, saved, differences) in [
+        (i32::MIN, None, 0),
+        (-7, None, 0),
+        (-1, None, 0),
+        (0, Some(0), 0),
+        (i32::MAX, Some(i32::MAX), 0),
+        (0, None, 1),
+        (-1, Some(0), 1),
+        (7, Some(8), 1),
+    ] {
+        let suffix = saved
+            .map(|value| format!("distance={value}"))
+            .unwrap_or_default();
+        let text = format!(
+            "countries={{GER={{theatres={{theatre={{id={{id=2 type=67}} orders_group={{id={{id=7 type=53}} name=Army field_marshal_group=no motorization_level=0 {suffix}}}}}}}}}}}"
+        );
+        save.naval_history = installed_content::save::naval_history::parse(
+            &installed_content::parser::parse(text.as_bytes()).unwrap().items,
+        )
+        .unwrap();
+        set(
+            &mut frame,
+            TableRows::OrdersGroupCounterInputs(vec![replay::rows::OrdersGroupCounterInputRow {
+                group,
+                withdrawing: 0,
+                hq_distance: Recorded::Value(Some(actual)),
+                ..Default::default()
+            }]),
+        );
+        let mut report = Report::default();
+        groups(&frame, &save, &mut report).unwrap();
+        assert_eq!(
+            report.differences.len(),
+            differences,
+            "{actual} {saved:?}: {:?}",
+            report.differences
+        );
+    }
+    for (distance, expected_reason) in [
+        (
+            Recorded::NotRecorded,
+            "OrdersGroupCounterInputs.hq_distance not recorded",
+        ),
+        (Recorded::Value(None), "HQ distance unreadable at capture"),
+    ] {
+        set(
+            &mut frame,
+            TableRows::OrdersGroupCounterInputs(vec![replay::rows::OrdersGroupCounterInputRow {
+                group,
+                withdrawing: 0xff,
+                hq_distance: distance,
+                ..Default::default()
+            }]),
+        );
+        let mut report = Report::default();
+        groups(&frame, &save, &mut report).unwrap();
+        assert_eq!(
+            report.differences.len(),
+            1,
+            "withdrawing remains independently compared"
+        );
+        assert!(report.limitations.contains_key(expected_reason));
+    }
+}
+
+#[test]
+fn invasion_source_distance_oracle_preserves_negative_omission_and_hq_comparison() {
+    let (mut frame, mut save) = base();
+    let group = (7 << 32) | 53;
+    set(
+        &mut frame,
+        TableRows::OrdersGroups(vec![replay::rows::OrdersGroupRow {
+            handle: group,
+            ..Default::default()
+        }]),
+    );
+    for (actual, saved, differences) in [
+        (i32::MIN, None, 0),
+        (-7, None, 0),
+        (-1, None, 0),
+        (0, Some(0), 0),
+        (i32::MAX, Some(i32::MAX), 0),
+        (0, None, 1),
+        (-1, Some(0), 1),
+        (7, Some(8), 1),
+    ] {
+        let suffix = saved
+            .map(|value| format!("hq_distance_to_naval_invasion_source={value}"))
+            .unwrap_or_default();
+        let text = format!(
+            "countries={{GER={{theatres={{theatre={{id={{id=2 type=67}} orders_group={{id={{id=7 type=53}} name=Army field_marshal_group=no motorization_level=0 distance=31 {suffix}}}}}}}}}}}"
+        );
+        save.naval_history = installed_content::save::naval_history::parse(
+            &installed_content::parser::parse(text.as_bytes()).unwrap().items,
+        )
+        .unwrap();
+        set(
+            &mut frame,
+            TableRows::OrdersGroupCounterInputs(vec![replay::rows::OrdersGroupCounterInputRow {
+                group,
+                hq_distance: Recorded::Value(Some(31)),
+                invasion_source_distance: Recorded::Value(Some(actual)),
+                ..Default::default()
+            }]),
+        );
+        let mut report = Report::default();
+        groups(&frame, &save, &mut report).unwrap();
+        assert_eq!(
+            report.differences.len(),
+            differences,
+            "{actual} {saved:?}: {:?}",
+            report.differences
+        );
+    }
+    for (distance, expected_reason) in [
+        (
+            Recorded::NotRecorded,
+            "OrdersGroupCounterInputs.invasion_source_distance not recorded",
+        ),
+        (
+            Recorded::Value(None),
+            "invasion-source distance unreadable at capture",
+        ),
+    ] {
+        set(
+            &mut frame,
+            TableRows::OrdersGroupCounterInputs(vec![replay::rows::OrdersGroupCounterInputRow {
+                group,
+                hq_distance: Recorded::Value(Some(32)),
+                invasion_source_distance: distance,
+                ..Default::default()
+            }]),
+        );
+        let mut report = Report::default();
+        groups(&frame, &save, &mut report).unwrap();
+        assert_eq!(
+            report.differences.len(),
+            1,
+            "known HQ distance is still compared"
+        );
+        assert!(report.limitations.contains_key(expected_reason));
+    }
+}
+
+#[test]
 fn historical_roster_fields_keep_existing_country_counter_comparisons() {
     let (mut frame, save) = base();
     set(
@@ -207,6 +362,7 @@ fn naval_country_and_supply_membership_inputs_compare_with_saved_rules() {
     save.counter_inputs = counter_inputs::Pack {
         sent_volunteers: Default::default(),
         first_divisions: Default::default(),
+        division_orders: Default::default(),
         prides: [(b"GER".to_vec(), Some(pride))].into(),
         fleets: [(
             fleet,

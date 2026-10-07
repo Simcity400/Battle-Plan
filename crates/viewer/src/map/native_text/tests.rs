@@ -37,6 +37,7 @@ fn limits(width: i32) -> Limits {
         height: i32::MAX,
         border: [0; 2],
         newlines: true,
+        preserve_indent: false,
         ellipsis: false,
         multiline: true,
         special: true,
@@ -73,6 +74,84 @@ fn lines_break_as_the_game_breaks_them() {
     assert_eq!(laid("AV\nx", limits(100)), ("AV\nx".into(), vec![12, 7]));
 }
 
+/// Tooltip prewrap's final flag copies literal leading spaces (`1422861E0`,
+/// `142283E90`, `142287190`). Hard LF and formatting prefixes retain their own text.
+#[test]
+fn tooltip_soft_wrap_preserves_literal_leading_spaces() {
+    let indent = Limits {
+        preserve_indent: true,
+        ..limits(25)
+    };
+    // A pending word moves with the indent; a longer word also breaks within itself.
+    assert_eq!(laid(" ab cd", indent), (" ab \n cd".into(), vec![18, 18]));
+    assert_eq!(
+        laid(" ab cdef", indent),
+        (" ab \n cd\n ef".into(), vec![18, 18, 18])
+    );
+    assert_eq!(
+        laid(" ab cd\nxy", indent),
+        (" ab \n cd\nxy".into(), vec![18, 18, 14])
+    );
+    // The helper starts after LF only; it neither skips a colour control nor a tab.
+    assert_eq!(
+        laid(&format!("{COLOR}R ab cd"), indent),
+        (format!("{COLOR}R ab \ncd"), vec![18, 14])
+    );
+    assert_eq!(
+        laid("\t ab cd", indent),
+        ("\t ab \ncd".into(), vec![18, 14])
+    );
+    // Two spaces reach width 8 exactly: the helper must stop copying them.
+    assert_eq!(
+        laid("  x", Limits { width: 8, ..indent }),
+        (" \n  \nx".into(), vec![0, 4, 7])
+    );
+    // The ordinary layout leaves continuation indentation disabled.
+    assert_eq!(
+        laid(" ab cd", limits(25)),
+        (" ab \ncd".into(), vec![18, 14])
+    );
+}
+
+/// `142285B10` reads the space through the normal descriptor lookup: its `?`
+/// fallback supplies the advance, or a missing descriptor leaves advance zero.
+#[test]
+fn tooltip_indent_uses_space_descriptor_fallback() {
+    struct MissingSpace(bool);
+    impl Glyphs for MissingSpace {
+        fn own(&self, ch: char) -> Option<Glyph> {
+            if ch == ' ' || (ch == '?' && self.0) {
+                None
+            } else {
+                Mono.own(ch)
+            }
+        }
+        fn kerning(&self, a: char, b: char) -> i32 {
+            Mono.kerning(a, b)
+        }
+        fn line_height(&self) -> i32 {
+            14
+        }
+    }
+    let chars: Vec<char> = " abcd".chars().collect();
+    for (missing_fallback, width, expected_widths) in
+        [(false, 25, vec![21, 21]), (true, 15, vec![14, 14])]
+    {
+        let laid = lay_out(
+            &MissingSpace(missing_fallback),
+            &|_| None,
+            &chars,
+            Limits {
+                preserve_indent: true,
+                ..limits(width)
+            },
+        )
+        .unwrap();
+        assert_eq!(laid.text.iter().collect::<String>(), " ab\n cd");
+        assert_eq!(laid.widths, expected_widths);
+    }
+}
+
 /// A single-line box stops at the first overflow or line feed; `truncate` ends it with three
 /// dots that fit where the last characters were.
 #[test]
@@ -88,6 +167,7 @@ fn cut_text_ends_with_three_dots() {
                 height: 20,
                 border: [0; 2],
                 newlines: false,
+                preserve_indent: false,
                 ellipsis: true,
                 multiline: false,
                 special: true,

@@ -6,11 +6,12 @@ use installed_content::localisation::Argument as Arg;
 use installed_content::localisation::Localisation;
 use replay::{
     frame::DecodedFrame,
-    rows::{RaidRow, RaidTooltipOperandRow, tables},
+    rows::{RaidRow, RaidTooltipOperandRow, Recorded, tables},
 };
 
 pub struct Name<'a> {
     rows: Vec<&'a RaidTooltipOperandRow>,
+    wing_name: Option<&'a Recorded<Option<Vec<u8>>>>,
 }
 
 impl<'a> Name<'a> {
@@ -22,7 +23,12 @@ impl<'a> Name<'a> {
             .iter()
             .filter(|r| r.raid == id)
             .collect();
-        let out = Self { rows };
+        let wing_name = frame
+            .complete::<tables::AirWings>()
+            .ok()
+            .and_then(|wings| wings.iter().find(|wing| wing.id == raid.air_wing))
+            .map(|wing| &wing.name);
+        let out = Self { rows, wing_name };
         if out.rows.iter().any(|r| r.kind == UNREADABLE) {
             return Err("raid operands were unreadable when recorded".into());
         }
@@ -113,6 +119,23 @@ impl<'a> Name<'a> {
             return self.member(content, NAME, NAME_GROUP, CUSTOM_NAME, 0);
         }
         if self.value(NAME, WING_RESOLVED)? != 0 {
+            match self.wing_name {
+                Some(Recorded::Value(Some(bytes))) => {
+                    return dashboard::scripted_text::stored_text(
+                        loc,
+                        recorded_language,
+                        bytes,
+                        "raid wing name",
+                    );
+                }
+                Some(Recorded::Value(None)) => {
+                    return Err(
+                        "AirWings stored wing name unavailable: guarded read or name arena refusal"
+                            .into(),
+                    );
+                }
+                Some(Recorded::NotRecorded) | None => {}
+            }
             if let Ok(code) = self.value(WING_NAME, u32::MAX)
                 && code < 0
             {
@@ -192,6 +215,89 @@ impl<'a> Name<'a> {
 mod tests {
     use super::super::super::tests::{frame, put};
     use super::*;
+    #[test]
+    fn raid_names_prefer_recorded_wing_text_and_keep_old_format_fallback() {
+        let raid = RaidRow {
+            id: 9,
+            reference_type: 91,
+            air_wing: 123,
+            ..Default::default()
+        };
+        let id = u64::from(raid.id) << 32 | u64::from(raid.reference_type);
+        let mut frame = frame();
+        let mut loc = Localisation::default();
+        loc.language = "english".into();
+        put::<tables::RaidTooltipOperands>(
+            &mut frame,
+            [
+                (REFERENCES, 0, 0),
+                (REFERENCES, 1, 123),
+                (NAME, ARMY_RESOLVED, 0),
+                (NAME, WING_RESOLVED, 1),
+                (WING_NAME, u32::MAX, 6),
+                (WING_NAME, 0, i64::from_le_bytes(*b"Legacy\0\0")),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, (kind, key, raw))| RaidTooltipOperandRow {
+                raid: id,
+                ordinal: ordinal as u32,
+                kind,
+                key,
+                raw,
+            })
+            .collect(),
+        );
+        for (name, expected) in [
+            (
+                Recorded::Value(Some(b"Stored %d [Root.GetTag]".to_vec())),
+                Ok("Stored %d [Root.GetTag]"),
+            ),
+            (Recorded::Value(Some(Vec::new())), Ok("")),
+            (
+                Recorded::Value(None),
+                Err("guarded read or name arena refusal"),
+            ),
+            (Recorded::NotRecorded, Ok("Legacy")),
+        ] {
+            put::<tables::AirWings>(
+                &mut frame,
+                vec![replay::rows::AirWingRow {
+                    id: raid.air_wing,
+                    name,
+                    ..Default::default()
+                }],
+            );
+            let name = Name::new(&frame, &raid).unwrap();
+            match expected {
+                Ok(expected) => assert_eq!(
+                    name.raw(&Content::default(), &loc, "english").as_deref(),
+                    Ok(expected)
+                ),
+                Err(expected) => assert!(
+                    name.raw(&Content::default(), &loc, "english")
+                        .unwrap_err()
+                        .contains(expected)
+                ),
+            }
+        }
+        put::<tables::AirWings>(
+            &mut frame,
+            vec![replay::rows::AirWingRow {
+                id: raid.air_wing,
+                name: Recorded::Value(Some(b"Stored".to_vec())),
+                ..Default::default()
+            }],
+        );
+        loc.language = "french".into();
+        assert!(
+            Name::new(&frame, &raid)
+                .unwrap()
+                .raw(&Content::default(), &loc, "english")
+                .unwrap_err()
+                .contains("stored in english without its key")
+        );
+    }
     #[test]
     fn raid_wing_name_recorded_text_produces_native_coloured_find_line() {
         let raid = RaidRow {

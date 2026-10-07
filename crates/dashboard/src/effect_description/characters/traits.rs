@@ -188,26 +188,36 @@ impl Renderer<'_, '_, '_> {
                 }
                 first = false;
                 text.push_str(&" ".repeat(stripped.len() + 4));
-                let (_, name, positive) = installed_content::equipment::STAT_METADATA[index];
-                text.push_str(&self.char_native_text(name.as_bytes(), &[], scopes, false)?);
-                // 1413D0370 uses a defined per-stat _MOD_DIFF, else the
-                // native sign-polarity fallback (14309B650).
-                let candidate = format!("{name}_MOD_DIFF");
-                let key: &[u8] = if self.context.localisation.get(&candidate).is_some() {
-                    candidate.as_bytes()
-                } else if positive {
-                    b"STAT_MODIFIER_DIFF"
-                } else {
-                    b"STAT_MODIFIER_DIFF_NEG"
-                };
-                text.push_str(&self.char_native_text(
-                    key,
-                    &[("VALUE", Argument::Fixed5(value.value))],
-                    scopes,
-                    false,
-                )?);
+                text.push_str(&self.char_equipment_stat_difference(index, value.value, scopes)?);
             }
         }
+        Ok(text)
+    }
+
+    // 1413D0370 uses a defined per-stat _MOD_DIFF, else the native
+    // sign-polarity fallback. Shared by traits and swap-idea differentials.
+    pub(in crate::effect_description) fn char_equipment_stat_difference(
+        &self,
+        index: usize,
+        value: i64,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let (_, name, positive) = installed_content::equipment::STAT_METADATA[index];
+        let mut text = self.char_native_text(name.as_bytes(), &[], scopes, false)?;
+        let candidate = format!("{name}_MOD_DIFF");
+        let key: &[u8] = if self.context.localisation.get(&candidate).is_some() {
+            candidate.as_bytes()
+        } else if positive {
+            b"STAT_MODIFIER_DIFF"
+        } else {
+            b"STAT_MODIFIER_DIFF_NEG"
+        };
+        text.push_str(&self.char_native_text(
+            key,
+            &[("VALUE", Argument::Fixed5(value))],
+            scopes,
+            false,
+        )?);
         Ok(text)
     }
 
@@ -309,7 +319,11 @@ impl Renderer<'_, '_, '_> {
     }
 
     // 140FFFDD0 -> 140FFF670, fixed native key construction and line order.
-    fn char_adjuster_lines(&self, adjuster: &Adjuster, scopes: Scopes) -> Result<String, String> {
+    pub(in crate::effect_description) fn char_adjuster_lines(
+        &self,
+        adjuster: &Adjuster,
+        scopes: Scopes,
+    ) -> Result<String, String> {
         let mut text = String::new();
         for (stat, value) in [
             ("MOVEMENT", adjuster.movement),
@@ -676,7 +690,7 @@ impl Renderer<'_, '_, '_> {
             character = Some(current);
         }
         if character.is_none()
-            && let Scope::Country(country) = scopes.this
+            && let Scope::Country(country) | Scope::CountryLeader { country, .. } = scopes.this
             && country > 0
         {
             character = self.char_ruling_leader(country)?;

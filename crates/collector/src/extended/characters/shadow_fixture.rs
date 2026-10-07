@@ -23,6 +23,7 @@ pub(crate) fn character_shadow_fixture(value: u8) -> Captured {
             character: (index + 3) as u32,
             country: u32::from(value),
             ideology: -7,
+            ..Default::default()
         };
         captured.advisors.rows.rows[index] = cadvisor::Row {
             character: (index + 3) as u32,

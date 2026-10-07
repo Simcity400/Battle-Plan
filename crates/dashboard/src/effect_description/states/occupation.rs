@@ -27,9 +27,9 @@ impl Renderer<'_, '_, '_> {
         positive_good: bool,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // 142257CE0 inserts '+' for zero too; the shared formatter does not.
+        // 142257CE0's zero branch keeps '+'@142719C4C and yellow controls.
         if value == 0 {
-            return Err("zero value needs FormatColoredFixed5Value@142257CE0's '+' prefix (142719C4C), unavailable in the shared formatter".into());
+            return Ok("\u{11}Y+0.0%\u{11}!".to_owned());
         }
         crate::modifier_text::value_text(
             &ModifierDefinitionRow {

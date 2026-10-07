@@ -47,7 +47,9 @@ Combat hovers reject transparent text and follow graphical attach order
 use the normal show delay (`1402A2810`, `1402A4080`). Naval header skills use
 recorded component values and retained definitions (`141DF4270`, `140AD9010`);
 trait hovers share the land reader and use recorded timed traits for live and
-result commanders (`141C5F730`, `140C0B3C0`, `140C07810`). A historical timed-trait
+result commanders (`141C5F730`, `140C0B3C0`, `140C07810`). Naval grids use context 2,
+land grids context 4; only naval shows the field-marshal-only inactivity warning.
+A historical timed-trait
 gap refuses only the trait hover by field name and counts it.
 
 Unseen combat icons retain established frames. Without history, the owner ruling

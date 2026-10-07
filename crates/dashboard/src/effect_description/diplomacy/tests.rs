@@ -5,6 +5,328 @@ use EventObject::{Country as C, State as S};
 use replay::{frame::TableView, rows::*};
 
 #[test]
+fn create_wargoal_uses_owned_type_recipient_subjects_and_claim_subset() {
+    let mut fixture = Fixture::new();
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/test.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+        ),
+        (
+            "common/wargoals/a.txt",
+            "wargoal_types={SynGoal={} other={}}",
+        ),
+        ("common/wargoals/b.txt", "wargoal_types={SYNGOAL={}}"),
+        (
+            "localisation/test_l_english.yml",
+            concat!(
+                "\u{feff}l_english:\n AAA:0 \"Alpha\"\n BBB:0 \"Beta\"\n CCC:0 \"Gamma\"\n",
+                " SynGoal:0 \"Claim [This.GetTag]\"\n SYNGOAL:0 \"Wrong duplicate\"\n",
+                " EFFECT_CREATE_WARGOAL:0 \"$COUNTRY$/$WARGOAL$/$TARGET$ [This.GetTag]/[Root.GetTag]\"\n",
+            ),
+        ),
+    ]);
+    fixture.catalogue = catalogue;
+    fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .set_synthetic_environment(Default::default());
+    let scripted = fixture.catalogue.scripted_content().unwrap();
+    let cached = scripted.effects().unwrap();
+    std::fs::write(
+        _folder.0.join("common/wargoals/a.txt"),
+        "wargoal_types={Changed={}}",
+    )
+    .unwrap();
+    assert!(std::ptr::eq(cached, scripted.effects().unwrap()));
+    assert_eq!(
+        cached
+            .view(None)
+            .wargoals
+            .unwrap()
+            .find(b"syngoal")
+            .unwrap(),
+        Some(b"SynGoal".as_slice())
+    );
+    *fixture.frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![
+            LexicalTokenRow {
+                token: 10,
+                literal: b"syngoal".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 20,
+                literal: b"other".to_vec(),
+            },
+        ]));
+    *fixture.frame.tables[TableId::CountryLinks.index()] =
+        TableView::Complete(TableRows::CountryLinks(vec![
+            CountryLinkRow {
+                id: 100,
+                canonical_slot: 1,
+            },
+            CountryLinkRow {
+                id: 200,
+                canonical_slot: 2,
+            },
+            CountryLinkRow {
+                id: 201,
+                canonical_slot: 2,
+            },
+            CountryLinkRow {
+                id: 300,
+                canonical_slot: 3,
+            },
+        ]));
+    *fixture.frame.tables[TableId::CountryAppearance.index()] =
+        TableView::Complete(TableRows::CountryAppearance(vec![
+            CountryAppearanceRow {
+                country: 100,
+                subjects: vec![].into(),
+                ..Default::default()
+            },
+            CountryAppearanceRow {
+                country: 200,
+                subjects: vec![300].into(),
+                ..Default::default()
+            },
+            CountryAppearanceRow {
+                country: 300,
+                subjects: vec![100].into(),
+                ..Default::default()
+            },
+        ]));
+    let names = installed_content::key_names::KeyNames::default();
+    let content = Content {
+        key_names: Some(&names),
+        ..Default::default()
+    };
+    let visible = "Alpha/Claim AAA/Beta AAA/AAA\n";
+    for (country, recipient, goal_type, states, generator, expected) in [
+        (100, 200, 10, vec![1, 2], "generator={1}", ""),
+        (100, 201, 10, vec![1, 2], "generator={2 1 2}", ""),
+        (100, 300, 10, vec![1, 2], "generator={1}", ""),
+        (100, 100, 10, vec![1], "generator={1}", visible), // Descendant, not direct subject.
+        (200, 200, 10, vec![1], "generator={1}", visible), // Another owner.
+        (100, 200, 20, vec![1], "generator={1}", visible), // Another type.
+        (100, 200, 10, vec![1], "generator={2}", visible),
+        (100, 200, 10, vec![], "generator={2}", ""), // Empty existing states cover all.
+        (100, 200, 10, vec![1], "", ""),
+        (100, 200, 10, vec![1], "generator=ROOT", ""), // Own text never executes the generator.
+        (100, 200, 10, vec![1], "generator=all", ""),
+        (100, 200, 10, vec![1], "generator={}", ""),
+        (100, 200, 10, vec![0], "generator={999 -1 invalid}", ""), // Null pointer membership.
+        (100, 200, 10, vec![1], "generator={0}", visible),
+        (100, 200, 10, vec![1], "generator={01 0x1}", ""), // Native %i, not decimal.
+    ] {
+        *fixture.frame.tables[TableId::OwnedWargoals.index()] =
+            TableView::Complete(TableRows::OwnedWargoals(vec![OwnedWargoalRow {
+                country,
+                recipient,
+                goal_type,
+                states,
+                ..Default::default()
+            }]));
+        let mut scopes = EventScopes::new(vec![EventScope::of(C(1))]);
+        let body = format!("create_wargoal={{target=BBB type=SYNGOAL {generator}}}");
+        let out = fixture.render_native(&body, &mut scopes, content);
+        assert_eq!(out.text, expected, "{body}");
+        assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals);
+    }
+    // The owned goal scan continues after a noncovering goal, never combining
+    // independent state sets to invent a covering goal.
+    for (sets, expected) in [
+        (vec![vec![1], vec![2]], visible),
+        (vec![vec![2], vec![1, 2]], ""),
+    ] {
+        *fixture.frame.tables[TableId::OwnedWargoals.index()] =
+            TableView::Complete(TableRows::OwnedWargoals(
+                sets.into_iter()
+                    .enumerate()
+                    .map(|(ordinal, states)| OwnedWargoalRow {
+                        country: 100,
+                        ordinal: ordinal as u32,
+                        recipient: 200,
+                        goal_type: 10,
+                        states,
+                    })
+                    .collect(),
+            ));
+        let out = fixture.render_native(
+            "create_wargoal={target=BBB type=SynGoal generator={1 2}}",
+            &mut EventScopes::new(vec![EventScope::of(C(1))]),
+            content,
+        );
+        assert_eq!(out.text, expected);
+        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    }
+}
+
+#[test]
+fn create_wargoal_keeps_missing_roster_and_subject_inputs_named_and_lazy() {
+    let mut fixture = Fixture::new();
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/test.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+        ),
+        (
+            "localisation/test_l_english.yml",
+            concat!(
+                "\u{feff}l_english:\n AAA:0 \"Alpha\"\n BBB:0 \"Beta\"\n",
+                " EFFECT_CREATE_WARGOAL:0 \"Goal $COUNTRY$/$WARGOAL$/$TARGET$\"\n",
+            ),
+        ),
+    ]);
+    fixture.catalogue = catalogue;
+    fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .set_synthetic_environment(Default::default());
+    let names = installed_content::key_names::KeyNames::default();
+    let database = installed_content::wargoals::parse(b"wargoal_types={SynGoal={}}", &names).unwrap();
+    let content = Content {
+        key_names: Some(&names),
+        wargoals: Some(&database),
+        ..Default::default()
+    };
+    *fixture.frame.tables[TableId::OwnedWargoals.index()] = TableView::Unavailable {
+        reason: "older format has no owned roster".into(),
+    };
+    for (body, refusal) in [
+        (
+            "create_wargoal={target=BBB type=SynGoal}",
+            Some("OwnedWargoals"),
+        ),
+        ("create_wargoal={target=BBB type=unknown}", None),
+        ("create_wargoal={target=BBB type=\"SynGoal\"}", None),
+        ("create_wargoal={target=BBB}", None),
+    ] {
+        let out = fixture.render_native(
+            body,
+            &mut EventScopes::new(vec![EventScope::of(C(1))]),
+            content,
+        );
+        assert_eq!(out.text, "");
+        if let Some(refusal) = refusal {
+            assert_eq!(out.refusals.values().sum::<usize>(), 1);
+            assert!(
+                out.refusals.keys().any(|key| key.contains(refusal)),
+                "{:?}",
+                out.refusals
+            );
+        } else {
+            assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+        }
+    }
+    *fixture.frame.tables[TableId::OwnedWargoals.index()] =
+        TableView::Complete(TableRows::OwnedWargoals(vec![OwnedWargoalRow {
+            country: 100,
+            recipient: 300,
+            goal_type: 10,
+            states: vec![],
+            ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::CountryAppearance.index()] =
+        TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
+            country: 200,
+            subjects: replay::rows::Recorded::NotRecorded,
+            ..Default::default()
+        }]));
+    let out = fixture.render_native(
+        "create_wargoal={target=BBB type=SynGoal}",
+        &mut EventScopes::new(vec![EventScope::of(C(1))]),
+        content,
+    );
+    assert!(
+        out.refusals
+            .keys()
+            .any(|key| key.contains("CountryAppearance.subjects")),
+        "{:?}",
+        out.refusals
+    );
+    // No owned goals need neither subject membership nor state pointer lookups.
+    if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
+    {
+        // The earlier subject-gap case replaced this table. The displayed
+        // source name still needs its own recorded naming operands.
+        rows.push(CountryAppearanceRow {
+            country: 100,
+            ..Default::default()
+        });
+        rows.sort_by_key(|row| row.country);
+    }
+    *fixture.frame.tables[TableId::OwnedWargoals.index()] =
+        TableView::Complete(TableRows::OwnedWargoals(vec![]));
+    *fixture.frame.tables[TableId::States.index()] = TableView::Unavailable {
+        reason: "synthetic missing states".into(),
+    };
+    let out = fixture.render_native(
+        "create_wargoal={target=BBB type=SynGoal generator={1}}",
+        &mut EventScopes::new(vec![EventScope::of(C(1))]),
+        content,
+    );
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    assert_eq!(out.text, "Goal Alpha/SynGoal/Beta\n");
+}
+
+#[test]
+fn create_wargoal_uses_the_complete_roster_at_1500_and_5000_countries() {
+    let mut fixture = Fixture::new();
+    let names = installed_content::key_names::KeyNames::default();
+    let database = installed_content::wargoals::parse(b"wargoal_types={SynGoal={}}", &names).unwrap();
+    let content = Content {
+        key_names: Some(&names),
+        wargoals: Some(&database),
+        ..Default::default()
+    };
+    *fixture.frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 10,
+            literal: b"syngoal".to_vec(),
+        }]));
+    for count in [1500, 5000] {
+        let countries = synthetic_countries(count);
+        let target = String::from_utf8(countries[0].tag.clone()).unwrap();
+        *fixture.frame.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(
+                countries
+                    .iter()
+                    .map(|row| CountryLinkRow {
+                        id: row.id,
+                        canonical_slot: row.canonical_slot,
+                    })
+                    .collect(),
+            ));
+        *fixture.frame.tables[TableId::OwnedWargoals.index()] =
+            TableView::Complete(TableRows::OwnedWargoals(
+                countries
+                    .iter()
+                    .map(|row| OwnedWargoalRow {
+                        country: row.id,
+                        recipient: countries[0].id,
+                        goal_type: 10,
+                        states: vec![1],
+                        ..Default::default()
+                    })
+                    .collect(),
+            ));
+        *fixture.frame.tables[TableId::Countries.index()] =
+            TableView::Complete(TableRows::Countries(countries));
+        let out = fixture.render_native(
+            &format!("create_wargoal={{target={target} type=SynGoal generator={{1}}}}"),
+            &mut EventScopes::new(vec![EventScope::of(C(count))]),
+            content,
+        );
+        assert_eq!(out.text, "");
+        assert!(out.refusals.is_empty(), "{count}: {:?}", out.refusals);
+    }
+}
+
+#[test]
 fn purchase_contract_uses_seller_roster_and_native_quantity_pool() {
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
@@ -190,8 +512,8 @@ fn purchase_contract_uses_seller_roster_and_native_quantity_pool() {
         ),
         (
             "equipment={type=syn_one amount=2} equipment={type=syn_two amount=3}",
-            "",
-            Some("version u8 +0x41C"),
+            "0/2 New CCC (ViewA), 3 Deep (ViewA)",
+            None,
         ),
         (
             "equipment={type=syn_one producer=AAA producer=0 amount=1}",
@@ -482,12 +804,32 @@ fn faction_influence_environment_keeps_links_and_scales_to_5000_countries() {
                     })
                     .collect(),
             ));
+        *fixture.frame.tables[TableId::CountryAppearance.index()] =
+            TableView::Complete(TableRows::CountryAppearance(
+                countries
+                    .iter()
+                    .map(|row| CountryAppearanceRow {
+                        country: row.id,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ));
+        *fixture.frame.tables[TableId::Politics.index()] =
+            TableView::Complete(TableRows::Politics(
+                countries
+                    .iter()
+                    .map(|row| PoliticsRow {
+                        country: row.id,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ));
         *fixture.frame.tables[TableId::Countries.index()] =
             TableView::Complete(TableRows::Countries(countries));
         *fixture.frame.tables[TableId::Factions.index()] =
             TableView::Complete(TableRows::Factions(vec![FactionRow {
                 id: 9,
-                name: b"SYN_FACTION".to_vec(),
+                name: b"Union".to_vec(), // CFaction stores the resolved literal name.
                 ..Default::default()
             }]));
         *fixture.frame.tables[TableId::FactionMembers.index()] =
@@ -1533,7 +1875,7 @@ fn diplomacy_native_output_branches() {
             C(1),
             2,
             "",
-            Some("claimed-state set"),
+            None,
         ),
         (
             "start_civil_war={ideology=synthetic size=0.5}",
@@ -1867,16 +2209,17 @@ fn diplomacy_native_output_branches() {
                 .all(|why| why.contains("autonomy states content unavailable"))
         );
     }
-    for (body, expected, refusal) in [
+    for (body, expected) in [
         (
             "add_to_war={enemy=ROOT.FROM targeted_alliance=FROM.ROOT}",
             "War Alpha/Beta\n",
-            None,
         ),
         (
             "add_to_war={enemy=ROOT.ROOT targeted_alliance=BBB}",
-            "",
-            Some("origin_country fallback"),
+            // 14036C350 follows the first ROOT to scope 1. Its terminal ROOT
+            // getter@14052B240 uses scope 1's country when linked scope 2 has
+            // neither a country nor a state.
+            "War Beta/Beta\n",
         ),
     ] {
         let mut graph = EventScopes::new(vec![
@@ -1898,22 +2241,52 @@ fn diplomacy_native_output_branches() {
         ]);
         let out = fixture.render(body, &mut graph, Content::default());
         assert_eq!(out.text, expected, "{body}: {:?}", out.refusals);
-        match refusal {
-            None => assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals),
-            Some(reason) => assert!(out.refusals.keys().any(|why| why.contains(reason))),
-        }
+        assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals);
     }
-    for (template_token, expected, refused) in [(None, "Spy \n", false), (Some(77), "", true)] {
+    // 140D77360 returns empty text for a genuine null template. A nonnull
+    // template still needs its recorded lexer spelling, even with empty text.
+    for (template_token, dictionary_gap, expected, refusal) in [
+        (None, true, "Spy \n", None),
+        (
+            Some(77),
+            false,
+            "",
+            Some("token 77 has no LexicalTokens spelling"),
+        ),
+        (
+            Some(77),
+            true,
+            "",
+            Some("LexicalTokens is not recorded completely"),
+        ),
+    ] {
         if let TableView::Complete(TableRows::Factions(rows)) =
             &mut *fixture.frame.tables[TableId::Factions.index()]
         {
             rows[0].name.clear();
             rows[0].template_token = template_token;
         }
+        *fixture.frame.tables[TableId::LexicalTokens.index()] = if dictionary_gap {
+            TableView::Unavailable {
+                reason: "synthetic missing template dictionary".into(),
+            }
+        } else {
+            TableView::Complete(TableRows::LexicalTokens(vec![]))
+        };
         let mut graph = EventScopes::new(vec![EventScope::of(C(1))]);
         let out = fixture.render("set_faction_spymaster=yes", &mut graph, Content::default());
         assert_eq!(out.text, expected, "{:?}", out.refusals);
-        assert_eq!(out.refusals.values().sum::<usize>(), usize::from(refused));
+        assert_eq!(
+            out.refusals.values().sum::<usize>(),
+            usize::from(refusal.is_some())
+        );
+        if let Some(reason) = refusal {
+            assert!(
+                out.refusals.keys().any(|why| why.contains(reason)),
+                "{:?}",
+                out.refusals
+            );
+        }
     }
 }
 

@@ -89,6 +89,7 @@ pub mod triggers;
 pub mod unit_leader;
 pub mod unit_path;
 pub mod variable_builtins;
+pub mod wargoals;
 pub mod weather;
 
 pub use content::{

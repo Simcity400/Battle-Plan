@@ -275,26 +275,26 @@ fn coded_effect_precedes_scope_and_scripted_name() {
 
 #[test]
 fn deferred_readers_keep_by_key_bodies_and_count_named_gaps() {
-    // Both class tokens have zero reach. every_active_scientist shares the
-    // ported every_character key-reader address but keeps its named refusal.
+    // ai_message remains deferred and reads by key. every_active_scientist
+    // now shares the ported character reader 1402F6D70: its ReadEffect tail
+    // skips an invalid block without defining anything in it.
     let read = read(b"body = { ai_message = { @seen = 1 unknown = @seen } ai_message = { unknown = 2 } every_active_scientist = { @flag = 2 invalid = { @hidden = 9 marker = 1 } } } final = @flag hidden = @hidden", &KeyNames::default());
     assert!(read.unsettled.is_none(), "{read:?}");
     assert_eq!(scalar(&read.items, "final"), b"2");
-    assert_eq!(scalar(&read.items, "hidden"), b"9");
+    assert_eq!(scalar(&read.items, "hidden"), b"@hidden");
+    let body = block(&read.items, "body");
+    assert_eq!(scalar(body[0].value.items().unwrap(), "unknown"), b"1");
+    assert!(block(block(body, "every_active_scientist"), "invalid").is_empty());
     let gaps: Vec<_> = read
         .misreads
         .iter()
         .filter(|note| note.count.is_some())
         .collect();
-    assert_eq!(gaps.len(), 2);
+    assert_eq!(gaps.len(), 1);
     assert!(gaps[0].what.contains("`ai_message`"));
     assert!(gaps[0].what.contains("0x140534280"));
     assert!(gaps[0].what.contains("0x1403AE870"));
     assert_eq!(gaps[0].count, Some(2));
-    assert!(gaps[1].what.contains("`every_active_scientist`"));
-    assert!(gaps[1].what.contains("0x140534280"));
-    assert!(gaps[1].what.contains("0x1402F6D70"));
-    assert_eq!(gaps[1].count, Some(1));
 }
 
 #[test]
@@ -403,11 +403,69 @@ fn focus_projection_keeps_the_native_originator_and_invalid_tooltip_boundary() {
     assert_eq!(projected.len(), 2);
     assert!(projected[0].keyword_is("tooltip"));
     assert!(projected[1].keyword_is("hidden_effect"));
-    assert!(
-        read_body(
-            b"complete_national_focus = { focus = SYN_FOCUS tooltip = SYN_INVALID }",
-            &KeyNames::default(),
-        )
-        .is_err()
+    let names = KeyNames::default();
+    let parsed = read_body(
+        b"complete_national_focus = { focus = SYN_FOCUS tooltip = SYN_INVALID hidden_effect = { add_stability = 1 } }",
+        &names,
+    ).unwrap();
+    let children = description_fields(&parsed[0]).unwrap();
+    assert_eq!(children.len(), 2);
+    // ReadEffect's known invalid-key skip is not an unported-reader refusal.
+    assert!(!adds_child(&children[0], &names).unwrap());
+    assert!(adds_child(&children[1], &names).unwrap());
+
+    let parsed = read(
+        b"body = { complete_national_focus = { focus = SYN_FOCUS tooltip = { @hidden = 9 } hidden_effect = { @seen = 3 add_stability = @seen } } } hidden = @hidden final = @seen",
+        &names,
     );
+    assert!(parsed.unsettled.is_none(), "{parsed:?}");
+    assert!(parsed.misreads.is_empty(), "{parsed:?}");
+    assert_eq!(scalar(&parsed.items, "hidden"), b"@hidden");
+    assert_eq!(scalar(&parsed.items, "final"), b"3");
+}
+
+#[test]
+fn active_scientist_projection_reuses_its_native_character_reader() {
+    // Both classes use key reader 1402F6D70. Its five own fields never
+    // enter the child array; other keys delegate to ReadEffect1405345D0.
+    let names = KeyNames::default();
+    for key in ["every_scientist", "every_active_scientist"] {
+        let text = format!(
+            "{key} = {{ tooltip = SYN_TOOLTIP limit = {{ always = yes }} visible_when_empty = yes display_individual_scopes = yes random_select_amount = 3 add_stability = 1 }}"
+        );
+        let items = read_body(text.as_bytes(), &names).unwrap();
+        let children = description_fields(&items[0]).unwrap();
+        assert_eq!(children.len(), 1, "{key}");
+        assert!(children[0].keyword_is("add_stability"), "{key}");
+        for own in [
+            "tooltip",
+            "limit",
+            "visible_when_empty",
+            "display_individual_scopes",
+            "random_select_amount",
+        ] {
+            assert!(
+                is_own_field(registered(key.as_bytes()).unwrap(), own.as_bytes()),
+                "{key}.{own}"
+            );
+        }
+    }
+}
+
+#[test]
+fn technology_scalar_effects_keep_their_operand_and_no_child_array() {
+    // Generic value reader 141385570 passes +0xC0 to vf6 directly.
+    // The stored scalar is independent of the empty child array +8/+0x14.
+    let names = KeyNames::default();
+    let items = read_body(
+        b"@source=BBB @enabled=yes inherit_technology=@source set_faction_research_unlocked=@enabled",
+        &names,
+    ).unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].value.scalar(), Some(b"BBB".as_slice()));
+    assert_eq!(items[1].value_keyword().as_deref(), Some("yes"));
+    for item in &items {
+        assert!(description_fields(item).unwrap().is_empty());
+        assert!(adds_child(item, &names).unwrap());
+    }
 }

@@ -4,6 +4,33 @@ fn fixture(input: &[u8]) -> io::Result<Pack> {
     parse(&crate::parser::parse(input)?.items)
 }
 
+#[test]
+fn scientist_active_preserves_native_boolean_presence() {
+    let pack = fixture(
+        br#"character_manager={historical={
+        character={id={id=1 type=73} token=a scientist={skills={} is_assigned=yes}}
+        character={id={id=2 type=73} token=b scientist={skills={}}}
+    }} countries={}"#,
+    )
+    .unwrap();
+    let manager = pack.manager.unwrap();
+    assert!(
+        manager.characters[&((1 << 32) | 73)]
+            .scientist
+            .as_ref()
+            .unwrap()
+            .active
+    );
+    assert!(
+        !manager.characters[&((2 << 32) | 73)]
+            .scientist
+            .as_ref()
+            .unwrap()
+            .active
+    );
+    assert!(fixture(br#"character_manager={historical={character={id={id=1 type=73} token=a scientist={skills={} is_assigned=invalid}}}} countries={}"#).is_err());
+}
+
 const SCIENTIST: &[u8] = br#"character_manager={ historical={
         character={
             id={ id=265 type=73 } token="AST_mark_oliphant" country="AST"

@@ -95,7 +95,11 @@ fn sharing_bonus_keeps_native_empty_gates() {
         );
     }
     let body = "modify_tech_sharing_bonus={id=SYN_GROUP bonus=0.03}";
-    for object in [EventObject::Country(0), EventObject::Country(2), EventObject::State(2)] {
+    for object in [
+        EventObject::Country(0),
+        EventObject::Country(2),
+        EventObject::State(2),
+    ] {
         let mut scopes = caller();
         scopes.scopes[0].this = object;
         assert_eq!(
@@ -106,7 +110,13 @@ fn sharing_bonus_keeps_native_empty_gates() {
     *fixture.frame.tables[TableId::TechSharingMembers.index()] = TableView::Unavailable {
         reason: "no group needs no members".into(),
     };
-    for groups in [vec![], vec![TechSharingGroupRow { id: 0x10010, ..Default::default() }]] {
+    for groups in [
+        vec![],
+        vec![TechSharingGroupRow {
+            id: 0x10010,
+            ..Default::default()
+        }],
+    ] {
         *fixture.frame.tables[TableId::TechSharingGroups.index()] =
             TableView::Complete(TableRows::TechSharingGroups(groups));
         assert_eq!(
@@ -140,7 +150,8 @@ fn sharing_bonus_counts_missing_recorded_membership() {
             why.contains("CModifyTechnologySharingBonusEffect")
                 && why.contains("missing sharing members")
         }),
-        "{:?}", output.refusals
+        "{:?}",
+        output.refusals
     );
 }
 
@@ -225,7 +236,9 @@ fn focus_bound_originator_is_named_and_counted() {
     assert_eq!(output.refusals.values().sum::<usize>(), 1);
     assert!(output.refusals.keys().all(|why| {
         why.contains("CCompleteNationalFocusEffect")
-            && why.contains("originator_name bound localisation block requires core formatter (1402F19A0)")
+            && why.contains(
+                "originator_name bound localisation block requires core formatter (1402F19A0)",
+            )
     }));
 }
 

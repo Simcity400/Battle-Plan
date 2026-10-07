@@ -8,7 +8,10 @@ fn native_scorer_entries_keep_target_arrays_filters_and_scores() {
     assert_eq!(entries.len(), 2);
     let entry = &entries[0];
     assert_eq!(entry.targets.arrays, [b"global.sample".to_vec()]);
-    assert_eq!(entry.targets.targets, [b"AAA".to_vec(), b"BBB".to_vec(), b"CCC".to_vec()]);
+    assert_eq!(
+        entry.targets.targets,
+        [b"AAA".to_vec(), b"BBB".to_vec(), b"CCC".to_vec()]
+    );
     assert_eq!(entry.targets.root_limit.len(), 1);
     assert_eq!(entry.targets.target_limit.len(), 1);
     assert!(!entry.targets.dynamic);
@@ -21,10 +24,19 @@ fn native_scorer_entries_keep_target_arrays_filters_and_scores() {
 #[test]
 fn duplicate_scorer_is_skipped_and_unknown_fields_are_named() {
     let mut database = Database::default();
-    database.read_file(b"sample={targets={targets={AAA}}} SAMPLE={targets={targets={BBB}}}", &KeyNames::default());
+    database.read_file(
+        b"sample={targets={targets={AAA}}} SAMPLE={targets={targets={BBB}}}",
+        &KeyNames::default(),
+    );
     database.read_file(b"sample={targets={targets={CCC}}}", &KeyNames::default());
-    assert_eq!(database.get(b"sample").unwrap().unwrap()[0].targets.targets, [b"AAA".to_vec()]);
+    assert_eq!(
+        database.get(b"sample").unwrap().unwrap()[0].targets.targets,
+        [b"AAA".to_vec()]
+    );
     database.read_file(b"bad={targets={unknown_field=yes}}", &KeyNames::default());
     let why = database.get(b"bad").unwrap_err();
-    assert!(why.contains("unknown_field") && why.contains("140A951D0"), "{why}");
+    assert!(
+        why.contains("unknown_field") && why.contains("140A951D0"),
+        "{why}"
+    );
 }

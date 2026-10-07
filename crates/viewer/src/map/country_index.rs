@@ -34,6 +34,9 @@ pub const TABLES: &[TableId] = &[
     TableId::CountryAppearance,
 ];
 
+/// Cosmetic prefix and the exact original-or-own tag, including its refusal.
+pub type FlagTags = (Result<String, String>, Result<String, String>);
+
 /// One hour's country identities, by raw link id and by canonical slot.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct CountryIndex {
@@ -43,10 +46,10 @@ pub struct CountryIndex {
     tags: BTreeMap<u32, String>,
     /// Canonical slot to the country's own raw link id, from `Countries`.
     ids: BTreeMap<u32, u32>,
-    /// Canonical slot to the cosmetic tag and the name tag its flag is chosen
+    /// Canonical slot to the cosmetic tag and exact original-or-own flag tag
     /// by, from `CountryAppearance`: whatever rows the hour holds, so a
     /// country the table lacks has none.
-    flag_tags: BTreeMap<u32, (String, String)>,
+    flag_tags: BTreeMap<u32, FlagTags>,
 }
 
 impl CountryIndex {
@@ -59,13 +62,27 @@ impl CountryIndex {
             .map(|link| (link.id, link.canonical_slot))
             .collect();
         let countries = core::<tables::Countries>(frame)?;
-        let flag_tags = rows::<tables::CountryAppearance>(frame)?
+        let by_slot: BTreeMap<_, _> = countries
+            .iter()
+            .map(|country| (country.canonical_slot, country))
+            .collect();
+        let appearances: BTreeMap<_, _> = rows::<tables::CountryAppearance>(frame)?
             .rows()
             .iter()
-            .filter_map(|row| {
+            .map(|row| (row.country, row))
+            .collect();
+        let flag_tags = by_slot
+            .iter()
+            .filter_map(|(&slot, country)| {
+                let row = appearances.get(&country.id)?;
                 Some((
-                    *links.get(&row.country)?,
-                    (text(&row.cosmetic_tag), text(&row.name_tag)),
+                    slot,
+                    (
+                        std::str::from_utf8(&row.cosmetic_tag)
+                            .map(str::to_owned)
+                            .map_err(|_| "country cosmetic tag is not UTF-8".into()),
+                        installed_content::country_names::original_tag(country, row).map(str::to_owned),
+                    ),
                 ))
             })
             .collect();
@@ -147,7 +164,7 @@ impl CountryIndex {
         not(test),
         expect(dead_code, reason = "used once the per-hour layers switch over")
     )]
-    pub fn flag_tags(&self) -> &BTreeMap<u32, (String, String)> {
+    pub fn flag_tags(&self) -> &BTreeMap<u32, FlagTags> {
         &self.flag_tags
     }
 }
@@ -195,6 +212,8 @@ mod tests {
                             Vec::new()
                         },
                         name_tag: tag(slot),
+                        original_tag: replay::rows::Recorded::Value(Some(Vec::new())),
+                        original_tag_reference: replay::rows::Recorded::Value(Some(0)),
                         ..Default::default()
                     })
                     .collect(),
@@ -227,9 +246,128 @@ mod tests {
         assert_eq!(index.links().len(), 3);
         assert_eq!(index.tag(2), Some("C002"));
         assert_eq!(index.ids()[&0], 1000);
-        assert_eq!(index.flag_tags()[&1], ("COS".to_owned(), "C001".to_owned()));
+        assert_eq!(
+            index.flag_tags()[&1],
+            (Ok("COS".to_owned()), Ok("C001".to_owned()))
+        );
         // The last country has no appearance row, so no flag tags.
         assert!(!index.flag_tags().contains_key(&2));
+    }
+
+    #[test]
+    fn the_flag_index_tracks_exact_original_tag_and_each_refusal() {
+        use replay::rows::Recorded;
+        let hour = |number, naming: &[u8], original| {
+            let [links, countries, appearance] = tables(3, 0);
+            let TableView::Complete(TableRows::CountryAppearance(rows)) = &*appearance else {
+                unreachable!();
+            };
+            let mut rows = rows.clone();
+            rows[1].name_tag = naming.to_vec();
+            rows[1].original_tag = original;
+            rows[1].original_tag_reference = Recorded::Value(Some(1));
+            frame(
+                number,
+                &[
+                    links,
+                    countries,
+                    SharedView::from(TableView::Complete(TableRows::CountryAppearance(rows))),
+                ],
+            )
+        };
+        let memo = CountryIndex::memo(4);
+        let known = CountryIndex::settled(
+            &memo,
+            &hour(1, b"GEN", Recorded::Value(Some(b"ORI".to_vec()))),
+        )
+        .unwrap();
+        assert_eq!(known.flag_tags()[&1].1.as_deref(), Ok("ORI"));
+        let renamed = CountryIndex::settled(
+            &memo,
+            &hour(2, b"OTHER", Recorded::Value(Some(b"ORI".to_vec()))),
+        )
+        .unwrap();
+        assert!(Arc::ptr_eq(&known, &renamed));
+        for (number, captured, reason) in [
+            (3, Recorded::Value(None), "original_tag capture refused"),
+            (4, Recorded::NotRecorded, "original_tag not recorded"),
+            (5, Recorded::Value(Some(vec![0xff])), "not UTF-8"),
+        ] {
+            let refused = CountryIndex::settled(&memo, &hour(number, b"GEN", captured)).unwrap();
+            assert!(!Arc::ptr_eq(&known, &refused));
+            assert!(
+                refused.flag_tags()[&1]
+                    .1
+                    .as_ref()
+                    .unwrap_err()
+                    .contains(reason)
+            );
+            assert_eq!(refused.tags(), known.tags());
+            assert_eq!(refused.links(), known.links());
+        }
+        let empty =
+            CountryIndex::read(&hour(6, b"GEN", Recorded::Value(Some(Vec::new())))).unwrap();
+        assert_eq!(empty.flag_tags()[&1].1.as_deref(), Ok(""));
+        for (captured, reason) in [
+            (
+                Recorded::Value(None),
+                "original_tag_reference capture refused",
+            ),
+            (Recorded::NotRecorded, "original_tag_reference not recorded"),
+        ] {
+            let mut frame = hour(7, b"GEN", Recorded::Value(Some(b"ORI".to_vec())));
+            let TableView::Complete(TableRows::CountryAppearance(rows)) =
+                &mut *frame.tables[TableId::CountryAppearance.index()]
+            else {
+                unreachable!()
+            };
+            rows[1].original_tag_reference = captured;
+            let refused = CountryIndex::settled(&memo, &frame).unwrap();
+            assert!(!Arc::ptr_eq(&known, &refused));
+            assert!(
+                refused.flag_tags()[&1]
+                    .1
+                    .as_ref()
+                    .unwrap_err()
+                    .contains(reason)
+            );
+        }
+    }
+
+    #[test]
+    fn alias_appearance_does_not_replace_the_resolved_country_objects_flag_inputs() {
+        let [links, countries, appearance] = tables(3, 0);
+        let TableView::Complete(TableRows::CountryLinks(link_rows)) = &*links else {
+            unreachable!()
+        };
+        let mut link_rows = link_rows.clone();
+        link_rows.push(CountryLinkRow {
+            id: 9000,
+            canonical_slot: 1,
+        });
+        let TableView::Complete(TableRows::CountryAppearance(appearance_rows)) = &*appearance
+        else {
+            unreachable!()
+        };
+        let mut appearance_rows = appearance_rows.clone();
+        let mut alias = appearance_rows[1].clone();
+        alias.country = 9000;
+        alias.cosmetic_tag = vec![0xff];
+        alias.original_tag_reference = replay::rows::Recorded::NotRecorded;
+        appearance_rows.push(alias);
+        let index = CountryIndex::read(&frame(
+            1,
+            &[
+                SharedView::from(TableView::Complete(TableRows::CountryLinks(link_rows))),
+                countries,
+                SharedView::from(TableView::Complete(TableRows::CountryAppearance(
+                    appearance_rows,
+                ))),
+            ],
+        ))
+        .unwrap();
+        assert_eq!(index.slot(9000), Some(1));
+        assert_eq!(index.flag_tags()[&1], (Ok("COS".into()), Ok("C001".into())));
     }
 
     /// `view`'s rows as a partial walk that missed one more.
@@ -318,7 +456,7 @@ mod tests {
         BTreeMap<u32, u32>,
         BTreeMap<u32, String>,
         BTreeMap<u32, u32>,
-        BTreeMap<u32, (String, String)>,
+        BTreeMap<u32, FlagTags>,
     )> {
         let links: BTreeMap<u32, u32> = core::<tables::CountryLinks>(frame)?
             .iter()
@@ -338,14 +476,28 @@ mod tests {
             .iter()
             .map(|country| (country.canonical_slot, country.id))
             .collect();
-        let flag_tags = super::super::tables::rows::<tables::CountryAppearance>(frame)?
-            .rows()
+        let by_slot: BTreeMap<_, _> = rows
             .iter()
-            .filter_map(|row| {
-                let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+            .map(|country| (country.canonical_slot, country))
+            .collect();
+        let appearances: BTreeMap<_, _> =
+            super::super::tables::rows::<tables::CountryAppearance>(frame)?
+                .rows()
+                .iter()
+                .map(|row| (row.country, row))
+                .collect();
+        let flag_tags = by_slot
+            .iter()
+            .filter_map(|(&slot, country)| {
+                let row = appearances.get(&country.id)?;
                 Some((
-                    *links.get(&row.country)?,
-                    (text(&row.cosmetic_tag), text(&row.name_tag)),
+                    slot,
+                    (
+                        std::str::from_utf8(&row.cosmetic_tag)
+                            .map(str::to_owned)
+                            .map_err(|_| "country cosmetic tag is not UTF-8".into()),
+                        installed_content::country_names::original_tag(country, row).map(str::to_owned),
+                    ),
                 ))
             })
             .collect();

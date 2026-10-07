@@ -67,6 +67,7 @@ mod country_appearance_tests {
 // Variable records borrow their typed values during encoding and allocate only on decode.
 opaque_value!(Option<Vec<u8>>);
 opaque_value!(Option<Vec<u32>>);
+opaque_value!(Option<Vec<Vec<u32>>>);
 opaque_value!(Option<Vec<u64>>);
 opaque_value!(Vec<i64>);
 opaque_value!(Vec<i32>);

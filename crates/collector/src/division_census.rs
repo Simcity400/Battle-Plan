@@ -366,6 +366,9 @@ impl Census {
         // is still visited, but only its native count is read, so the growth
         // demand covers the whole census in one step.
         let mut counting = false;
+        // Private scalar storage must not stop the independent native roster
+        // used by UnitIntel. Finish that roster before refusing the seeds.
+        let mut scalar_capacity_failed = false;
         let mut pointers = [0usize; BATCH];
         let mut pointer_bytes = [0u8; BATCH * 8];
         const POINTER: [RecordField; 1] = [RecordField {
@@ -455,6 +458,15 @@ impl Census {
                         self.overflowed = true;
                     } else {
                         self.entries.push(Entry { pointer, canonical });
+                        if inputs.seeds.len() == inputs.seeds.capacity() {
+                            scalar_capacity_failed = true;
+                        } else {
+                            inputs.seeds.push(carmy::DivisionSeed {
+                                pointer,
+                                country_ordinal: Some(first + i as u32),
+                                ..Default::default()
+                            });
+                        }
                     }
                 }
             }
@@ -478,15 +490,9 @@ impl Census {
         inputs.intel_outcome = Outcome::Rows {
             len: inputs.roster_slots.len(),
         };
-        if self.entries.len() > inputs.seeds.capacity() {
+        if scalar_capacity_failed || self.entries.len() > inputs.seeds.capacity() {
             self.overflowed = true;
             return Err("division owned scalar capacity exhausted");
-        }
-        for entry in &self.entries {
-            inputs.seeds.push(carmy::DivisionSeed {
-                pointer: entry.pointer,
-                ..Default::default()
-            });
         }
         carmy::capture_division_seeds(memory, &mut inputs.seeds);
         for seed in &mut inputs.seeds {

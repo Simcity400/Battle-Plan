@@ -4,6 +4,71 @@ use crate::rows::TerrainSpeed;
 const LAND: u8 = 1;
 const SEA: u8 = 0;
 
+#[test]
+fn railway_gun_first_edge_uses_captured_speed_content_distance_and_native_progress() {
+    use crate::rows::{RailwayGunEtaOperands, Recorded};
+    let mut gun = RailwayGunCounterInputRow {
+        gun: 74,
+        province: 1,
+        ordinary_path: vec![2, 3],
+        // Later targeted members still take part in a counter's first-edge minimum.
+        target: 3,
+        eta: Recorded::Value(Some(RailwayGunEtaOperands {
+            numerator: 50_000,
+            current_speed: 200_000,
+        })),
+        ..Default::default()
+    };
+    assert_eq!(
+        railway_gun_first_edge(&gun, land, |_, _| Some(300_000), &defines()),
+        Some(125_000)
+    );
+    assert_eq!(
+        railway_gun_first_edge(&gun, land, |_, _| None, &defines()),
+        None
+    );
+    let embark = |id| {
+        land(id).map(|mut row| {
+            if id == 1 {
+                row.terrain_flags = SEA;
+            }
+            row
+        })
+    };
+    assert_eq!(
+        railway_gun_first_edge(
+            &gun,
+            embark,
+            |_, _| panic!("embark uses its content define"),
+            &defines()
+        ),
+        Some(125_000)
+    );
+    // A self edge is skipped by the walk, but progress is still subtracted.
+    gun.ordinary_path[0] = 1;
+    assert_eq!(
+        railway_gun_first_edge(
+            &gun,
+            |_| panic!("no distance for self edge"),
+            |_, _| panic!("no distance for self edge"),
+            &defines()
+        ),
+        Some(-25_000)
+    );
+    for eta in [Recorded::NotRecorded, Recorded::Value(None)] {
+        gun.eta = eta;
+        assert_eq!(
+            railway_gun_first_edge(&gun, land, |_, _| Some(300_000), &defines()),
+            None
+        );
+    }
+    gun.ordinary_path.clear();
+    assert_eq!(
+        railway_gun_first_edge(&gun, land, |_, _| None, &defines()),
+        Some(0)
+    );
+}
+
 fn defines() -> Defines {
     Defines {
         embark_distance: 300_000,

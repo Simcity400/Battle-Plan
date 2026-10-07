@@ -2594,6 +2594,11 @@ fn worker_decodes_a_construction_rest_payload_into_the_same_typed_rows() {
     let shared = Shared::new(0, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+    // Runtime presizes the occupied-country arena before admission. This
+    // synthetic Shared has no live sizing observer; install the same fixture
+    // capacities used by the independent typed capture.
+    *frame.extended.construction_rest_pilot() =
+        crate::extended::construction::Captured::with_capacities(&kit::capacities());
     let direct = kit::direct(&memory, &kit::capacities());
     let ctx = ConstructionRestCopyContext {
         base: 0,

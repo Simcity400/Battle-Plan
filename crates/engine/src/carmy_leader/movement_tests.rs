@@ -472,3 +472,47 @@ fn terrain_preserves_signed_width_and_native_index_zero_fallback() {
     assert!(movement_terrain(&f, 0, LEADER, 0).is_err());
     assert!(movement_terrain(&f, usize::MAX, LEADER, 0).is_err());
 }
+
+#[test]
+fn counter_dig_in_factor_keeps_native_one_and_wrapping_commander_modifier() {
+    struct Definitions<'a>(&'a Fixture);
+    impl Memory for Definitions<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address == crate::modifier_definition::TABLE_RVA && output.len() == 8 {
+                output.copy_from_slice(&0x3000_0000_u64.to_le_bytes());
+                return true;
+            }
+            if (0x3000_0000..0x3004_0000).contains(&address) {
+                output.fill(0);
+                return true;
+            }
+            self.0.copy(address, output)
+        }
+    }
+    let mut fixture = Fixture::new();
+    fixture.flags = 0;
+    let mut seed = carmy::DivisionSeed {
+        pointer: ARMY,
+        orders_group: Some(0),
+        class: Some(0),
+        ..Default::default()
+    };
+    assert_eq!(
+        carmy::counter_dig_in_factor(&Definitions(&fixture), 0, &seed),
+        Ok(100_000)
+    );
+    seed.orders_group = Some(GROUP);
+    fixture.array(
+        LEADER + MOVEMENT_MODIFIER + MODIFIER_ACCUMULATOR,
+        MEMBERS,
+        1,
+    );
+    fixture.word(MEMBERS, crate::modifier_keys::COMBAT_ENTRENCHMENT as u64);
+    for modifier in [-150_000_i64, 17, i64::MAX] {
+        fixture.word(MEMBERS + 8, modifier as u64);
+        assert_eq!(
+            carmy::counter_dig_in_factor(&Definitions(&fixture), 0, &seed),
+            Ok(100_000_i64.wrapping_add(modifier))
+        );
+    }
+}

@@ -44,6 +44,38 @@ fn small() -> (Capacities, Captured) {
 }
 
 #[test]
+fn refused_scientist_activity_keeps_membership_and_skills() {
+    let (_, mut captured) = small();
+    captured.scientists.rows[0] = scientist_roster::Row {
+        country: 5_000,
+        character: 7,
+        skill_count: 1,
+        active: None,
+        ..Default::default()
+    };
+    captured.scientists.outcome = Outcome::Rows { len: 1 };
+    captured.scientist_skills.rows[0] = scientist_roster::SkillRow {
+        character: 7,
+        token: u32::MAX,
+        experience_raw: i64::MIN,
+        ..Default::default()
+    };
+    captured.scientist_skills.outcome = Outcome::Rows { len: 1 };
+    let tables = captured.tables();
+    let TableView::Complete(rows::TableRows::Scientists(scientists)) = &tables[8] else {
+        panic!("scientist membership lost");
+    };
+    assert_eq!(scientists[0].country, 5_000);
+    assert_eq!(scientists[0].skill_count, 1);
+    assert_eq!(scientists[0].active, rows::Recorded::Value(None));
+    let TableView::Complete(rows::TableRows::ScientistSkills(skills)) = &tables[9] else {
+        panic!("scientist specialization lost");
+    };
+    assert_eq!(skills[0].token, u32::MAX);
+    assert_eq!(skills[0].experience_raw, i64::MIN);
+}
+
+#[test]
 fn daily_project_siblings_do_no_inactive_native_work_after_shared_faults() {
     struct Unreadable;
     impl Memory for Unreadable {

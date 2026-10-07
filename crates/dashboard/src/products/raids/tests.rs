@@ -1554,6 +1554,7 @@ fn raids_selection_sizes_from_the_recording_and_reply_refuses_the_transport_budg
 
 #[test]
 fn raids_target_names_use_original_tags_and_empty_qualified_names_mask_bare_keys() {
+    use replay::rows::{Recorded, ReservedCountryNamingRow};
     let (_scratch, mut content) = mod_content();
     let cat = Arc::get_mut(&mut content.catalogue).unwrap();
     let mut entries: Vec<_> = cat
@@ -1570,6 +1571,7 @@ fn raids_target_names_use_original_tags_and_empty_qualified_names_mask_bare_keys
         ("GER_VICTORY_POINTS_101".into(), "Wrong current tag".into()),
         ("controls/mod_VICTORY_POINTS_101".into(), "§Y§!".into()),
         ("VICTORY_POINTS_101".into(), "Wrong bare retry".into()),
+        ("_VICTORY_POINTS_101".into(), "".into()),
     ]);
     let mut localisation: installed_content::localisation::Localisation = entries.into_iter().collect();
     localisation.language = "english".into();
@@ -1579,10 +1581,13 @@ fn raids_target_names_use_original_tags_and_empty_qualified_names_mask_bare_keys
         province: 101,
         ..Default::default()
     };
+    let country_id = observed.complete::<tables::Countries>().unwrap()[0].id;
     *observed.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
-            country: 9001,
-            name_tag: b"original/mod".to_vec(),
+            country: country_id,
+            name_tag: b"unrelated_generator".to_vec(),
+            original_tag_reference: Recorded::Value(Some(1)),
+            original_tag: Recorded::Value(Some(b"original/mod".to_vec())),
             ..Default::default()
         }]));
     assert_eq!(
@@ -1592,7 +1597,7 @@ fn raids_target_names_use_original_tags_and_empty_qualified_names_mask_bare_keys
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *observed.tables[TableId::CountryAppearance.index()]
     {
-        rows[0].name_tag = b"other/mod".to_vec();
+        rows[0].original_tag = Recorded::Value(Some(b"other/mod".to_vec()));
     }
     assert_eq!(
         target_name(&observed, &scope, &content).as_deref(),
@@ -1601,13 +1606,58 @@ fn raids_target_names_use_original_tags_and_empty_qualified_names_mask_bare_keys
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *observed.tables[TableId::CountryAppearance.index()]
     {
-        rows[0].name_tag = b"controls/mod".to_vec();
+        rows[0].original_tag = Recorded::Value(Some(b"controls/mod".to_vec()));
     }
     assert_eq!(
         target_name(&observed, &scope, &content).as_deref(),
         Ok(""),
         "native emptiness is checked before presentation strips controls"
     );
+    if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *observed.tables[TableId::CountryAppearance.index()]
+    {
+        rows[0].original_tag = Recorded::Value(Some(Vec::new()));
+    }
+    assert_eq!(
+        target_name(&observed, &scope, &content).as_deref(),
+        Ok("Recorded state"),
+        "a positive original reference with empty bytes still chooses the empty qualified key"
+    );
+    for (reference, bytes, reason) in [
+        (
+            Recorded::Value(None),
+            Recorded::Value(Some(b"other/mod".to_vec())),
+            "original_tag_reference capture refused",
+        ),
+        (
+            Recorded::NotRecorded,
+            Recorded::Value(Some(b"other/mod".to_vec())),
+            "original_tag_reference not recorded",
+        ),
+        (
+            Recorded::Value(Some(1)),
+            Recorded::Value(None),
+            "original_tag capture refused",
+        ),
+        (
+            Recorded::Value(Some(1)),
+            Recorded::NotRecorded,
+            "original_tag not recorded",
+        ),
+    ] {
+        if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+            &mut *observed.tables[TableId::CountryAppearance.index()]
+        {
+            rows[0].original_tag_reference = reference;
+            rows[0].original_tag = bytes;
+        }
+        assert!(
+            target_name(&observed, &scope, &content)
+                .unwrap_err()
+                .contains(reason),
+            "an unknown earlier qualified key cannot fall back to a known state name"
+        );
+    }
     if let TableView::Complete(TableRows::RaidTargets(rows)) =
         &mut *observed.tables[TableId::RaidTargets.index()]
     {
@@ -1618,12 +1668,22 @@ fn raids_target_names_use_original_tags_and_empty_qualified_names_mask_bare_keys
     {
         rows[0].owner = 0;
     }
+    *observed.tables[TableId::ReservedCountryNaming.index()] =
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            ReservedCountryNamingRow {
+                tag: b"ZZ0".to_vec(),
+                name_tag: b"unrelated_generator".to_vec(),
+                original_tag_reference: Recorded::NotRecorded,
+                original_tag: Recorded::Value(Some(b"other/mod".to_vec())),
+                ..Default::default()
+            },
+        ]));
     let mut scan = Scan::new();
     scan.observe(&observed, Some(&content)).unwrap();
     let result = scan.finish();
     assert!(result.episodes[0].runs[0].target_name.is_none());
     assert!(result.warnings.iter().any(|line| {
-        line.contains("reserved owner original tag is not recorded")
+        line.contains("ReservedCountryNaming.original_tag_reference not recorded")
             && line.contains("1 raid facts")
     }));
 }

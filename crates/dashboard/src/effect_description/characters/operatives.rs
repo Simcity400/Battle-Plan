@@ -16,7 +16,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         country_key: &str,
     ) -> (Option<&'a [u8]>, Option<&'a [u8]>) {
         let scalar = item.value.scalar();
-        let character_scope = matches!(scopes.this, Scope::Character(_) | Scope::Leader(_));
+        let character_scope = matches!(
+            scopes.this,
+            Scope::Character(_) | Scope::Leader(_) | Scope::CountryLeader { .. }
+        );
         (
             field(children(item), "operative")
                 .and_then(|item| item.value.scalar())
@@ -61,7 +64,11 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(Some(country));
         }
         Ok(match scopes.this {
-            Scope::Country(country) if country as i32 > 0 => Some(country),
+            Scope::Country(country) | Scope::CountryLeader { country, .. }
+                if country as i32 > 0 =>
+            {
+                Some(country)
+            }
             _ => None,
         })
     }
@@ -153,7 +160,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         scopes: Scopes,
     ) -> Result<String, String> {
         let captured_by = field(children(item), "captured_by").and_then(|item| item.value.scalar());
-        let Some(_capturer) = captured_by
+        let Some(capturer) = captured_by
             .map(|value| self.evaluator()?.scoped_country(value, scopes))
             .transpose()?
             .flatten()
@@ -161,7 +168,51 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         else {
             return Ok(String::new());
         };
-        Err("captured operative references (CIntelligenceAgency+0x108/+0x114, 140FC7860) are unrecorded".into())
+        let owner = self.current_country(scopes)?;
+        let world = self.context.world()?;
+        let mut found = false;
+        for row in world
+            .frame()
+            .complete::<tables::CapturedOperativeReferences>()
+            .map_err(|why| why.to_string())?
+        {
+            if world.slot(row.country) != Some(capturer) {
+                continue;
+            }
+            // 140FC7860 skips null/unresolved references before same_country.
+            if let Some(raw) = row.owner {
+                let country = if raw == 0 {
+                    0
+                } else {
+                    world
+                        .slot(raw)
+                        .ok_or("CountryLinks lacks captured-operative owner (140FC7860)")?
+                };
+                if country == owner {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if !found {
+            return Ok(String::new());
+        }
+        let name = self.country_name(capturer, false)?;
+        let name = format!("\u{11}Y{name}\u{11}!"); // 140BA59E0.
+        self.char_native_text(
+            if field(children(item), "all")
+                .and_then(|item| item.value.scalar())
+                .and_then(installed_content::parser::read_bool)
+                .unwrap_or(false)
+            {
+                b"EFFECT_FREE_RANDOM_OPERATIVE_ALL"
+            } else {
+                b"EFFECT_FREE_RANDOM_OPERATIVE"
+            },
+            &[("COUNTRY", Argument::Text(&name))],
+            scopes,
+            true,
+        )
     }
 
     // CIntEffect reader 14137DD70 and evaluator 141384870 narrow to i32.

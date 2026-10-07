@@ -44,16 +44,31 @@ fn newline(text: &mut String) {
     }
 }
 
-fn clean_modifiers(text: &str) -> String {
-    trim_description(text)
+fn clean_modifiers(text: &str, remove_spaced_colon: bool) -> String {
+    let text = trim_description(text)
         .replace('\n', ", ")
-        .replace(":,", ":")
-        .replace(": ,", ":")
-        .replace("    ", " ")
+        .replace(":,", ":");
+    let text = if remove_spaced_colon {
+        text.replace(": ,", ":")
+    } else {
+        text
+    };
+    text.replace("    ", " ")
 }
 
-impl Renderer<'_, '_, '_> {
-    fn idea<'a>(&'a self, token: &str) -> Result<Option<&'a installed_content::ideas::Idea>, String> {
+// 14039DCC0/1403A21E0 floor into fixed5 first, wrapping that intermediate,
+// then divide and narrow. This differs from integer floor near i64::MIN.
+fn timed_component_integer(value: i64) -> i32 {
+    let floored = if value % 100_000 == 0 {
+        value
+    } else {
+        (value / 100_000 + (value >> 63)).wrapping_mul(100_000)
+    };
+    (floored / 100_000) as i32
+}
+
+impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
+    fn idea(&self, token: &str) -> Result<Option<&'c installed_content::ideas::Idea>, String> {
         self.context
             .content
             .ideas
@@ -66,7 +81,7 @@ impl Renderer<'_, '_, '_> {
         &self,
         operand: &str,
         scopes: Scopes,
-    ) -> Result<Option<&installed_content::ideas::Idea>, String> {
+    ) -> Result<Option<&'c installed_content::ideas::Idea>, String> {
         // 1403A85A0 treats token: as a literal; ':' or '.' chooses a variable.
         if let Some(token) = operand.strip_prefix("token:") {
             return self.idea(token);
@@ -92,31 +107,60 @@ impl Renderer<'_, '_, '_> {
 
     // CIdea::GetDisplayNameForCountry@140FBCF90, shared by all idea effects.
     fn idea_name(&self, idea: &installed_content::ideas::Idea, scopes: Scopes) -> Result<String, String> {
-        let country = self.current_country(scopes)?;
+        // The caller supplies its +8 country carrier, including zero for a
+        // non-country scope; name expansion uses a fresh country-only scope.
+        let country = match scopes.this {
+            Scope::Country(country) | Scope::CountryLeader { country, .. } => country,
+            _ => 0,
+        };
+        let naming_scope = self.fresh_country_state_scope(country, 0)?;
+        if let Some(name) = idea.name.as_deref().filter(|name| !name.is_empty()) {
+            return self.localised(name.as_bytes(), &[], naming_scope, true);
+        }
         let names = self
             .context
             .content
             .name_lists
             .ok_or_else(|| self.content_gap("name lists"))?;
         let world = self.context.world()?;
-        let appearance = world
-            .frame()
-            .complete::<tables::CountryAppearance>()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .find(|row| world.recorded().slot(row.country) == Some(country));
         let civil = identity::civil_war(world.frame(), country);
-        let look = appearance
-            .map(|row| -> Result<_, String> {
-                Ok(CountryLook {
-                    name_tag: std::str::from_utf8(&row.name_tag)
-                        .map_err(|_| "idea country name_tag is not UTF-8")?,
-                    cosmetic_tag: std::str::from_utf8(&row.cosmetic_tag)
-                        .map_err(|_| "idea country cosmetic_tag is not UTF-8")?,
-                    civil_war: civil.as_ref().copied().map_err(String::as_str),
-                })
+        let original_or_own_tag =
+            installed_content::country_names::original_or_own_tag(world.frame(), country);
+        let look = if country == 0 {
+            let rows = world
+                .frame()
+                .complete::<tables::ReservedCountryNaming>()
+                .map_err(|why| why.to_string())?;
+            let [row] = rows else {
+                return Err("ReservedCountryNaming has no singleton row for CCountry[0]".into());
+            };
+            Some(CountryLook {
+                name_tag: std::str::from_utf8(&row.name_tag)
+                    .map_err(|_| "reserved idea name_tag is not UTF-8")?,
+                original_or_own_tag: original_or_own_tag.as_deref().map_err(String::as_str),
+                cosmetic_tag: std::str::from_utf8(&row.cosmetic_tag)
+                    .map_err(|_| "reserved idea cosmetic_tag is not UTF-8")?,
+                civil_war: Ok(false), // 140BA61F0 tests canonical zero, not a dynamic country.
             })
-            .transpose()?;
+        } else {
+            world
+                .frame()
+                .complete::<tables::CountryAppearance>()
+                .map_err(|why| why.to_string())?
+                .iter()
+                .find(|row| world.recorded().slot(row.country) == Some(country))
+                .map(|row| -> Result<_, String> {
+                    Ok(CountryLook {
+                        name_tag: std::str::from_utf8(&row.name_tag)
+                            .map_err(|_| "idea country name_tag is not UTF-8")?,
+                        original_or_own_tag: original_or_own_tag.as_deref().map_err(String::as_str),
+                        cosmetic_tag: std::str::from_utf8(&row.cosmetic_tag)
+                            .map_err(|_| "idea country cosmetic_tag is not UTF-8")?,
+                        civil_war: civil.as_ref().copied().map_err(String::as_str),
+                    })
+                })
+                .transpose()?
+        };
         let ideas = self
             .context
             .content
@@ -133,7 +177,7 @@ impl Renderer<'_, '_, '_> {
                 look,
             },
         )? {
-            IdeaName::Key(key) => self.localised(key.as_bytes(), &[], scopes, true),
+            IdeaName::Key(key) => self.localised(key.as_bytes(), &[], naming_scope, true),
             IdeaName::Generated(name) => Ok(name),
         }
     }
@@ -230,12 +274,19 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
     ) -> Result<String, String> {
         let category = self.localised(
-            format!("{}_research", bonus.key).as_bytes(), &[], scopes, false,
+            format!("{}_research", bonus.key).as_bytes(),
+            &[],
+            scopes,
+            false,
         )?;
         self.char_native_text(
             b"POLITICAL_RESEARCH_BONUS_ENTRY",
-            &[("CATEGORY", Argument::Text(&category)), ("FACTOR", Argument::Fixed5(bonus.value))],
-            scopes, false,
+            &[
+                ("CATEGORY", Argument::Text(&category)),
+                ("FACTOR", Argument::Fixed5(bonus.value)),
+            ],
+            scopes,
+            false,
         )
     }
 
@@ -267,6 +318,18 @@ impl Renderer<'_, '_, '_> {
         }
     }
 
+    // Bound idea_desc callback 1405256B0 -> 140FBA570; a missing token is empty.
+    pub(in crate::effect_description) fn bound_idea_description(
+        &self,
+        token: &str,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        self.idea(token)?
+            .map(|idea| self.idea_tooltip(idea, scopes))
+            .transpose()
+            .map(Option::unwrap_or_default)
+    }
+
     // 140378970 concatenates four fragments, cleans them, then expands the wrapper.
     pub(super) fn timed_idea(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let fields = children(item);
@@ -275,7 +338,7 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         };
         let name = self.idea_name(idea, scopes)?;
-        let description = clean_modifiers(&self.idea_details(idea, scopes)?);
+        let description = clean_modifiers(&self.idea_details(idea, scopes)?, true);
         let duration = self.duration(fields, scopes)?;
         self.char_native_text(
             b"EFFECT_ADD_TIMED_IDEA",
@@ -291,7 +354,10 @@ impl Renderer<'_, '_, '_> {
 
     fn idea_advisor(&self, token: &str) -> Result<bool, String> {
         // 1406ACA00: registered advisor tokens take precedence over CIdea.
-        Ok(self.context.text.frame()
+        Ok(self
+            .context
+            .text
+            .frame()
             .complete::<tables::AdvisorTokens>()
             .map_err(|why| why.to_string())?
             .iter()
@@ -316,13 +382,16 @@ impl Renderer<'_, '_, '_> {
                         return Ok(String::new());
                     }
                     // 14039504D still tries CIdea when the association misses.
-                    let name = self.idea(token)?
-                        .map(|idea| self.idea_name(idea, scopes)).transpose()?
+                    let name = self
+                        .idea(token)?
+                        .map(|idea| self.idea_name(idea, scopes))
+                        .transpose()?
                         .unwrap_or_default();
                     names.push(name);
                     continue;
                 };
-                let character = self.effect_character(Scope::Character(character))?
+                let character = self
+                    .effect_character(Scope::Character(character))?
                     .ok_or_else(|| format!("Characters lacks advisor character {character}"))?;
                 names.push(if tokens.len() == 1 {
                     self.advisor_idea_tooltip(character, token, scopes, remove, show)?
@@ -392,28 +461,445 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    pub(super) fn modify_timed_idea(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
-        let token = text_field(children(item), "idea")?;
-        if self.idea_reference(token, scopes)?.is_none() {
-            return Ok(String::new());
-        }
-        self.current_country(scopes)?;
-        // 140385480 tests membership with 140B9D8F0, then 140B9C980 reads days.
-        Err("timed idea description requires unrecorded CPoliticalStatus timed ideas (+0x68/count +0x74, entry idea +8, remaining days +0x10; 140B9D8F0/140B9C980, writer 140B980F0)".into())
+    // 140B9C980 returns the first entry's stored days, or -1 without one.
+    // Keep membership separate: an entry itself may store -1.
+    fn timed_idea_days(
+        &self,
+        idea: &installed_content::ideas::Idea,
+        scopes: Scopes,
+    ) -> Result<Option<i32>, String> {
+        let country = self.current_country(scopes)?;
+        let world = self.context.world()?;
+        Ok(world
+            .frame()
+            .complete::<tables::TimedIdeas>()
+            .map_err(|why| why.to_string())?
+            .iter()
+            .filter(|row| {
+                world.slot(row.country) == Some(country)
+                    && row.token.eq_ignore_ascii_case(idea.token.as_bytes())
+            })
+            .min_by_key(|row| row.ordinal)
+            .map(|row| row.days))
     }
 
-    pub(super) fn swap_ideas(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
+    pub(super) fn modify_timed_idea(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
+        let token = text_field(children(item), "idea")?;
+        let Some(idea) = self.idea_reference(token, scopes)? else {
+            return Ok(String::new());
+        };
+        let Some(days) = self.timed_idea_days(idea, scopes)? else {
+            return Ok(String::new()); // 140B9D8F0 membership gate.
+        };
+        let mut added = 0_i32;
+        // 14039DCC0 floors each component before native signed32 arithmetic.
+        for (field_name, scale) in [("days", 1), ("years", 365), ("months", 30)] {
+            if let Some(field) = field(children(item), field_name) {
+                let raw = self.scoped_value(field.value.scalar().unwrap_or_default(), scopes)?;
+                added = added.wrapping_add(timed_component_integer(raw).wrapping_mul(scale));
+            }
+        }
+        let (year, month, day) = super::numeric::numeric_date_parts(
+            self.context
+                .text
+                .frame()
+                .hour
+                .wrapping_add(added.wrapping_add(days).wrapping_mul(24)),
+        );
+        // FormatDayMonthYear@140526FD0 -> 1422542E0 localises the month key.
+        let month = self.char_native_text(month.as_bytes(), &[], scopes, false)?;
+        let date = format!("{day} {month}, {year}"); // FormatDayMonthYear 140526FD0.
+        let name = self.idea_name(idea, scopes)?;
+        // 140385480 cleans ':,' but, unlike add-timed, retains ': ,'.
+        let description = clean_modifiers(&self.idea_details(idea, scopes)?, false);
+        let duration = self.duration(children(item), scopes)?;
+        self.char_native_text(
+            if added > 0 {
+                b"EFFECT_MODIFY_TIMED_IDEA_INCREASE"
+            } else {
+                b"EFFECT_MODIFY_TIMED_IDEA_DECREASE"
+            },
+            &[
+                ("IDEA", Argument::Text(&name)),
+                ("DATE", Argument::Text(&date)),
+                ("TIME_DESC", Argument::Text(&duration)),
+                ("DESC", Argument::Text(&description)),
+            ],
+            scopes,
+            true,
+        )
+    }
+
+    pub(super) fn swap_ideas(&mut self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let fields = children(item);
         let add = text_field(fields, "add_idea")?;
         let remove = text_field(fields, "remove_idea")?;
-        if self.idea_reference(add, scopes)?.is_none()
-            || self.idea_reference(remove, scopes)?.is_none()
-        {
+        let add = self.idea_reference(add, scopes)?;
+        let remove = self.idea_reference(remove, scopes)?;
+        let (Some(add), Some(remove)) = (add, remove) else {
             return Ok("ERROR: IDEAS ARE MISSING\n".to_owned()); // 142751718.
+        };
+        let old = self.timed_idea_days(remove, scopes)?.unwrap_or(-1);
+        let mut days = old;
+        // 14039DBB0's negative add-days result describes removal alone.
+        if let Some(days) = field(fields, "add_days") {
+            let added = crate::triggers::fixed_round(
+                self.scoped_value(days.value.scalar().unwrap_or_default(), scopes)?,
+            ) as i32;
+            let total = added.wrapping_add(if old == -1 { 0 } else { old });
+            if total < 0 {
+                let name = self.idea_name(remove, scopes)?;
+                return self.char_native_line(
+                    b"EFFECT_REMOVE_IDEA",
+                    &[("NAME", Argument::Text(&name))],
+                    scopes,
+                    true,
+                );
+            }
+            // add_days takes precedence even when days is also authored.
+            return self.swap_idea_description(add, remove, old, total, scopes);
+        } else if let Some(value) = field(fields, "days") {
+            days = crate::triggers::fixed_round(
+                self.scoped_value(value.value.scalar().unwrap_or_default(), scopes)?,
+            ) as i32;
         }
-        self.current_country(scopes)?;
-        // 140396910 always reads old duration, even an untimed authored swap.
-        Err("idea swap description requires unrecorded CPoliticalStatus timed ideas (+0x68/count +0x74, entry idea +8, remaining days +0x10; 140396910/14039DBB0/140B9C980, writer 140B980F0)".into())
+        self.swap_idea_description(add, remove, old, days, scopes)
+    }
+
+    // 140396910 compares display-name bytes, not idea tokens, before choosing
+    // the duration wrapper. Its fragments stay plain; only the header expands.
+    fn swap_idea_description(
+        &mut self,
+        add: &installed_content::ideas::Idea,
+        remove: &installed_content::ideas::Idea,
+        old: i32,
+        days: i32,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let added_name = self.idea_name(add, scopes)?;
+        let removed_name = self.idea_name(remove, scopes)?;
+        let same = added_name == removed_name;
+        let key: &[u8] = match (same, old == days, old == -1, days == -1) {
+            (false, true, _, _) => b"EFFECT_SWAP_IDEAS_REPLACE",
+            (false, false, true, _) => b"EFFECT_SWAP_IDEAS_REPLACE_AND_SET_DURATION",
+            (false, false, _, true) => b"EFFECT_SWAP_IDEAS_REPLACE_AND_CLEAR_DURATION",
+            (false, false, _, _) => b"EFFECT_SWAP_IDEAS_REPLACE_AND_ADD_DURATION",
+            (true, true, _, _) => b"EFFECT_SWAP_IDEAS_MODIFY",
+            (true, false, true, _) => b"EFFECT_SWAP_IDEAS_MODIFY_AND_SET_DURATION",
+            (true, false, _, true) => b"EFFECT_SWAP_IDEAS_MODIFY_AND_CLEAR_DURATION",
+            (true, false, _, _) => b"EFFECT_SWAP_IDEAS_MODIFY_AND_ADD_DURATION",
+        };
+        let mut args = vec![("REMOVE", Argument::Text(&removed_name))];
+        if !same {
+            args.push(("ADD", Argument::Text(&added_name)));
+        }
+        if old != days && days != -1 {
+            args.push(("DAYS", Argument::Int32(days)));
+            if old != -1 {
+                args.push(("DAYS_MODIFIED", Argument::Int32(days.wrapping_sub(old))));
+            }
+        }
+        let mut text = self.char_native_text(key, &args, scopes, true)?;
+        text.push('\n'); // The header appends LF unconditionally.
+        for fragment in [
+            self.modifier_difference(&add.modifiers, &remove.modifiers, true),
+            self.idea_targeted_difference(add, remove, scopes),
+            self.idea_research_difference(add, remove, scopes),
+            self.idea_rule_difference(add, remove, scopes),
+            self.idea_equipment_difference(add, remove, scopes),
+        ] {
+            match fragment {
+                Ok(fragment) => text.push_str(&fragment),
+                Err(why) => self.refuse("CSwapIdeasEffect", why),
+            }
+            newline(&mut text);
+        }
+        text.push('\n'); // 1403978D0: terminal LF even after a fragment's LF.
+        Ok(text)
+    }
+
+    // 14054AD00/14054AE00: each raw contribution multiplies before division;
+    // the new accumulator does not copy hidden flags or custom tooltip slots.
+    fn modifier_difference(
+        &self,
+        add: &Modifiers,
+        remove: &Modifiers,
+        force_plus: bool,
+    ) -> Result<String, String> {
+        let mut combined = Modifiers::default();
+        for (source, scale) in [(add, 100_000_i64), (remove, -100_000_i64)] {
+            if let Some(why) = source.unheld.cause() {
+                return Err(why.to_owned());
+            }
+            for value in &source.values {
+                let contribution = value.value.wrapping_mul(scale) / 100_000;
+                if let Some(stored) = combined
+                    .values
+                    .iter_mut()
+                    .find(|stored| stored.name == value.name)
+                {
+                    stored.value = stored.value.wrapping_add(contribution);
+                } else {
+                    let mut value = value.clone();
+                    value.value = contribution;
+                    combined.values.push(value);
+                }
+            }
+        }
+        let options = ModifierListOptions {
+            category_mask: u32::MAX,
+            force_plus,
+            ..Default::default()
+        };
+        if combined.values.is_empty() {
+            self.modifier_description_values(&[], &[], "", options)
+        } else {
+            self.modifier_description_with(&combined, "", options)
+        }
+    }
+
+    // 1403A1B00 / 140FBD830: first matching target per country, in country
+    // index order. Each operand evaluates in a fresh default-empty scope.
+    fn idea_targeted_difference(
+        &self,
+        add: &installed_content::ideas::Idea,
+        remove: &installed_content::ideas::Idea,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        if add.targeted.is_empty() && remove.targeted.is_empty() {
+            return Ok(String::new());
+        }
+        let countries: std::collections::BTreeSet<_> = std::iter::once(0)
+            .chain(
+                self.context
+                    .text
+                    .frame()
+                    .complete::<tables::Countries>()
+                    .map_err(|why| why.to_string())?
+                    .iter()
+                    .map(|row| row.canonical_slot),
+            )
+            .collect();
+        let empty = Modifiers::default();
+        let mut text = String::new();
+        for country in countries {
+            // 140FBD830 evaluates only the prefix up to the first match for
+            // this country; a later variable may never be evaluated at all.
+            let mut selected = [&empty, &empty];
+            for (index, idea) in [add, remove].into_iter().enumerate() {
+                for target in &idea.targeted {
+                    let candidate = target
+                        .operand
+                        .as_deref()
+                        .map(|operand| self.evaluator()?.scoped_country(operand, Scopes::empty()))
+                        .transpose()?
+                        .flatten()
+                        .unwrap_or(0);
+                    if candidate == country {
+                        selected[index] = &target.modifiers;
+                        break;
+                    }
+                }
+            }
+            let details = self.modifier_difference(selected[0], selected[1], false)?;
+            if details.is_empty() {
+                continue;
+            }
+            let details = format!("    {}", details.replace('\n', "\n    "));
+            let name = crt_case_text(&self.country_name(country, true)?, true, true);
+            text.push_str(&self.char_native_text(
+                b"EFFECT_SWAP_IDEAS_TARGETED_MODIFIERS",
+                &[
+                    ("COUNTRY", Argument::Text(&name)),
+                    ("MODIFIER", Argument::Text(&details)),
+                ],
+                scopes,
+                false,
+            )?);
+            text.push('\n');
+        }
+        Ok(text)
+    }
+
+    // 14039F410/14039C2C0: new order, first old folded match, then remaining
+    // old entries in their order. Matched values subtract with signed64 wrap.
+    fn idea_research_difference(
+        &self,
+        add: &installed_content::ideas::Idea,
+        remove: &installed_content::ideas::Idea,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let mut remaining: Vec<_> = remove.research_bonuses.iter().map(Some).collect();
+        let mut text = String::new();
+        for bonus in &add.research_bonuses {
+            let mut difference = bonus.clone();
+            if let Some(index) = remove
+                .research_bonuses
+                .iter()
+                .position(|old| old.key.eq_ignore_ascii_case(&bonus.key))
+            {
+                difference.value = bonus
+                    .value
+                    .wrapping_sub(remove.research_bonuses[index].value);
+                remaining[index] = None;
+                if difference.value == 0 {
+                    continue;
+                }
+            }
+            text.push_str(&self.research_bonus_line(&difference, scopes)?);
+            text.push('\n');
+        }
+        for old in remaining.into_iter().flatten() {
+            let mut difference = old.clone();
+            difference.value = old.value.wrapping_neg();
+            text.push_str(&self.research_bonus_line(&difference, scopes)?);
+            text.push('\n');
+        }
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        Ok(text)
+    }
+
+    // 14039FCD0 -> CRule::BuildRuleDescriptionWithChildren@14062CB20:
+    // a changed rule restored to its native default contributes an empty line.
+    fn idea_rule_difference(
+        &self,
+        add: &installed_content::ideas::Idea,
+        remove: &installed_content::ideas::Idea,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let mut text = String::new();
+        for (index, &(_, key, default, fulfilled)) in
+            installed_content::power_balance::RULES.iter().enumerate()
+        {
+            let value = add
+                .rules
+                .values
+                .get(index)
+                .copied()
+                .ok_or("idea rule values are incomplete (CRule+0x40, 14039FCD0)")?;
+            let old = remove
+                .rules
+                .values
+                .get(index)
+                .copied()
+                .ok_or("idea rule values are incomplete (CRule+0x40, 14039FCD0)")?;
+            if value == old {
+                continue;
+            }
+            if value != default {
+                let mut description = self.localised(
+                    if value == fulfilled {
+                        b"TRIGGER_FULLFILLED_PREFIX".as_slice()
+                    } else {
+                        b"TRIGGER_UNFULLFILLED_PREFIX".as_slice()
+                    },
+                    &[],
+                    scopes,
+                    false,
+                )?;
+                description.push(' ');
+                description.push_str(&self.localised(key.as_bytes(), &[], scopes, false)?);
+                let override_key = if add.rules.description.is_empty() {
+                    add.rules
+                        .overrides
+                        .get(&index)
+                        .map(String::as_str)
+                        .unwrap_or_default()
+                } else {
+                    &add.rules.description
+                };
+                if !override_key.is_empty() {
+                    description = self.localised(
+                        override_key.as_bytes(),
+                        &[("DESC", Argument::Text(&description))],
+                        scopes,
+                        false,
+                    )?;
+                }
+                text.push_str(&description);
+            }
+            text.push('\n');
+        }
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        Ok(text)
+    }
+
+    // 14039C4E0/140624A70/140626010 group equipment names in first-seen order
+    // and add/subtract each stored stat; 14039BBF0 omits zero stats.
+    fn idea_equipment_difference(
+        &self,
+        add: &installed_content::ideas::Idea,
+        remove: &installed_content::ideas::Idea,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let mut groups: Vec<installed_content::modifiers::EquipmentBonus> = Vec::new();
+        for (idea, subtract) in [(add, false), (remove, true)] {
+            for bonus in &idea.equipment_bonuses {
+                let index = groups
+                    .iter()
+                    .position(|group| group.equipment.eq_ignore_ascii_case(&bonus.equipment))
+                    .unwrap_or_else(|| {
+                        groups.push(installed_content::modifiers::EquipmentBonus {
+                            values: Vec::new(),
+                            ..bonus.clone()
+                        });
+                        groups.len() - 1
+                    });
+                for value in &bonus.values {
+                    let Some(stat) = installed_content::equipment::stat_index(value.name.as_bytes()) else {
+                        continue;
+                    };
+                    let contribution = if subtract {
+                        value.value.wrapping_neg()
+                    } else {
+                        value.value
+                    };
+                    if let Some(stored) = groups[index].values.iter_mut().find(|stored| {
+                        installed_content::equipment::stat_index(stored.name.as_bytes()) == Some(stat)
+                    }) {
+                        stored.value = stored.value.wrapping_add(contribution);
+                    } else {
+                        let mut value = value.clone();
+                        value.value = contribution;
+                        groups[index].values.push(value);
+                    }
+                }
+            }
+        }
+        let mut text = String::new();
+        for group in groups {
+            let values: Vec<_> = group
+                .values
+                .iter()
+                .filter(|value| value.value != 0)
+                .collect();
+            if values.is_empty() {
+                continue;
+            }
+            text.push_str("\u{11}Y");
+            text.push_str(&self.localised(group.equipment.as_bytes(), &[], scopes, false)?);
+            text.push_str("\u{11}!: ");
+            if values.len() > 1 {
+                text.push('\n');
+            }
+            for value in &values {
+                if values.len() > 1 {
+                    text.push_str("    ");
+                }
+                let index = installed_content::equipment::stat_index(value.name.as_bytes())
+                    .expect("filtered equipment stat");
+                text.push_str(&self.char_equipment_stat_difference(index, value.value, scopes)?);
+                text.push('\n');
+            }
+        }
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        Ok(text)
     }
 
     pub(super) fn opinion_modifier(
@@ -540,14 +1026,18 @@ impl Renderer<'_, '_, '_> {
             None
         };
         let selected_scopes = match selected {
-            Some(Scope::Country(country)) => self.fresh_country_state_scope(country, 0)?,
+            Some(Scope::Country(country) | Scope::CountryLeader { country, .. }) => {
+                self.fresh_country_state_scope(country, 0)?
+            }
             Some(Scope::State(state)) => self.fresh_country_state_scope(0, state)?,
             _ => scopes,
         };
         let mut name = self.localised(modifier.name.as_bytes(), &[], selected_scopes, true)?;
         if let Some(selected) = selected {
             let selected_name = match selected {
-                Scope::Country(country) => Some(self.country_name(country, false)?),
+                Scope::Country(country) | Scope::CountryLeader { country, .. } => {
+                    Some(self.country_name(country, false)?)
+                }
                 Scope::State(state) => Some(self.state_name(state)?),
                 _ => None,
             };
@@ -763,7 +1253,7 @@ impl Renderer<'_, '_, '_> {
                 continue;
             };
             let raw = self.scoped_value(item.value.scalar().unwrap_or_default(), scopes)?;
-            let whole = raw.div_euclid(100_000) as i32;
+            let whole = timed_component_integer(raw);
             if whole <= 0 {
                 continue;
             }
@@ -780,15 +1270,6 @@ impl Renderer<'_, '_, '_> {
             }
         }
         Ok(text)
-    }
-
-    pub(super) fn modifier_list(
-        &self,
-        modifiers: &Modifiers,
-        prefix: &str,
-        scopes: Scopes,
-    ) -> Result<String, String> {
-        self.modifier_list_with(modifiers, prefix, scopes, ModifierListOptions::default())
     }
 
     /// 14054E520 expands 14054E050's raw list in the supplied event scope.
@@ -850,19 +1331,76 @@ impl Renderer<'_, '_, '_> {
         prefix: &str,
         options: ModifierListOptions<'_>,
     ) -> Result<String, String> {
+        self.cached_modifier_description(entries, &[], prefix, options)
+    }
+
+    /// 141290135/14054E050: occupied tooltip slots are stored string bytes,
+    /// independent of authored traits and the cache's refresh history.
+    pub(in crate::effect_description) fn advisor_cache_description(
+        &self,
+        row: &replay::rows::AdvisorRoleRow,
+    ) -> Result<String, String> {
+        let cache = row
+            .modifier_cache
+            .require("AdvisorRoles.modifier_cache")?
+            .as_ref()
+            .ok_or("AdvisorRoles.modifier_cache unavailable (CAdvisor+0x1B0)")?;
+        let keys = row
+            .tooltip_keys
+            .require("AdvisorRoles.tooltip_keys")?
+            .as_ref()
+            .ok_or("AdvisorRoles.tooltip_keys capture unavailable (CAdvisor+0x218)")?;
+        let tooltips = keys
+            .iter()
+            .map(|key| {
+                std::str::from_utf8(installed_content::parser::c_string(key))
+                    .map(str::to_owned)
+                    .map_err(|_| "AdvisorRoles tooltip key is not UTF-8 (14054E050)".to_owned())
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        self.cached_modifier_description(
+            &cache.entries,
+            &tooltips,
+            "",
+            ModifierListOptions {
+                category_mask: u32::MAX,
+                ..Default::default()
+            },
+        )
+    }
+
+    fn cached_modifier_description(
+        &self,
+        entries: &[CachedModifier],
+        tooltips: &[String],
+        prefix: &str,
+        options: ModifierListOptions<'_>,
+    ) -> Result<String, String> {
         if entries.is_empty() {
-            return self.modifier_description_values(&[], &[], prefix, options);
+            return self.modifier_description_values(&[], tooltips, prefix, options);
         }
-        let definitions = self.context.text.frame()
+        let definitions = self
+            .context
+            .text
+            .frame()
             .complete::<tables::ModifierDefinitions>()
             .map_err(|why| why.to_string())?;
-        let values = entries.iter().map(|entry| {
-            let definition = definitions.iter()
-                .find(|definition| definition.index == entry.definition)
-                .ok_or_else(|| format!("advisor cached modifier {} has no recorded definition", entry.definition))?;
-            Ok((entry.value, definition))
-        }).collect::<Result<Vec<_>, String>>()?;
-        self.modifier_description_values(&values, &[], prefix, options)
+        let values = entries
+            .iter()
+            .map(|entry| {
+                let definition = definitions
+                    .iter()
+                    .find(|definition| definition.index == entry.definition)
+                    .ok_or_else(|| {
+                        format!(
+                            "advisor cached modifier {} has no recorded definition",
+                            entry.definition
+                        )
+                    })?;
+                Ok((entry.value, definition))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        self.modifier_description_values(&values, tooltips, prefix, options)
     }
 
     fn modifier_description_values(

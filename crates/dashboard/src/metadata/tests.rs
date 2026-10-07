@@ -288,14 +288,37 @@ fn compatibility_real_g2_product_impact() {
     let appearances = frame
         .complete::<replay::rows::tables::CountryAppearance>()
         .unwrap();
+    let links = frame
+        .complete::<replay::rows::tables::CountryLinks>()
+        .unwrap();
     for flag in &flags {
-        let fallback = appearances
+        let canonical = links
             .iter()
-            .find(|row| row.country == flag.raw)
-            .map(|row| std::str::from_utf8(&row.name_tag).unwrap())
-            .filter(|original| !original.is_empty())
-            .unwrap_or(&flag.tag);
-        assert_eq!(flag.candidates.last().map(String::as_str), Some(fallback));
+            .find(|row| row.id == flag.raw)
+            .unwrap()
+            .canonical_slot;
+        let country = countries
+            .iter()
+            .rev()
+            .find(|row| row.canonical_slot == canonical)
+            .unwrap();
+        let Some(appearance) = appearances.iter().find(|row| row.country == country.id) else {
+            assert!(
+                flag.refusal
+                    .as_deref()
+                    .is_some_and(|why| why.contains("CountryAppearance"))
+            );
+            continue;
+        };
+        // Format 94 retains cosmetic candidates but has no exact signed
+        // original-tag selection operand, even for an aliased raw link.
+        let refusal = installed_content::country_names::original_tag(country, appearance).unwrap_err();
+        assert!(refusal.contains("CountryAppearance.original_tag_reference not recorded"));
+        assert!(
+            flag.refusal
+                .as_deref()
+                .is_some_and(|why| why.contains(&refusal))
+        );
     }
     let names = installed_content::country_names::CountryNames::read(&frame, &localisation);
     assert!(names.operands(country.canonical_slot).unwrap().is_ok());
@@ -355,6 +378,9 @@ fn compatibility_real_g2_product_impact() {
 
 #[test]
 fn metadata_compatibility_opens_format94_and_surfaces_every_named_gap() {
+    use replay::{codec::put_bytes, format::FormatVersion, spool::Record};
+
+    let format = FormatVersion::read(94).unwrap();
     let mut frame = source(1, 1000, Some(1));
     for table in [
         TableId::CountryAppearance,
@@ -370,9 +396,74 @@ fn metadata_compatibility_opens_format94_and_surfaces_every_named_gap() {
         unreachable!();
     };
     session.identity.coverage_policy = 3;
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records]).unwrap();
-    let mut bytes = replay.bytes().to_vec();
-    bytes[4..6].copy_from_slice(&94_u16.to_le_bytes());
+    let Record::Frame(frame) = &records[2] else {
+        unreachable!();
+    };
+    let mut current = Vec::new();
+    let sizes = frame.encode_with_sizes(&mut current).unwrap();
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&frame.branch.to_le_bytes());
+    payload.extend_from_slice(&frame.hour.to_le_bytes());
+    payload.push(u8::from(frame.keyframe));
+    payload.extend_from_slice(&frame.metrics.total_ns.to_le_bytes());
+    for table in TableId::ALL {
+        if table.last_change().present(format.version()) {
+            payload.extend_from_slice(&frame.metrics.table_ns[table.index()].to_le_bytes());
+        }
+    }
+    payload.extend_from_slice(&frame.metrics.pool_bytes.to_le_bytes());
+    payload.extend_from_slice(&frame.metrics.dropped_frames.to_le_bytes());
+    let mut at = current.len() - sizes.iter().sum::<usize>();
+    for table in TableId::ALL {
+        let end = at + sizes[table.index()];
+        if table.last_change().present(format.version()) {
+            // Only unchanged nonempty prefixes, empty snapshots and unavailable
+            // updates can be copied directly into this historical fixture.
+            assert!(sizes[table.index()] > 0, "{table:?}");
+            match &frame.tables[table.index()] {
+                TableUpdate::Snapshot(rows) if !rows.is_empty() => {
+                    assert!(format.table_refusal(table).is_none(), "{table:?}");
+                    assert_eq!(format.field_gaps(table).count(), 0, "{table:?}");
+                    assert!(matches!(
+                        table,
+                        TableId::Campaign | TableId::Countries | TableId::CountryLinks
+                    ));
+                }
+                TableUpdate::Snapshot(_) | TableUpdate::Unavailable { .. } => {}
+                _ => panic!("historical fixture has a dependent {table:?} update"),
+            }
+            payload.extend_from_slice(&current[at..end]);
+        }
+        at = end;
+    }
+    assert_eq!(at, current.len());
+    let mut raw = 1_u32.to_le_bytes().to_vec();
+    put_bytes(&mut raw, &payload).unwrap();
+    let compressed = zstd::encode_all(raw.as_slice(), 3).unwrap();
+    let current = Replay::from_records(CAMPAIGN.into(), &[records]).unwrap();
+    assert_eq!(current.index.len(), 1);
+    let block = &current.index[0];
+    let trailer_start = (block.offset + block.length) as usize;
+    let footer_start = current.bytes().len() - (4 + 8 + 8 + 4);
+    let mut trailer = current.bytes()[trailer_start..footer_start].to_vec();
+    // The sole index entry is the trailer's final field. Keep all session and
+    // branch metadata, replacing only the block's compressed/raw lengths.
+    let lengths_at = trailer.len() - (8 + 8);
+    assert_eq!(
+        &trailer[lengths_at..],
+        [block.length.to_le_bytes(), block.raw_length.to_le_bytes()].concat()
+    );
+    trailer[lengths_at..lengths_at + 8].copy_from_slice(&(compressed.len() as u64).to_le_bytes());
+    trailer[lengths_at + 8..].copy_from_slice(&(raw.len() as u64).to_le_bytes());
+    let mut bytes = current.bytes()[..block.offset as usize].to_vec();
+    bytes[4..6].copy_from_slice(&format.version().to_le_bytes());
+    bytes.extend_from_slice(&compressed);
+    let trailer_start = bytes.len() as u64;
+    bytes.extend_from_slice(&trailer);
+    bytes.extend_from_slice(b"H4FT");
+    bytes.extend_from_slice(&trailer_start.to_le_bytes());
+    bytes.extend_from_slice(&(trailer.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(&crc32fast::hash(&trailer).to_le_bytes());
     let replay = Arc::new(Replay::open(bytes).unwrap());
     let metadata = crate::metadata::read(
         &replay,
@@ -383,8 +474,17 @@ fn metadata_compatibility_opens_format94_and_surfaces_every_named_gap() {
     assert_eq!(metadata.format, 94);
     assert_eq!(metadata.countries.len(), 1);
     assert_eq!(metadata.countries[0].tag, "GER");
-    let expected = replay.compatibility_gaps();
-    assert_eq!(expected.len(), 4);
+    let expected = TableId::ALL
+        .into_iter()
+        .flat_map(|table| {
+            format
+                .table_refusal(table)
+                .into_iter()
+                .chain(format.field_gaps(table))
+        })
+        .chain(format.nested_field_gaps())
+        .collect::<Vec<_>>();
+    assert_eq!(replay.compatibility_gaps(), expected);
     assert_eq!(metadata.warnings, expected);
     for table in [
         TableId::CountryAppearance,

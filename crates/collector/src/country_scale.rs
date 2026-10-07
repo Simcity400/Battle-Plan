@@ -96,6 +96,71 @@ pub fn observe_country_intel(memory: &impl Memory, base: usize) -> Option<usize>
     Some(rows.min(slots.saturating_mul(slots)))
 }
 
+static AIR_WING_NAME_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn air_wing_name_bytes() -> usize {
+    AIR_WING_NAME_BYTES.load(Ordering::Relaxed)
+}
+
+pub(crate) fn note_air_wing_name_bytes(bytes: usize) {
+    AIR_WING_NAME_BYTES.fetch_max(bytes, Ordering::Relaxed);
+}
+
+/// The shared authenticated wing census sizes stored names without copying text.
+pub fn observe_air_wing_names(
+    memory: &impl Memory,
+    base: usize,
+) -> Result<Option<usize>, &'static str> {
+    let Some(state) = demand_game_state(memory, base)? else {
+        return Ok(None);
+    };
+    engine::cair_wing::name_demand(memory, base, state).map(Some)
+}
+
+static RAILWAY_GUN_ROWS: AtomicUsize = AtomicUsize::new(0);
+static RAILWAY_GUN_NAME_BYTES: AtomicUsize = AtomicUsize::new(0);
+static RAILWAY_GUN_NAMED_BONUSES: AtomicUsize = AtomicUsize::new(0);
+static RAILWAY_GUN_SUPPLY_ORIGINS: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn railway_gun_name_demand() -> engine::railway_gun_counter_inputs::NameDemand {
+    engine::railway_gun_counter_inputs::NameDemand {
+        rows: RAILWAY_GUN_ROWS.load(Ordering::Relaxed),
+        bytes: RAILWAY_GUN_NAME_BYTES.load(Ordering::Relaxed),
+        named_bonuses: RAILWAY_GUN_NAMED_BONUSES.load(Ordering::Relaxed),
+        supply_origins: RAILWAY_GUN_SUPPLY_ORIGINS.load(Ordering::Relaxed),
+    }
+}
+
+pub(crate) fn note_railway_gun_names(demand: engine::railway_gun_counter_inputs::NameDemand) {
+    RAILWAY_GUN_ROWS.fetch_max(demand.rows, Ordering::Relaxed);
+    RAILWAY_GUN_NAME_BYTES.fetch_max(demand.bytes, Ordering::Relaxed);
+    RAILWAY_GUN_NAMED_BONUSES.fetch_max(demand.named_bonuses, Ordering::Relaxed);
+    RAILWAY_GUN_SUPPLY_ORIGINS.fetch_max(demand.supply_origins, Ordering::Relaxed);
+}
+
+pub fn observe_railway_gun_names(
+    memory: &impl Memory,
+    base: usize,
+) -> Result<Option<engine::railway_gun_counter_inputs::NameDemand>, &'static str> {
+    let Some(state) = demand_game_state(memory, base)? else {
+        return Ok(None);
+    };
+    engine::railway_gun_counter_inputs::name_demand(memory, base, state).map(Some)
+}
+
+/// Only the shared army census and the singleton attrition getter's requested
+/// roots. Off-hour observations size all pooled buffers before acquisition;
+/// they never provide captured values or suppress a later guarded failure.
+pub fn observe_attrition_inputs(
+    memory: &impl Memory,
+    base: usize,
+) -> Result<Option<engine::attrition_modifier_breakdown::Demand>, &'static str> {
+    let Some(state) = demand_game_state(memory, base)? else {
+        return Ok(None);
+    };
+    engine::attrition_modifier_breakdown::demand(memory, base, state).map(Some)
+}
+
 /// Live equipment-line population, using ProductionLines' walk with no row
 /// storage: only country identities, production managers and roster headers
 /// are read. An unreadable census contributes no sizing hint.
@@ -281,6 +346,14 @@ pub struct PoliticsDemand {
     pub available_advisor_bytes: usize,
     pub advisor_modifiers: engine::cadvisor::ModifierDemand,
     pub country_rosters: engine::ccountry::RosterDemand,
+    pub timed_ideas: engine::cpolitical_status::IdeaDemand,
+    pub decision_random_items: engine::cdecision_status::RandomItemDemand,
+    pub effect_rosters: engine::ccountry::EffectRosterDemand,
+    pub captured_operatives: usize,
+    pub occupied_countries: usize,
+    pub reserved_naming_bytes: usize,
+    pub original_tag_lists: engine::original_tag_lists::Demand,
+    pub country_array: usize,
     pub owned_wargoals: engine::cwar_goal::Demand,
     pub character_inputs: crate::extended::character_inputs::Demand,
 }
@@ -293,6 +366,19 @@ impl PoliticsDemand {
             || self.available_advisor_bytes > seen.available_advisor_bytes
             || self.advisor_modifiers.rows > seen.advisor_modifiers.rows
             || self.advisor_modifiers.bytes > seen.advisor_modifiers.bytes
+            || self.advisor_modifiers.tooltip_bytes > seen.advisor_modifiers.tooltip_bytes
+            || self.timed_ideas.rows > seen.timed_ideas.rows
+            || self.timed_ideas.bytes > seen.timed_ideas.bytes
+            || self.decision_random_items.rows > seen.decision_random_items.rows
+            || self.decision_random_items.bytes > seen.decision_random_items.bytes
+            || self.effect_rosters.neighbors > seen.effect_rosters.neighbors
+            || self.effect_rosters.policies > seen.effect_rosters.policies
+            || self.captured_operatives > seen.captured_operatives
+            || self.occupied_countries > seen.occupied_countries
+            || self.reserved_naming_bytes > seen.reserved_naming_bytes
+            || self.original_tag_lists.buckets > seen.original_tag_lists.buckets
+            || self.original_tag_lists.members > seen.original_tag_lists.members
+            || self.country_array > seen.country_array
             || self.country_rosters.states > seen.country_rosters.states
             || self.country_rosters.leaders > seen.country_rosters.leaders
             || self.owned_wargoals.rows > seen.owned_wargoals.rows
@@ -325,7 +411,40 @@ impl PoliticsDemand {
                     .advisor_modifiers
                     .bytes
                     .max(other.advisor_modifiers.bytes),
+                tooltip_bytes: self
+                    .advisor_modifiers
+                    .tooltip_bytes
+                    .max(other.advisor_modifiers.tooltip_bytes),
             },
+            timed_ideas: engine::cpolitical_status::IdeaDemand {
+                rows: self.timed_ideas.rows.max(other.timed_ideas.rows),
+                bytes: self.timed_ideas.bytes.max(other.timed_ideas.bytes),
+            },
+            decision_random_items: engine::cdecision_status::RandomItemDemand {
+                rows: self
+                    .decision_random_items
+                    .rows
+                    .max(other.decision_random_items.rows),
+                bytes: self
+                    .decision_random_items
+                    .bytes
+                    .max(other.decision_random_items.bytes),
+            },
+            effect_rosters: engine::ccountry::EffectRosterDemand {
+                neighbors: self
+                    .effect_rosters
+                    .neighbors
+                    .max(other.effect_rosters.neighbors),
+                policies: self
+                    .effect_rosters
+                    .policies
+                    .max(other.effect_rosters.policies),
+            },
+            captured_operatives: self.captured_operatives.max(other.captured_operatives),
+            occupied_countries: self.occupied_countries.max(other.occupied_countries),
+            reserved_naming_bytes: self.reserved_naming_bytes.max(other.reserved_naming_bytes),
+            original_tag_lists: self.original_tag_lists.max(other.original_tag_lists),
+            country_array: self.country_array.max(other.country_array),
             country_rosters: engine::ccountry::RosterDemand {
                 states: self
                     .country_rosters
@@ -390,6 +509,21 @@ pub fn observe_politics(
         available_advisor_bytes,
         advisor_modifiers: engine::cadvisor::modifier_demand(memory, base, state)?,
         country_rosters: engine::ccountry::counter_roster_demand(memory, base, state)?,
+        timed_ideas: engine::cpolitical_status::timed_idea_demand(memory, base, state)?,
+        decision_random_items: engine::cdecision_status::random_item_demand(memory, base, state)?,
+        effect_rosters: engine::ccountry::counter_effect_roster_demand(memory, base, state)?,
+        captured_operatives: engine::cintelligence_agency::captured_operative_demand(
+            memory, base, state,
+        )?,
+        occupied_countries: engine::ccountry_occupation_status::occupied_demand(
+            memory, base, state,
+        )?,
+        // These independent optional sizing hints retain each other's known
+        // floors. Actual hourly reads still refuse missing native data.
+        reserved_naming_bytes: engine::ccountry::read_country_naming_demand(memory, base, state)
+            .unwrap_or_default(),
+        original_tag_lists: engine::original_tag_lists::demand(memory, state).unwrap_or_default(),
+        country_array: engine::country_roster::demand(memory, base, state).unwrap_or_default(),
         owned_wargoals: goals.required,
         active_characters,
         retired_characters,
@@ -577,6 +711,7 @@ mod tests {
             advisor_modifiers: engine::cadvisor::ModifierDemand {
                 rows: 15_000,
                 bytes: 1_000_000,
+                tooltip_bytes: 2_000_000,
             },
             ..Default::default()
         };
@@ -609,6 +744,66 @@ mod tests {
         assert_eq!(observe_politics(&menu, 0), Ok(None));
         assert_eq!(observe_characters(&menu, 0), Ok(None));
         assert!(observe_characters(&world(), BASE).is_err());
+    }
+
+    #[test]
+    fn format99_demand_presizes_5000_country_inputs_and_only_grows() {
+        let count = 5000;
+        let demand = PoliticsDemand {
+            timed_ideas: engine::cpolitical_status::IdeaDemand {
+                rows: count * 3,
+                bytes: count * 3 * 80,
+            },
+            decision_random_items: engine::cdecision_status::RandomItemDemand {
+                rows: count * 30,
+                bytes: count * 30 * 80,
+            },
+            effect_rosters: engine::ccountry::EffectRosterDemand {
+                neighbors: count * 5,
+                policies: count * 4,
+            },
+            captured_operatives: count * 2,
+            occupied_countries: count * 3,
+            reserved_naming_bytes: 5000,
+            original_tag_lists: engine::original_tag_lists::Demand {
+                buckets: count,
+                members: count * 2,
+            },
+            country_array: count + 1,
+            advisor_modifiers: engine::cadvisor::ModifierDemand {
+                rows: count * 4,
+                bytes: count * 4 * 12,
+                tooltip_bytes: count * 4 * 160,
+            },
+            ..Default::default()
+        };
+        assert!(demand.exceeds(&PoliticsDemand::default()));
+        assert_eq!(demand.max(PoliticsDemand::default()), demand);
+        let mut sizing = Sizing::for_slots(count + 1);
+        let before = sizing.extended;
+        sizing.extended.raise_for_politics(demand);
+        assert!(sizing.extended != before);
+        let after = sizing.extended;
+        sizing
+            .extended
+            .raise_for_politics(PoliticsDemand::default());
+        assert!(sizing.extended == after);
+        let larger = PoliticsDemand {
+            timed_ideas: engine::cpolitical_status::IdeaDemand {
+                rows: count * 6,
+                bytes: count * 6 * 80,
+            },
+            original_tag_lists: engine::original_tag_lists::Demand {
+                buckets: count * 2,
+                members: count * 4,
+            },
+            country_array: count * 2 + 1,
+            ..demand
+        };
+        assert!(larger.exceeds(&demand));
+        assert_eq!(demand.max(larger), larger);
+        sizing.extended.raise_for_politics(larger);
+        assert!(sizing.extended != after);
     }
     use crate::extended::{country_appearance, country_counters, country_tactic_unlocks};
     use engine::{
@@ -1165,8 +1360,10 @@ mod tests {
         }
         appearance.capture(&Subjects(&memory), BASE, STATE);
         assert_eq!(appearance.outcomes()[0], Outcome::Rows { len: COUNTRIES });
-        let [replay::frame::TableView::Complete(replay::rows::TableRows::CountryAppearance(rows))] =
-            appearance.tables()
+        let [
+            replay::frame::TableView::Complete(replay::rows::TableRows::CountryAppearance(rows)),
+            _,
+        ] = appearance.tables()
         else {
             panic!("presized subject capture must be complete");
         };

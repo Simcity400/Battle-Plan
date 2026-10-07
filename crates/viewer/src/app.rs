@@ -295,8 +295,8 @@ struct Uploaded {
     orders: Option<Arc<map::orders::OrderField>>,
 }
 
-/// The largest share of the central panel the warning area may take before it
-/// scrolls instead of growing.
+/// Cap the warning area's previous-frame content height at this share of the
+/// central panel; taller content scrolls instead of growing.
 ///
 /// It lists what the hour could not draw, which `--dump` prints too, so all of
 /// it stays reachable; but unbounded it took the map's place entirely. At
@@ -304,29 +304,52 @@ struct Uploaded {
 /// the panel and left the map one pixel tall.
 const WARNING_SHARE: f32 = 0.4;
 
-/// Reserve the panel before sizing the map, but collect and draw its warnings after the overlay.
+/// Reserve last frame's measured warning content before sizing the map (owner 2026-10-07).
+fn reserve_warnings(ui: &mut egui::Ui, measured: f32) -> egui::Rect {
+    let height = measured.min(ui.available_height() * WARNING_SHARE).max(0.0);
+    let size = egui::vec2(ui.available_width(), height);
+    if height > 0.0 {
+        ui.allocate_space(size).1
+    } else {
+        egui::Rect::from_min_size(ui.available_rect_before_wrap().min, size)
+    }
+}
+
+/// Collect and draw after the overlay; the measured content sizes the next frame's reservation.
 fn finish_warnings(
     ui: &mut egui::Ui,
     rect: Option<egui::Rect>,
+    measured: &mut f32,
     enabled: bool,
     collect: impl FnOnce() -> Vec<String>,
 ) -> Vec<String> {
     let warnings = if enabled { collect() } else { Vec::new() };
     if let Some(rect) = rect {
-        let mut panel = ui.new_child(
-            egui::UiBuilder::new()
-                .id_salt("warnings_panel")
-                .max_rect(rect),
-        );
-        egui::ScrollArea::vertical()
-            .id_salt("warnings")
-            .max_height(rect.height())
-            .auto_shrink([false, true])
-            .show(&mut panel, |ui| {
-                for warning in &warnings {
-                    ui.colored_label(egui::Color32::YELLOW, warning);
-                }
-            });
+        let height = if warnings.is_empty() {
+            0.0
+        } else {
+            let mut panel = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt("warnings_panel")
+                    .max_rect(rect),
+            );
+            egui::ScrollArea::vertical()
+                .id_salt("warnings")
+                .max_height(rect.height())
+                .min_scrolled_height(0.0)
+                .auto_shrink([false, true])
+                .show(&mut panel, |ui| {
+                    for warning in &warnings {
+                        ui.colored_label(egui::Color32::YELLOW, warning);
+                    }
+                })
+                .content_size
+                .y
+        };
+        if *measured != height {
+            *measured = height;
+            ui.ctx().request_repaint();
+        }
     }
     warnings
 }
@@ -453,6 +476,8 @@ pub struct Viewer {
     /// The last frame's data limitations, built only while they are shown or
     /// a capture will print them.
     map_warnings: Vec<String>,
+    /// Last standalone warning ScrollArea content height, capped before the next map layout.
+    warnings_height: f32,
     /// Whether technical stats and data limitations are shown with the map.
     /// Off by default: the standalone viewer saves the choice in
     /// `viewer.json`, the desktop host sends its own, and `--diagnostics`
@@ -814,6 +839,7 @@ impl Viewer {
             rendered: None,
             rendered_sequence: 0,
             map_warnings: Vec::new(),
+            warnings_height: 0.0,
             diagnostics: initial_diagnostics(
                 options.diagnostics,
                 config.diagnostics,
@@ -1748,9 +1774,14 @@ impl Viewer {
                     return Some((Arc::new(text), rect, None));
                 }
             };
-            let text =
-                self.land_marker_tooltips
-                    .request(document, frame, viewer, id, index.as_deref());
+            let text = self.land_marker_tooltips.request(
+                document,
+                frame,
+                viewer,
+                id,
+                index.as_deref(),
+                self.counter_view.settings.nato,
+            );
             return Some((text, rect, None));
         }
         if let Some((id, rect)) = crate::combat::naval_marker_tooltips::hit(
@@ -1909,12 +1940,9 @@ impl Viewer {
         let build_warnings = self.diagnostics || self.capture.is_some();
         self.interface_points =
             map::ui_scale::points(1.0, raster.screen_scale(), ui.ctx().pixels_per_point());
-        // A changing hover report must not move the map and invalidate its own hit region.
+        // Reserve the previous content height; late collection measures the next frame's panel.
         let warnings_rect = if self.diagnostics && !self.dashboard_map && self.embedded.is_none() {
-            let (_, rect) = ui.allocate_space(egui::vec2(
-                ui.available_width(),
-                ui.available_height() * WARNING_SHARE,
-            ));
+            let rect = reserve_warnings(ui, self.warnings_height);
             for line in shown.stats() {
                 ui.weak(line);
             }
@@ -2177,257 +2205,279 @@ impl Viewer {
             perspective: self.perspective.clone(),
             counter_settings: self.counter_view.settings,
         };
-        let overlay_timer = Instant::now();
-        // capture: the animation clock is the one input a live window cannot
-        // share with a headless frame, so a capture frame renders at 0, the
-        // still frame `--dump` renders, or at its explicit sequence clock. The
-        // window runs one presentation clock: the map scene and the map-icon
-        // windows' GUI clock (`Time`, `CGraphics+0x32590`) share it.
-        // A background flag or portrait load repaints the window, which then
-        // lays the overlay out again with what it decoded.
-        if !document.icons.lazy.has_wake() {
-            let ctx = ui.ctx().clone();
-            document.icons.lazy.set_wake(move || ctx.request_repaint());
-        }
-        let stale = self
-            .prepared_overlay
-            .as_ref()
-            .is_some_and(|prepared| prepared.is_stale(&now));
-        let engaged = self
-            .hours
-            .as_ref()
-            .map(|hours| hours.engaged(&self.perspective.country))
-            .transpose()
-            .map_err(|error| error.to_string())?;
-        // An overlay laid out before the engaged index reached its hour, by the
-        // window or by an hour builder, is laid out again once it does, so a
-        // paused seek or a prebuilt hour settles on the exact flag.
-        let engaged_arrived = engaged_relayout(
-            self.prepared_overlay
-                .as_ref()
-                .zip(self.overlay_at.as_ref())
-                .map(|(prepared, key)| (prepared.engaged_covered(), key.branch, key.hour)),
-            |branch, hour| {
-                engaged
-                    .as_ref()
-                    .is_some_and(|index| index.covers(branch, hour))
-            },
-        );
-        // The raid lane's icons for the hour on screen replace the hour's
-        // when they are newer; a paused frame asks the lane for one batch.
-        let ctx = ui.ctx().clone();
-        // Its batches borrow the hour builders' threads.
-        if let Some(hours) = &self.hours {
-            self.raid_lane.use_workers(hours.workers());
-        }
-        self.raid_lane.show(
-            &document.content,
-            &self.perspective,
-            (document.playback.branch(), document.playback.hour()),
-            self.playing,
-            move || ctx.request_repaint(),
-        );
-        // Only icons of the lane's current reset, built for the hour and the
-        // resolved viewing country the tables are for, install.
-        let mut raids_changed = false;
-        if let Some((branch, hour, _, tables)) = &mut self.overlay_tables
-            && let Some(icons) = self.raid_lane.icons(*branch, *hour, tables.ours())
-            && !Arc::ptr_eq(&icons, &tables.raids())
-        {
-            raids_changed = tables.set_raids(icons);
-        }
-        let layout_changed =
-            stale || engaged_arrived || self.overlay_at.as_ref() != Some(&overlay_key);
-        // A raid batch on the laid-out hour, camera and view replaces the raid
-        // icons alone: the rest of the overlay does not read them. The batch
-        // drawn at this fraction takes them in place, as drawing it again
-        // would; a new fraction draws it again below.
-        let raids_only = raids_changed && !layout_changed;
-        if raids_only
-            && let (Some(prepared), Some((_, _, _, tables))) =
-                (self.prepared_overlay.as_mut(), self.overlay_tables.as_ref())
-        {
-            let drawn = (self.overlay_fraction == Some(document.hour_fraction))
-                .then_some(self.overlay.as_mut())
-                .flatten();
-            prepared.replace_raids(&now, camera, pixels, ui_scale, &tables.raids(), drawn);
-        }
-        if layout_changed || (raids_only && self.prepared_overlay.is_none()) {
-            let tables_key = (
-                document.playback.branch(),
-                document.playback.hour(),
-                self.perspective.clone(),
-            );
-            if engaged_arrived
-                || self
-                    .overlay_tables
-                    .as_ref()
-                    .is_none_or(|(branch, hour, perspective, _)| {
-                        (*branch, *hour, perspective) != (tables_key.0, tables_key.1, &tables_key.2)
-                    })
-            {
-                // Raid offers are only evaluated on the raid lane: until it
-                // delivers this hour's for this view, no raid icon draws
-                // (`RaidIcons::carried`).
-                let ours = now
-                    .vision(&self.perspective)
-                    .map_err(|error| error.to_string())?
-                    .ours();
-                let raids = self
-                    .raid_lane
-                    .icons(tables_key.0, tables_key.1, ours)
-                    .unwrap_or_default();
-                let tables = now
-                    .hour_tables_with_raids(&self.perspective, raids, engaged.as_deref())
-                    .map_err(|error| error.to_string())?;
-                self.overlay_tables = Some((tables_key.0, tables_key.1, tables_key.2, tables));
+        let (overlay_ms, additions) = {
+            let overlay_timer = Instant::now();
+            // capture: the animation clock is the one input a live window cannot
+            // share with a headless frame, so a capture frame renders at 0, the
+            // still frame `--dump` renders, or at its explicit sequence clock. The
+            // window runs one presentation clock: the map scene and the map-icon
+            // windows' GUI clock (`Time`, `CGraphics+0x32590`) share it.
+            // A background flag or portrait load repaints the window, which then
+            // lays the overlay out again with what it decoded.
+            if !document.icons.lazy.has_wake() {
+                let ctx = ui.ctx().clone();
+                document.icons.lazy.set_wake(move || ctx.request_repaint());
             }
-            let tables = &self.overlay_tables.as_ref().expect("parsed above").3;
-            self.prepared_overlay = Some(
-                now.prepare_overlay_cached(camera, pixels, ui_scale, tables, &self.counter_view)
-                    .map_err(|error| error.to_string())?,
-            );
-            self.overlay_at = Some(overlay_key);
-            self.overlay_fraction = None;
-        }
-        laps.lap("overlay_prepare");
-        // The frame's province schedule, advanced before its map icons read the dirty bits
-        // (`CGraphicalMap::update` runs before `CMapIconManagerImpl::update`); the scene's
-        // render takes it.
-        if let Some(scene) = self.scene.as_mut() {
-            scene.share_province_schedule(self.counter_view.presentation.schedule());
-            scene.advance_provinces(camera, pixels);
-        }
-        if self.overlay_fraction != Some(document.hour_fraction) {
-            // Redrawn into the last fraction's batch and report, so playback allocates nothing.
-            let prepared = self.prepared_overlay.as_mut().expect("prepared above");
-            prepared
-                .draw_into(
-                    &now,
-                    camera,
-                    pixels,
-                    ui_scale,
-                    Default::default(),
-                    animation_time,
-                    self.overlay.get_or_insert_with(Batch::default),
-                    &mut self.counter_report,
-                )
-                .map_err(|error| error.to_string())?;
-            if self.label_report != *prepared.label_report() {
-                self.label_report.clone_from(prepared.label_report());
-            }
-            self.overlay_fraction = Some(document.hour_fraction);
-        }
-        // A map-icon window still fading in is laid out again on the next frame, as the game
-        // ticks every window each frame (`UpdateTransitions@1422AF9F0`).
-        if self.counter_view.presentation.take_running() {
-            self.overlay_at = None;
-            ui.ctx().request_repaint();
-        }
-        if raids_only && check_overlay() {
-            self.check_overlay(&now, camera, pixels, ui_scale, animation_time)?;
-        }
-        // Resolve clicks against this hour and camera's newly rebuilt hit regions.
-        if response.clicked()
-            && !over_combat
-            && let Some(point) = point
-            && let Some(hit) = self
-                .counter_report
-                .combat_hits
-                .iter()
-                .rev()
-                .find(|hit| hit.contains(point))
-        {
-            self.combat.open(hit.selection);
-        }
-        let overlay_ms = overlay_timer.elapsed().as_secs_f64() * 1000.0;
-        laps.lap("overlay_draw");
-        let engaged = self
-            .hours
-            .as_ref()
-            .map(|hours| hours.engaged(&self.perspective.country))
-            .transpose()
-            .map_err(|error| error.to_string())?;
-        self.combat.set_playing(self.playing);
-        let drawn = self
-            .combat
-            .draw(
-                document,
-                extent,
-                &self.perspective,
-                engaged.as_deref(),
-                true,
-                animation_time,
-                true,
-            )
-            .map_err(|error| error.to_string())?;
-        if self.combat.gui_active() {
-            ui.ctx().request_repaint();
-        }
-        let map_hit = self.map_tooltip(document, point.filter(|_| !over_combat), extent, ui.ctx());
-        let mut tooltip_refused = map_hit
-            .as_ref()
-            .map(|(text, _, _)| text.refused.clone())
-            .unwrap_or_default();
-        let mut additions = Batch::default();
-        let tooltip_time = Instant::now();
-        if let Some((text, anchor)) = self.combat.tooltip(
-            drawn.as_ref(),
-            document.icons.combat.tooltip_defines.as_ref().ok(),
-            point,
-            map_hit.as_ref().map(|(text, rect, province)| {
-                (
-                    text.title.as_str(),
-                    Some(text.body.as_str()),
-                    *rect,
-                    *province,
-                )
-            }),
-            tooltip_time,
-        ) {
-            let refused = self
+            let stale = self
                 .prepared_overlay
                 .as_ref()
-                .expect("built above")
-                .draw_tooltip(&now, &mut additions, text, anchor, extent, animation_time)
+                .is_some_and(|prepared| prepared.is_stale(&now));
+            let engaged = self
+                .hours
+                .as_ref()
+                .map(|hours| hours.engaged(&self.perspective.country))
+                .transpose()
                 .map_err(|error| error.to_string())?;
-            for (reason, count) in refused {
-                *tooltip_refused.entry(reason).or_default() += count;
+            // An overlay laid out before the engaged index reached its hour, by the
+            // window or by an hour builder, is laid out again once it does, so a
+            // paused seek or a prebuilt hour settles on the exact flag.
+            let engaged_arrived = engaged_relayout(
+                self.prepared_overlay
+                    .as_ref()
+                    .zip(self.overlay_at.as_ref())
+                    .map(|(prepared, key)| (prepared.engaged_covered(), key.branch, key.hour)),
+                |branch, hour| {
+                    engaged
+                        .as_ref()
+                        .is_some_and(|index| index.covers(branch, hour))
+                },
+            );
+            // The raid lane's icons for the hour on screen replace the hour's
+            // when they are newer; a paused frame asks the lane for one batch.
+            let ctx = ui.ctx().clone();
+            // Its batches borrow the hour builders' threads.
+            if let Some(hours) = &self.hours {
+                self.raid_lane.use_workers(hours.workers());
             }
-        }
-        // Captures inventory reachable counter hovers even when the pointer left the plate.
-        if self.capture.is_some()
-            && let crate::playback::Current::Frame(frame) = document.playback.current()
-        {
-            let tooltips = self.counter_report.land_hovers.iter().map(|hover| {
-                map::counter_tooltips::build(
-                    &document.content,
-                    frame,
-                    hover,
-                    &self.counter_report.perspective,
-                    self.counter_view.settings.nato,
+            self.raid_lane.show(
+                &document.content,
+                &self.perspective,
+                (document.playback.branch(), document.playback.hour()),
+                self.playing,
+                move || ctx.request_repaint(),
+            );
+            // Only icons of the lane's current reset, built for the hour and the
+            // resolved viewing country the tables are for, install.
+            let mut raids_changed = false;
+            if let Some((branch, hour, _, tables)) = &mut self.overlay_tables
+                && let Some(icons) = self.raid_lane.icons(*branch, *hour, tables.ours())
+                && !Arc::ptr_eq(&icons, &tables.raids())
+            {
+                raids_changed = tables.set_raids(icons);
+            }
+            let layout_changed =
+                stale || engaged_arrived || self.overlay_at.as_ref() != Some(&overlay_key);
+            // A raid batch on the laid-out hour, camera and view replaces the raid
+            // icons alone: the rest of the overlay does not read them. The batch
+            // drawn at this fraction takes them in place, as drawing it again
+            // would; a new fraction draws it again below.
+            let raids_only = raids_changed && !layout_changed;
+            if raids_only
+                && let (Some(prepared), Some((_, _, _, tables))) =
+                    (self.prepared_overlay.as_mut(), self.overlay_tables.as_ref())
+            {
+                let drawn = (self.overlay_fraction == Some(document.hour_fraction))
+                    .then_some(self.overlay.as_mut())
+                    .flatten();
+                prepared.replace_raids(&now, camera, pixels, ui_scale, &tables.raids(), drawn);
+            }
+            if layout_changed || (raids_only && self.prepared_overlay.is_none()) {
+                let tables_key = (
+                    document.playback.branch(),
+                    document.playback.hour(),
+                    self.perspective.clone(),
+                );
+                if engaged_arrived
+                    || self
+                        .overlay_tables
+                        .as_ref()
+                        .is_none_or(|(branch, hour, perspective, _)| {
+                            (*branch, *hour, perspective)
+                                != (tables_key.0, tables_key.1, &tables_key.2)
+                        })
+                {
+                    // Raid offers are only evaluated on the raid lane: until it
+                    // delivers this hour's for this view, no raid icon draws
+                    // (`RaidIcons::carried`).
+                    let ours = now
+                        .vision(&self.perspective)
+                        .map_err(|error| error.to_string())?
+                        .ours();
+                    let raids = self
+                        .raid_lane
+                        .icons(tables_key.0, tables_key.1, ours)
+                        .unwrap_or_default();
+                    let tables = now
+                        .hour_tables_with_raids(&self.perspective, raids, engaged.as_deref())
+                        .map_err(|error| error.to_string())?;
+                    self.overlay_tables = Some((tables_key.0, tables_key.1, tables_key.2, tables));
+                }
+                let tables = &self.overlay_tables.as_ref().expect("parsed above").3;
+                self.prepared_overlay = Some(
+                    now.prepare_overlay_cached(
+                        camera,
+                        pixels,
+                        ui_scale,
+                        tables,
+                        &self.counter_view,
+                    )
+                    .map_err(|error| error.to_string())?,
+                );
+                self.overlay_at = Some(overlay_key);
+                self.overlay_fraction = None;
+            }
+            laps.lap("overlay_prepare");
+            // The frame's province schedule, advanced before its map icons read the dirty bits
+            // (`CGraphicalMap::update` runs before `CMapIconManagerImpl::update`); the scene's
+            // render takes it.
+            if let Some(scene) = self.scene.as_mut() {
+                scene.share_province_schedule(self.counter_view.presentation.schedule());
+                scene.advance_provinces(camera, pixels);
+            }
+            if self.overlay_fraction != Some(document.hour_fraction) {
+                // Reuse the last fraction's batch and report during playback.
+                let prepared = self.prepared_overlay.as_mut().expect("prepared above");
+                prepared
+                    .draw_into(
+                        &now,
+                        camera,
+                        pixels,
+                        ui_scale,
+                        Default::default(),
+                        animation_time,
+                        self.overlay.get_or_insert_with(Batch::default),
+                        &mut self.counter_report,
+                    )
+                    .map_err(|error| error.to_string())?;
+                if self.label_report != *prepared.label_report() {
+                    self.label_report.clone_from(prepared.label_report());
+                }
+                self.overlay_fraction = Some(document.hour_fraction);
+            }
+            // A fading map-icon window is laid out on the next frame; native ticks every
+            // window each frame (UpdateTransitions@1422AF9F0).
+            if self.counter_view.presentation.take_running() {
+                self.overlay_at = None;
+                ui.ctx().request_repaint();
+            }
+            if raids_only && check_overlay() {
+                self.check_overlay(&now, camera, pixels, ui_scale, animation_time)?;
+            }
+            // Resolve clicks against this hour and camera's newly rebuilt hit regions.
+            if response.clicked()
+                && !over_combat
+                && let Some(point) = point
+                && let Some(hit) = self
+                    .counter_report
+                    .combat_hits
+                    .iter()
+                    .rev()
+                    .find(|hit| hit.contains(point))
+            {
+                self.combat.open(hit.selection);
+            }
+            let overlay_ms = overlay_timer.elapsed().as_secs_f64() * 1000.0;
+            laps.lap("overlay_draw");
+            let engaged = self
+                .hours
+                .as_ref()
+                .map(|hours| hours.engaged(&self.perspective.country))
+                .transpose()
+                .map_err(|error| error.to_string())?;
+            self.combat.set_playing(self.playing);
+            let drawn = self
+                .combat
+                .draw(
+                    document,
+                    extent,
+                    &self.perspective,
+                    engaged.as_deref(),
+                    true,
+                    animation_time,
+                    true,
                 )
-            });
-            let refused = map::counter_tooltips::count_refusals(tooltips);
-            for (reason, count) in refused {
-                let current = tooltip_refused.entry(reason).or_default();
-                *current = (*current).max(count);
+                .map_err(|error| error.to_string())?;
+            if self.combat.gui_active() {
+                ui.ctx().request_repaint();
             }
-        }
-        self.tooltip_refused = tooltip_refused;
-        let warnings = finish_warnings(ui, warnings_rect, build_warnings, || {
+            let map_hit =
+                self.map_tooltip(document, point.filter(|_| !over_combat), extent, ui.ctx());
+            let mut tooltip_refused = map_hit
+                .as_ref()
+                .map(|(text, _, _)| text.refused.clone())
+                .unwrap_or_default();
+            let mut additions = Batch::default();
+            let tooltip_time = Instant::now();
+            if let Some((text, anchor)) = self.combat.tooltip(
+                drawn.as_ref(),
+                document.icons.combat.tooltip_defines.as_ref().ok(),
+                point,
+                map_hit.as_ref().map(|(text, rect, province)| {
+                    (
+                        text.title.as_str(),
+                        Some(text.body.as_str()),
+                        *rect,
+                        *province,
+                    )
+                }),
+                tooltip_time,
+            ) {
+                let refused = self
+                    .prepared_overlay
+                    .as_ref()
+                    .expect("built above")
+                    .draw_tooltip(&now, &mut additions, text, anchor, extent, animation_time)
+                    .map_err(|error| error.to_string())?;
+                for (reason, count) in refused {
+                    *tooltip_refused.entry(reason).or_default() += count;
+                }
+            }
+            // Captures inventory reachable counter hovers even when the pointer left the plate.
+            if self.capture.is_some()
+                && let crate::playback::Current::Frame(frame) = document.playback.current()
+            {
+                let tooltips = self.counter_report.land_hovers.iter().map(|hover| {
+                    map::counter_tooltips::build(
+                        &document.content,
+                        frame,
+                        hover,
+                        &self.counter_report.perspective,
+                        self.counter_view.settings.nato,
+                    )
+                });
+                let refused = map::counter_tooltips::count_refusals(tooltips);
+                for (reason, count) in refused {
+                    let current = tooltip_refused.entry(reason).or_default();
+                    *current = (*current).max(count);
+                }
+            }
+            self.tooltip_refused = tooltip_refused;
+            if let Some(delay) = self.combat.tooltip_repaint_after(
+                document.icons.combat.tooltip_defines.as_ref().ok(),
+                tooltip_time,
+            ) {
+                ui.ctx().request_repaint_after(delay);
+            }
+            if let Some(drawn) = drawn {
+                additions.quads.extend(drawn.batch.quads);
+            }
+            laps.lap("combat_hover");
+            (overlay_ms, additions)
+        };
+        // Overlay and hover diagnostics belong to this frame.
+        let warnings = if build_warnings {
             self.collect_warnings(document)
-        });
-        laps.lap("limitations");
-        if let Some(delay) = self.combat.tooltip_repaint_after(
-            document.icons.combat.tooltip_defines.as_ref().ok(),
-            tooltip_time,
-        ) {
-            ui.ctx().request_repaint_after(delay);
-        }
-        if let Some(drawn) = drawn {
-            additions.quads.extend(drawn.batch.quads);
-        }
+        } else {
+            Vec::new()
+        };
+        let warnings = finish_warnings(
+            ui,
+            warnings_rect,
+            &mut self.warnings_height,
+            build_warnings,
+            || warnings,
+        );
+        laps.lap("diagnostics");
         let overlay = self.overlay.as_ref().expect("built above");
         let mut combined;
         let label_batch = if additions.is_empty() {
@@ -3157,26 +3207,34 @@ fn engaged_relayout(
 pub(crate) mod tests {
     use super::*;
 
-    /// Uses the runtime's reserved panel and late collector, including its painted text.
+    /// Uses the runtime's measured reservation and late collector after the first repaint.
     pub(crate) fn assert_diagnostics(
         mut collect: impl FnMut() -> Vec<String>,
         expected: &[String],
     ) {
         let ctx = egui::Context::default();
         let mut warnings = Vec::new();
-        let output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1400.0, 800.0),
-                )),
-                ..Default::default()
-            },
-            |ui| {
-                let (_, rect) = ui.allocate_space(egui::vec2(1300.0, 300.0));
-                warnings = finish_warnings(ui, Some(rect), true, &mut collect);
-            },
-        );
+        let mut measured = 0.0;
+        let mut frame = || {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1400.0, 800.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    let rect = reserve_warnings(ui, measured);
+                    warnings = finish_warnings(ui, Some(rect), &mut measured, true, &mut collect);
+                },
+            );
+            // These frames inspect text and shapes without uploading their textures.
+            output.textures_delta.clear();
+            output
+        };
+        let _ = frame();
+        let output = frame();
         let labels: Vec<_> = output
             .shapes
             .iter()
@@ -3195,36 +3253,60 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn diagnostics_collect_after_the_overlay_and_before_drawing() {
-        use crate::combat::icon_frames::{Kept, LAND_NO_HISTORY};
-        let mut report = map::counters::CounterReport::default();
-        let expected = format!(
-            "Land combats: 1 {}; combats 7",
-            Kept::Unindexed.limitation(LAND_NO_HISTORY)
-        );
-        assert_diagnostics(
-            || {
-                // The current overlay publishes this after the panel reserves its rectangle.
-                report.combat_limits.insert(
-                    ("Land", Kept::Unindexed.limitation(LAND_NO_HISTORY)),
-                    [7].into(),
-                );
-                report.combat_gap_lines().collect()
-            },
-            &[expected],
-        );
+    fn warning_reservation_follows_measured_content_and_caps_at_the_share() {
+        let ctx = egui::Context::default();
+        let mut measured = 0.0;
+        for count in [0, 2, 2, 100, 100, 0, 0] {
+            let previous = measured;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(400.0, 300.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    let available = ui.available_height();
+                    let cap = available * WARNING_SHARE;
+                    let rect = reserve_warnings(ui, measured);
+                    assert!((rect.height() - previous.min(cap)).abs() < 0.001);
+                    if previous == 0.0 {
+                        assert_eq!(ui.available_height(), available);
+                    }
+                    let warnings = vec!["limitation".to_owned(); count];
+                    let reported =
+                        finish_warnings(ui, Some(rect), &mut measured, true, || warnings.clone());
+                    assert_eq!(reported, warnings);
+                    match count {
+                        0 => assert_eq!(measured, 0.0),
+                        2 => assert!(measured > 0.0 && measured < cap),
+                        100 => assert!(measured > cap),
+                        _ => unreachable!(),
+                    }
+                },
+            );
+            output.textures_delta.clear();
+        }
     }
 
     #[test]
     fn hidden_diagnostics_do_not_collect_and_exports_do_not_draw_a_panel() {
         let ctx = egui::Context::default();
         let mut warnings = Vec::new();
-        let output = ctx.run_ui(Default::default(), |ui| {
-            let hidden = finish_warnings(ui, None, false, || panic!("hidden collector"));
+        let mut measured = 0.0;
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            let hidden = finish_warnings(ui, None, &mut measured, false, || {
+                panic!("hidden collector")
+            });
             assert!(hidden.is_empty());
-            warnings = finish_warnings(ui, None, true, || vec!["export limitation".into()]);
+            warnings = finish_warnings(ui, None, &mut measured, true, || {
+                vec!["export limitation".into()]
+            });
         });
+        output.textures_delta.clear();
         assert_eq!(warnings, ["export limitation"]);
+        assert_eq!(measured, 0.0);
         assert!(
             !output
                 .shapes

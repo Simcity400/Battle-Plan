@@ -139,6 +139,7 @@ fn frame(token: u32, saved: &str, dlc: u32) -> DecodedFrame {
                 dlc_mask: dlc,
                 human_ai: 0,
                 weather_suspend: replay::rows::Recorded::Value(None),
+                ..Default::default()
             }]),
         ),
     ];

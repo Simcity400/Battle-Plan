@@ -12,11 +12,14 @@ impl Renderer<'_, '_, '_> {
         Ok(String::new())
     }
 
-    pub(super) fn save_global_event_target(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
+    pub(super) fn save_global_event_target(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
         // 14038D6B0 -> 1401ED290, cleared by the existing 140529520 session exit.
-        self.evaluator()?.save_global_tooltip_target(
-            item.value.read_string().unwrap_or_default(), scopes,
-        )?;
+        self.evaluator()?
+            .save_global_tooltip_target(item.value.read_string().unwrap_or_default(), scopes)?;
         Ok(String::new())
     }
 
@@ -30,18 +33,34 @@ impl Renderer<'_, '_, '_> {
         // 14039A7D0 short-circuits before reading operands when tooltip is empty.
         // 140379020 first executes vf13 for temporary scalars, even then.
         // 1403B691F passes zero to ReadStringInto's LF check (1424ABB50).
-        let tooltip = children(item).iter().rev().find(|field| field.keyword_is("tooltip"))
-            .and_then(|field| field.value.read_string()).unwrap_or_default();
+        let tooltip = children(item)
+            .iter()
+            .rev()
+            .find(|field| field.keyword_is("tooltip"))
+            .and_then(|field| field.value.read_string())
+            .unwrap_or_default();
         if !temporary && tooltip.is_empty() {
             return Ok(String::new());
         }
         let values = self.evaluator()?.description_variable(
-            operation, item, scopes, temporary, !tooltip.is_empty(),
+            operation,
+            item,
+            scopes,
+            temporary,
+            !tooltip.is_empty(),
         )?;
-        let Some((left, right)) = values else { return Ok(String::new()); };
-        self.localised(tooltip, &[
-            ("LEFT", Argument::Fixed5(left)), ("RIGHT", Argument::Fixed5(right)),
-        ], scopes, true)
+        let Some((left, right)) = values else {
+            return Ok(String::new());
+        };
+        self.localised(
+            tooltip,
+            &[
+                ("LEFT", Argument::Fixed5(left)),
+                ("RIGHT", Argument::Fixed5(right)),
+            ],
+            scopes,
+            true,
+        )
     }
 
     pub(super) fn temp_variable_builder(
@@ -54,11 +73,20 @@ impl Renderer<'_, '_, '_> {
         let result = match operation {
             // 14037B520 -> 14034EDD0; 14047BF30 -> 14047B280.
             "clamp_temp_variable" | "modulo_temp_variable" => evaluator
-                .description_variable(operation, item, scopes, true, false).map(|_| ()),
-            // 14047BF80 -> 14047B530. The pre-RNG invalid-range branch is known.
+                .description_variable(operation, item, scopes, true, false)
+                .map(|_| ()),
+            // 14047BF80 -> 14047B530; TLS RNG uses recorded CVariables+8.
             "set_temp_variable_to_random" => evaluator.description_random_temp(item, scopes),
             // 14047BEE0 -> 14047B0B0 initializes zero for an unknown type.
-            "get_supply_vehicles_temp" => evaluator.description_supply_temp(item, scopes),
+            "get_supply_vehicles_temp" => evaluator.description_supply_temp(item, scopes, || {
+                self.context
+                    .text
+                    .content()
+                    .environment()?
+                    .defines()
+                    .fixed5("NSupply", "MIN_TRAIN_REQUIREMENT")
+                    .map_err(|why| why.to_string()) // 14047B0B0, native 1433199D0.
+            }),
             _ => unreachable!(),
         };
         if let Err(why) = &result {

@@ -391,7 +391,9 @@ impl Renderer<'_, '_, '_> {
         };
         // 14036B420 decodes into a default-constructed scope, not a caller copy.
         let object = match target {
-            Scope::Country(id) => crate::scripted_text::EventObject::Country(id),
+            Scope::Country(id) | Scope::CountryLeader { country: id, .. } => {
+                crate::scripted_text::EventObject::Country(id)
+            }
             Scope::State(id) => crate::scripted_text::EventObject::State(id),
             Scope::Province(id) => crate::scripted_text::EventObject::Province(id),
             Scope::Character(id) => crate::scripted_text::EventObject::Character(id),
@@ -399,7 +401,9 @@ impl Renderer<'_, '_, '_> {
             Scope::IndustrialOrganisation(id) => {
                 crate::scripted_text::EventObject::IndustrialOrganisation(id)
             }
-            Scope::Project { owner, id } => crate::scripted_text::EventObject::Project { owner, id },
+            Scope::Project { owner, id } => {
+                crate::scripted_text::EventObject::Project { owner, id }
+            }
             Scope::Raid(id) => crate::scripted_text::EventObject::Raid(id),
             Scope::Unit(id) => crate::scripted_text::EventObject::Unit(id),
             Scope::Combat => return Err("array combat scope is unavailable (140537A10)".into()),
@@ -502,7 +506,7 @@ impl Renderer<'_, '_, '_> {
         Ok(self.group(&body, scopes, indent))
     }
 
-    pub(super) fn override_own(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
+    pub(super) fn override_own(&mut self, item: &Item, scopes: Scopes) -> Result<String, String> {
         field(children(item), "tooltip")
             .filter(|item| !item.value.read_string().is_some_and(|key| key.is_empty()))
             .map(|tooltip| self.custom_tooltip(tooltip, scopes))

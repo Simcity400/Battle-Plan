@@ -138,7 +138,11 @@ fn a_failed_capture_counts_no_model_failures() {
 #[test]
 fn conversion_preserves_exact_bytes_and_rejects_every_invalid_span() {
     let mut capture = Captured::with_capacities(&capacity());
-    capture.capture(&fixture(), 0, 0x1000, 3, true);
+    let mut source = fixture();
+    source.bytes
+        [0x5000 + native::FORMATION_DIVISION_COUNT..0x5000 + native::FORMATION_DIVISION_COUNT + 4]
+        .copy_from_slice(&(-17_i32).to_le_bytes());
+    capture.capture(&source, 0, 0x1000, 3, true);
     let [
         TableView::Complete(replay::rows::TableRows::DivisionTemplates(rows)),
         TableView::Complete(replay::rows::TableRows::DivisionTemplateIcons(icons)),
@@ -165,6 +169,10 @@ fn conversion_preserves_exact_bytes_and_rejects_every_invalid_span() {
     assert_eq!(icons[0].template, 0xffff_ffff_0000_0034);
     assert_eq!(icons[0].priority_unit, 777);
     assert_eq!(icons[0].priority_unit_name, b"infantry");
+    assert_eq!(
+        icons[0].formation_division_count,
+        replay::rows::Recorded::Value(Some(-17))
+    );
     // A row whose model inputs failed publishes the flag, keeps its
     // counter fields and is counted by reason.
     let good = capture.icon_rows.rows[0];
@@ -178,6 +186,10 @@ fn conversion_preserves_exact_bytes_and_rejects_every_invalid_span() {
     };
     assert_eq!(flagged[0].model_unreadable, 1);
     assert_eq!(flagged[0].priority_unit_name, b"infantry");
+    assert_eq!(
+        flagged[0].formation_division_count,
+        replay::rows::Recorded::Value(Some(-17))
+    );
     capture.icon_rows.rows[0] = good;
     let mut failures = ModelFailures::default();
     for reason in ["a", "b", "a"] {

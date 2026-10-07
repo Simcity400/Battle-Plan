@@ -27,9 +27,49 @@ pub(crate) struct RosterWork {
     refusals: Vec<(&'static str, u64)>,
     states_required: usize,
     leaders_required: usize,
+    neighbors_required: usize,
+    policies_required: usize,
+    occupied_captured: u64,
+    occupied_required: usize,
 }
 
 impl RosterWork {
+    fn refuse(&mut self, reason: &'static str) -> std::io::Result<()> {
+        let index = match self.refusals.binary_search_by_key(&reason, |entry| entry.0) {
+            Ok(index) => index,
+            Err(index) => {
+                engine::allocation::reserve(&mut self.refusals, 1)?;
+                self.refusals.insert(index, (reason, 0));
+                index
+            }
+        };
+        self.refusals[index].1 = self.refusals[index].1.saturating_add(1);
+        Ok(())
+    }
+
+    pub(crate) fn observe_occupied(
+        &mut self,
+        rows: &[engine::ccountry_occupation_status::Row],
+        arena: &Arena<u32>,
+    ) -> std::io::Result<()> {
+        for row in rows {
+            let reason = row.occupied_reason.or_else(|| match row.occupied {
+                None => Some("occupied-country roster unobserved"),
+                Some(span) if !valid_span(arena, span.start, span.count) => {
+                    Some("occupied-country roster span outside acquired arena")
+                }
+                Some(_) => None,
+            });
+            if let Some(reason) = reason {
+                self.refuse(reason)?;
+            } else {
+                self.occupied_captured = self.occupied_captured.saturating_add(1);
+            }
+        }
+        self.occupied_required = arena.required;
+        Ok(())
+    }
+
     fn observe(&mut self, capture: &Captured) -> std::io::Result<()> {
         let rows = capture
             .rows
@@ -41,22 +81,30 @@ impl RosterWork {
                 (row.state_rosters.is_none() || row.leader_rosters.is_none())
                     .then_some("country roster inputs unobserved")
             });
-            if let Some(reason) = reason {
-                let index = match self.refusals.binary_search_by_key(&reason, |entry| entry.0) {
-                    Ok(index) => index,
-                    Err(index) => {
-                        engine::allocation::reserve(&mut self.refusals, 1)?;
-                        self.refusals.insert(index, (reason, 0));
-                        index
-                    }
-                };
-                self.refusals[index].1 = self.refusals[index].1.saturating_add(1);
-            } else {
+            let neighbor_reason = row.neighbor_reason.or_else(|| {
+                row.neighbors
+                    .filter(|span| !valid_span(&capture.neighbors, span.start, span.count))
+                    .map(|_| "country neighbor roster span outside acquired arena")
+            });
+            let policy_reason = row.policy_reason.or_else(|| {
+                row.mio_policies
+                    .filter(|span| !valid_span(&capture.policies, span.start, span.count))
+                    .map(|_| "MIO policy roster span outside acquired arena")
+            });
+            for reason in [reason, neighbor_reason, policy_reason]
+                .into_iter()
+                .flatten()
+            {
+                self.refuse(reason)?;
+            }
+            if reason.is_none() && neighbor_reason.is_none() && policy_reason.is_none() {
                 self.captured = self.captured.saturating_add(1);
             }
         }
         self.states_required = capture.states.required;
         self.leaders_required = capture.leaders.required;
+        self.neighbors_required = capture.neighbors.required;
+        self.policies_required = capture.policies.required;
         Ok(())
     }
 
@@ -67,7 +115,11 @@ impl RosterWork {
             "refusals": crate::status::map(self.refusals.iter().map(|&(reason, count)| (reason, count))),
             "states_required": self.states_required,
             "leaders_required": self.leaders_required,
-            "scope": "hourly country roster inputs; refused lists are absent while country scalar operands remain available",
+            "neighbors_required": self.neighbors_required,
+            "policies_required": self.policies_required,
+            "occupied_captured": self.occupied_captured,
+            "occupied_required": self.occupied_required,
+            "scope": "stored country roster inputs at host cadence; refused appended lists preserve existing row values",
         })
     }
 }
@@ -78,6 +130,8 @@ pub struct Capacities {
     civil_wars: usize,
     states: usize,
     leaders: usize,
+    neighbors: usize,
+    policies: usize,
     wargoals: usize,
     wargoal_states: usize,
 }
@@ -88,12 +142,25 @@ impl Default for Capacities {
             civil_wars: 64,
             states: 0,
             leaders: 0,
+            neighbors: 0,
+            policies: 0,
             wargoals: 0,
             wargoal_states: 0,
         }
     }
 }
 impl Capacities {
+    pub(crate) fn raise_for_effect_rosters(&mut self, demand: ccountry::EffectRosterDemand) {
+        crate::country_scale::raise(
+            &mut self.neighbors,
+            crate::country_scale::rows(demand.neighbors, 1),
+        );
+        crate::country_scale::raise(
+            &mut self.policies,
+            crate::country_scale::rows(demand.policies, 1),
+        );
+    }
+
     /// One row per canonical country slot.
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         crate::country_scale::raise(&mut self.rows, crate::country_scale::rows(slots, 1));
@@ -125,6 +192,8 @@ pub struct Captured {
     civil_wars: CaptureRows<ccountry::CivilWarRow>,
     states: Arena<u32>,
     leaders: Arena<u64>,
+    neighbors: Arena<u32>,
+    policies: Arena<u32>,
     wargoals: CaptureRows<cwar_goal::Row>,
     wargoal_states: Arena<u32>,
 }
@@ -144,6 +213,8 @@ impl Captured {
             civil_wars: CaptureRows::new(capacity.civil_wars),
             states: Arena::new(capacity.states),
             leaders: Arena::new(capacity.leaders),
+            neighbors: Arena::new(capacity.neighbors),
+            policies: Arena::new(capacity.policies),
             wargoals: CaptureRows::new(capacity.wargoals),
             wargoal_states: Arena::new(capacity.wargoal_states),
         }
@@ -153,6 +224,8 @@ impl Captured {
         self.civil_wars.reset();
         self.states.reset();
         self.leaders.reset();
+        self.neighbors.reset();
+        self.policies.reset();
         self.wargoals.reset();
         self.wargoal_states.reset();
     }
@@ -161,6 +234,8 @@ impl Captured {
             + self.civil_wars.allocated_bytes()
             + self.states.allocated_bytes()
             + self.leaders.allocated_bytes()
+            + self.neighbors.allocated_bytes()
+            + self.policies.allocated_bytes()
             + self.wargoals.allocated_bytes()
             + self.wargoal_states.allocated_bytes()
     }
@@ -169,6 +244,8 @@ impl Captured {
         self.civil_wars.grow(&mut capacity.civil_wars);
         self.states.grow(&mut capacity.states);
         self.leaders.grow(&mut capacity.leaders);
+        self.neighbors.grow(&mut capacity.neighbors);
+        self.policies.grow(&mut capacity.policies);
         self.wargoals.grow(&mut capacity.wargoals);
         self.wargoal_states.grow(&mut capacity.wargoal_states);
     }
@@ -184,17 +261,29 @@ impl Captured {
                 leader_len: 0,
                 required: Default::default(),
             };
-            self.rows.outcome = ccountry::walk_counter_inputs_with_rosters(
+            let mut effects = ccountry::EffectRosters {
+                neighbors: &mut self.neighbors.first,
+                policies: &mut self.policies.first,
+                neighbor_len: 0,
+                policy_len: 0,
+                required: Default::default(),
+            };
+            self.rows.outcome = ccountry::walk_counter_inputs_with_effect_rosters(
                 memory,
                 base,
                 state,
                 &mut self.rows.rows,
                 &mut rosters,
+                &mut effects,
             );
             self.states.len = rosters.state_len;
             self.states.required = rosters.required.states;
             self.leaders.len = rosters.leader_len;
             self.leaders.required = rosters.required.leaders;
+            self.neighbors.len = effects.neighbor_len;
+            self.neighbors.required = effects.required.neighbors;
+            self.policies.len = effects.policy_len;
+            self.policies.required = effects.required.policies;
             ticks[0] = qpc().saturating_sub(begin).max(0) as u64;
         }
         {
@@ -289,6 +378,14 @@ impl Captured {
                 navy_leaders: Recorded::Value(
                     r.leader_rosters.map(|spans| self.leader_list(spans[1])),
                 ),
+                mio_policies: Recorded::Value(
+                    r.mio_policies
+                        .and_then(|span| self.effect_list(&self.policies, span)),
+                ),
+                neighbors: Recorded::Value(
+                    r.neighbors
+                        .and_then(|span| self.effect_list(&self.neighbors, span)),
+                ),
             }
         })
     }
@@ -325,6 +422,14 @@ impl Captured {
             &self.leaders.first[span.start..span.start + span.count],
         ))
     }
+
+    fn effect_list(&self, arena: &Arena<u32>, span: ccountry::RosterSpan) -> Option<Vec<u32>> {
+        valid_span(arena, span.start, span.count).then(|| {
+            engine::allocation::owned_vec(engine::allocation::copy_vec(
+                &arena.first[span.start..span.start + span.count],
+            ))
+        })
+    }
 }
 
 fn valid_span<T>(arena: &Arena<T>, start: usize, count: usize) -> bool {
@@ -337,6 +442,35 @@ fn valid_span<T>(arena: &Arena<T>, start: usize, count: usize) -> bool {
 mod tests {
     use super::*;
     use engine::memory::SliceMemory;
+
+    #[test]
+    fn native_null_mio_roster_is_named_and_preserves_counter_values() {
+        let mut captured = Captured::with_capacities(&Capacities {
+            rows: 1,
+            ..Default::default()
+        });
+        captured.rows.rows[0] = ccountry::CounterInputsRow {
+            country: 5_000,
+            owned_state_count: 7,
+            state_rosters: Some([Default::default(); 3]),
+            leader_rosters: Some([Default::default(); 2]),
+            neighbors: Some(Default::default()),
+            policy_reason: Some("MIO policy production status is null"),
+            ..Default::default()
+        };
+        captured.rows.outcome = Outcome::Rows { len: 1 };
+        let tables = captured.tables();
+        let TableView::Complete(replay::rows::TableRows::CountryCounterInputs(rows)) = &tables[0]
+        else {
+            panic!("existing country row lost");
+        };
+        assert_eq!(rows[0].owned_state_count, 7);
+        assert_eq!(rows[0].mio_policies, Recorded::Value(None));
+        assert_eq!(rows[0].neighbors, Recorded::Value(Some(Vec::new())));
+        let mut work = RosterWork::default();
+        captured.observe_rosters(&mut work).unwrap();
+        assert_eq!(work.refusals, [("MIO policy production status is null", 1)]);
+    }
     #[test]
     fn unreadable_census_is_unavailable_and_country_operands_preserve_primary_values() {
         let memory = SliceMemory {

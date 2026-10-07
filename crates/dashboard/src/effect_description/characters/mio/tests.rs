@@ -37,11 +37,14 @@ fn fixture() -> (Fixture, Folder) {
                 "\u{feff}l_english:\n AAA:0 \"Alpha\"\n",
                 " EFFECT_MIO_UNLOCK_TRAIT:0 \"Unlock $TRAIT$ [Root.GetTag]\"\n",
                 " EFFECT_MIO_COMPLETE_TRAIT:0 \"Complete $TRAIT$ [Root.GetTag]\"\n",
+                " EFFECT_MIO_UNLOCK_POLICY:0 \"Policy $NAME$\"\n",
                 " SYN_TRAIT:0 \"Base trait\"\n AAA_SYN_TRAIT:0 \"Owner trait\"\n",
                 " synthetic_mio_synthetic_prussia_trait:0 \"Prussia\"\n",
                 " STAT_ARMY_SOFT_ATTACK:0 \"Soft\"\n STAT_ARMY_SUPPLY_CONSUMPTION:0 \"Supply\"\n",
                 " STAT_MODIFIER_DIFF:0 \"+$VALUE|2$\"\n STAT_MODIFIER_DIFF_NEG:0 \"-$VALUE|2$\"\n",
                 " PP:0 \"Power\"\n RAW_BODY:0 \"Raw [Root.GetTag]\"\n",
+                " BONUS_PRODUCTION_CAPACITY_FACTOR:0 \"Capacity\"\n",
+                " BONUS_PRODUCTION_COST_FACTOR:0 \"Cost\"\n",
                 " unknown_trait:0 \"Must not localise missing trait\"\n"
             ),
         ),
@@ -227,18 +230,23 @@ fn mio_repeated_trait_and_valid_boolean_assignments_keep_the_last_value() {
 }
 
 #[test]
-fn mio_production_bonus_refuses_the_whole_description_and_keeps_each_reason() {
+fn mio_production_bonus_uses_q15_rounding_and_quantized_zero_sign() {
     let (fixture, _folder) = fixture();
-    for (key, class, header) in EFFECTS {
+    for (key, _, header) in EFFECTS {
         let out = fixture.render(
             &format!("{key}={{trait=production_gap}}"),
             &mut scopes(),
             Content::default(),
         );
-        assert_eq!(out.text, "", "{key}");
-        assert_eq!(out.refusals, ["production_capacity_factor", "production_cost_factor"].map(|stat| (
-            format!("synthetic effect {class}: MIO production bonus {stat} needs shared Q15 percentage formatter (140630A10/141483A20/141483BF0/142259470/1424B5FF0)"), 1,
-        )).into_iter().collect());
+        assert_eq!(
+            out.text,
+            format!(
+                "{} (Soft+0.10, Capacity: \u{11}G+30.00%\u{11}!, Cost: \u{11}G-0.00%\u{11}!, Power: \u{11}G+0.30\u{11}!\nRaw [Root.GetTag])\n",
+                header.trim_end_matches('\n')
+            ),
+            "{key}"
+        );
+        assert!(out.refusals.is_empty(), "{key}: {:?}", out.refusals);
         let out = fixture.render(
             &format!("{key}={{trait=production_gap show_modifiers=no}}"),
             &mut scopes(),
@@ -250,7 +258,67 @@ fn mio_production_bonus_refuses_the_whole_description_and_keeps_each_reason() {
 }
 
 #[test]
-fn mio_inherited_organisation_block_refuses_the_whole_description() {
+fn mio_production_percent_keeps_native_sign_rounding_and_wrapping() {
+    for (value, bad_positive, expected) in [
+        (30_006, false, "\u{11}G+30.00%\u{11}!"),
+        (29_999, false, "\u{11}G+30.00%\u{11}!"),
+        (-30_006, false, "\u{11}R-30.00%\u{11}!"),
+        (30_006, true, "\u{11}R+30.00%\u{11}!"),
+        (-30_006, true, "\u{11}G-30.00%\u{11}!"),
+        (-1, false, "\u{11}G+0.00%\u{11}!"),
+        (1, true, "\u{11}G-0.00%\u{11}!"),
+        (3_125, false, "\u{11}G+3.12%\u{11}!"),
+        (9_375, false, "\u{11}G+9.38%\u{11}!"),
+        (429_496_729_600_000, true, "\u{11}R+0.00%\u{11}!"),
+    ] {
+        assert_eq!(
+            mio_production_percent(value, bad_positive),
+            expected,
+            "{value}/{bad_positive}"
+        );
+    }
+}
+
+#[test]
+fn mio_policy_uses_the_same_native_production_bonus_formatter() {
+    let (mut fixture, _folder) = fixture();
+    let mut database = installed_content::industrial_organisations::Database::default();
+    database.policies.read_file(
+        b"synthetic_policy={name=SYN_TRAIT production_bonus={SYN_TRAIT={production_capacity_factor=0.30006 production_cost_factor=-0.00001}}}",
+        &installed_content::key_names::KeyNames::default(),
+    ).unwrap();
+    let TableView::Complete(TableRows::LexicalTokens(rows)) =
+        &mut *fixture.frame.tables[TableId::LexicalTokens.index()]
+    else {
+        unreachable!()
+    };
+    rows.push(LexicalTokenRow {
+        token: 15,
+        literal: b"synthetic_policy".to_vec(),
+    });
+    let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryCounterInputs.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].mio_policies = Recorded::Value(Some(vec![15]));
+    let out = fixture.render(
+        "unlock_mio_policy_tooltip={policy=synthetic_policy}",
+        &mut crate::effect_description::tests::fresh(),
+        Content {
+            industrial_organisations: Some(&database),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        out.text,
+        "Policy Owner trait\n (\u{11}YBase trait\u{11}! Capacity: \u{11}G+30.00%\u{11}!, Cost: \u{11}G-0.00%\u{11}!)"
+    );
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+#[test]
+fn mio_inherited_organisation_block_refuses_only_that_fragment() {
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::LexicalTokens(tokens)) =
         &mut *fixture.frame.tables[TableId::LexicalTokens.index()]
@@ -264,7 +332,14 @@ fn mio_inherited_organisation_block_refuses_the_whole_description() {
             &mut scopes(),
             Content::default(),
         );
-        assert_eq!(out.text, "", "{key}");
+        assert_eq!(
+            out.text,
+            format!(
+                "{} (Soft+0.10, Supply--0.20)\n",
+                header.trim_end_matches('\n')
+            ),
+            "{key}"
+        );
         assert_eq!(out.refusals, [(
             format!("synthetic effect {class}: MIO organization_modifier inheritance needs shared ModifierAccumulator_CopyAssign tooltip-table copying (140A417D0/14054A5B0)"), 1,
         )].into_iter().collect());
@@ -279,7 +354,7 @@ fn mio_inherited_organisation_block_refuses_the_whole_description() {
 }
 
 #[test]
-fn mio_organisation_eligibility_or_formatter_error_refuses_the_whole_description() {
+fn mio_organisation_eligibility_or_formatter_error_keeps_bonus_fragments() {
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::ModifierDefinitions.index()] =
         TableView::Complete(TableRows::ModifierDefinitions(vec![]));
@@ -294,13 +369,22 @@ fn mio_organisation_eligibility_or_formatter_error_refuses_the_whole_description
             "trait modifier political_power_gain has no recorded definition",
         ),
     ] {
-        for (key, class, _) in EFFECTS {
+        for (key, class, header) in EFFECTS {
             let out = fixture.render(
                 &format!("{key}={{trait={trait_key}}}"),
                 &mut scopes(),
                 Content::default(),
             );
-            assert_eq!(out.text, "", "{key}/{trait_key}");
+            let bonuses = if trait_key == "numeric_zero" {
+                "Soft+0.10"
+            } else {
+                "Soft+0.10, Supply--0.20"
+            };
+            assert_eq!(
+                out.text,
+                format!("{} ({bonuses})\n", header.trim_end_matches('\n')),
+                "{key}/{trait_key}"
+            );
             assert_eq!(
                 out.refusals,
                 [(format!("synthetic effect {class}: {why}"), 1)]

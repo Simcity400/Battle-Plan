@@ -452,7 +452,7 @@ fn country_groups_faction_names_display_undefined_localisation_keys_as_their_tex
 }
 
 #[test]
-fn country_groups_faction_names_keep_missing_content_and_dictionary_reasons() {
+fn country_groups_faction_names_distinguish_null_template_from_unread_content_and_dictionary() {
     let templates = crate::catalogue::tests::loaded_templates("demo = { name = DEMO_NAME }");
     let localisation = crate::catalogue::tests::loaded("l_english:\n DEMO_NAME:0 \"Demo Pact\"\n");
     let mut missing_dictionary = template_frame(101, "", Some((17, "demo")));
@@ -478,12 +478,9 @@ fn country_groups_faction_names_keep_missing_content_and_dictionary_reasons() {
             .contains("not in the recorded content")
     );
     assert!(names[1].reason.as_ref().unwrap().contains("LexicalTokens"));
-    assert!(
-        names[2]
-            .reason
-            .as_ref()
-            .unwrap()
-            .contains("template is not recorded")
+    assert_eq!(
+        names[2].reason.as_deref(),
+        Some("Faction name has no plain display text"),
     );
     assert!(names.iter().all(|run| run.name.is_none()));
 }

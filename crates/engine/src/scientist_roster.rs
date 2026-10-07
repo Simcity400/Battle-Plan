@@ -33,6 +33,8 @@ pub struct Row {
     pub trait_count: i32,
     /// Native CScientist specialization-vector count at +0x11c.
     pub skill_count: i32,
+    /// None is a failed appended-byte read; membership and skills remain available.
+    pub active: Option<u8>,
 }
 
 /// One specialization record of one scientist, in native vector order.
@@ -156,6 +158,7 @@ pub fn walk(
                         character: id,
                         trait_count,
                         skill_count,
+                        active: reader.field(scientist, cscientist::ACTIVE).ok(),
                     },
                 )?;
                 for index in 0..skills.count {
@@ -345,6 +348,7 @@ mod tests {
             );
         }
         vector(&mut bytes, SC2 + cscientist::SKILLS, SKILLS2, 0);
+        bytes[SC1 + cscientist::ACTIVE] = 253;
         bytes
     }
 
@@ -379,6 +383,7 @@ mod tests {
                     // +0x38 is the capacity; the native count is +0x3c.
                     trait_count: 2,
                     skill_count: 4,
+                    active: Some(253),
                 },
                 Row {
                     country: 1,
@@ -386,6 +391,7 @@ mod tests {
                     character: 266,
                     trait_count: 0,
                     skill_count: 0,
+                    active: Some(0),
                 },
             ]
         );
@@ -408,6 +414,45 @@ mod tests {
             skills[3].token,
             u32::from(scientist_skill_entry::LAND_TOKEN_PREFIX)
         );
+    }
+
+    #[test]
+    fn unreadable_activity_preserves_roster_and_specializations() {
+        struct ActivityFault<'a>(&'a [u8]);
+        impl Memory for ActivityFault<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                address != SC1 + cscientist::ACTIVE
+                    && SliceMemory {
+                        base: 0,
+                        bytes: self.0,
+                    }
+                    .copy(address, output)
+            }
+        }
+        let bytes = fixture();
+        let (_, expected, expected_skills) = run(&bytes, [2, 4]);
+        let mut scientists = [Row::default(); 2];
+        let mut skills = [SkillRow::default(); 4];
+        let result = walk(
+            &ActivityFault(&bytes),
+            0,
+            GS,
+            &mut Buffers {
+                scientists: &mut scientists,
+                skills: &mut skills,
+            },
+        );
+        assert_eq!(result.scientists, Outcome::Rows { len: 2 });
+        assert_eq!(result.skills, Outcome::Rows { len: 4 });
+        assert_eq!(
+            scientists[0],
+            Row {
+                active: None,
+                ..expected[0]
+            }
+        );
+        assert_eq!(scientists[1], expected[1]);
+        assert_eq!(skills.as_slice(), expected_skills);
     }
 
     #[test]

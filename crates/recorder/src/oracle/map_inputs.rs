@@ -10,8 +10,290 @@ fn eq<T: PartialEq + std::fmt::Debug>(report: &mut Report, label: &str, actual: 
 
 pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
     report.attempt_table(TableId::CountryAppearance, |r| countries(frame, save, r));
+    report.attempt_table(TableId::ReservedCountryNaming, |r| {
+        reserved_naming(frame, r)
+    });
     report.attempt_table(TableId::ArmyIconInputs, |r| armies(frame, save, r));
     report.attempt_table(TableId::ShipModels, |r| ships(frame, save, r));
+}
+
+fn reserved_naming(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
+    let rows = frame.complete::<tables::ReservedCountryNaming>()?;
+    if rows.len() != 1 {
+        return Err(invalid(
+            "ReservedCountryNaming requires its one reserved-country row",
+        ));
+    }
+    report.compared("ReservedCountryNaming", 0);
+    if let Some(None) = report.recorded(
+        &rows[0].original_tag,
+        "ReservedCountryNaming.original_tag",
+        "reserved country original tag",
+    ) {
+        report.limitation(
+            "reserved country original tag unreadable at capture; the independent naming operands remain available",
+            "ReservedCountryNaming.original_tag: 1 guarded read or arena refusal",
+        );
+    }
+    report.limitation("CCountry::Serialize@14070C580 is reached through the positive-country save census; reserved slot zero naming operands and stored-length built witness have no proved save counterpart", "ReservedCountryNaming: singleton decoded, naming and built remain unverified");
+    report.limitation("CCountry+0x130C original presence and exact tag_string@140BA5C20 bytes are runtime operands for the reserved object; CGameState::Write@1401F2A20 starts its +0x310 country census at slot one (1401F4185/1401F4190), so the save omits slot zero", "ReservedCountryNaming.original_tag: exact original presence/bytes are unsaved and remain unverified");
+    if let Some(None) = report.recorded(
+        &rows[0].original_tag_reference,
+        "ReservedCountryNaming.original_tag_reference",
+        "reserved country signed original tag reference",
+    ) {
+        report.limitation(
+            "reserved country original tag reference unreadable at capture",
+            "ReservedCountryNaming.original_tag_reference: guarded read refusal",
+        );
+    }
+    report.limitation("the positive-country save census omits reserved slot zero, including its exact signed +0x130C reference", "ReservedCountryNaming.original_tag_reference: unsaved");
+    if let Some(None) = report.recorded(
+        &rows[0].original_tag_buckets,
+        "ReservedCountryNaming.original_tag_buckets",
+        "native original-tag bucket cache",
+    ) {
+        report.limitation(
+            "native original-tag bucket cache unreadable or short of arena space at capture",
+            "ReservedCountryNaming.original_tag_buckets: guarded read or arena refusal",
+        );
+    }
+    report.limitation("CGameState+0x988 is a runtime original-tag bucket cache rebuilt by 1401DA010 and changed by native setters; serialized countries cannot certify retained cache order, repeats or alias reference identity", "ReservedCountryNaming.original_tag_buckets: unsaved native cache");
+    if let Some(None) = report.recorded(
+        &rows[0].country_array,
+        "ReservedCountryNaming.country_array",
+        "physical country-array occurrences",
+    ) {
+        report.limitation(
+            "physical country array unreadable or short of arena space at capture",
+            "ReservedCountryNaming.country_array: guarded read or arena refusal",
+        );
+    }
+    report.limitation("the country save census starts at physical slot one and serializes tags rather than exact raw CCountry+0x8 IDs; it cannot certify the full physical array's reserved-zero, alias and duplicate occurrences", "ReservedCountryNaming.country_array: raw physical order and identity remain unverified");
+    if let Some(None) = report.recorded(
+        &rows[0].owned_state_count,
+        "ReservedCountryNaming.owned_state_count",
+        "reserved country signed owned-state count",
+    ) {
+        report.limitation("reserved country owned-state count unreadable at capture; other naming operands remain available", "ReservedCountryNaming.owned_state_count: guarded read refusal");
+    }
+    report.limitation("CGameState::Write@1401F2A20 begins its country census at physical slot one and omits reserved Country0, so its exact signed +0x484 getter operand has no fresh-save counterpart", "ReservedCountryNaming.owned_state_count: unsaved reserved getter operand");
+    Ok(())
+}
+
+#[cfg(test)]
+mod original_tag_tests {
+    use super::*;
+    use replay::rows::{Recorded, ReservedCountryNamingRow};
+
+    #[test]
+    fn reserved_original_tag_oracle_reports_unsaved_and_independent_refusal() {
+        let (mut frame, _, _, _) = super::super::tests::fixture();
+        for tag in [
+            Recorded::Value(Some(vec![0xff, 0])),
+            Recorded::Value(Some(Vec::new())),
+            Recorded::Value(None),
+            Recorded::NotRecorded,
+        ] {
+            *frame.tables[TableId::ReservedCountryNaming.index()] =
+                TableView::Complete(TableRows::ReservedCountryNaming(vec![
+                    ReservedCountryNamingRow {
+                        tag: b"ZERO".to_vec(),
+                        original_tag: tag.clone(),
+                        ..Default::default()
+                    },
+                ]));
+            let mut report = Report::default();
+            reserved_naming(&frame, &mut report).unwrap();
+            assert!(report.differences.is_empty());
+            assert_eq!(report.scalar_checks, 0);
+            assert!(
+                report
+                    .limitations
+                    .keys()
+                    .any(|reason| reason.contains("CGameState::Write@1401F2A20")
+                        && reason.contains("save omits slot zero"))
+            );
+            assert_eq!(
+                report
+                    .limitations
+                    .keys()
+                    .any(|reason| reason.contains("reserved country original tag unreadable")),
+                matches!(tag, Recorded::Value(None))
+            );
+            assert_eq!(
+                report
+                    .limitations
+                    .contains_key("ReservedCountryNaming.original_tag not recorded"),
+                matches!(tag, Recorded::NotRecorded)
+            );
+        }
+    }
+
+    #[test]
+    fn positive_original_tag_oracle_compares_presence_bytes_and_preserves_refusals() {
+        use replay::rows::CountryAppearanceRow;
+        for (reference, actual, saved, differences) in [
+            (i32::MIN, Some(Vec::new()), None, 0),
+            (0, Some(Vec::new()), Some(Vec::new()), 1),
+            (7, Some(Vec::new()), Some(Vec::new()), 0),
+            (7, Some(Vec::new()), None, 1),
+            (7, Some(b"OWN".to_vec()), Some(b"OWN".to_vec()), 0),
+            (7, Some(b"OTHER".to_vec()), Some(b"OTHER".to_vec()), 0),
+            (-1, Some(Vec::new()), Some(b"OWN".to_vec()), 1),
+            (7, Some(b"OWN".to_vec()), None, 1),
+            (7, Some(b"OTHER".to_vec()), Some(b"OWN".to_vec()), 1),
+            (7, Some(vec![b'A', 0, b'B']), Some(b"A".to_vec()), 1),
+        ] {
+            let row = CountryAppearanceRow {
+                original_tag: Recorded::Value(actual),
+                original_tag_reference: Recorded::Value(Some(reference)),
+                ..Default::default()
+            };
+            let saved = save::Country {
+                original_tag: saved,
+                ..Default::default()
+            };
+            let mut report = Report::default();
+            original_tag(&row, &saved, "OWN", &mut report);
+            assert_eq!(report.differences.len(), differences);
+            assert_eq!(report.scalar_checks, 1);
+        }
+        for (value, reason) in [
+            (
+                Recorded::Value(None),
+                "country original tag unreadable at capture; existing appearance remains available",
+            ),
+            (
+                Recorded::NotRecorded,
+                "CountryAppearance.original_tag not recorded",
+            ),
+        ] {
+            let row = CountryAppearanceRow {
+                original_tag: value,
+                original_tag_reference: Recorded::Value(Some(7)),
+                ..Default::default()
+            };
+            let mut report = Report::default();
+            original_tag(&row, &save::Country::default(), "OWN", &mut report);
+            assert!(report.limitations.contains_key(reason));
+            assert_eq!(report.scalar_checks, 0);
+            assert!(report.differences.is_empty());
+        }
+    }
+
+    #[test]
+    fn raw_reference_and_native_domain_oracles_preserve_gaps_and_refusals() {
+        for (value, reason) in [
+            (
+                Recorded::Value(None),
+                "country original tag reference unreadable at capture; existing appearance remains available",
+            ),
+            (
+                Recorded::NotRecorded,
+                "CountryAppearance.original_tag_reference not recorded",
+            ),
+        ] {
+            let row = replay::rows::CountryAppearanceRow {
+                original_tag: Recorded::Value(Some(b"OWN".to_vec())),
+                original_tag_reference: value,
+                ..Default::default()
+            };
+            let mut report = Report::default();
+            original_tag(&row, &save::Country::default(), "OWN", &mut report);
+            assert!(report.limitations.contains_key(reason));
+            assert_eq!(report.scalar_checks, 0);
+            assert!(report.differences.is_empty());
+        }
+        let (mut frame, _, _, _) = super::super::tests::fixture();
+        for absent in [false, true] {
+            let row = ReservedCountryNamingRow {
+                original_tag_reference: if absent {
+                    Recorded::NotRecorded
+                } else {
+                    Recorded::Value(None)
+                },
+                original_tag_buckets: if absent {
+                    Recorded::NotRecorded
+                } else {
+                    Recorded::Value(None)
+                },
+                country_array: if absent {
+                    Recorded::NotRecorded
+                } else {
+                    Recorded::Value(None)
+                },
+                ..Default::default()
+            };
+            *frame.tables[TableId::ReservedCountryNaming.index()] =
+                TableView::Complete(TableRows::ReservedCountryNaming(vec![row]));
+            let mut report = Report::default();
+            reserved_naming(&frame, &mut report).unwrap();
+            for field in [
+                "original_tag_reference",
+                "original_tag_buckets",
+                "country_array",
+            ] {
+                assert_eq!(
+                    report
+                        .limitations
+                        .contains_key(&format!("ReservedCountryNaming.{field} not recorded")),
+                    absent
+                );
+            }
+            assert_eq!(report.scalar_checks, 0);
+            assert!(report.differences.is_empty());
+            assert!(
+                report
+                    .limitations
+                    .keys()
+                    .any(|reason| reason.contains("runtime original-tag bucket cache"))
+            );
+            assert!(
+                report
+                    .limitations
+                    .keys()
+                    .any(|reason| reason.contains("full physical array"))
+            );
+        }
+    }
+
+    #[test]
+    fn reserved_owned_state_count_oracle_preserves_unsaved_values_and_gaps() {
+        let (mut frame, _, _, _) = super::super::tests::fixture();
+        for value in [
+            Recorded::Value(Some(i32::MIN)),
+            Recorded::Value(Some(0)),
+            Recorded::Value(Some(7)),
+            Recorded::Value(None),
+            Recorded::NotRecorded,
+        ] {
+            *frame.tables[TableId::ReservedCountryNaming.index()] =
+                TableView::Complete(TableRows::ReservedCountryNaming(vec![
+                    ReservedCountryNamingRow {
+                        owned_state_count: value,
+                        ..Default::default()
+                    },
+                ]));
+            let mut report = Report::default();
+            reserved_naming(&frame, &mut report).unwrap();
+            assert!(report.differences.is_empty());
+            assert_eq!(report.scalar_checks, 0);
+            assert!(
+                report
+                    .limitations
+                    .keys()
+                    .any(|reason| reason.contains("exact signed +0x484 getter operand"))
+            );
+            assert_eq!(
+                report
+                    .limitations
+                    .contains_key("ReservedCountryNaming.owned_state_count not recorded"),
+                matches!(value, Recorded::NotRecorded)
+            );
+            assert_eq!(report.limitations.contains_key("reserved country owned-state count unreadable at capture; other naming operands remain available"), matches!(value, Recorded::Value(None)));
+        }
+    }
 }
 
 fn countries(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
@@ -47,6 +329,7 @@ fn countries(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Resu
             &row.cosmetic_tag,
             cosmetic,
         );
+        original_tag(row, saved, &label, report);
         ruling_leader(save, tag, &label, row, report)?;
     }
     for tag in remaining {
@@ -71,6 +354,53 @@ fn countries(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Resu
     report.limitation("the old-name caches (CCountry+0x90, +0xB0, +0xD0) are runtime text: CCountry::Write (14070C580) does not save them and only 140709950 writes them, so a save cannot certify them; they need a live check of GetOld* text", "CountryAppearance old names");
     report.limitation("CDiplomacyStatus::Serialize@140D32BD0 does not save the ordered subject roster at +0x170/count +0x17C; active_relations do not certify this array's order, repeats or raw reference words", "CountryAppearance.subjects");
     Ok(())
+}
+
+/// 14070C580 emits original_tag/token3551 iff signed +0x130C>0; it passes
+/// that exact reference to tag_string (positive raw-indexed live +0x358).
+/// The signed reference selects original bytes, including actual empty strings;
+/// nonpositive references certify saved omission without inventing zero.
+fn original_tag(
+    row: &replay::rows::CountryAppearanceRow,
+    saved: &save::Country,
+    label: &str,
+    report: &mut Report,
+) {
+    let bytes = report.recorded(
+        &row.original_tag,
+        "CountryAppearance.original_tag",
+        format!("{label}.original_tag"),
+    );
+    if matches!(bytes, Some(None)) {
+        report.limitation(
+            "country original tag unreadable at capture; existing appearance remains available",
+            format!("{label}.original_tag: guarded read or arena refusal"),
+        );
+    }
+    let Some(reference) = report.recorded(
+        &row.original_tag_reference,
+        "CountryAppearance.original_tag_reference",
+        format!("{label}.original_tag_reference"),
+    ) else {
+        return;
+    };
+    let Some(reference) = reference else {
+        report.limitation("country original tag reference unreadable at capture; existing appearance remains available", format!("{label}.original_tag_reference: guarded read refusal"));
+        return;
+    };
+    report.limitation("CCountry::Serialize@14070C580 emits original tag bytes only for signed positive +0x130C; it does not serialize the raw reference magnitude or alias identity, including exact nonpositive values", format!("{label}.original_tag_reference={reference}: unsaved raw identity"));
+    let actual = if *reference > 0 {
+        let Some(Some(bytes)) = bytes else { return };
+        Some(bytes.as_slice())
+    } else {
+        None
+    };
+    eq(
+        report,
+        &format!("{label}.original_tag"),
+        actual,
+        saved.original_tag.as_deref(),
+    );
 }
 
 /// The ruling party's first saved `country_leader` against the recorded leader
@@ -331,7 +661,7 @@ mod tests {
         compare(&frame, &saved, &mut report);
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert!(report.failed_comparisons.is_empty());
-        assert_eq!(report.compared_tables.len(), 3);
+        assert_eq!(report.compared_tables.len(), 4);
         saved
             .countries
             .get_mut(b"GER".as_slice())

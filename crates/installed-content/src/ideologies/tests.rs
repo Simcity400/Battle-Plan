@@ -309,3 +309,16 @@ fn a_group_frame_is_its_place_in_the_defining_block() {
     let stopped = Ideologies::from_groups(Vec::new(), Some(("common/ideologies/d.txt", "x")));
     assert!(stopped.frame("neutrality").is_err());
 }
+
+#[test]
+fn count_names_preserve_sub_ideology_identity() {
+    let db = parsed(b"ideologies={synthetic_group={types={synthetic_type={}}}}");
+    let names = crate::trigger_keys::CountTriggerNames::new(
+        &crate::buildings::Buildings::default(),
+        &db,
+        &[],
+    );
+    assert_eq!(names.is_ideology_type(b"SYNTHETIC_TYPE"), Ok(true));
+    assert_eq!(names.is_ideology_type(b"synthetic_group"), Ok(false));
+    assert_eq!(names.is_ideology(b"synthetic_group"), Ok(true));
+}

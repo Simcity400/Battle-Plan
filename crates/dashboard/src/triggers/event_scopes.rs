@@ -12,9 +12,13 @@ pub(super) fn object(value: EventObject) -> Scope {
         EventObject::Country(id) | EventObject::CountryState { country: id, .. } => {
             Scope::Country(id)
         }
+        EventObject::Combat => Scope::Combat,
         EventObject::State(id) => Scope::State(id),
         EventObject::Province(id) => Scope::Province(id),
         EventObject::UnitLeader(id) => Scope::Leader(id),
+        EventObject::CountryUnitLeader { country, leader } => {
+            Scope::CountryLeader { country, leader }
+        }
         EventObject::Character(id) => Scope::Character(id),
         EventObject::IndustrialOrganisation(id) => Scope::IndustrialOrganisation(id),
         EventObject::Project { owner, id } => Scope::Project { owner, id },
@@ -23,18 +27,21 @@ pub(super) fn object(value: EventObject) -> Scope {
     }
 }
 
-fn event_object(value: Scope) -> Result<EventObject, String> {
+pub(super) fn event_object(value: Scope) -> Result<EventObject, String> {
     Ok(match value {
         Scope::Country(id) => EventObject::Country(id),
         Scope::State(id) => EventObject::State(id),
         Scope::Province(id) => EventObject::Province(id),
         Scope::Leader(id) => EventObject::UnitLeader(id),
+        Scope::CountryLeader { country, leader } => {
+            EventObject::CountryUnitLeader { country, leader }
+        }
         Scope::Character(id) => EventObject::Character(id),
         Scope::IndustrialOrganisation(id) => EventObject::IndustrialOrganisation(id),
         Scope::Project { owner, id } => EventObject::Project { owner, id },
         Scope::Raid(id) => EventObject::Raid(id),
         Scope::Unit(id) => EventObject::Unit(id),
-        Scope::Combat => return Err("combat scope graph needs its caller's combat context".into()),
+        Scope::Combat => EventObject::Combat,
     })
 }
 
@@ -92,7 +99,13 @@ pub(crate) fn project(graph: &EventScopes, at: usize) -> Result<Scopes, String> 
         target_state: graph.variables.target_state,
         target_province: graph.variables.target_province,
         target_leader: graph.variables.target_leader,
-        bare: false,
+        // Clearing country/state/combat setters (14052DD00/14052ECE0/
+        // 14052DC80 -> 14052F3F0) leave no character+50. Retained operands
+        // use distinct combined carriers, including after link copies.
+        bare: matches!(
+            scope.this,
+            EventObject::Country(_) | EventObject::State(_) | EventObject::Combat
+        ),
         cursor: Some(at),
     })
 }
@@ -174,6 +187,16 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         self.description_depth.set(self.description_depth.get() + 1);
     }
 
+    /// 1405354A0 begins TLS in the outer caller, before child scope changes.
+    /// Retain an unavailable seed as a failed temp, without refusing unrelated text.
+    pub(crate) fn begin_description_in(&self, scopes: Scopes) {
+        let outer = self.description_depth.get() == 0 && self.checking.get() == 0;
+        self.begin_description();
+        if outer {
+            self.initialize_variable_random(scopes);
+        }
+    }
+
     /// 140529520 clears only terminal FROM storage and global tooltip targets.
     pub fn end_description(&self, scopes: Scopes) -> Result<(), String> {
         let depth = self.description_depth.get();
@@ -207,6 +230,20 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         // 14052DE40 projects UNIT/RAID, but has no PROJECT+0x90 arm.
         let target = match graph.scopes[at].this {
             EventObject::Project { .. } => EventObject::State(super::NULL_STATE),
+            // 14052DE40 checks country+8 before character+50 and writes one
+            // CSavedEventTarget arm; scope copies still retain both operands.
+            EventObject::CountryUnitLeader { country, leader } => {
+                if self.variable_scope_has_country(country)? {
+                    EventObject::Country(country)
+                } else {
+                    EventObject::Character(
+                        self.world()
+                            .unit_leader(leader)?
+                            .ok_or("tooltip target unit leader is not recorded")?
+                            .character_id,
+                    )
+                }
+            }
             target => target,
         };
         let rows = graph.tooltip_targets.entry(owner).or_default();
@@ -219,16 +256,45 @@ impl<'e, 'a> Evaluator<'e, 'a> {
 
     /// 14038D6B0 -> 1401ED290 writes the description registry (+0x6D8),
     /// not saved globals (+0x6C0). State precedes country in a combined scope.
-    pub(crate) fn save_global_tooltip_target(&self, name: &[u8], scopes: Scopes) -> Result<(), String> {
-        let at = scopes.cursor.ok_or("global description target needs caller scope graph")?;
+    pub(crate) fn save_global_tooltip_target(
+        &self,
+        name: &[u8],
+        scopes: Scopes,
+    ) -> Result<(), String> {
+        let at = scopes
+            .cursor
+            .ok_or("global description target needs caller scope graph")?;
         let binding = self.event_graph.borrow();
-        let mut graph = binding.as_ref()
-            .ok_or("global description target needs caller scope graph")?.borrow_mut();
-        let target = match graph.scopes.get(at).ok_or("global target scope is absent")?.this {
-            EventObject::CountryState { state, .. } if state != super::NULL_STATE => EventObject::State(state),
+        let mut graph = binding
+            .as_ref()
+            .ok_or("global description target needs caller scope graph")?
+            .borrow_mut();
+        let target = match graph
+            .scopes
+            .get(at)
+            .ok_or("global target scope is absent")?
+            .this
+        {
+            EventObject::CountryState { state, .. } if state != super::NULL_STATE => {
+                EventObject::State(state)
+            }
             EventObject::CountryState { country, .. } => EventObject::Country(country),
-            EventObject::State(super::NULL_STATE) | EventObject::IndustrialOrganisation(_) => return Ok(()),
-            EventObject::Province(_) => return Err("global target's province scope is not a native CEventScope (1401ED290)".into()),
+            // 1401ED290 also chooses positive country before ability caster.
+            EventObject::CountryUnitLeader { country, leader } => {
+                if self.variable_scope_has_country(country)? {
+                    EventObject::Country(country)
+                } else {
+                    EventObject::UnitLeader(leader)
+                }
+            }
+            EventObject::State(super::NULL_STATE) | EventObject::IndustrialOrganisation(_) => {
+                return Ok(());
+            }
+            EventObject::Province(_) => {
+                return Err(
+                    "global target's province scope is not a native CEventScope (1401ED290)".into(),
+                );
+            }
             target => target,
         };
         let rows = &mut graph.global_tooltip_targets;
@@ -286,12 +352,17 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             .get(&owner)
             .and_then(|rows| lookup(rows, name))
             .is_some_and(|target| match target {
-                EventObject::Country(_) | EventObject::CountryState { .. } => true,
+                EventObject::Country(_)
+                | EventObject::CountryState { .. }
+                | EventObject::CountryUnitLeader { .. }
+                | EventObject::Combat => true,
                 EventObject::State(id) | EventObject::Province(id) | EventObject::Character(id) => {
                     id > 0
                 }
-                EventObject::UnitLeader(id) | EventObject::IndustrialOrganisation(id)
-                | EventObject::Raid(id) | EventObject::Unit(id) => id != 0,
+                EventObject::UnitLeader(id)
+                | EventObject::IndustrialOrganisation(id)
+                | EventObject::Raid(id)
+                | EventObject::Unit(id) => id != 0,
                 EventObject::Project { id, .. } => id != 0,
             }))
     }
@@ -462,16 +533,31 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             let mut graph = graph.borrow_mut();
             let from = match from {
                 Some(from) => {
-                    let source = from.cursor.ok_or("scorer FROM copy needs its graph cursor")?;
-                    let mut copied = *graph.scopes.get(source).ok_or("scorer FROM scope is absent")?;
-                    let absolute = |link| if link == Link::Itself { Link::Scope(source) } else { link };
+                    let source = from
+                        .cursor
+                        .ok_or("scorer FROM copy needs its graph cursor")?;
+                    let mut copied = *graph
+                        .scopes
+                        .get(source)
+                        .ok_or("scorer FROM scope is absent")?;
+                    let absolute = |link| {
+                        if link == Link::Itself {
+                            Link::Scope(source)
+                        } else {
+                            link
+                        }
+                    };
                     copied.root = absolute(copied.root);
                     copied.from = absolute(copied.from);
                     copied.prev = absolute(copied.prev);
                     let at = graph.scopes.len();
                     graph.scopes.push(copied);
-                    if let Some(targets) = graph.tooltip_targets.get(&source).cloned() { graph.tooltip_targets.insert(at, targets); }
-                    if let Some(targets) = graph.saved_targets.get(&source).cloned() { graph.saved_targets.insert(at, targets); }
+                    if let Some(targets) = graph.tooltip_targets.get(&source).cloned() {
+                        graph.tooltip_targets.insert(at, targets);
+                    }
+                    if let Some(targets) = graph.saved_targets.get(&source).cloned() {
+                        graph.saved_targets.insert(at, targets);
+                    }
                     Link::Scope(at)
                 }
                 None => Link::Itself,

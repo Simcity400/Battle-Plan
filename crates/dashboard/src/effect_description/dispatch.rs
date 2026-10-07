@@ -412,7 +412,7 @@ impl Renderer<'_, '_, '_> {
             0x142760950 /* CCancelBorderWar */ => self.end_border_war(item, scopes, false), // 14037A900
             0x1427B23A8 /* CCreateFactionEffect */ => self.create_faction(item, scopes), // 1404AD3D0
             0x1427B2490 /* CCreateFactionFromTemplateEffect */ => self.create_faction_template(scopes), // 1404AD630
-            0x142759CB8 /* CCreateWargoalEffect */ => Err("wargoal type content lookup (14037DF80/140A2C5D0) and current country's existing wargoal type/claimed-state set (1403A35A0 -> 140D28650, CWargoal+0x40/+0x48/+0x54) are unavailable; cannot determine the native empty branch".into()),
+            0x142759CB8 /* CCreateWargoalEffect */ => self.create_wargoal(item, scopes), // 14037DF80 / 1403A35A0 / 140D28650.
             0x14275A840 /* CDiplomaticRelationEffect */ => self.diplomatic_relation(item, scopes), // 14037F730
             0x1427B25E8 /* CDismantleFactionEffect */ => self.dismantle_faction(scopes), // 1404ADAD0
             0x142761740 /* CEndExileEffect */ => self.diplomacy_end_exile(item, scopes), // 14037FFF0
@@ -502,7 +502,7 @@ impl Renderer<'_, '_, '_> {
             0x1427ABA60 /* CAddEquipmentToStockpileEffect */ => self.units_stockpile(item, scopes), // 14049B6D0
             0x142734050 /* NInternationalMarket::CAddEquipmentSubsidyEffect */ => self.units_subsidy(item, scopes), // 140305540
             0x142759EB0 /* CAddNavyExperienceEffect */ => self.numeric_value(item, scopes, b"EFFECT_ADD_NAVY_EXPERIENCE"), // 140374F30
-            0x1427655B0 /* CAddUnitBonusEffect */ => self.units_unit_bonus(item), // 1403794A0
+            0x1427655B0 /* CAddUnitBonusEffect */ => self.units_unit_bonus(item, scopes), // 1403794A0
             0x142752CF8 /* CAddUnitsToDivisionTemplateEffect */ => self.units_add_to_template(item, scopes), // 1403794F0
             0x1427977B8 /* CArmyChangeTemplateEffect */ => self.units_change_template(item, scopes), // 14045DB70
             0x142760DA8 /* CClearTemplateDivisionCapEffect */ => self.units_template(item, scopes, units::TemplateDescription::ClearCap), // 14037B560

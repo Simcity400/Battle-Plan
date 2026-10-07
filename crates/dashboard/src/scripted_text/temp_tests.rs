@@ -38,7 +38,7 @@ fn temp_variables_drive_localisation_conditions_and_text_weights() {
             *frame.tables[id.index()] = TableView::Complete(TableRows::empty(id));
         }
     }
-    let text = ScriptedText::new(&frame, &catalogue.localisation, content, 0);
+    let text = ScriptedText::new(&frame, &catalogue.localisation, content, 1);
     assert_eq!(
         text.expand("[Pick]/[Reset]").as_deref(),
         Ok("selected/selected")

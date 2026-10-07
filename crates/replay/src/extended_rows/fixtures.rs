@@ -298,7 +298,7 @@ fixture!(OrdersGroupRow, |key| {handle: key as u64}, {country: u32, is_army_grou
 fixture!(OrdersGroupMemberRow, |key| {group: (key >> 32) as u64, ordinal: key as u32}, {unit: u64});
 fixture!(ArmyGroupMemberRow, |key| {group: (key >> 32) as u64, ordinal: key as u32}, {child: u64});
 fixture!(IncomingDiplomaticActionRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {handle: u64, status: u8, action_type: i32, actor: u32, original_actor: u32, recipient: u32, original_recipient: u32, hour: i32, last_command_hour: i32});
-fixture!(ScientistRow, |key| {character: key as u32}, {country: u32, ordinal: u32, trait_count: i32, skill_count: i32});
+fixture!(ScientistRow, |key| {character: key as u32}, {country: u32, ordinal: u32, trait_count: i32, skill_count: i32, active: Recorded<Option<u8>>});
 fixture!(ScientistSkillRow, |key| {character: (key >> 32) as u32, ordinal: key as u32}, {token: u32, level: i32, experience_raw: i64});
 fixture!(CountryFuelRow, |key| {country: key as u32}, {current_raw: i64, maximum_raw: i64, gain_raw: i64, cost_raw: i64, gain_from_states_raw: i64, lend_lease_gain_raw: i64, lend_lease_consumption_raw: i64, gain_per_oil_raw: i64, history_index: i32, remaining_hours: i32, ring_gain_raw: i64, ring_consumed_raw: i64, ring_other_raw: i64, ring_requested_0_raw: i64, ring_requested_1_raw: i64, ring_requested_2_raw: i64, ring_received_0_raw: i64, ring_received_1_raw: i64, ring_received_2_raw: i64});
 fixture!(CountryFuelConsumerRow, |key| {country: (key >> 32) as u32, index: key as u32}, {priority: i32, requested_raw: i64, received_raw: i64});
@@ -316,7 +316,7 @@ fixture!(BuildingRow, |key| {location: (key >> 32) as u32, building_type: key as
 fixture!(StateBaseResourceRow, |key| {state: (key >> 32) as u32, resource: key as u32}, {ordinal: u32, amount: i64});
 fixture!(BuildingConstructionRow, |key| {id: key as u64}, {country: u32, queue_ordinal: u32, active_factories: i32, cost: i64, speed: i64, produced: i64, priority: i32, amount: i32, created_hour: i32, building_type: u32, target_flags: u32, target_location: u32, target_state: u32, target_country: u32, repair_levels: i32});
 fixture!(RailwayConstructionRow, |key| {id: key as u64}, {country: u32, queue_ordinal: u32, active_factories: i32, cost: i64, speed: i64, produced: i64, priority: i32, amount: i32, created_hour: i32, base_level: i32, target_level: i32, cancelled: u8, current_segment: i32, remaining_cost: i64, route: Vec<u32>});
-fixture!(OccupationSettingsRow, |key| {country: key as u32}, {garrison_template: Option<u64>, default_law_present: u8, law: Vec<u8>});
+fixture!(OccupationSettingsRow, |key| {country: key as u32}, {garrison_template: Option<u64>, default_law_present: u8, law: Vec<u8>, occupied: Recorded<Option<Vec<u32>>>});
 fixture!(StateOccupationLawRow, |key| {controller: (key >> 64) as u32, occupied: (key >> 32) as u32, state: key as u32}, {name: Vec<u8>});
 fixture!(StateGarrisonRow, |key| {controller: (key >> 32) as u32, state: key as u32}, {occupied: u32, required_manpower: i32, strength_ratio: i64, garrison_required: i64, serialized_flag: u8});
 fixture!(StateAssignedManpowerRow, |key| {controller: (key >> 64) as u32, state: (key >> 32) as u32, ordinal: key as u32}, {occupied: u32, source_country: u32, amount: i32});
@@ -324,8 +324,8 @@ fixture!(CountryOccupationReserveManpowerRow, |key| {country: (key >> 32) as u32
 fixture!(StateResistanceRow, |key| {state: key as u32}, {country: u32, level: i64, speed: i64, compliance: i64, compliance_speed: i64, active: u8});
 fixture!(CountryCollaborationRow, |key| {source: (key >> 32) as u32, target: key as u32}, {progress: i64});
 fixture!(CharacterRow, |key| {id: key as u32}, {country: u32, name_token_id: i32, roster: u8, ordinal: u32, name: Vec<u8>, token: Vec<u8>, template_present: u8, template_tag: u32, template_file: Vec<u8>, template_line: i32, template_generated: u8, gender: u32});
-fixture!(CountryLeaderRoleRow, |key| {character: (key >> 32) as u32, ideology: key as u32 as i32}, {country: u32});
-fixture!(AdvisorRoleRow, |key| {character: (key >> 32) as u32, ordinal: key as u32}, {country: u32, key: Vec<u8>, idea: Vec<u8>, slot: Vec<u8>, modifier_cache: Recorded<Option<AdvisorModifierCache>>});
+fixture!(CountryLeaderRoleRow, |key| {character: (key >> 32) as u32, ideology: key as u32 as i32}, {country: u32, current_ideology: Recorded<Option<Option<u32>>>});
+fixture!(AdvisorRoleRow, |key| {character: (key >> 32) as u32, ordinal: key as u32}, {country: u32, key: Vec<u8>, idea: Vec<u8>, slot: Vec<u8>, modifier_cache: Recorded<Option<AdvisorModifierCache>>, tooltip_keys: Recorded<Option<Vec<Vec<u8>>>>});
 impl Fixture for UnitLeaderRow {
     fn fixture(key: u128, tick: usize) -> Self {
         let codename = Option::<NameOperands>::sample(tick);
@@ -355,6 +355,7 @@ impl Fixture for UnitLeaderRow {
             template_visibility: u8::sample(tick),
             exile_country: Recorded::Value(i32::sample(tick)),
             codename: Recorded::Value(codename),
+            formation_reference: Recorded::Value(Option::<u64>::sample(tick)),
         }
     }
 }
@@ -430,6 +431,19 @@ impl Fixture for NavalModifierBreakdownRow {
                 order: tick as u32,
             }],
             nodes: ReserveModifierBreakdownRow::fixture(1, tick).nodes,
+        }
+    }
+    fn largest_key() -> u128 {
+        (u64::MAX as u128) << 32 | u32::MAX as u128
+    }
+}
+impl Fixture for AttritionModifierBreakdownRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        Self {
+            accumulator: (key >> 32) as u64,
+            key: key as u32,
+            nodes: (!tick.is_multiple_of(4))
+                .then(|| ReserveModifierBreakdownRow::fixture(1, tick).nodes),
         }
     }
     fn largest_key() -> u128 {
@@ -517,7 +531,11 @@ impl Fixture for CharacterOperativeRow {
             } else {
                 None
             },
-            codename: Recorded::Value(None),
+            codename: Recorded::Value(if resolved {
+                Option::<NameOperands>::sample(tick)
+            } else {
+                None
+            }),
             name: Recorded::Value(if resolved {
                 Some(Vec::<u8>::sample(tick))
             } else {
@@ -548,6 +566,30 @@ fixture!(OperationTokensRow, |key| {owner: (key >> 32) as u32, target: key as u3
 fixture!(LexicalTokenRow, |key| {token: key as u32}, {literal: Vec<u8>});
 fixture!(OwnedWargoalRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {recipient: u32, goal_type: i32, states: Vec<u32>});
 fixture!(AvailableAdvisorRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {character: u32, idea: Vec<u8>});
+
+fixture!(TimedIdeaRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {token: Vec<u8>, days: i32});
+fixture!(DecisionRandomItemRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {token: Vec<u8>, count: i32, target: u32});
+fixture!(CapturedOperativeReferenceRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {operative: u64, owner: Option<u32>});
+impl Fixture for ReservedCountryNamingRow {
+    fn fixture(_key: u128, tick: usize) -> Self {
+        Self {
+            tag: Vec::<u8>::sample(tick),
+            name_tag: Vec::<u8>::sample(tick + 1),
+            cosmetic_tag: Vec::<u8>::sample(tick + 2),
+            leader_ideology: Vec::<u8>::sample(tick + 3),
+            group: Option::<Vec<u8>>::sample(tick + 4),
+            overlord: i32::sample(tick),
+            autonomy: Option::<Vec<u8>>::sample(tick + 5),
+            built: (tick & 7) as u8,
+            original_tag: Recorded::<Option<Vec<u8>>>::sample(tick + 6),
+            original_tag_reference: Recorded::<Option<i32>>::sample(tick + 7),
+            original_tag_buckets: Recorded::<Option<Vec<Vec<u32>>>>::sample(tick + 8),
+            country_array: Recorded::<Option<Vec<u32>>>::sample(tick + 9),
+            owned_state_count: Recorded::<Option<i32>>::sample(tick + 10),
+        }
+    }
+}
+
 fixture!(HiredAdvisorRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {character: u32, idea: Vec<u8>, slot: Vec<u8>});
 fixture!(NavalSupremacyRow, |key| {region: (key >> 32) as u32, country: key as u32}, {region_slot: u32, current: i64, base_target: i64, target: i64, individual_ratio: i64, previous: i64, decline_from: i64});
 fixture!(RadarCoverageRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {state: Option<u32>, provinces: Vec<u32>});
@@ -811,7 +853,7 @@ fixture!(NavalCombatShipRow, |key| { combat: (key >> 33) as u64, side: ((key >> 
 fixture!(NavalCombatResultDetailsRow, |key| { result: key as u64 }, { sides: [NavalResultSideDetails;2] });
 // Combat fixture end
 fixture!(TrainInventoryRow, |key| {country: key as u32}, {node_count: u32, allocations: Vec<TrainAllocation>, controller_access: SparseBytes, allocated_trucks: Recorded<Option<i32>>, required_trucks_raw: Recorded<Option<i64>>, required_trains: Recorded<Option<i32>>});
-fixture!(CountryAppearanceRow, |key| {country: key as u32}, {red: u32, green: u32, blue: u32, alpha: u32, cosmetic_tag: Vec<u8>, name_tag: Vec<u8>, leader_ideology: Vec<u8>, overlord: i32, graphical_culture: Vec<u8>, leader_character: Option<u32>, old_name: Option<Vec<u8>>, old_adjective: Option<Vec<u8>>, old_definite_name: Option<Vec<u8>>, ui_red: u32, ui_green: u32, ui_blue: u32, ui_alpha: u32, graphical_culture_2d: Vec<u8>, subjects: Recorded<Vec<i32>>});
+fixture!(CountryAppearanceRow, |key| {country: key as u32}, {red: u32, green: u32, blue: u32, alpha: u32, cosmetic_tag: Vec<u8>, name_tag: Vec<u8>, leader_ideology: Vec<u8>, overlord: i32, graphical_culture: Vec<u8>, leader_character: Option<u32>, old_name: Option<Vec<u8>>, old_adjective: Option<Vec<u8>>, old_definite_name: Option<Vec<u8>>, ui_red: u32, ui_green: u32, ui_blue: u32, ui_alpha: u32, graphical_culture_2d: Vec<u8>, subjects: Recorded<Vec<i32>>, original_tag: Recorded<Option<Vec<u8>>>, original_tag_reference: Recorded<Option<i32>>});
 fixture!(ArmyIconInputRow, |key| {division: key as u64}, {separate_counter: u8, alternate_template: u64});
 fixture!(ProvinceUnitOrderRow,|key| {province:key as u32},{mixed:Vec<u64>,naval:Vec<u64>});
 sample_struct!(CharacterPortrait {category:u32,size:u32,is_set:u8,kind:u32,identity:Vec<u8>});
@@ -838,10 +880,14 @@ fixture!(NavalCombatTransferRow, |key| {combat: key as u64}, {transfers: Vec<u64
 fixture!(NavalTransferUnitRow, |key| {transfer: key as u64}, {units: Vec<u64>});
 fixture!(TaskForceMissionRow, |key| {task_force: key as u64}, {owner: u32, current_region: u32, regions: Vec<u32>});
 fixture!(NavalCombatAirBaseWingHandlesRow, |key| { base: key as u64 }, { wings: Vec<u64> });
-fixture!(RailwayGunCounterInputRow, |key| {gun: key as u64}, {roster_owner: u32, expeditionary_owner: u32, logical_owner: u32, province: u32, naval_transfer: u8, transfer_action_status: u8, exiled: u8, retreat: u8, strategic_redeployment: u8, reference_entry_count: i32, assignee_group: u64, subunit_token: u32, current_strength: i64, maximum_strength: i64, received_supply_ratio: i64, railway_building_level: Option<i16>, target: u32, combat_role: u8, combat_province: u32, combat_count: u32, attacking: u8, ordinary_path: Vec<u32>, alternate_path: Vec<u32>});
+sample_struct!(RailwayGunEtaOperands {
+    numerator: i64,
+    current_speed: i64
+});
+fixture!(RailwayGunCounterInputRow, |key| {gun: key as u64}, {roster_owner: u32, expeditionary_owner: u32, logical_owner: u32, province: u32, naval_transfer: u8, transfer_action_status: u8, exiled: u8, retreat: u8, strategic_redeployment: u8, reference_entry_count: i32, assignee_group: u64, subunit_token: u32, current_strength: i64, maximum_strength: i64, received_supply_ratio: i64, railway_building_level: Option<i16>, target: u32, combat_role: u8, combat_province: u32, combat_count: u32, attacking: u8, ordinary_path: Vec<u32>, alternate_path: Vec<u32>, name: Recorded<Option<Vec<u8>>>, eta: Recorded<Option<RailwayGunEtaOperands>>, supply: Recorded<Option<UnitSupplyInputs>>});
 fixture!(FleetCounterInputRow, |key| {fleet: key as u64}, {red: u32, green: u32, blue: u32, alpha: u32, mission_region_count: i32, task_forces: Vec<u64>});
-fixture!(CountryCounterInputRow, |key| {country: key as u32}, {pride_of_the_fleet: u64, owned_state_count: i32, controlled_state_count: i32, first_division: u64, owned_states: Recorded<Option<Vec<u32>>>, controlled_states: Recorded<Option<Vec<u32>>>, core_states: Recorded<Option<Vec<u32>>>, army_leaders: Recorded<Option<Vec<u64>>>, navy_leaders: Recorded<Option<Vec<u64>>>});
-fixture!(OrdersGroupCounterInputRow, |key| {group: key as u64}, {withdrawing: u8});
+fixture!(CountryCounterInputRow, |key| {country: key as u32}, {pride_of_the_fleet: u64, owned_state_count: i32, controlled_state_count: i32, first_division: u64, owned_states: Recorded<Option<Vec<u32>>>, controlled_states: Recorded<Option<Vec<u32>>>, core_states: Recorded<Option<Vec<u32>>>, army_leaders: Recorded<Option<Vec<u64>>>, navy_leaders: Recorded<Option<Vec<u64>>>, mio_policies: Recorded<Option<Vec<u32>>>, neighbors: Recorded<Option<Vec<u32>>>});
+fixture!(OrdersGroupCounterInputRow, |key| {group: key as u64}, {withdrawing: u8, hq_distance: Recorded<Option<i32>>, leader_enroute_days: Recorded<Option<i32>>, border_war_presence: Recorded<Option<u8>>, invasion_source_distance: Recorded<Option<i32>>});
 fixture!(LeaderPortraitPathRow, |key| {leader: key as u64}, {country: u32, tag_reference: u32, tag: Vec<u8>});
 impl Fixture for ShipModelRow {
     fn fixture(key: u128, tick: usize) -> Self {
@@ -862,7 +908,7 @@ impl Fixture for ShipModelRow {
     }
 }
 fixture!(LocalPlayerRow, |_key| {}, {country: u32, observer_country: u32});
-fixture!(SimulationFeatureRow, |_key| {}, {dlc_mask: u32, human_ai: u8, weather_suspend: Recorded<Option<[u8; 2]>>});
+fixture!(SimulationFeatureRow, |_key| {}, {dlc_mask: u32, human_ai: u8, weather_suspend: Recorded<Option<[u8; 2]>>, instant_decisions: Recorded<Option<u8>>});
 fixture!(RaidPlayerAllowedTypeRow, |key| {country: key as u32}, {allowed: Vec<u32>});
 impl Fixture for ModifierDefinitionRow {
     fn fixture(key: u128, tick: usize) -> Self {
@@ -1018,7 +1064,32 @@ sample_struct!(DivisionAcclimatization {
     category: u32,
     weight: i64
 });
-fixture!(DivisionStatusRow, |key| {division: key as u64}, {maximum_hit_points: i64, maximum_organisation: i64, entrenchment: i64, entrenchment_cap: i64, supply_ratio: i64, attrition_value: i64, attrition_threshold: i64, attrition: u8, exercising: u8, has_order: u8, invalid_orders: u8, strength_factor: i64, model_number: i32, acclimatization_maximum: Option<i64>, acclimatization: Vec<DivisionAcclimatization>, move_flags: u8, border_combat_stats: Recorded<Option<[i64; 3]>>, naming: Recorded<Option<NameOperands>>, supply_grace_maximum: Recorded<i64>, supply_grace_remaining: Recorded<i64>});
+sample_struct!(UnitSupplyDemand {
+    count: i32,
+    value: i64
+});
+sample_struct!(UnitSupplyOrigin {
+    province: i32,
+    requested: i64,
+    received: i64
+});
+sample_struct!(UnitSupplyInputs { asked: i64, received: i64, from_state: i64,
+    air_drops: i64, disruption: i64, division_demand: UnitSupplyDemand,
+    airplane_demand: UnitSupplyDemand, ship_demand: UnitSupplyDemand,
+    origins: Option<Vec<UnitSupplyOrigin>> });
+sample_struct!(AttritionSupply { penalty: Option<i64>, attrition_factor: Option<i64> });
+sample_struct!(AttritionThermal { base: i64, country_factor: Option<i64>, leader_factor: Option<Option<i64>> });
+sample_struct!(AttritionWeather { acclimatization: Option<i64>, attrition: Option<i64>, heat: Option<Option<AttritionThermal>>, winter: Option<Option<AttritionThermal>> });
+sample_struct!(AttritionBorder { state: Option<u32>, country: Option<u32>, factor: Option<i64> });
+sample_struct!(AttritionTerrain { name: Option<Vec<u8>>, attrition: Option<i64>, equipment: Option<i64> });
+sample_struct!(AttritionModifierSource {
+    accumulator: u64,
+    key: u32,
+    depth: i32,
+    scale: i64
+});
+sample_struct!(ArmyAttritionInputs { province: Option<Option<u32>>, upkeep: Option<i64>, terrain: Option<Option<AttritionTerrain>>, state: Option<Option<i64>>, supply: Option<AttritionSupply>, country_upkeep_modifier: Option<i64>, moving_state: Option<Option<i64>>, weather: Option<Option<AttritionWeather>>, training: Option<bool>, training_attrition: Option<Option<i64>>, border: Option<Option<AttritionBorder>>, country_attrition_modifier: Option<i64>, sources: [Option<Option<AttritionModifierSource>>; engine::carmy_attrition::SOURCE_COUNT] });
+fixture!(DivisionStatusRow, |key| {division: key as u64}, {maximum_hit_points: i64, maximum_organisation: i64, entrenchment: i64, entrenchment_cap: i64, supply_ratio: i64, attrition_value: i64, attrition_threshold: i64, attrition: u8, exercising: u8, has_order: u8, invalid_orders: u8, strength_factor: i64, model_number: i32, acclimatization_maximum: Option<i64>, acclimatization: Vec<DivisionAcclimatization>, move_flags: u8, border_combat_stats: Recorded<Option<[i64; 3]>>, naming: Recorded<Option<NameOperands>>, supply_grace_maximum: Recorded<i64>, supply_grace_remaining: Recorded<i64>, country_ordinal: Recorded<Option<u32>>, invalid_orders_reason: Recorded<Option<i32>>, supply: Recorded<Option<UnitSupplyInputs>>, attrition_inputs: Recorded<ArmyAttritionInputs>, dig_in_factor: Recorded<Option<i64>>, name: Recorded<Option<Vec<u8>>>});
 impl Fixture for DivisionEtaInputsRow {
     fn fixture(key: u128, tick: usize) -> Self {
         // Leg vectors must stay aligned, so they cannot be sampled apart.
@@ -1070,7 +1141,7 @@ sample_struct!(TemplateSubunit {
     count: i32
 });
 fixture!(DivisionTemplateRow, |key| {template: key as u64}, {owner: u32, name: Vec<u8>, unit_type: i32, name_key: Recorded<Vec<u8>>});
-fixture!(DivisionTemplateIconRow, |key| {template: key as u64}, {priority_unit: u32, priority_unit_name: Vec<u8>, custom_icon: i32, custom_icon_nato: u8, representative: u32, representative_local: u8, subunits: Vec<TemplateSubunit>, country: i32, foreign_country: i32, model_category: Option<u64>, model_entity: Vec<u8>, excluded_variants: Vec<u64>, model_unreadable: u8});
+fixture!(DivisionTemplateIconRow, |key| {template: key as u64}, {priority_unit: u32, priority_unit_name: Vec<u8>, custom_icon: i32, custom_icon_nato: u8, representative: u32, representative_local: u8, subunits: Vec<TemplateSubunit>, country: i32, foreign_country: i32, model_category: Option<u64>, model_entity: Vec<u8>, excluded_variants: Vec<u64>, model_unreadable: u8, formation_division_count: Recorded<Option<i32>>});
 fixture!(LandCombatProgressRow, |key| {combat: key as u64}, {attacker_progress: i64, defender_progress: i64, direction_attacker: u64, direction_province: u32});
 fixture!(ThreatSourceRow, |key| {ordinal: key as u32}, {country: u32, second_country: u32, current_raw: i64, final_raw: i64, daily_raw: i64, date: i32, reason: Vec<u8>});
 fixture!(ThreatCountryAggregateRow, |key| {country_slot: key as u32}, {total_raw: i64});
@@ -1549,6 +1620,16 @@ pub(crate) fn sample_extended_table(table: TableId, tick: usize) -> Option<Table
             TableRows::ModifierDefinitions(rows::<ModifierDefinitionRow>(tick))
         }
         TableId::OwnedWargoals => TableRows::OwnedWargoals(rows::<OwnedWargoalRow>(tick)),
+        TableId::TimedIdeas => TableRows::TimedIdeas(rows::<TimedIdeaRow>(tick)),
+        TableId::DecisionRandomItems => {
+            TableRows::DecisionRandomItems(rows::<DecisionRandomItemRow>(tick))
+        }
+        TableId::CapturedOperativeReferences => {
+            TableRows::CapturedOperativeReferences(rows::<CapturedOperativeReferenceRow>(tick))
+        }
+        TableId::ReservedCountryNaming => {
+            TableRows::ReservedCountryNaming(rows::<ReservedCountryNamingRow>(tick))
+        }
         TableId::AvailableAdvisors => {
             TableRows::AvailableAdvisors(rows::<AvailableAdvisorRow>(tick))
         }
@@ -1599,6 +1680,9 @@ pub(crate) fn sample_extended_table(table: TableId, tick: usize) -> Option<Table
         ),
         TableId::NavalModifierBreakdowns => {
             TableRows::NavalModifierBreakdowns(rows::<NavalModifierBreakdownRow>(tick))
+        }
+        TableId::AttritionModifierBreakdowns => {
+            TableRows::AttritionModifierBreakdowns(rows::<AttritionModifierBreakdownRow>(tick))
         }
         _ => return None,
     })
@@ -2126,7 +2210,9 @@ fn country_appearance_preserves_float_bits_and_literal_tag_transitions() {
         ui_blue: 0x7fc0_0001,  // NaN payload.
         ui_alpha: 0xbf80_0000, // Negative one.
         graphical_culture_2d: b"western_european_2d".to_vec(),
-        subjects: Recorded::Value(vec![7, -1].into()),
+        subjects: Recorded::Value(vec![7, -1]),
+        original_tag: Recorded::Value(Some(b"GER".to_vec())),
+        original_tag_reference: Recorded::Value(Some(i32::MAX)),
     };
     let mut bytes = Vec::new();
     encode_row(&previous, 0, &mut bytes).unwrap();
@@ -2757,6 +2843,11 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<ModifierDefinitionRow>(TableId::ModifierDefinitions);
     check_table::<OwnedWargoalRow>(TableId::OwnedWargoals);
     check_table::<AvailableAdvisorRow>(TableId::AvailableAdvisors);
+    check_table::<TimedIdeaRow>(TableId::TimedIdeas);
+    check_table::<DecisionRandomItemRow>(TableId::DecisionRandomItems);
+    check_table::<CapturedOperativeReferenceRow>(TableId::CapturedOperativeReferences);
+    check_table::<ReservedCountryNamingRow>(TableId::ReservedCountryNaming);
+    check_table::<AttritionModifierBreakdownRow>(TableId::AttritionModifierBreakdowns);
     check_table::<HiredAdvisorRow>(TableId::HiredAdvisors);
     check_table::<CountryStabilityInputRow>(TableId::CountryStabilityInputs);
     check_table::<CountryStabilityLineRow>(TableId::CountryStabilityLines);

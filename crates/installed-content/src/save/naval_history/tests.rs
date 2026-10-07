@@ -83,6 +83,55 @@ fn an_orders_group_without_its_unconditional_fields_is_refused() {
     assert!(parse_text(text.as_bytes()).is_err());
 }
 
+#[test]
+fn orders_group_distance_matches_the_native_nonnegative_save_predicate() {
+    let original = String::from_utf8(ORDER_OF_BATTLE.to_vec()).unwrap();
+    for value in [0, 1, i32::MAX] {
+        let text = original.replace(
+            "motorization_level=0",
+            &format!("motorization_level=0 distance={value}"),
+        );
+        let pack = parse_text(text.as_bytes()).unwrap();
+        let groups =
+            &pack.theatre_countries.as_ref().unwrap()[b"GER".as_slice()].land[0].definitions;
+        assert_eq!(groups[0].distance, Some(value));
+        assert_eq!(groups[1].distance, None);
+    }
+    for value in [i32::MIN, -7, -1] {
+        let text = original.replace(
+            "motorization_level=0",
+            &format!("motorization_level=0 distance={value}"),
+        );
+        assert!(parse_text(text.as_bytes()).is_err());
+    }
+}
+
+#[test]
+fn invasion_source_distance_has_its_own_nonnegative_save_field() {
+    let original = String::from_utf8(ORDER_OF_BATTLE.to_vec()).unwrap();
+    for value in [0, 17, i32::MAX] {
+        let text = original.replace(
+            "motorization_level=0",
+            &format!(
+                "motorization_level=0 distance=31 hq_distance_to_naval_invasion_source={value}"
+            ),
+        );
+        let pack = parse_text(text.as_bytes()).unwrap();
+        let groups =
+            &pack.theatre_countries.as_ref().unwrap()[b"GER".as_slice()].land[0].definitions;
+        assert_eq!(groups[0].invasion_source_distance, Some(value));
+        assert_eq!(groups[0].distance, Some(31));
+        assert_eq!(groups[1].invasion_source_distance, None);
+    }
+    for value in [i32::MIN, -7, -1] {
+        let text = original.replace(
+            "motorization_level=0",
+            &format!("motorization_level=0 hq_distance_to_naval_invasion_source={value}"),
+        );
+        assert!(parse_text(text.as_bytes()).is_err());
+    }
+}
+
 fn adjacency_content() -> (Vec<u8>, Vec<u8>) {
     let definitions =
         b"0;0;0;0;land\n1;1;0;0;land\n2;2;0;0;sea\n3;3;0;0;lake\n4;4;0;0;land\n5;5;0;0;land\n"

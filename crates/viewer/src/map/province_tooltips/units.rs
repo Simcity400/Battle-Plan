@@ -343,9 +343,10 @@ fn aggregate(
                     return Err(format!("unit composition sub-unit {spelling}: {reason}"));
                 }
             };
-            let name = content.subunits.name(index).ok_or_else(|| {
-                format!("unit composition sub-unit index {index} has no name")
-            })??;
+            let name = content
+                .subunits
+                .name(index)
+                .ok_or_else(|| format!("unit composition sub-unit index {index} has no name"))??;
             (index, name, content.subunits.category(name.as_bytes())?)
         };
         let identity = (index, (subunit.local != 0).then_some(country));

@@ -22,6 +22,18 @@ use replay::{
         SimulationFeatureRow, StateVisibilityRow, TableId, tables,
     },
 };
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+static INSTANT_DECISIONS_REFUSALS: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn instant_decisions_data() -> impl serde::Serialize {
+    let refused = INSTANT_DECISIONS_REFUSALS.load(Relaxed);
+    crate::status::status!({
+        "refused": refused,
+        "refusals": crate::status::map(std::iter::once(("instant decisions byte unreadable", refused)).filter(|(_, count)| *count != 0)),
+        "scope": "cumulative appended instant-decision read failures; other simulation features remain available",
+    })
+}
 
 pub const N: usize = 7;
 pub const TABLES: [TableId; N] = [
@@ -75,6 +87,7 @@ struct FeatureInputs {
     dlc_mask: u32,
     human_ai: u8,
     weather_suspend: Option<[u8; 2]>,
+    instant_decisions: Option<u8>,
 }
 
 pub struct Captured {
@@ -223,6 +236,11 @@ impl Captured {
                             Ok(FeatureInputs {
                                 dlc_mask,
                                 human_ai: native::human_ai(memory, base)?,
+                                instant_decisions: native::instant_decisions(memory, base)
+                                    .inspect_err(|_| {
+                                        INSTANT_DECISIONS_REFUSALS.fetch_add(1, Relaxed);
+                                    })
+                                    .ok(),
                                 weather_suspend: cweather_manager::Reader::new(
                                     memory, base, game_state,
                                 )
@@ -310,6 +328,7 @@ impl Captured {
                     dlc_mask: r.dlc_mask,
                     human_ai: r.human_ai,
                     weather_suspend: replay::rows::Recorded::Value(r.weather_suspend),
+                    instant_decisions: replay::rows::Recorded::Value(r.instant_decisions),
                 },
             ),
             table::<tables::CountryVisibility, _>(

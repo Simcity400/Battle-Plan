@@ -416,6 +416,11 @@ pub(crate) fn fixture() -> Vec<u8> {
     );
     put(
         &mut bytes,
+        OCC_DATA + ccountry_occupation_data::OCCUPIED_COUNTRY_POINTER,
+        &(COUNTRY as u64).to_le_bytes(),
+    );
+    put(
+        &mut bytes,
         OCC_DATA + ccountry_occupation_data::OCCUPIED_COUNTRY,
         &1_u32.to_le_bytes(),
     );
@@ -515,6 +520,7 @@ pub(crate) fn capacities() -> Capacities {
         rows: [8; N],
         routes: 8,
         law_bytes: 64,
+        occupied: 8,
     }
 }
 
@@ -620,6 +626,12 @@ pub(crate) fn assert_matches_direct(split: &Captured, direct: &Captured) {
         &split.law_bytes.first[..split.law_bytes.len],
         &direct.law_bytes.first[..direct.law_bytes.len],
         "law bytes"
+    );
+    assert_eq!(split.occupied.len, direct.occupied.len, "occupied arena");
+    assert_eq!(
+        &split.occupied.first[..split.occupied.len],
+        &direct.occupied.first[..direct.occupied.len],
+        "occupied countries"
     );
     let len = split.settings.outcome.len();
     assert_eq!(

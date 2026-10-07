@@ -233,10 +233,12 @@ impl Product for CountryGroups {
             }
         };
         let mut warnings = Vec::new();
-        let needs_templates = scan
-            .factions
-            .values()
-            .any(|faction| faction.names.iter().any(|name| name.literal.is_empty()));
+        let needs_templates = scan.factions.values().any(|faction| {
+            faction
+                .names
+                .iter()
+                .any(|name| name.literal.is_empty() && name.template_token.is_some())
+        });
         let language = &source.replay_ref().identity.language;
         let recorded_language = language.strip_prefix("l_").unwrap_or(language);
         // Stored literals need only the selected language, not game assets.
@@ -324,7 +326,7 @@ struct NameOperands {
     template_token: Option<u32>,
     lexical_read: i32,
     tokens: Arc<faction_names::LexicalNames>,
-    template: Result<String, String>,
+    template: Result<Option<String>, String>,
 }
 
 struct ScannedFaction {
@@ -364,7 +366,11 @@ impl Scan {
                 for operands in &faction.names {
                     let resolved = faction_names::name(
                         &operands.literal,
-                        operands.template.as_deref().map_err(Clone::clone),
+                        operands
+                            .template
+                            .as_ref()
+                            .map(|value| value.as_deref())
+                            .map_err(Clone::clone),
                         templates.as_ref().copied().map_err(Clone::clone),
                         localisation,
                         recorded_language,

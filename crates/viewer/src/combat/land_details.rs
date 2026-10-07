@@ -614,7 +614,7 @@ pub(super) fn bind(
             format!("Land combat heading is hidden: the content lacks sprite {name} (1415C8950)."),
         ),
     }
-    out.warnings.push("Derived land values: committed widths apply recorded country/contextual-leader modifiers; ordinary combat total width takes terrain and attack directions, while border total width needs its unrecorded configured base; CAS damage and kills belong to the opposing side; heading uses the native early damage estimate or 24-loss mean and all participants.".into());
+    out.warnings.push("Derived land values: committed widths apply recorded country/contextual-leader modifiers; ordinary combat total width takes terrain and attack directions, while border total width applies the recorded configured base; CAS damage and kills belong to the opposing side; heading uses the native early damage estimate or 24-loss mean and all participants.".into());
     Ok(())
 }
 

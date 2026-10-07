@@ -89,6 +89,19 @@ fn legacy_rows(table: TableId, hour: Hour) -> TableRows {
             ..Default::default()
         }]),
         TableId::UnitLeaders => TableRows::UnitLeaders(vec![Default::default()]),
+        TableId::AirWings => TableRows::AirWings(vec![Default::default()]),
+        TableId::OrdersGroupCounterInputs => {
+            TableRows::OrdersGroupCounterInputs(vec![Default::default()])
+        }
+        TableId::DivisionTemplateIcons => {
+            TableRows::DivisionTemplateIcons(vec![Default::default()])
+        }
+        TableId::OccupationSettings => TableRows::OccupationSettings(vec![Default::default()]),
+        TableId::Scientists => TableRows::Scientists(vec![Default::default()]),
+        TableId::CountryLeaderRoles => TableRows::CountryLeaderRoles(vec![Default::default()]),
+        TableId::RailwayGunCounterInputs => {
+            TableRows::RailwayGunCounterInputs(vec![Default::default()])
+        }
         TableId::WeatherProvinces => TableRows::WeatherProvinces(vec![Default::default()]),
         TableId::StateFlags => TableRows::StateFlags(vec![Default::default()]),
         TableId::DivisionStatus => TableRows::DivisionStatus(vec![rows::DivisionStatusRow {
@@ -373,6 +386,16 @@ fn compatibility_every_appended_field_is_explicitly_not_recorded() {
         if appended.is_empty() {
             continue;
         }
+        if !table.last_change().present(format.version()) {
+            assert_eq!(
+                *decoded.tables[table.index()],
+                TableView::Unavailable {
+                    reason: format.table_refusal(table).unwrap()
+                },
+                "{table:?} did not exist in the historical stream"
+            );
+            continue;
+        }
         let TableView::Complete(rows) = &*decoded.tables[table.index()] else {
             panic!("{table:?} was withheld");
         };
@@ -401,7 +424,7 @@ fn compatibility_layout_change_still_withholds_the_whole_table() {
         Frame::decode_with_history(&mut Decoder::new(&payload), None, format, &history).unwrap();
     let decoded = FrameDecoder::new().apply(&parsed).unwrap();
     assert!(
-        matches!(&*decoded.tables[table.index()], TableView::Unavailable { reason } if reason.starts_with("CountryAppearance layout or meaning changed at format 97"))
+        matches!(&*decoded.tables[table.index()], TableView::Unavailable { reason } if reason == &format!("CountryAppearance layout or meaning changed at format {}; this recording is format 94", history[table.index()].format))
     );
     assert!(decoded.complete::<rows::tables::Countries>().is_ok());
 }

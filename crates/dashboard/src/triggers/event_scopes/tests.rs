@@ -357,3 +357,222 @@ fn broken_graph_and_storage_cycles_refuse_only_reached_links() {
         );
     });
 }
+
+#[test]
+fn ability_country_leader_copies_keep_both_masks_and_getter_priorities() {
+    use replay::rows::{CharacterRow, Recorded, UnitLeaderRow};
+    let leader = 9_u64 << 32 | 3;
+    // Deliberately disagree: carried SOV country versus the leader's GER
+    // owner. Native Tag reads the leader; country flags/store/hash read +8.
+    let mut f = with_variables(
+        frame(&original_countries(), &[103]),
+        &[(1, 103, &[("x", ONE)]), (3, 44, &[("x", 9 * ONE)])],
+    );
+    *f.tables[TableId::UnitLeaders.index()] =
+        TableView::Complete(TableRows::UnitLeaders(vec![UnitLeaderRow {
+            id: 9,
+            reference_type: 3,
+            owner: 100,
+            character_id: 44,
+            character_type: engine::ccharacter::REFERENCE_TYPE,
+            ..Default::default()
+        }]));
+    *f.tables[TableId::Characters.index()] =
+        TableView::Complete(TableRows::Characters(vec![CharacterRow {
+            id: 44,
+            country: 103,
+            ..Default::default()
+        }]));
+    let TableView::Complete(TableRows::ScriptFlags(flags)) =
+        &mut *f.tables[TableId::ScriptFlags.index()]
+    else {
+        panic!("flags");
+    };
+    flags.push(ScriptFlagRow {
+        scope_kind: 3,
+        scope_id: 44,
+        token: 900,
+        value: 1,
+        ..Default::default()
+    });
+    let TableView::Complete(TableRows::ScriptVariables(stores)) =
+        &mut *f.tables[TableId::ScriptVariables.index()]
+    else {
+        panic!("variables");
+    };
+    for row in stores {
+        row.seed = Recorded::Value(Some(if row.scope_kind == 1 { 37 } else { 999 }));
+    }
+    with_world(&f, "", Err("none"), |world| {
+        let object = EventObject::CountryUnitLeader { country: 4, leader };
+        let graph = Rc::new(RefCell::new(EventScopes::new(vec![EventScope::of(object)])));
+        let evaluator = Evaluator::new(world, None).with_event_scopes(graph.clone());
+        let caller = evaluator.event_scopes(0).unwrap();
+        let combined = Scope::CountryLeader { country: 4, leader };
+        assert_eq!(
+            (caller.this, caller.root, caller.from, caller.prev),
+            (combined, combined, Some(combined), Some(combined))
+        );
+        for prefix in ["", "ROOT", "FROM", "PREV"] {
+            let body = "tag=GER has_country_flag=x has_character_flag=x check_variable={x=1}";
+            let script = if prefix.is_empty() {
+                body.to_owned()
+            } else {
+                format!("{prefix}={{{body}}}")
+            };
+            assert_eq!(
+                evaluator.evaluate(&items(&script), caller),
+                Eval::True,
+                "{script}"
+            );
+        }
+        let encoded = i64::from(u32::from_le_bytes(*b"SOV\0") | 0x4000_0000);
+        assert_eq!(evaluator.scoped_value(b"THIS", caller), Ok(encoded));
+        assert_eq!(evaluator.scoped_country(b"ROOT", caller), Ok(Some(4)));
+        assert_eq!(
+            evaluator.scoped_scope(b"THIS", caller),
+            Ok(Some(Scope::Country(4)))
+        );
+        assert_eq!(
+            evaluator.evaluate(&items("var:THIS={has_character_flag=x}"), caller),
+            Eval::False
+        );
+        evaluator.begin_description_in(caller);
+        assert_eq!(
+            evaluator.scoped_value(b"random_seed", caller),
+            Ok(37 + 4 * 31 * (13 + 17))
+        );
+        evaluator.end_description(caller).unwrap();
+        // Saving a target projects one native CSavedEventTarget arm. Copying
+        // a scope preserves both, while clearing setters produce bare children.
+        evaluator.save_tooltip_target(b"kept", caller).unwrap();
+        evaluator
+            .save_global_tooltip_target(b"global", caller)
+            .unwrap();
+        assert_eq!(
+            graph.borrow().tooltip_targets[&0][0].1,
+            EventObject::Country(4)
+        );
+        assert_eq!(
+            graph.borrow().global_tooltip_targets[0].1,
+            EventObject::Country(4)
+        );
+        let entered = evaluator
+            .enter_scope(
+                &installed_content::scope::parse("SOV", false, world.recorded()),
+                caller,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(entered.this, Scope::Country(4));
+        assert!(entered.bare);
+        assert_eq!(
+            evaluator.evaluate(&items("has_character_flag=x"), entered),
+            Eval::False
+        );
+        assert_eq!(
+            evaluator.evaluate(&items("THIS={has_character_flag=x}"), entered),
+            Eval::False
+        );
+        assert_eq!(
+            evaluator.evaluate(&items("var:THIS={THIS={has_character_flag=x}}"), caller),
+            Eval::False
+        );
+        for object in [
+            EventObject::Country(4),
+            EventObject::State(7),
+            EventObject::Combat,
+        ] {
+            let cleared = {
+                let mut graph = graph.borrow_mut();
+                let at = graph.scopes.len();
+                graph.scopes.push(EventScope {
+                    prev: Link::Scope(0),
+                    ..EventScope::of(object)
+                });
+                at
+            };
+            let cleared = evaluator.event_scopes(cleared).unwrap();
+            assert!(cleared.bare);
+            for prefix in ["THIS", "ROOT"] {
+                assert_eq!(
+                    evaluator.evaluate(
+                        &items(&format!("{prefix}={{has_character_flag=x}}")),
+                        cleared
+                    ),
+                    Eval::False,
+                    "{object:?}.{prefix}"
+                );
+            }
+        }
+        assert_eq!(
+            evaluator.evaluate(&items("has_country_flag=x"), Scopes::combat()),
+            Eval::False
+        );
+        assert_eq!(
+            evaluator.evaluate(&items("has_character_flag=x"), Scopes::combat()),
+            Eval::False
+        );
+        assert_eq!(graph.borrow().scopes[0].this, object);
+        assert_eq!(
+            (
+                graph.borrow().scopes[0].random_seed,
+                graph.borrow().scopes[0].random_counter
+            ),
+            (1, 0x5ea6_ba9e)
+        );
+    });
+    let mut incomplete = f.clone();
+    *incomplete.tables[TableId::Countries.index()] = TableView::Unavailable {
+        reason: "country mapping unavailable".into(),
+    };
+    with_world(&incomplete, "", Err("none"), |world| {
+        let evaluator = Evaluator::new(world, None);
+        let scopes = Scopes::of(Scope::CountryLeader { country: 4, leader });
+        for script in [
+            "always=yes",
+            "has_character_flag=x",
+            "hidden_trigger={has_character_flag=x}",
+        ] {
+            assert_eq!(
+                evaluator.evaluate(&items(script), scopes),
+                Eval::True,
+                "{script}"
+            );
+        }
+        assert!(
+            evaluator
+                .evaluate(&items("has_country_flag=x"), scopes)
+                .decided()
+                .is_err()
+        );
+    });
+    // A changed current role can coexist with the original group leader.
+    // The existing role projection refuses ambiguous associations rather
+    // than selecting the original handle's owner as if it were the current one.
+    let TableView::Complete(TableRows::UnitLeaders(leaders)) =
+        &mut *f.tables[TableId::UnitLeaders.index()]
+    else {
+        panic!("leaders");
+    };
+    leaders.push(UnitLeaderRow {
+        id: 10,
+        reference_type: 3,
+        owner: 103,
+        character_id: 44,
+        character_type: engine::ccharacter::REFERENCE_TYPE,
+        ..Default::default()
+    });
+    with_world(&f, "", Err("none"), |world| {
+        for this in [
+            Scope::Leader(leader),
+            Scope::CountryLeader { country: 4, leader },
+        ] {
+            let why = Evaluator::new(world, None)
+                .evaluate(&items("tag=GER"), Scopes::of(this))
+                .decided()
+                .unwrap_err();
+            assert!(why.contains("more than one UnitLeaders row"), "{why}");
+        }
+    });
+}

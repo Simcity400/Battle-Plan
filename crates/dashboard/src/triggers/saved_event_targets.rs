@@ -147,6 +147,11 @@ impl Evaluator<'_, '_> {
     ) -> Result<Option<Scopes>, String> {
         let recorded = self.world().recorded();
         if let Some(mut this) = self.graph_saved(name, reader, scopes)? {
+            if matches!(reader, Reader::CountrySelector)
+                && let Scope::CountryLeader { country, .. } = this
+            {
+                this = Scope::Country(country);
+            }
             if matches!(reader, Reader::CountrySelector) && !matches!(this, Scope::Country(_)) {
                 return Ok(None);
             }

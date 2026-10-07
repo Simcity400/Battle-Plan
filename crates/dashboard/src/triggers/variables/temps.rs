@@ -65,6 +65,7 @@ impl Evaluator<'_, '_> {
                 | "clamp_temp_variable"
                 | "round_temp_variable"
                 | "modulo_temp_variable"
+                | "set_temp_variable_to_random"
         ) {
             return None;
         }
@@ -76,9 +77,12 @@ impl Evaluator<'_, '_> {
             // These setters return true even when their execution is optional.
             return Some(Ok(()));
         }
-        let result = self
-            .variable_operands(name, item, false)
-            .and_then(|operands| self.set_temp(name, &operands, scopes, false));
+        let result = if name == "set_temp_variable_to_random" {
+            self.description_random_temp(item, scopes)
+        } else {
+            self.variable_operands(name, item, false)
+                .and_then(|operands| self.set_temp(name, &operands, scopes, false))
+        };
         // A failed key read may name any destination. Do not retain old temps.
         if let Err(why) = &result {
             self.taint_temps(format!("trigger {name}: {why}"));
@@ -180,6 +184,9 @@ impl Evaluator<'_, '_> {
             Some(v) => self.raw(v),
             None => Ok(initial),
         });
+        if !self.local_temps.borrow().contains_key(&key) {
+            self.note_variable_effect();
+        }
         self.local_temps
             .borrow_mut()
             .insert(key.clone(), current.map(Value::Raw));
@@ -268,6 +275,9 @@ impl Evaluator<'_, '_> {
                         } else {
                             None
                         };
+                        if rhs == 0 && !effect {
+                            return Ok(()); // 1403D0360: trigger logs zero without a store.
+                        }
                         let value = current()?;
                         // 1403D0360 logs zero and leaves the inserted value.
                         if rhs == 0 {
@@ -280,9 +290,7 @@ impl Evaluator<'_, '_> {
                 }
             }
         };
-        self.local_temps
-            .borrow_mut()
-            .insert(key, Ok(Value::Raw(value)));
+        self.store_description_temp(key, value);
         Ok(())
     }
 
@@ -366,6 +374,7 @@ impl Evaluator<'_, '_> {
     }
 
     pub(crate) fn store_description_temp(&self, key: Vec<u8>, value: i64) {
+        self.note_variable_effect();
         self.local_temps
             .borrow_mut()
             .insert(key, Ok(Value::Raw(value)));
@@ -389,6 +398,7 @@ impl Evaluator<'_, '_> {
     ) -> Result<(), String> {
         let mut min = ScopedVariable::literal(0);
         let mut max = ScopedVariable::literal(ONE);
+        let mut var = zero();
         // Defaults are literal but unparsed, so the first authored read replaces them.
         min.parsed = false;
         max.parsed = false;
@@ -397,6 +407,8 @@ impl Evaluator<'_, '_> {
                 assign(self, &mut min, field.value.scalar().unwrap_or_default())?;
             } else if field.keyword_is("max") {
                 assign(self, &mut max, field.value.scalar().unwrap_or_default())?;
+            } else if field.keyword_is("var") {
+                assign(self, &mut var, field.value.scalar().unwrap_or_default())?;
             }
         }
         let min = self
@@ -408,7 +420,27 @@ impl Evaluator<'_, '_> {
         if max < min {
             return Ok(());
         }
-        Err("set_temp_variable_to_random TLS scoped-variable RNG context (1405354A0) and NextScopedVariableRandomFraction (140537810) are not reproduced from the recorded CVariables+8 seed and scope/root hashes (140536DF0/140529EE0)".into())
+        let destination = self.mutable_temp(&var, scopes, None)?;
+        let random = self.next_variable_random(scopes)?;
+        let integer = installed_content::parser::read_bool_field(
+            item.value.items().unwrap_or_default(),
+            "integer",
+            false,
+        );
+        let value = if integer {
+            // 14047B530 floors/narrows each endpoint, then the scaled delta.
+            let lower = modulo_integer(min);
+            let upper = modulo_integer(max);
+            let delta = i64::from(upper.wrapping_sub(lower))
+                .wrapping_mul(ONE)
+                .wrapping_mul(random)
+                / ONE;
+            i64::from(lower.wrapping_add(modulo_integer(delta))).wrapping_mul(ONE)
+        } else {
+            min.wrapping_add(max.wrapping_sub(min).wrapping_mul(random) / ONE)
+        };
+        self.store_description_temp(destination, value);
+        Ok(())
     }
 
     /// 14047BEE0 -> 14047B0B0; reader@140480FD0. Only recognized bare
@@ -417,6 +449,7 @@ impl Evaluator<'_, '_> {
         &self,
         item: &Item,
         scopes: Scopes,
+        minimum_trains: impl FnOnce() -> Result<i64, String>,
     ) -> Result<(), String> {
         let mut var = zero();
         let mut kind = None;
@@ -428,22 +461,75 @@ impl Evaluator<'_, '_> {
             }
         }
         let destination = self.mutable_temp(&var, scopes, None)?;
-        self.store_description_temp(destination, 0);
+        self.store_description_temp(destination.clone(), 0);
         let need = installed_content::parser::read_bool_field(
             item.value.items().unwrap_or_default(),
             "need",
             false,
         );
-        let offset = match (kind.as_deref(), need) {
-            (Some("truck"), false) => "CCountrySupplySystem+0x138 i32 actual trucks",
-            (Some("train"), false) => "CCountrySupplySystem+0x110 i32 actual trains",
-            (Some("truck"), true) => "CSupplyCalculationData+0x130 i64 required trucks",
-            (Some("train"), true) => "CSupplyCalculationData+0x140 i32 required trains",
-            _ => return Ok(()),
+        if !matches!(kind.as_deref(), Some("truck" | "train")) {
+            return Ok(());
+        }
+        if kind.as_deref() == Some("train") && !need {
+            return Err("get_supply_vehicles_temp actual trains CCountrySupplySystem+0x110 i32 are not recorded (14047B0B0)".into());
+        }
+        let country = match scopes.this {
+            Scope::Country(country) | Scope::CountryLeader { country, .. } => country,
+            Scope::Combat => self.combat_country()?,
+            _ => {
+                return Err(
+                    "get_supply_vehicles_temp needs the caller's country (14047B0B0)".into(),
+                );
+            }
         };
-        Err(format!(
-            "get_supply_vehicles_temp recorded {offset} operand evaluation is not ported (14047B0B0)"
-        ))
+        let raw = self
+            .world()
+            .raw_country(country)
+            .ok_or("supply-temp country is not recorded")?;
+        let row = self
+            .world()
+            .frame()
+            .complete::<replay::rows::tables::TrainInventory>()
+            .map_err(|why| why.to_string())?
+            .iter()
+            .find(|row| row.country == raw)
+            .ok_or_else(|| format!("TrainInventory lacks supply-temp country {raw}"))?;
+        let value = match (kind.as_deref(), need) {
+            (Some("truck"), false) => i64::from(
+                row.allocated_trucks
+                    .require("TrainInventory.allocated_trucks (CCountrySupplySystem+0x138 i32)")?
+                    .ok_or("TrainInventory.allocated_trucks capture unavailable")?,
+            )
+            .wrapping_mul(ONE),
+            (Some("truck"), true) => {
+                let raw = row
+                    .required_trucks_raw
+                    .require(
+                        "TrainInventory.required_trucks_raw (CSupplyCalculationData+0x130 i64)",
+                    )?
+                    .ok_or("TrainInventory.required_trucks_raw capture unavailable")?;
+                // 14047C4A0 ceilings fixed5 (wrapping product); 14047B0B0
+                // narrows the resulting whole count to i32 before scaling it.
+                let rounded = if raw % ONE == 0 {
+                    raw
+                } else {
+                    (raw / ONE + i64::from(raw > 0)).wrapping_mul(ONE)
+                };
+                i64::from((rounded / ONE) as i32).wrapping_mul(ONE)
+            }
+            (Some("train"), true) => {
+                let count = row
+                    .required_trains
+                    .require("TrainInventory.required_trains (CSupplyCalculationData+0x140 i32)")?
+                    .ok_or("TrainInventory.required_trains capture unavailable")?;
+                let raw = i64::from(count).wrapping_mul(ONE);
+                // 14047B0B0: strictly greater than the content define, else zero.
+                if raw > minimum_trains()? { raw } else { 0 }
+            }
+            _ => unreachable!(),
+        };
+        self.store_description_temp(destination, value);
+        Ok(())
     }
 
     /// Core CExpression instructions@1414052C0, from the shared math reader.

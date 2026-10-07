@@ -11,6 +11,12 @@ pub(crate) struct CharactersJob {
     pub active: [bool; 6],
     pub(super) traits: TraitCapture,
     pub(super) advisor_demand: AdvisorDemand,
+    // Authenticated roles whose appended fields are copied after every old
+    // field. Capacity comes from the admitted raw-span storage and grows idle.
+    pub(super) appended_roles: Vec<AppendedRole>,
+    pub(super) appended_required: usize,
+    pub(super) appended_overflowed: bool,
+    pub(super) appended_charge: crate::raw_memory::Charge,
     pub(super) skills: [SkillCopy; 32],
     pub(super) portrait_census: Option<Arc<ccharacter_manager::PortraitCensus>>,
     pub(super) census_current: bool,
@@ -148,6 +154,17 @@ pub(super) struct AdvisorDemand {
     pub(super) overflowed: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) enum AppendedRole {
+    Leader(usize),
+    Advisor(usize),
+    Unit {
+        pointer: usize,
+        kind: u8,
+        category: i32,
+    },
+}
+
 impl CharactersJob {
     pub(crate) fn has_storage(&self) -> bool {
         self.advisor_cache.is_some() || self.log.spans.capacity() != 0
@@ -195,6 +212,14 @@ impl CharactersJob {
                 + crate::raw_memory::vector_bytes(&census_visited),
             ..Default::default()
         });
+        // Start below the raw-span budget; an unusually dense role population
+        // counts its exact suffix-queue demand and grows off-thread.
+        let appended_roles = owned_vec(vec(spans / 8));
+        let mut appended_charge = crate::raw_memory::Charge::default();
+        appended_charge.set(crate::raw_memory::Capacity {
+            auxiliary_vectors: crate::raw_memory::vector_bytes(&appended_roles),
+            ..Default::default()
+        });
         Self {
             part,
             log,
@@ -206,6 +231,10 @@ impl CharactersJob {
                 TraitCapture::default()
             },
             advisor_demand: AdvisorDemand::default(),
+            appended_roles,
+            appended_required: 0,
+            appended_overflowed: false,
+            appended_charge,
             skills: [SkillCopy::default(); 32],
             portrait_census: census.map(Arc::new),
             census_current: false,
@@ -263,6 +292,9 @@ impl CharactersJob {
         self.active = [false; 6];
         self.traits.clear();
         self.advisor_demand = AdvisorDemand::default();
+        self.appended_roles.clear();
+        self.appended_required = 0;
+        self.appended_overflowed = false;
         self.skills.fill(SkillCopy::default());
         self.census_current = false;
         self.role_census_current = false;
@@ -327,6 +359,7 @@ impl CharactersJob {
                 .as_ref()
                 .is_some_and(|census| census.needs_growth())
             || self.visits_required(census::live_len()) > self.census_visited.capacity()
+            || self.appended_required > self.appended_roles.capacity()
     }
 
     /// Visits the next role pass may need: its recorded demand, and every
@@ -339,7 +372,7 @@ impl CharactersJob {
     }
 
     pub(super) fn overflowed(&self) -> bool {
-        self.log.overflowed
+        (self.log.overflowed && !self.appended_overflowed)
             || self.traits.overflowed()
             || self.advisor_roots.overflowed
             || self
@@ -372,6 +405,22 @@ impl CharactersJob {
             return;
         }
         self.update_census_charge();
+        let appended_grew = self.appended_required > self.appended_roles.capacity();
+        let appended = self
+            .appended_required
+            .saturating_sub(self.appended_roles.len());
+        if reserve(&mut self.appended_roles, appended).is_err() {
+            return;
+        }
+        if appended_grew {
+            // A prefix-only program from a short queue has no requests for
+            // the omitted fields. Rediscover them after idle growth.
+            self.log.invalidate_read_plan();
+        }
+        self.appended_charge.set(crate::raw_memory::Capacity {
+            auxiliary_vectors: crate::raw_memory::vector_bytes(&self.appended_roles),
+            ..Default::default()
+        });
         if let Some(cache) = &mut self.advisor_cache {
             cache.grow();
         }
@@ -404,12 +453,20 @@ impl CharactersJob {
 
     pub(super) fn requires_no_retry(&self) -> bool {
         let mut observed = self.log.planned_source_observed();
-        let mut failed = self.log.planned_capture_requires_no_retry();
+        let mut failed = self.log.planned_capture_failed()
+            || (!self.appended_overflowed && self.log.planned_capture_requires_no_retry());
         if let Some(dynamic) = &self.advisor_dynamic {
             observed |= dynamic.log.planned_source_observed();
             failed |= dynamic.requires_no_retry();
         }
         failed || (self.overflowed() && observed)
+    }
+
+    fn remember_appended(&mut self, role: AppendedRole) {
+        self.appended_required = self.appended_required.saturating_add(1);
+        if self.appended_roles.len() < self.appended_roles.capacity() {
+            self.appended_roles.push(role);
+        }
     }
 
     pub(super) fn fate(&self) -> TreeFate {
@@ -423,8 +480,8 @@ impl CharactersJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct CharactersCopyReport {
-    /// False when staging overflowed: the caller falls back to the typed walk
-    /// (identical rows through the existing path) and enqueues no payload.
+    /// False when the existing field prefix exceeded staging. A short
+    /// appended suffix keeps the prefix payload and refuses only that field.
     pub raw_ok: bool,
     /// A stopped prepared pass may not fall back to another native capture.
     pub plan_failed: bool,
@@ -1210,6 +1267,7 @@ pub(super) fn copy_leaders(
             dead.leaders = true;
             return true;
         }
+        job.remember_appended(AppendedRole::Leader(role.unwrap()));
     }
     true
 }
@@ -1435,6 +1493,7 @@ pub(super) fn copy_advisors(
             }
             first += count as u32;
         }
+        job.remember_appended(AppendedRole::Advisor(role));
     }
     true
 }
@@ -1566,6 +1625,17 @@ pub(super) fn copy_unit(
             if job.log.overflowed {
                 return false;
             }
+        }
+        if !dead.units
+            && let (Some(kind), Some(category)) = (kind, state[1])
+            && kind == cunit_leader::KIND_ARMY
+            && pool_u32(job, category) < 2
+        {
+            job.remember_appended(AppendedRole::Unit {
+                pointer: unit,
+                kind,
+                category: pool_u32(job, category) as i32,
+            });
         }
     }
     // Identity-fallback spans for the trait replay. Recorded whenever the
@@ -1767,17 +1837,71 @@ pub(super) fn copy_unit_text(
     }
 }
 
-/// Own read_codename's member span, then copy_string's heap first byte,
-/// tail/terminator and payload, retaining its exact fault precedence.
-struct CodenameCopy<'a, M> {
+/// Records independent appended-reader spans and their first failed read.
+/// An unavailable suffix does not kill the role's existing field batch.
+struct AppendedCopy<'a, M> {
     job: std::cell::RefCell<&'a mut CharactersJob>,
     memory: &'a M,
+    mask: u32,
 }
 
-impl<M: Memory> Memory for CodenameCopy<'_, M> {
+/// Appended reads cannot consume staging needed by a later existing row.
+/// A short suffix leaves the completed prefix admitted; the raw log retains
+/// its actual overflow and growth demand, and missing owned reads refuse only
+/// the corresponding appended field during decode.
+fn copy_appended_roles(job: &mut CharactersJob, memory: &impl Memory, base: usize) {
+    if job.overflowed() || job.log.planned_capture_failed() {
+        return;
+    }
+    for index in 0..job.appended_roles.len() {
+        let role = job.appended_roles[index];
+        let source = AppendedCopy {
+            job: std::cell::RefCell::new(&mut *job),
+            memory,
+            mask: match role {
+                AppendedRole::Leader(_) => MASK_LEADERS,
+                AppendedRole::Advisor(_) => MASK_ADVISORS,
+                AppendedRole::Unit { .. } => MASK_UNITS,
+            },
+        };
+        match role {
+            AppendedRole::Leader(pointer) => {
+                let _ = ccountry_leader::current_ideology(&source, base, pointer);
+            }
+            AppendedRole::Advisor(pointer) => {
+                let _ = cadvisor::visit_tooltip_keys(&source, pointer, |_, header| {
+                    let mut job = source.job.borrow_mut();
+                    let len = copy_unit_literal(&mut job, memory, &header, MASK_ADVISORS)
+                        .ok_or("advisor tooltip key unreadable or invalid")?;
+                    let Some(bytes) = len
+                        .checked_add(8)
+                        .and_then(|bytes| job.advisor_demand.bytes.checked_add(bytes))
+                    else {
+                        return Err("advisor tooltip byte count overflow");
+                    };
+                    job.advisor_demand.bytes = bytes;
+                    Ok(())
+                });
+            }
+            AppendedRole::Unit {
+                pointer,
+                kind,
+                category,
+            } => {
+                let _ = cunit_leader::read_formation_reference(&source, pointer, kind, category);
+            }
+        }
+        if source.job.borrow().log.overflowed {
+            source.job.borrow_mut().appended_overflowed = true;
+            break;
+        }
+    }
+}
+
+impl<M: Memory> Memory for AppendedCopy<'_, M> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         let mut job = self.job.borrow_mut();
-        let Some(start) = job.log.take(self.memory, address, output.len(), MASK_UNITS) else {
+        let Some(start) = job.log.take(self.memory, address, output.len(), self.mask) else {
             return false;
         };
         output.copy_from_slice(&job.log.bytes[start..start + output.len()]);
@@ -1810,9 +1934,10 @@ fn copy_unit_codename(job: &mut CharactersJob, memory: &impl Memory, base: usize
             if length == 0 {
                 continue;
             }
-            let source = CodenameCopy {
+            let source = AppendedCopy {
                 job: std::cell::RefCell::new(&mut *job),
                 memory,
+                mask: MASK_UNITS,
             };
             override_shown = match unit.checked_add(coperative_leader::CODENAME) {
                 Some(member) => {
@@ -2006,6 +2131,7 @@ pub(super) fn copy_pass(
     let _reads = read_accounting::table(TABLES[anchor(context.active)]);
     job.log.clear();
     job.advisor_demand = AdvisorDemand::default();
+    job.appended_overflowed = false;
     job.skills.fill(SkillCopy::default());
     job.active = context.active;
     job.traits.begin(context);
@@ -2043,6 +2169,8 @@ pub(super) fn copy_pass(
         },
     );
     if !(hourly || bound) || !job.log.begin_planned_capture(memory, key) {
+        job.appended_roles.clear();
+        job.appended_required = 0;
         if bound {
             job.source_bindings.as_mut().unwrap().begin(context);
         }
@@ -2058,6 +2186,7 @@ pub(super) fn copy_pass(
             census,
             section,
         );
+        copy_appended_roles(job, memory, context.base);
         if bound {
             let complete = !job.overflowed()
                 && !job.advisor_demand.overflowed
@@ -2349,6 +2478,9 @@ pub(super) fn copy_census(
     let _reads = read_accounting::table(TABLES[anchor(context.active)]);
     job.log.clear();
     job.advisor_demand = AdvisorDemand::default();
+    job.appended_roles.clear();
+    job.appended_required = 0;
+    job.appended_overflowed = false;
     job.skills.fill(SkillCopy::default());
     job.active = context.active;
     job.traits.begin(context);
@@ -2375,6 +2507,7 @@ pub(super) fn copy_census(
     } else {
         copy_census_units(job, memory, context.base, census, &mut dead);
     }
+    copy_appended_roles(job, memory, context.base);
     job.source_bindings = bindings;
     job.traits.finish();
 }
@@ -2612,7 +2745,7 @@ pub(super) fn walk_advisor_section(
             };
             let entry = view.entry()?;
             advisors.append(
-                |rows, bytes| cadvisor::walk_entry(&view, base, entry, rows, bytes).into(),
+                |rows, bytes| cadvisor::walk_prefix_entry(&view, base, entry, rows, bytes).into(),
                 |row, offset| {
                     relocate(&mut row.key_start, offset)
                         && relocate(&mut row.idea_start, offset)

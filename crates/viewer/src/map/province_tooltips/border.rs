@@ -49,55 +49,29 @@ fn combat_value(d: &DivisionRow, stats: [i64; 3], skill: i32, defines: &Defines)
     (factor.wrapping_mul(stats) / 100_000).wrapping_mul(100) / 100_000
 }
 
-pub(super) fn build(
+/// 1409C8D50 returns the enemy fraction; its tooltip substitutes the complement.
+fn enemy_ratio(power: [i64; 2]) -> i64 {
+    let total = power[0].wrapping_add(power[1]);
+    if total < 1 {
+        return 50_000;
+    }
+    let own = if (power[0] as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd {
+        0xffff_ffff
+    } else {
+        power[0].wrapping_mul(100_000) / total
+    };
+    100_000_i64.wrapping_sub(own)
+}
+
+fn power(
     content: &super::Content,
-    loc: &Localisation,
     frame: &DecodedFrame,
-    viewer: u32,
+    viewer_raw: u32,
     links: &BTreeMap<u32, u32>,
     state: u32,
-    flag: &StateFlagRow,
-) -> Result<String, String> {
-    if *flag
-        .border_conflict_active
-        .require("StateFlags.border_conflict_active")?
-        == 0
-    {
-        return Ok(String::new());
-    }
-    let states = frame
-        .complete::<tables::States>()
-        .map_err(|e| e.to_string())?;
-    let states: BTreeMap<_, _> = states.iter().map(|row| (row.id, row)).collect();
-    let countries = frame
-        .complete::<tables::Countries>()
-        .map_err(|e| e.to_string())?;
-    let countries: BTreeMap<_, _> = countries
-        .iter()
-        .map(|row| (row.canonical_slot, row))
-        .collect();
-    let viewer_raw = countries
-        .get(&viewer)
-        .ok_or("border viewing country absent")?
-        .id;
-    let hovered = states.get(&state).ok_or("border state absent")?;
-    let mut involved = same(links, hovered.controller, viewer_raw)?;
-    if !involved {
-        'pairs: for pair in flag
-            .border_conflict_countries
-            .require("StateFlags.border_conflict_countries")?
-        {
-            for &raw in pair {
-                if same(links, raw as u32, viewer_raw)? {
-                    involved = true;
-                    break 'pairs;
-                }
-            }
-        }
-    }
-    if !involved {
-        return localise(loc, "BORDER_WAR_NOT_OURS", &[]).map(|text| format!("    {text}"));
-    }
+    states: &BTreeMap<u32, &replay::rows::StateRow>,
+    countries: &BTreeMap<u32, &replay::rows::CountryRow>,
+) -> Result<[i64; 2], String> {
     let flags = frame
         .complete::<tables::StateFlags>()
         .map_err(|e| e.to_string())?;
@@ -228,14 +202,98 @@ pub(super) fn build(
         let side = usize::from(!same(links, raw, viewer_raw)?);
         power[side] = power[side].wrapping_mul(i64::from(level.wrapping_add(1)));
     }
-    let total = power[0].wrapping_add(power[1]);
-    let share = if total < 1 {
-        50_000
-    } else if (power[0] as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd {
-        0xffff_ffff
-    } else {
-        power[0].wrapping_mul(100_000) / total
-    };
+    Ok(power)
+}
+
+/// Numeric getter used by fresh attrition; the optional native text pointer is null.
+pub(super) fn ratio(
+    content: &super::Content,
+    frame: &DecodedFrame,
+    country: u32,
+    state: u32,
+    links: &BTreeMap<u32, u32>,
+) -> Result<i64, String> {
+    let flag = frame
+        .complete::<tables::StateFlags>()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .find(|row| row.state == state)
+        .ok_or("border state active predicate absent")?;
+    if *flag
+        .border_conflict_active
+        .require("StateFlags.border_conflict_active")?
+        == 0
+    {
+        return Ok(0);
+    }
+    let states = frame
+        .complete::<tables::States>()
+        .map_err(|e| e.to_string())?;
+    let states = states.iter().map(|row| (row.id, row)).collect();
+    let countries = frame
+        .complete::<tables::Countries>()
+        .map_err(|e| e.to_string())?;
+    let countries = countries
+        .iter()
+        .map(|row| (row.canonical_slot, row))
+        .collect();
+    power(content, frame, country, links, state, &states, &countries).map(enemy_ratio)
+}
+
+pub(super) fn build(
+    content: &super::Content,
+    loc: &Localisation,
+    frame: &DecodedFrame,
+    viewer: u32,
+    links: &BTreeMap<u32, u32>,
+    state: u32,
+    flag: &StateFlagRow,
+) -> Result<String, String> {
+    if *flag
+        .border_conflict_active
+        .require("StateFlags.border_conflict_active")?
+        == 0
+    {
+        return Ok(String::new());
+    }
+    let states = frame
+        .complete::<tables::States>()
+        .map_err(|e| e.to_string())?;
+    let states: BTreeMap<_, _> = states.iter().map(|row| (row.id, row)).collect();
+    let countries = frame
+        .complete::<tables::Countries>()
+        .map_err(|e| e.to_string())?;
+    let countries: BTreeMap<_, _> = countries
+        .iter()
+        .map(|row| (row.canonical_slot, row))
+        .collect();
+    let viewer_raw = countries
+        .get(&viewer)
+        .ok_or("border viewing country absent")?
+        .id;
+    let hovered = states.get(&state).ok_or("border state absent")?;
+    let mut involved = same(links, hovered.controller, viewer_raw)?;
+    if !involved {
+        'pairs: for pair in flag
+            .border_conflict_countries
+            .require("StateFlags.border_conflict_countries")?
+        {
+            for &raw in pair {
+                if same(links, raw as u32, viewer_raw)? {
+                    involved = true;
+                    break 'pairs;
+                }
+            }
+        }
+    }
+    if !involved {
+        return localise(loc, "BORDER_WAR_NOT_OURS", &[]).map(|text| format!("    {text}"));
+    }
+    let defines = content.border.as_ref().map_err(Clone::clone)?;
+    let power = power(
+        content, frame, viewer_raw, links, state, &states, &countries,
+    )?;
+    let share = 100_000_i64.wrapping_sub(enemy_ratio(power));
     let mut text = format!("    {}", localise(loc, "BORDER_WAR_HEADER", &[])?);
     let mut block = String::new();
     // 140DEBC90 appends 140DE8E30's indented block directly after the header.

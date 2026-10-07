@@ -91,6 +91,11 @@ Read [AGENTS.md](../../AGENTS.md), then [cadence.rs](../replay/src/cadence.rs) a
 
 Collect the least data the viewer and dashboard need to display, so recording costs the game as little as possible. Record the value the game already stores for what is displayed. Capture inputs instead only when the game does not store the result (it computes it on demand), when the result depends on the viewing country or camera, when it is text the game has already localised (display text follows the viewer's language, not the recording client's), or when it is much larger than its inputs. Every new table, field or cadence increase must serve something visible and be measured against its capture cost.
 
+A native getter's retained name cache is authoritative even when its generator
+operands would now produce different text. Capture those exact bytes and keep
+the recording-language guard; the [shared Army-name formatter](../dashboard/src/unit_names.rs)
+uses generated names only for historical cache absence.
+
 Raid naming, capture and save comparison follow the [raid tooltip contract](../viewer/src/map/raids/tooltips/README.md).
 
 The naval details pack follows the [naval modifier tree contract](../replay/README.md#naval-modifier-breakdowns); future reuse needs the writer coverage described below.
@@ -349,7 +354,7 @@ TaskForceMissions shares the hourly fleet walk of [naval_counters.rs](src/extend
 
 ## Testing and measurement
 
-Use existing synthetic-memory fixtures to check aliases, invalid pointers, short reads, exact first failures, capacity and growth demand, and owned-versus-direct equivalence. Share splits repeat first-fault reads and cache keys add reads; update counted expectations deliberately. Check each changed crate with the shared [build commands](../../AGENTS.md#build-commands). New capture domains need collector/replay integration and an oracle comparison or an explicit limitation. See the [recorder guide](../recorder/README.md#inspect-and-compare) for hourly-sample versus later-save limits and the separate live smoke workflow.
+Use existing synthetic-memory fixtures to check aliases, invalid pointers, short reads, exact first failures, capacity and growth demand, and owned-versus-direct equivalence. Share splits repeat first-fault reads and cache keys add reads; update counted expectations deliberately. Check each changed crate with the shared [build commands](../../AGENTS.md#keep-these-guarantees). New capture domains need collector/replay integration and an oracle comparison or an explicit limitation. See the [recorder guide](../recorder/README.md#inspect-and-compare) for hourly-sample versus later-save limits and the separate live smoke workflow.
 
 Use [tools/bench.ps1](../../tools/bench.ps1), frozen builds and a same-run no-recorder baseline. Do not compile during timed windows or trust throughput percentages from a locked desktop or collapsed baseline. Acquire `%TEMP%\claude\hoi4_game.lock\owner` before controlling the game; release it by renaming the lock directory to `hoi4_game.lock.released-<stamp>-<why>`. Leave the game running and paused.
 
@@ -422,3 +427,27 @@ Border-event descriptions add operands to existing table captures. [Country appe
 [Governance](src/extended/governance.rs) builds targeted-decision demand once per scheduled decision pass from the live border combats and their actual outcome event definitions, through [the engine census](../engine/src/border_effect_demand.rs). It conservatively unions supported branches and country scopes, without executing effects. Each resolved event is walked once and demand name bytes are copied once into reusable callback arenas. Only matching active targeted rows consult the status seed array, and `fixed_random_seed` skips it. A failed demand census withholds Decisions while preserving DecisionCounts; counts and rows keep their existing scheduling. A border war starting between daily decision passes can lack a description seed for up to one day; the viewer refuses that effect line until the next pass. Definition hashes derive from content, not memory. [Division templates](src/extended/division_templates.rs) includes fallback localisation-key bytes alongside names in its existing dictionary cadence/arena.
 
 The ignored `border_effect_subject_scale_bench`, `border_effect_template_key_scale_bench` and `border_effect_decision_seed_scale_bench` tests exercise the real capture/walk/codec paths with synthetic quiet, typical and all-changed inputs, including no-border and active-border decision demand. Reported sizes and timings describe those fixtures; they do not certify game slowdown.
+
+The stored effect inputs follow their existing acquisition families. Advisor
+cached tooltip keys retain exact string bytes in occupied-slot order, separately
+from numeric cache entries. Timed ideas retain the native remaining-days word;
+decision random items and captured-operative references keep their own ordered
+rosters. Neighbor, occupied-country and MIO policy lists are stored caches, never
+refreshed by capture. Country slot zero has a dedicated naming singleton and
+does not enter the positive-country census. Ordinary and reserved naming retain
+original-tag bytes and the signed native original reference independently of the
+generator's dynamic tag gate. The reference distinguishes a nonpositive original
+from a positive original whose text is empty. The naming singleton also retains
+the actual positional original-tag buckets and physical country-array raw IDs,
+including empty buckets, zero and repeated occurrences, and the reserved country's
+signed owned-state count for reached scope resolution. Independent guarded-read
+or arena failures retain the existing naming operands. Arena sizing uses authenticated live
+headers through [country_scale](src/country_scale.rs); shortages retain unrelated
+row operands and count refusals. Native evidence stays beside the engine readers.
+Fresh-save agreement, smoke and live cost remain coordinated checks.
+
+Advisor numeric caches stage across the full character batch before appended
+tooltip keys. Appended raw-copy shortages retain the complete prefix and growth
+demand without retrying live reads. Scientist activity, current leader ideology
+and instant-decision read failures also retain their unchanged row fields;
+status reports count these field refusals separately.

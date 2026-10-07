@@ -3,7 +3,7 @@ use replay::{
     frame::{Metrics, TableView},
     rows::{
         CampaignRow, CountryAppearanceRow, CountryLinkRow, CountryRow, ProvinceNameRow,
-        ProvinceRow, StateRow, TableRows, TableSchema,
+        ProvinceRow, Recorded, StateRow, TableRows, TableSchema,
     },
 };
 
@@ -16,7 +16,11 @@ fn frame(hour: i32) -> DecodedFrame {
         branch: 1,
         hour,
         tables: std::array::from_fn(|at| {
-            if NAME_TABLES.contains(&TableId::ALL[at]) {
+            if TableId::ALL[at] == TableId::ReservedCountryNaming {
+                TableView::Unavailable {
+                    reason: "reserved country naming not sampled in place fixture".into(),
+                }
+            } else if NAME_TABLES.contains(&TableId::ALL[at]) {
                 TableView::Complete(TableRows::empty(TableId::ALL[at]))
             } else {
                 TableView::Unavailable {
@@ -38,7 +42,7 @@ fn frame(hour: i32) -> DecodedFrame {
         (1..=5_000)
             .map(|id| CountryRow {
                 id: id + 10_000,
-                canonical_slot: id - 1,
+                canonical_slot: id,
                 tag: format!("mod_tag_{id}").into_bytes(),
                 ..Default::default()
             })
@@ -49,7 +53,7 @@ fn frame(hour: i32) -> DecodedFrame {
         (1..=5_000)
             .map(|id| CountryLinkRow {
                 id: id + 10_000,
-                canonical_slot: id - 1,
+                canonical_slot: id,
             })
             .collect(),
     );
@@ -57,7 +61,8 @@ fn frame(hour: i32) -> DecodedFrame {
         &mut frame,
         vec![CountryAppearanceRow {
             country: 15_000,
-            name_tag: b"mod_original".to_vec(),
+            original_tag_reference: Recorded::Value(Some(1)),
+            original_tag: Recorded::Value(Some(b"mod_original".to_vec())),
             ..Default::default()
         }],
     );
@@ -106,7 +111,7 @@ fn catalogue() -> (Catalogue, crate::catalogue::tests::Folder) {
         ("history/states/mod.txt", "state={id=64 name=MOD_STATE}"),
         (
             "localisation/mod_l_english.yml",
-            "\u{feff}l_english:\n MOD_STATE:0 \"Mod state\"\n mod_original_VICTORY_POINTS_17:0 \"Original town\"\n mod_tag_1_VICTORY_POINTS_17:0 \"Controller town\"\n VICTORY_POINTS_17:0 \"Generic town\"\n RENAME:0 \"Renamed town\"\n",
+            "\u{feff}l_english:\n MOD_STATE:0 \"Mod state\"\n mod_original_VICTORY_POINTS_17:0 \"Original town\"\n mod_tag_1_VICTORY_POINTS_17:0 \"Controller town\"\n VICTORY_POINTS_17:0 \"Generic town\"\n OR0_VICTORY_POINTS_60000:0 \"Reserved town\"\n RENAME:0 \"Renamed town\"\n",
         ),
     ])
 }
@@ -704,4 +709,60 @@ fn place_names_unresolvable_names_keep_ids_out_of_display_text() {
     let (name, missing) = resolved(&f, 99999, &cat, Ok(&names), Ok(&BTreeMap::new()));
     assert!(name.is_none());
     assert!(missing.unwrap().contains("99999"));
+}
+
+#[test]
+fn selected_place_reads_keep_the_reserved_original_tag_operand() {
+    let (cat, _folder) = catalogue();
+    let mut f = frame(1);
+    let positive_province = f.complete::<tables::Provinces>().unwrap()[0].clone();
+    set::<tables::Provinces>(
+        &mut f,
+        vec![
+            positive_province,
+            ProvinceRow {
+                id: 60000,
+                ..Default::default()
+            },
+        ],
+    );
+    set::<tables::ReservedCountryNaming>(
+        &mut f,
+        vec![replay::rows::ReservedCountryNamingRow {
+            tag: b"ZZ0".to_vec(),
+            original_tag_reference: replay::rows::Recorded::Value(Some(1)),
+            original_tag: replay::rows::Recorded::Value(Some(b"OR0".to_vec())),
+            ..Default::default()
+        }],
+    );
+    let replay = crate::test_fixtures::replay(vec![f]);
+    let params = PlaceNamesParams {
+        branch_id: "1".into(),
+        places: vec![
+            PlaceNameRequest {
+                province_id: 17,
+                hour: 1,
+            },
+            PlaceNameRequest {
+                province_id: 60000,
+                hour: 1,
+            },
+        ],
+        states: Vec::new(),
+    };
+    let regions = BTreeMap::from([(60000, Ok("Fallback sea region".into()))]);
+    let (places, states) = read_names(
+        &replay,
+        1,
+        &params,
+        &cat,
+        Err("irrelevant state templates"),
+        Ok(&regions),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(states.is_empty());
+    assert_eq!(places[0].name.as_deref(), Some("Original town"));
+    assert_eq!(places[1].name.as_deref(), Some("Reserved town"));
+    assert!(places.iter().all(|place| place.missing.is_none()));
 }

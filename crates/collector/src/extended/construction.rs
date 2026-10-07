@@ -53,6 +53,7 @@ pub struct Capacities {
     rows: [usize; N],
     routes: usize,
     law_bytes: usize,
+    occupied: usize,
 }
 
 impl Default for Capacities {
@@ -63,10 +64,15 @@ impl Default for Capacities {
             ],
             routes: 4096,
             law_bytes: 16384,
+            occupied: 0,
         }
     }
 }
 impl Capacities {
+    pub(crate) fn raise_for_occupied(&mut self, entries: usize) {
+        crate::country_scale::raise(&mut self.occupied, crate::country_scale::rows(entries, 1));
+    }
+
     /// OccupationSettings has one row per canonical country.
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
@@ -138,6 +144,7 @@ pub struct Captured {
     collaboration: CaptureRows<ccountry_collaboration_data::Row>,
     routes: Arena<u32>,
     law_bytes: Arena<u8>,
+    occupied: Arena<u32>,
     /// Raw-copy split gate for scheduled construction-rest tables.
     /// Set when an acquisition job returns a valid raw payload; `capture`
     /// then skips those typed walks and the decode worker fills the rows
@@ -147,6 +154,18 @@ pub struct Captured {
 }
 
 impl Captured {
+    pub(crate) fn observe_occupied(
+        &self,
+        work: &mut super::country_counters::RosterWork,
+    ) -> std::io::Result<()> {
+        let rows = self
+            .settings
+            .rows
+            .get(..self.settings.outcome.len())
+            .ok_or_else(|| std::io::Error::other("occupation settings row count exceeds buffer"))?;
+        work.observe_occupied(rows, &self.occupied)
+    }
+
     /// Buildings belong to Governance; staged rest rows belong to World.
     pub(crate) fn fail_gated_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         if !self.rest_raw_mode {
@@ -166,6 +185,7 @@ impl Captured {
             rows: [0; N],
             routes: 0,
             law_bytes: 0,
+            occupied: 0,
         })
     }
 
@@ -188,6 +208,7 @@ impl Captured {
             collaboration: CaptureRows::new(capacity.rows[11]),
             routes: Arena::new(capacity.routes),
             law_bytes: Arena::new(capacity.law_bytes),
+            occupied: Arena::new(capacity.occupied),
             rest_raw_mode: false,
         }
     }
@@ -208,6 +229,7 @@ impl Captured {
         self.collaboration.reset();
         self.routes.reset();
         self.law_bytes.reset();
+        self.occupied.reset();
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -224,6 +246,7 @@ impl Captured {
             + self.collaboration.allocated_bytes()
             + self.routes.allocated_bytes()
             + self.law_bytes.allocated_bytes()
+            + self.occupied.allocated_bytes()
     }
 
     pub fn grow(&mut self, capacity: &mut Capacities) {
@@ -247,6 +270,7 @@ impl Captured {
         self.collaboration.grow(&mut capacity.rows[11]);
         self.routes.grow(&mut capacity.routes);
         self.law_bytes.grow(&mut capacity.law_bytes);
+        self.occupied.grow(&mut capacity.occupied);
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {
@@ -360,7 +384,7 @@ impl Captured {
         ticks[3] = elapsed(begin);
         reads.select(TABLES[5]);
         let begin = qpc();
-        let occupation = ccountry_occupation_status::walk(
+        let occupation = ccountry_occupation_status::walk_with_occupied(
             memory,
             base,
             game_state,
@@ -372,6 +396,7 @@ impl Captured {
                 reserve_manpower: &mut self.reserve_manpower.rows,
                 names: &mut self.law_bytes.first,
             },
+            &mut self.occupied.first,
         );
         self.settings.outcome = occupation.settings;
         self.laws.outcome = occupation.laws;
@@ -380,6 +405,8 @@ impl Captured {
         self.reserve_manpower.outcome = occupation.reserve_manpower;
         self.law_bytes.len = occupation.bytes_len;
         self.law_bytes.required = occupation.required_bytes;
+        self.occupied.len = occupation.occupied_len;
+        self.occupied.required = occupation.required_occupied;
         ticks[5] = elapsed(begin);
         reads.select(TABLES[10]);
         ticks[10] = single(&mut self.resistance, |output| {
@@ -439,7 +466,7 @@ impl Captured {
                 },
             ),
             railway_table(&self.railway_construction, &self.routes),
-            settings_table(&self.settings, &self.law_bytes),
+            settings_table(&self.settings, &self.law_bytes, &self.occupied),
             law_table(&self.laws, &self.law_bytes),
             table::<tables::StateGarrisons, _>(
                 self.garrisons.outcome,
@@ -594,6 +621,7 @@ fn railway_table(
 fn settings_table(
     captured: &CaptureRows<ccountry_occupation_status::Row>,
     arena: &Arena<u8>,
+    occupied: &Arena<u32>,
 ) -> TableView {
     let (outcome, source) = match source(captured) {
         Ok(source) => source,
@@ -613,6 +641,13 @@ fn settings_table(
         garrison_template: row.garrison_template,
         default_law_present: row.default_law_present,
         law: owned_vec(copy_vec(&names[row.law_start..row.law_start + row.law_len])),
+        occupied: rows::Recorded::Value(row.occupied.and_then(|span| {
+            span.start
+                .checked_add(span.count)
+                .filter(|&end| end <= occupied.len)
+                .and_then(|end| occupied.first.get(span.start..end))
+                .map(|values| owned_vec(copy_vec(values)))
+        })),
     })
 }
 

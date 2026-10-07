@@ -4,30 +4,63 @@
 use super::*;
 use crate::{cname_group_member as member, msvc_string};
 
+/// Shared stored-text descriptor. Both AirWings and the historical raid
+/// projection use this exact scalar header, SSO/heap and overflow protocol.
+pub(crate) struct StoredString {
+    pub(crate) len: usize,
+    source: usize,
+}
+
+impl StoredString {
+    pub(crate) fn read(memory: &impl Memory, at: usize) -> Result<Self, NameReadError> {
+        use NameReadError::{Header, NullPointer, Overflow, Unreadable};
+        let len = field::<u64>(memory, at, msvc_string::LENGTH).map_err(|_| Unreadable)?;
+        let capacity = field::<u64>(memory, at, msvc_string::CAPACITY).map_err(|_| Unreadable)?;
+        if len > capacity || capacity < msvc_string::INLINE_CAPACITY {
+            return Err(Header);
+        }
+        let source = if capacity == msvc_string::INLINE_CAPACITY {
+            at
+        } else {
+            usize::try_from(field::<u64>(memory, at, 0).map_err(|_| Unreadable)?)
+                .map_err(|_| Overflow)?
+        };
+        if source == 0 {
+            return Err(NullPointer);
+        }
+        let len = usize::try_from(len).map_err(|_| Overflow)?;
+        let copied = len.checked_add(1).ok_or(Overflow)?;
+        source.checked_add(copied).ok_or(Overflow)?;
+        Ok(Self { len, source })
+    }
+
+    pub(crate) fn copy(
+        &self,
+        memory: &impl Memory,
+        output: &mut [u8],
+    ) -> Result<(), NameReadError> {
+        use NameReadError::{Overflow, Terminator, Unreadable};
+        let output = output.get_mut(..self.len).ok_or(Overflow)?;
+        if field::<u8>(memory, self.source, self.len).map_err(|_| Unreadable)? != 0 {
+            return Err(Terminator);
+        }
+        if !crate::read_slice(memory, self.source, output) {
+            return Err(Unreadable);
+        }
+        Ok(())
+    }
+}
+
 fn string(
     memory: &impl Memory,
     at: usize,
     kind: u32,
     sink: &mut Sink<'_>,
 ) -> Result<(), NameReadError> {
-    use NameReadError::{Header, NullPointer, Overflow, Terminator, Unreadable};
-    let len = field::<u64>(memory, at, msvc_string::LENGTH).map_err(|_| Unreadable)?;
-    let capacity = field::<u64>(memory, at, msvc_string::CAPACITY).map_err(|_| Unreadable)?;
-    if len > capacity || capacity < msvc_string::INLINE_CAPACITY {
-        return Err(Header);
-    }
-    let source = if capacity == msvc_string::INLINE_CAPACITY {
-        at
-    } else {
-        field::<u64>(memory, at, 0).map_err(|_| Unreadable)? as usize
-    };
-    if source == 0 {
-        return Err(NullPointer);
-    }
-    let len = usize::try_from(len).map_err(|_| Overflow)?;
+    use NameReadError::{Overflow, Terminator, Unreadable};
+    let StoredString { len, source } = StoredString::read(memory, at)?;
     let raw_len = i64::try_from(len).map_err(|_| Overflow)?;
     let copied = len.checked_add(1).ok_or(Overflow)?;
-    source.checked_add(copied).ok_or(Overflow)?;
     let count = len.div_ceil(8).checked_add(1).ok_or(Overflow)?;
     let end = sink.required.checked_add(count).ok_or(Overflow)?;
     let ordinal = sink

@@ -110,9 +110,10 @@ impl Renderer<'_, '_, '_> {
         }
         trailing(&mut text, 1);
         if !output.sub_unit_bonus.is_empty() {
-            // Shared 140635420 owns sub-unit/terrain/stat/icon formatting.
-            // D2/lead I must expose that helper; no second formatter here.
-            self.project_output_refusal("sub_unit_bonus uses shared native CSubUnitStatBonus formatter 140635420 (SOutput+0x110); helper pending lead D2/I".into());
+            match self.units_bonus_description(&output.sub_unit_bonus, scopes) {
+                Ok(bonus) => text.push_str(&bonus),
+                Err(why) => self.project_output_refusal(why),
+            }
         }
         trailing(&mut text, 1);
         if !output.equipment_bonus.is_empty() {
@@ -204,7 +205,7 @@ impl Renderer<'_, '_, '_> {
         }
         let world = self.context.world()?;
         let country = match scopes.this {
-            Scope::Country(country) => country,
+            Scope::Country(country) | Scope::CountryLeader { country, .. } => country,
             _ => 0,
         };
         let Some(specialization) = specialization else {
@@ -248,7 +249,7 @@ impl Renderer<'_, '_, '_> {
     ) -> Result<Option<(u32, u32)>, String> {
         let world = self.context.world()?;
         let country = match scopes.this {
-            Scope::Country(country) => country,
+            Scope::Country(country) | Scope::CountryLeader { country, .. } => country,
             _ => 0,
         };
         let mut programs: Vec<_> = self
@@ -342,14 +343,25 @@ impl Renderer<'_, '_, '_> {
         if lists.is_empty() {
             return Ok(Vec::new());
         }
+        if kind == 0 {
+            return self
+                .technology_enabled_subunits(lists)?
+                .into_iter()
+                .map(|name| {
+                    self.technology_country_name(
+                        name.as_bytes(),
+                        self.context.perspective,
+                        false,
+                        scopes,
+                    )
+                })
+                .collect();
+        }
         let mut names = Vec::new();
         for list in lists {
             // NDlcLocked readers attach the final limit to the entire block.
             let fields = children(list);
-            if let Some(limit) = fields
-                .iter()
-                .filter(|item| item.keyword_is("limit"))
-                .next_back()
+            if let Some(limit) = fields.iter().rfind(|item| item.keyword_is("limit"))
                 && !self.project_output_condition(children(limit), Scopes::empty())?
             {
                 continue;
@@ -368,19 +380,6 @@ impl Renderer<'_, '_, '_> {
             for entry in entries {
                 let token = installed_content::parser::c_string(entry);
                 let name: &[u8] = match kind {
-                    0 => {
-                        let sub_units = self
-                            .context
-                            .content
-                            .key_names
-                            .and_then(|names| names.sub_units.as_ref())
-                            .ok_or("sub-unit catalogue is unavailable")?;
-                        let name = sub_units.token_name(&installed_content::tokens::Token::c_str(token))?;
-                        if name.is_empty() {
-                            continue;
-                        }
-                        name.as_bytes()
-                    }
                     1 => {
                         let equipment = self
                             .context
@@ -401,17 +400,7 @@ impl Renderer<'_, '_, '_> {
                         let Some(name) = equipment.module(token) else {
                             continue;
                         };
-                        let conditions = equipment
-                            .module_conditions(token)
-                            .ok_or("module admission projection is unavailable")?;
-                        let selected =
-                            self.evaluator()?.fresh_country_scope(Some(country), None)?;
-                        if let Some(limit) = &conditions.limit
-                            && !self.project_output_condition(limit, selected)?
-                        {
-                            continue;
-                        }
-                        if !self.project_output_condition(&conditions.allowed, selected)? {
+                        if !self.technology_module_allowed(equipment, token, country)? {
                             continue;
                         }
                         name

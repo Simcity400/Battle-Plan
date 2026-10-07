@@ -17,9 +17,9 @@ pub(super) struct ActiveEntry {
     variables: ScopeVariables,
 }
 
-struct EntryGuard<'a>(&'a ExpansionScopes, usize);
+struct EntryGuard<'s, 'e, 'a>(&'s ExpansionScopes<'e, 'a>, usize);
 
-impl Drop for EntryGuard<'_> {
+impl Drop for EntryGuard<'_, '_, '_> {
     fn drop(&mut self) {
         self.0.active.borrow_mut().pop();
         self.0.scopes.borrow_mut().truncate(self.1);
@@ -414,7 +414,7 @@ impl<'a> ScriptedText<'a> {
         &self,
         object: Object,
         name: &str,
-        scopes: &ExpansionScopes,
+        scopes: &ExpansionScopes<'_, 'a>,
         active: usize,
         event_active: bool,
     ) -> Result<String, String> {
@@ -463,22 +463,16 @@ impl<'a> ScriptedText<'a> {
         for text in &entry.texts {
             // 140A9CC20 skips a null value without checking its trigger.
             let Some(value) = &text.value else { continue };
+            let trigger = &text.trigger;
             if text.trigger_present {
                 checked_trigger = true;
-                // The next outer check starts a new context (140544190).
-                evaluator = None;
-            }
-            let trigger = &text.trigger;
-            if !trigger.is_empty() {
+                // Even an empty trigger opens the next context (140A9CC20).
                 let projected = entry_scopes(scopes, at, bare);
-                evaluator = Some(scopes.evaluator(self.world()?, Temps::Fresh));
-                let session = scopes.session.borrow().is_some();
+                evaluator = Some(scopes.evaluator(self, Temps::Fresh)?);
                 let checked = evaluator.as_ref().unwrap().evaluate(trigger, projected);
-                if session {
-                    scopes
-                        .session
-                        .replace(Some(evaluator.as_ref().unwrap().variable_session()));
-                }
+                scopes
+                    .session
+                    .replace(Some(evaluator.as_ref().unwrap().variable_session()));
                 match checked {
                     Eval::False => continue,
                     Eval::True => {}
@@ -624,26 +618,18 @@ impl<'a> ScriptedText<'a> {
                         province.state
                     )
                 })?;
-            self.scopes.slot(state.owner).ok_or_else(|| {
-                format!(
-                    "province {id}: state owner's link {} resolves to no country",
-                    state.owner
-                )
-            })?
+            if state.owner == 0 {
+                0
+            } else {
+                self.scopes.slot(state.owner).ok_or_else(|| {
+                    format!(
+                        "province {id}: state owner's link {} resolves to no country",
+                        state.owner
+                    )
+                })?
+            }
         };
-        let appearance = self
-            .country_row::<tables::CountryAppearance>(owner, |row| row.country)?
-            .ok_or_else(|| {
-                format!("province {id}: owner slot {owner} has no CountryAppearance row")
-            })?;
-        let tag = if appearance.name_tag.is_empty() {
-            self.scopes
-                .tag(owner)
-                .ok_or_else(|| format!("province {id}: owner slot {owner} has no country tag"))?
-        } else {
-            std::str::from_utf8(&appearance.name_tag)
-                .map_err(|_| format!("province {id}: owner's original tag is not UTF-8"))?
-        };
+        let tag = installed_content::country_names::original_or_own_tag(self.frame, owner)?;
         for key in [
             format!("{tag}_VICTORY_POINTS_{id}"),
             format!("VICTORY_POINTS_{id}"),
@@ -677,7 +663,9 @@ impl<'a> ScriptedText<'a> {
     /// Terrain GetName@141A857D0 localises the already localised CGameItem id.
     pub(super) fn terrain_name(&self, ordinal: i32) -> Result<String, String> {
         let id = self.terrain_id_name(ordinal)?;
-        self.localisation.localise(id.as_bytes()).map_err(|e| e.to_string())
+        self.localisation
+            .localise(id.as_bytes())
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -712,13 +700,21 @@ pub(crate) fn state_name_from(
 /// (+0x20), and the active scope as PREV (+0x28); a country or state is set
 /// with clearing (14052DD00, 14052ECE0 with 1 -> 14052F3F0), so that scope
 /// carries no character.
-fn bound_scope(object: Object, scopes: &ExpansionScopes, active: usize, event_active: bool) -> usize {
+fn bound_scope(
+    object: Object,
+    scopes: &ExpansionScopes,
+    active: usize,
+    event_active: bool,
+) -> usize {
     let this = match object {
         Object::Event => return active,
         Object::Country(slot) => EventObject::Country(slot),
         Object::State(id) => EventObject::State(id.unwrap_or(crate::triggers::NULL_STATE)),
         Object::Character(id) => EventObject::Character(id),
-        Object::Province(_) | Object::Terrain(_) | Object::FactionEnvironment(_) | Object::Faction(_) => {
+        Object::Province(_)
+        | Object::Terrain(_)
+        | Object::FactionEnvironment(_)
+        | Object::Faction(_) => {
             unreachable!("1410CD900 does not bind these text kinds")
         }
     };
@@ -764,14 +760,18 @@ fn bound_scope(object: Object, scopes: &ExpansionScopes, active: usize, event_ac
 /// (`crate::character_scope`). A link the caller cannot describe is unknown
 /// to the evaluator, so only a condition that reads it is unknown (`always`
 /// reads none, 1403CE520).
-fn entry_scopes(scopes: &ExpansionScopes, at: usize, bare: bool) -> Scopes {
+pub(super) fn entry_scopes(scopes: &ExpansionScopes, at: usize, bare: bool) -> Scopes {
     let scope = |object| match object {
         EventObject::Country(slot) | EventObject::CountryState { country: slot, .. } => {
             Scope::Country(slot)
         }
+        EventObject::Combat => Scope::Combat,
         EventObject::State(id) => Scope::State(id),
         EventObject::Province(id) => Scope::Province(id),
         EventObject::UnitLeader(reference) => Scope::Leader(reference),
+        EventObject::CountryUnitLeader { country, leader } => {
+            Scope::CountryLeader { country, leader }
+        }
         EventObject::Character(id) => Scope::Character(id),
         EventObject::IndustrialOrganisation(id) => Scope::IndustrialOrganisation(id),
         EventObject::Project { owner, id } => Scope::Project { owner, id },

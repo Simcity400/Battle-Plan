@@ -18,6 +18,21 @@ use std::mem::size_of;
 
 pub const MAP_TABLES: usize = 10;
 
+static AIR_WING_NAMES_REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn air_wing_name_data() -> impl serde::Serialize {
+    let refused = AIR_WING_NAMES_REFUSED.load(std::sync::atomic::Ordering::Relaxed);
+    crate::status::status!({
+        "refused": refused,
+        "refusals": crate::status::map(std::iter::once(("air wing name guarded read or arena refusal", refused)).filter(|(_, count)| *count != 0)),
+        "scope": "cumulative stored air-wing name acquisition refusals; old AirWings columns remain available",
+    })
+}
+
+pub(crate) fn observe_air_wing_name_refusals(count: usize) {
+    AIR_WING_NAMES_REFUSED.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Inline source consumers own their state and validation. Return raw QPC ticks
 /// attributed to extension tables so the map buckets do not charge them twice.
 /// The begin/finish pair runs even for an empty or failed source census; every
@@ -57,6 +72,7 @@ impl MapSources for NoSources {
 pub struct MapCapacities {
     rows: [usize; MAP_TABLES],
     player_names: usize,
+    air_wing_names: usize,
     land_participants: usize,
     order_geometry: usize,
     order_groups: usize,
@@ -69,6 +85,7 @@ impl Default for MapCapacities {
         Self {
             rows: [64, 512, 512, 256, 512, 4096, 256, 2048, 1024, 1024],
             player_names: 4096,
+            air_wing_names: crate::country_scale::air_wing_name_bytes(),
             land_participants: 8192,
             order_geometry: 16384,
             order_groups: 2048,
@@ -79,6 +96,10 @@ impl Default for MapCapacities {
 }
 
 impl MapCapacities {
+    pub(crate) fn raise_for_air_wing_names(&mut self, bytes: usize) {
+        crate::country_scale::raise(&mut self.air_wing_names, bytes);
+    }
+
     /// HumanControllers has one row per authenticated canonical country
     /// (`chuman::walk_controllers`); the other map tables follow activity.
     pub fn raise_for_countries(&mut self, slots: usize) {
@@ -214,6 +235,7 @@ impl Orders {
         Self::new(&MapCapacities {
             rows: [0; MAP_TABLES],
             player_names: 0,
+            air_wing_names: 0,
             land_participants: 0,
             order_geometry: 0,
             order_groups: 0,
@@ -337,6 +359,10 @@ pub struct MapCaptured {
     pub naval_combats: CaptureRows<cnaval_combat::Row>,
     pub naval_combat_participants: CaptureRows<cnaval_combatant::Row>,
     pub air_wings: CaptureRows<cair_wing::Row>,
+    pub air_wing_names: Vec<u8>,
+    pub air_wing_names_len: usize,
+    air_wing_names_required: usize,
+    pub(crate) air_wing_name_failures: usize,
     pub orders: Orders,
     /// Raw-copy split gate for the hourly players pair (Players,
     /// HumanControllers). Set by the game thread every hour with a valid raw
@@ -368,6 +394,23 @@ impl MapCaptured {
         let begin = qpc();
         let len = job.map_outcome.len();
         self.air_wings.rows[..len].copy_from_slice(&job.map_rows[..len]);
+        let names_fit = job.names_len <= self.air_wing_names.len();
+        if names_fit {
+            self.air_wing_names[..job.names_len].copy_from_slice(&job.names[..job.names_len]);
+            self.air_wing_names_len = job.names_len;
+        } else {
+            self.air_wing_names_len = 0;
+            let omitted = self.air_wings.rows[..len]
+                .iter()
+                .filter(|row| row.name.is_some())
+                .count();
+            observe_air_wing_name_refusals(omitted);
+            for row in &mut self.air_wings.rows[..len] {
+                row.name = None;
+            }
+        }
+        self.air_wing_names_required = job.names_required.max(job.names_len);
+        self.air_wing_name_failures = job.name_failures + if names_fit { 0 } else { len };
         self.air_wings.outcome = job.map_outcome;
         self.owned_air_captured = true;
         qpc().saturating_sub(begin).max(0) as u64
@@ -395,6 +438,12 @@ impl MapCaptured {
             naval_combats: CaptureRows::new(capacity.rows[6]),
             naval_combat_participants: CaptureRows::new(capacity.rows[7]),
             air_wings: CaptureRows::new(capacity.rows[8]),
+            air_wing_names: engine::allocation::owned_vec(engine::allocation::default_vec(
+                capacity.air_wing_names,
+            )),
+            air_wing_names_len: 0,
+            air_wing_names_required: 0,
+            air_wing_name_failures: 0,
             owned_air_captured: false,
             air_capture_failure: None,
             orders: Orders::new(capacity),
@@ -425,6 +474,7 @@ impl MapCaptured {
             + self.naval_combats.allocated_bytes()
             + self.naval_combat_participants.allocated_bytes()
             + self.air_wings.allocated_bytes()
+            + self.air_wing_names.capacity()
             + self.orders.allocated_bytes()
             + self.player_names.capacity()
             + self.land_participants.capacity() * size_of::<u64>()
@@ -439,6 +489,9 @@ impl MapCaptured {
         self.naval_combats.reset();
         self.naval_combat_participants.reset();
         self.air_wings.reset();
+        self.air_wing_names_len = 0;
+        self.air_wing_names_required = 0;
+        self.air_wing_name_failures = 0;
         self.owned_air_captured = false;
         self.air_capture_failure = None;
         self.orders.reset();
@@ -476,6 +529,12 @@ impl MapCaptured {
         self.naval_combats.grow(&mut capacities.rows[6]);
         self.naval_combat_participants.grow(&mut capacities.rows[7]);
         self.air_wings.grow(&mut capacities.rows[8]);
+        grow_capacity(
+            &mut capacities.air_wing_names,
+            self.air_wing_names_required
+                .max(crate::country_scale::air_wing_name_bytes()),
+        );
+        grow_vec(&mut self.air_wing_names, capacities.air_wing_names);
         self.orders.grow(capacities);
         grow_capacity(&mut capacities.player_names, self.player_names_required);
         grow_capacity(
@@ -569,15 +628,26 @@ impl MapCaptured {
             self.air_wings.outcome = Outcome::Unavailable { reason };
         } else if !self.owned_air_captured {
             let mut nested = sources.begin_air();
-            self.air_wings.outcome = cair_wing::walk_with(
+            let mut names = cair_wing::NameArena {
+                bytes: &mut self.air_wing_names,
+                used: 0,
+                required: 0,
+                failures: 0,
+            };
+            self.air_wings.outcome = cair_wing::walk_with_names(
                 memory,
                 base,
                 state,
                 &mut self.air_wings.rows,
+                &mut names,
                 |pointer, pool, row| {
                     nested = nested.saturating_add(sources.air(pointer, pool, row))
                 },
             );
+            self.air_wing_names_len = names.used;
+            self.air_wing_names_required = names.required;
+            self.air_wing_name_failures = names.failures;
+            observe_air_wing_name_refusals(names.failures);
             nested = nested.saturating_add(sources.finish_air(self.air_wings.outcome));
             ticks[8] = ((qpc() - begin).max(0) as u64).saturating_sub(nested);
         }

@@ -429,7 +429,9 @@ impl Renderer<'_, '_, '_> {
                 }
                 _ => {
                     let name = match entered.this {
-                        Scope::Country(country) => self.country_name(country, false)?,
+                        Scope::Country(country) | Scope::CountryLeader { country, .. } => {
+                            self.country_name(country, false)?
+                        }
                         Scope::State(state) => self.state_name(state)?,
                         _ => {
                             return Err(format!(

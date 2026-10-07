@@ -58,7 +58,7 @@ fn country_frame(count: u32, cosmetic: &str) -> replay::frame::DecodedFrame {
                 (0..count)
                     .map(|i| CountryRow {
                         id: i + 1,
-                        canonical_slot: i,
+                        canonical_slot: i + 1,
                         tag: tag(i),
                         ..Default::default()
                     })
@@ -71,7 +71,7 @@ fn country_frame(count: u32, cosmetic: &str) -> replay::frame::DecodedFrame {
                 (0..count)
                     .map(|i| CountryLinkRow {
                         id: i + 1,
-                        canonical_slot: i,
+                        canonical_slot: i + 1,
                     })
                     .collect(),
             ),

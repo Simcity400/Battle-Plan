@@ -83,8 +83,8 @@ fn add_tag_index(path: &str, bytes: &[u8], index: &mut TagIndex) -> io::Result<(
         let Some(key) = item.key.as_deref() else {
             continue;
         };
-        // A lexer token, in any ASCII case (`parser::is_keyword`).
-        if key.eq_ignore_ascii_case(b"dynamic_tags") {
+        // 14070E900 tests token 0x309F, never a quoted key's text.
+        if item.keyword_is("dynamic_tags") {
             continue;
         }
         if key.len() != 3 {
@@ -307,7 +307,11 @@ mod tests {
             .map(|id| format!("skipped_{id}=unused\n"))
             .collect::<String>();
         add_tag_index("extra.txt", extra.as_bytes(), &mut index).unwrap();
-        assert_eq!(index.skipped.len(), 9);
+        assert_eq!(index.skipped.len(), 10);
         assert!(index.warning().unwrap().ends_with("extra.txt: skipped_7"));
+        // Quoted text is token 0xF, not the dynamic boundary token 0x309F.
+        add_tag_index("quoted.txt", b"\"dynamic_tags\" = unused", &mut index).unwrap();
+        assert_eq!(index.skipped.len(), 11);
+        assert_eq!(index.skipped.last().unwrap(), "quoted.txt: dynamic_tags");
     }
 }

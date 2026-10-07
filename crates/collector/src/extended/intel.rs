@@ -30,7 +30,7 @@ use replay::{
 use std::mem::size_of;
 use std::sync::Arc;
 
-pub const N: usize = 16;
+pub const N: usize = 17;
 pub const TABLES: [TableId; N] = [
     TableId::Capitulation,
     TableId::Subjects,
@@ -48,6 +48,7 @@ pub const TABLES: [TableId; N] = [
     TableId::RelationOpinions,
     TableId::RelationTuples,
     TableId::CountryIntel,
+    TableId::CapturedOperativeReferences,
 ];
 
 const UNCAPTURED: Outcome = Outcome::Unavailable {
@@ -148,7 +149,7 @@ impl Default for Capacities {
         Self {
             rows: [
                 512, 256, 256, 512, 4096, 4096, 16_384, 8192, 2048, 2048, 8192, 4096, 512, 16_384,
-                4096, 65_536,
+                4096, 65_536, 0,
             ],
             intel_scratch: 16_384,
             subject_names: 16_384,
@@ -182,6 +183,10 @@ impl Capacities {
     pub(crate) fn raise_for_country_intel(&mut self, native_rows: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows[15], rows(native_rows, 1));
+    }
+
+    pub(crate) fn raise_for_captured_operatives(&mut self, count: usize) {
+        crate::country_scale::raise(&mut self.rows[16], crate::country_scale::rows(count, 1));
     }
 
     /// ScriptFlags keeps one row per live flag of every scope, which the
@@ -378,6 +383,7 @@ pub struct Captured {
     autonomy: CaptureRows<ccurrent_autonomy_status::Row>,
     agencies: CaptureRows<cintelligence_agency::Row>,
     operatives: CaptureRows<coperative_leader::Row>,
+    captured_operatives: CaptureRows<cintelligence_agency::CapturedOperativeRow>,
     cryptology: CaptureRows<ccryptology::Row>,
     networks: CaptureRows<ccountry_intel_network::Row>,
     flags: CaptureRows<ScopedFlag>,
@@ -475,6 +481,7 @@ impl Captured {
             autonomy: CaptureRows::new(capacity.rows[2]),
             agencies: CaptureRows::new(capacity.rows[3]),
             operatives: CaptureRows::new(capacity.rows[4]),
+            captured_operatives: CaptureRows::new(capacity.rows[16]),
             cryptology: CaptureRows::new(capacity.rows[5]),
             networks: CaptureRows::new(capacity.rows[6]),
             flags: CaptureRows::new(capacity.rows[7]),
@@ -611,6 +618,7 @@ impl Captured {
         self.autonomy.reset();
         self.agencies.reset();
         self.operatives.reset();
+        self.captured_operatives.reset();
         self.cryptology.reset();
         self.networks.reset();
         self.flags.reset();
@@ -635,6 +643,7 @@ impl Captured {
             + self.autonomy.allocated_bytes()
             + self.agencies.allocated_bytes()
             + self.operatives.allocated_bytes()
+            + self.captured_operatives.allocated_bytes()
             + self.cryptology.allocated_bytes()
             + self.networks.allocated_bytes()
             + self.flags.allocated_bytes()
@@ -662,6 +671,7 @@ impl Captured {
         self.autonomy.grow(&mut capacity.rows[2]);
         self.agencies.grow(&mut capacity.rows[3]);
         self.operatives.grow(&mut capacity.rows[4]);
+        self.captured_operatives.grow(&mut capacity.rows[16]);
         self.cryptology.grow(&mut capacity.rows[5]);
         self.networks.grow(&mut capacity.rows[6]);
         self.flags.grow(&mut capacity.rows[7]);
@@ -839,6 +849,7 @@ impl Captured {
                 assignments = 10,
                 operation_tokens = 11,
                 incoming_actions = 12,
+                captured_operatives = 16,
             );
         }
         if include_delegated {
@@ -899,6 +910,11 @@ impl Captured {
             });
             ticks[3] = elapsed(begin);
             plain!(4, operatives, coperative_leader::walk);
+            plain!(
+                16,
+                captured_operatives,
+                cintelligence_agency::walk_captured_operatives
+            );
             plain!(5, cryptology, ccryptology::walk);
             plain!(6, networks, ccountry_intel_network::walk);
             if active[7] {
@@ -1025,6 +1041,7 @@ impl Captured {
             self.relation_opinions.outcome,
             self.relation_tuples.outcome,
             self.country_intel_outcome,
+            self.captured_operatives.outcome,
         ]
     }
 
@@ -1179,6 +1196,16 @@ impl Captured {
             )),
             sample(self.relation_tuples_table(outcomes[14])),
             country_intel,
+            sample(table::<tables::CapturedOperativeReferences, _>(
+                outcomes[16],
+                &self.captured_operatives.rows,
+                |r| rows::CapturedOperativeReferenceRow {
+                    country: r.country,
+                    ordinal: r.ordinal,
+                    operative: r.operative,
+                    owner: r.owner,
+                },
+            )),
         ]
     }
 }

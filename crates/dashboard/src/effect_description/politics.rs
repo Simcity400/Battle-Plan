@@ -156,7 +156,7 @@ impl Renderer<'_, '_, '_> {
     pub(super) fn politics_cosmetic(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let base = item.value.c_str().map_err(|why| why.to_string())?;
         let Some(country) = (match scopes.this {
-            Scope::Country(country) => Some(country),
+            Scope::Country(country) | Scope::CountryLeader { country, .. } => Some(country),
             _ => None,
         }) else {
             return Ok(String::new());
@@ -265,40 +265,56 @@ impl Renderer<'_, '_, '_> {
         key: &[u8],
     ) -> Result<String, String> {
         let current = match scopes.cursor {
-            Some(at) => self
-                .graph
-                .borrow()
-                .scopes
-                .get(at)
-                .ok_or("contested-owner caller scope is absent (1404A4F10/1404A4FC0)")?
-                .this,
+            Some(at) => {
+                self.graph
+                    .borrow()
+                    .scopes
+                    .get(at)
+                    .ok_or("contested-owner caller scope is absent (1404A4F10/1404A4FC0)")?
+                    .this
+            }
             None => match scopes.this {
-                Scope::Country(country) => EventObject::Country(country),
+                Scope::Country(country) | Scope::CountryLeader { country, .. } => {
+                    EventObject::Country(country)
+                }
                 Scope::State(state) => EventObject::State(state),
                 _ => return Err(
-                    "contested-owner scope lacks native country/state fields (1404A4F10/1404A4FC0)".into(),
+                    "contested-owner scope lacks native country/state fields (1404A4F10/1404A4FC0)"
+                        .into(),
                 ),
             },
         };
-        let carried_state = match current {
-            EventObject::State(state) | EventObject::CountryState { state, .. } => state,
-            EventObject::Country(_) => 0,
-            _ => return Err(
-                "contested-owner scope lacks native country/state fields (1404A4F10/1404A4FC0)".into(),
-            ),
-        };
+        let carried_state =
+            match current {
+                EventObject::State(state) | EventObject::CountryState { state, .. } => state,
+                EventObject::Country(_) | EventObject::CountryUnitLeader { .. } => 0,
+                _ => return Err(
+                    "contested-owner scope lacks native country/state fields (1404A4F10/1404A4FC0)"
+                        .into(),
+                ),
+            };
         let (country, state) = if (carried_state as i32) > 0 {
-            (self.country_target(item, scopes)?.unwrap_or(0), carried_state)
+            (
+                self.country_target(item, scopes)?.unwrap_or(0),
+                carried_state,
+            )
         } else {
             let country = match current {
-                EventObject::Country(country) | EventObject::CountryState { country, .. } => country,
+                EventObject::Country(country)
+                | EventObject::CountryState { country, .. }
+                | EventObject::CountryUnitLeader { country, .. } => country,
                 _ => 0,
             };
             (country, self.state_target(item, scopes)?)
         };
         // 1404A5070/1404A5160 set country, then state in a default scope;
         // EFFECT_ADD_CONTESTED_OWNER@1427AF660 / REMOVE@1427AF6B8 have no arguments.
-        self.localised(key, &[], self.fresh_country_state_scope(country, state)?, true)
+        self.localised(
+            key,
+            &[],
+            self.fresh_country_state_scope(country, state)?,
+            true,
+        )
     }
 
     // 14037B2B0 gates on the operand but describes the CURRENT country.

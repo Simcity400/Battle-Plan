@@ -48,6 +48,11 @@ pub const TOKENS: &[Token] = &[
         id: cpdx_lexer::FIXED15_TOKEN,
         name: "long_float",
     },
+    // Registered at 1400EA1E1; stat 0x3E maps here in 140632AC0.
+    Token {
+        id: crate::railway_gun_speed::MAXIMUM_SPEED_TOKEN,
+        name: "maximum_speed",
+    },
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

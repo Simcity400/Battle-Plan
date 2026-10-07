@@ -131,6 +131,8 @@ struct LeaderRow {
     text_b_len: usize,
     codename: Option<engine::cname_group_member::Inputs>,
     codename_reason: Option<&'static str>,
+    formation_reference: Option<u64>,
+    formation_reason: Option<&'static str>,
 }
 
 pub struct Captured {
@@ -171,6 +173,42 @@ static ADVISOR_SECTION_PLANNED: [std::sync::atomic::AtomicU64; 2] =
 static ADVISOR_SECTION_NS: [std::sync::atomic::AtomicU64; 2] =
     [const { std::sync::atomic::AtomicU64::new(0) }; 2];
 
+static CURRENT_IDEOLOGY_FAILURES: std::sync::Mutex<Vec<(&'static str, u64)>> =
+    std::sync::Mutex::new(Vec::new());
+static FORMATION_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn leader_ideology_status() -> impl serde::Serialize {
+    let failures = owned_vec(copy_vec(
+        &CURRENT_IDEOLOGY_FAILURES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    ));
+    crate::status::status!({
+        "refused": failures.iter().fold(0_u64, |sum, (_, count)| sum.saturating_add(*count)),
+        "refusals": crate::status::map(failures.into_iter()),
+        "scope": "country-leader current-ideology conversion failures; unavailable appended values retain the existing role row",
+    })
+}
+
+fn record_leader_ideologies(rows: &[ccountry_leader::Row]) {
+    let mut failures = CURRENT_IDEOLOGY_FAILURES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for reason in rows.iter().filter_map(|row| row.current_ideology_failure) {
+        let index = match failures.binary_search_by_key(&reason, |entry| entry.0) {
+            Ok(index) => index,
+            Err(index) => {
+                if engine::allocation::reserve(&mut failures, 1).is_err() {
+                    return;
+                }
+                failures.insert(index, (reason, 0));
+                index
+            }
+        };
+        failures[index].1 = failures[index].1.saturating_add(1);
+    }
+}
+
 pub(crate) fn acquisition_diagnostics() -> impl serde::Serialize {
     use std::sync::atomic::Ordering::Relaxed;
     let parts = std::array::from_fn::<_, PARTS, _>(|part| {
@@ -197,6 +235,8 @@ pub(crate) fn acquisition_diagnostics() -> impl serde::Serialize {
         "parts": crate::status::sequence(parts.into_iter()),
         "advisor_sections": crate::status::sequence(sections.into_iter()),
         "advisor_modifiers": advisors::modifier_status(),
+        "country_leader_ideologies": leader_ideology_status(),
+        "unit_leader_formation_refusals": FORMATION_REFUSALS.load(Relaxed),
     })
 }
 
@@ -220,6 +260,9 @@ impl Captured {
         work: &mut super::character_inputs::NamingWork,
     ) -> std::io::Result<()> {
         for row in &self.units.rows.rows[..self.units.rows.outcome.len()] {
+            if row.formation_reason.is_some() {
+                FORMATION_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
             if let Some(reason) = row.codename_reason {
                 work.refuse(reason)?;
             }
@@ -444,6 +487,14 @@ impl Captured {
     }
 
     fn leaders_table(&self) -> TableView {
+        if let Some(rows) = self
+            .leaders
+            .rows
+            .rows
+            .get(..self.leaders.rows.outcome.len())
+        {
+            record_leader_ideologies(rows);
+        }
         view::<tables::CountryLeaderRoles, _>(
             &self.leaders,
             |_, _| true,
@@ -451,6 +502,7 @@ impl Captured {
                 character: row.character,
                 country: row.country,
                 ideology: row.ideology,
+                current_ideology: replay::rows::Recorded::Value(row.current_ideology),
             },
         )
     }
@@ -475,6 +527,24 @@ impl Captured {
                         });
                     }
                     replay::rows::AdvisorModifierCache { entries: values }
+                })),
+                tooltip_keys: replay::rows::Recorded::Value(row.tooltip_recorded.then(|| {
+                    let mut source = &bytes[row.tooltip_start..row.tooltip_start + row.tooltip_len];
+                    let mut remaining = source;
+                    let mut count = 0;
+                    while !remaining.is_empty() {
+                        let len = u64::from_le_bytes(remaining[..8].try_into().unwrap()) as usize;
+                        remaining = &remaining[8 + len..];
+                        count += 1;
+                    }
+                    let mut keys = owned_vec(engine::allocation::vec(count));
+                    while !source.is_empty() {
+                        let len = u64::from_le_bytes(source[..8].try_into().unwrap()) as usize;
+                        source = &source[8..];
+                        keys.push(owned_vec(engine::allocation::copy_vec(&source[..len])));
+                        source = &source[len..];
+                    }
+                    keys
                 })),
             }
         })
@@ -832,6 +902,26 @@ impl<'a, R> Batch<'a, R> {
     }
 }
 
+impl Batch<'_, cadvisor::Row> {
+    fn append_tooltips(&mut self, memory: &impl Memory, start: usize, end: usize) {
+        if !self.active() {
+            return;
+        }
+        let captured = cadvisor::append_tooltips(
+            memory,
+            &mut self.rows[start..end],
+            self.bytes,
+            ccharacter::NameWalk {
+                outcome: Outcome::Rows { len: end - start },
+                bytes_len: self.bytes_len,
+                required_bytes: self.required_bytes,
+            },
+        );
+        self.bytes_len = captured.bytes_len;
+        self.required_bytes = captured.required_bytes;
+    }
+}
+
 fn relocate(start: &mut usize, base: usize) -> bool {
     let Some(value) = start.checked_add(base) else {
         return false;
@@ -910,6 +1000,10 @@ impl Family<'_> {
         ]
     }
 
+    fn finish_advisor_tooltips(&mut self, memory: &impl Memory) {
+        self.advisors.append_tooltips(memory, 0, self.advisors.len);
+    }
+
     /// Every table's rows for one roster occurrence. `templates` holds the
     /// template identities the decoding job's copy relied on; the live walk
     /// has none and reads every template.
@@ -952,7 +1046,9 @@ impl Family<'_> {
                     |_, _| true,
                 );
                 self.advisors.append(
-                    |rows, bytes| cadvisor::walk_entry(&view, base, character, rows, bytes).into(),
+                    |rows, bytes| {
+                        cadvisor::walk_prefix_entry(&view, base, character, rows, bytes).into()
+                    },
                     |row, offset| {
                         relocate(&mut row.key_start, offset)
                             && relocate(&mut row.idea_start, offset)
@@ -1110,6 +1206,7 @@ fn walk_family<M: Memory>(
     if let Err(reason) = result {
         family.fail(reason);
     }
+    family.finish_advisor_tooltips(memory);
     family.results()
 }
 
@@ -1140,6 +1237,7 @@ fn walk_census<M: Memory>(
             }
         }
     }
+    family.finish_advisor_tooltips(memory);
     family.results()
 }
 
@@ -1219,6 +1317,8 @@ fn read_unit(
         (None, None)
     };
     let fits = matches!(text.outcome, Outcome::Rows { len: 1 });
+    let formation =
+        cunit_leader::read_formation_reference(memory, pointer, native.kind, native.category);
     if fits {
         *output = LeaderRow {
             native,
@@ -1229,6 +1329,8 @@ fn read_unit(
             text_b_len: text.name_len,
             codename,
             codename_reason,
+            formation_reference: formation.unwrap_or(None),
+            formation_reason: formation.err(),
         };
     }
     ReadResult {
@@ -1315,8 +1417,29 @@ fn advisor_ranges_valid(row: &cadvisor::Row, bytes: &[u8]) -> bool {
         && valid(bytes, row.slot_start, row.slot_len)
         && valid(bytes, row.modifier_start, row.modifier_len)
         && row
+            .tooltip_start
+            .checked_add(row.tooltip_len)
+            .and_then(|end| bytes.get(row.tooltip_start..end))
+            .is_some_and(tooltip_ranges_valid)
+        && row
             .modifier_len
             .is_multiple_of(engine::modifier_entry::STRIDE)
+}
+
+fn tooltip_ranges_valid(mut bytes: &[u8]) -> bool {
+    while !bytes.is_empty() {
+        let Some(header) = bytes.get(..8) else {
+            return false;
+        };
+        let Ok(len) = usize::try_from(u64::from_le_bytes(header.try_into().unwrap())) else {
+            return false;
+        };
+        let Some(tail) = len.checked_add(8).and_then(|end| bytes.get(end..)) else {
+            return false;
+        };
+        bytes = tail;
+    }
+    true
 }
 
 /// Used only after `view` validates every range for this table.
@@ -1355,6 +1478,7 @@ fn leader_row(row: &LeaderRow, bytes: &[u8]) -> UnitLeaderRow {
             row.codename
                 .map(|name| super::character_inputs::operands(name, bytes)),
         ),
+        formation_reference: replay::rows::Recorded::Value(row.formation_reference),
     }
 }
 
@@ -1730,14 +1854,26 @@ impl Captured {
             let roots = crate::raw::Recorded::build(&job.advisor_roots);
             match ccharacter_manager::Roster::read(&roots, base, job.game_state) {
                 Ok(roster) => {
-                    for ((_, section), payload) in
-                        roster.sections().into_iter().zip([job, &**dynamic])
+                    let recorded = [
+                        crate::raw::Recorded::build(&job.log),
+                        crate::raw::Recorded::build(&dynamic.log),
+                    ];
+                    let mut ends = [0; 2];
+                    for (index, ((_, section), source)) in
+                        roster.sections().into_iter().zip(&recorded).enumerate()
                     {
                         if !advisors.active() {
                             break;
                         }
-                        let recorded = crate::raw::Recorded::build(&payload.log);
-                        walk_advisor_section(&recorded, base, section, &mut advisors);
+                        walk_advisor_section(source, base, section, &mut advisors);
+                        ends[index] = advisors.len;
+                    }
+                    let mut start = 0;
+                    for (end, source) in ends.into_iter().zip(&recorded) {
+                        if end >= start {
+                            advisors.append_tooltips(source, start, end);
+                            start = end;
+                        }
                     }
                 }
                 Err(reason) => advisors.fail(reason),

@@ -201,7 +201,10 @@ fn shortcut_only_hover_waits_for_show_delay_and_tail_follows_delayed_body() {
     let hit = Some(("Main", Some("Body"), Some(shortcut), RECT));
     assert_eq!(
         hover.shown(hit, POINT, start + Duration::from_millis(51), TIMING),
-        Some(("Main\n--------------\nShortcut: \u{13}ESCAPE", POINT.unwrap()))
+        Some((
+            "Main\n--------------\nShortcut: \u{13}ESCAPE",
+            POINT.unwrap()
+        ))
     );
     assert_eq!(
         hover.shown(hit, POINT, start + Duration::from_millis(1001), TIMING),

@@ -30,7 +30,8 @@ const STRIDES: [(usize, usize); 11] = [
     (CHARACTER, 0x100),
     (LEADER_HEAD, 0x40),
     (LEADER_NODE, 0x40),
-    (LEADER_ROLE, 0x20),
+    // Current ideology is stored at +0x140, beyond the old role prefix.
+    (LEADER_ROLE, 0x200),
     (ADVISOR_HEAD, 0x40),
     (ADVISOR_NODE, 0x60),
     (ADVISOR_ROLE, 0x400),
@@ -204,7 +205,7 @@ impl World {
                 );
                 window.pointer(
                     object + character_leader_node::LEADER,
-                    LEADER_ROLE + index * 0x20,
+                    LEADER_ROLE + index * 0x200,
                 );
             }
             LEADER_ROLE if Self::leader(index) => {
@@ -912,7 +913,7 @@ fn census_roles_match_the_independent_walk_at_every_fault_and_broken_map() {
         advisor_head(40),
         LEADER_NODE + 5 * 0x40 + msvc_tree_node::RIGHT,
         LEADER_NODE + 10 * 0x40 + character_leader_node::IDEOLOGY,
-        LEADER_ROLE + 15 * 0x20,
+        LEADER_ROLE + 15 * 0x200,
         ADVISOR_NODE + 43 * 0x60 + character_advisor_node::KEY_HASH,
         ADVISOR_ROLE + 3 * 0x400 + cadvisor::SLOT,
         UNIT + 5 * 0x2000 + cunit_leader::TRAIT_DATA,
@@ -1107,7 +1108,11 @@ fn census_advisor_cache_keeps_reuse_verification_and_fresh_countries() {
     let counting = Counting::new(&world);
     cache.capture(&counting, ctx, &Quiet, loan.admitted(MODULE, GAME_STATE));
     assert_eq!(cache.counts.planned, 2);
-    assert_eq!(counting.calls.get(), 2 + demand.rows);
+    // Definitions need only the two prepared control programs. Every advisor
+    // still acquires both independent headers: numeric cache (16 bytes) and
+    // tooltip set (17 bytes), even when both are empty.
+    assert_eq!(counting.calls.get(), 2 + 2 * demand.rows);
+    assert_eq!(counting.bytes.get() as u64, cache.raw_bytes);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
     cache.prepare();
     // A changed country comes from the current census, never the entry.

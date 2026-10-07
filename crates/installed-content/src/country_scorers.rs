@@ -1,10 +1,21 @@
 //! Country scorer database (143316C48), loaded from `common/scorers/country`
 //! by 14018B610 -> 1401870F0; readers 140A94FA0 and 140A951D0.
 
-use std::{collections::{BTreeMap, BTreeSet}, io};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
 
-use crate::{ResolvedLayers, combat_tactics::{Node as TriggerNode, Shaper}, key_names::KeyNames,
-    parser::{Item, c_string, native::{self, Shape}}, triggers::Triggers};
+use crate::{
+    ResolvedLayers,
+    combat_tactics::{Node as TriggerNode, Shaper},
+    key_names::KeyNames,
+    parser::{
+        Item, c_string,
+        native::{self, Shape},
+    },
+    triggers::Triggers,
+};
 
 /// CScriptTargets members (140C1D730). Arrays and explicit targets are
 /// separate native arrays, so their authored interleaving does not decide order.
@@ -33,7 +44,12 @@ pub struct Database {
 }
 
 #[derive(Clone, Copy)]
-enum Node { Top, Scorer, Entry, Trigger(TriggerNode) }
+enum Node {
+    Top,
+    Scorer,
+    Entry,
+    Trigger(TriggerNode),
+}
 
 impl Database {
     pub fn get(&self, name: &[u8]) -> Result<Option<&[Entry]>, String> {
@@ -41,7 +57,11 @@ impl Database {
             Some(Ok(entries)) => Ok(Some(entries)),
             Some(Err(why)) => Err(why.clone()),
             None if self.unread.is_empty() => Ok(None),
-            None => Err(format!("country scorer {} is unknown after {}", String::from_utf8_lossy(name), self.unread.join("; "))),
+            None => Err(format!(
+                "country scorer {} is unknown after {}",
+                String::from_utf8_lossy(name),
+                self.unread.join("; ")
+            )),
         }
     }
 
@@ -50,40 +70,80 @@ impl Database {
         let mut seen: BTreeSet<Vec<u8>> = self.entries.keys().cloned().collect();
         let mut shaper = Shaper::new(Some(names));
         let mut current = None;
-        let read = native::read(input, native::Mode::KeepMark, native::Top::File(Node::Top), Some(names),
+        let read = native::read(
+            input,
+            native::Mode::KeepMark,
+            native::Top::File(Node::Top),
+            Some(names),
             &mut |node, field| match node {
                 Node::Top => {
                     let name = field.key.c_str().to_ascii_lowercase();
                     current = Some(name.clone());
-                    if seen.insert(name) { Shape::Object(Node::Scorer) } else { Shape::Skip }
+                    if seen.insert(name) {
+                        Shape::Object(Node::Scorer)
+                    } else {
+                        Shape::Skip
+                    }
                 }
                 Node::Scorer => match field.keyword().as_deref() {
                     Some(b"targets") => Shape::Object(Node::Entry),
-                    _ => Shape::Unsettled(format!("country scorer field {} is unported (140A94FA0)", String::from_utf8_lossy(field.key.c_str()))),
+                    _ => Shape::Unsettled(format!(
+                        "country scorer field {} is unported (140A94FA0)",
+                        String::from_utf8_lossy(field.key.c_str())
+                    )),
                 },
                 Node::Entry => match field.keyword().as_deref() {
                     Some(b"targets") => Shape::List,
-                    Some(b"target_array" | b"country" | b"state" | b"targets_dynamic" | b"target_non_existing" | b"state_target") => Shape::One,
-                    Some(b"target_root_trigger" | b"target_trigger") => Shape::Body(Node::Trigger(TriggerNode::Trigger)),
+                    Some(
+                        b"target_array"
+                        | b"country"
+                        | b"state"
+                        | b"targets_dynamic"
+                        | b"target_non_existing"
+                        | b"state_target",
+                    ) => Shape::One,
+                    Some(b"target_root_trigger" | b"target_trigger") => {
+                        Shape::Body(Node::Trigger(TriggerNode::Trigger))
+                    }
                     Some(b"score") => Shape::Object(Node::Trigger(TriggerNode::Mtth)),
-                    _ => Shape::Unsettled(format!("country scorer target field {} is unported (140A951D0)", String::from_utf8_lossy(field.key.c_str()))),
+                    _ => Shape::Unsettled(format!(
+                        "country scorer target field {} is unported (140A951D0)",
+                        String::from_utf8_lossy(field.key.c_str())
+                    )),
                 },
                 Node::Trigger(node) => shaper.shape(node, field).map(Node::Trigger),
-            });
-        self.notes.extend(read.misreads.iter().map(ToString::to_string));
+            },
+        );
+        self.notes
+            .extend(read.misreads.iter().map(ToString::to_string));
         for (item, notes) in read.items.into_iter().zip(read.item_misreads) {
             let name = c_string(item.key.as_deref().unwrap_or_default()).to_ascii_lowercase();
-            let reasons = notes.iter().map(ToString::to_string).chain(self.unread.iter().cloned()).collect::<Vec<_>>();
+            let reasons = notes
+                .iter()
+                .map(ToString::to_string)
+                .chain(self.unread.iter().cloned())
+                .collect::<Vec<_>>();
             let value = if reasons.is_empty() {
-                Ok(item.value.items().unwrap_or_default().iter().filter(|field| field.keyword_is("targets")).map(entry).collect())
-            } else { Err(reasons.join("; ")) };
+                Ok(item
+                    .value
+                    .items()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|field| field.keyword_is("targets"))
+                    .map(entry)
+                    .collect())
+            } else {
+                Err(reasons.join("; "))
+            };
             self.entries.entry(name).or_insert(value);
         }
         if let Some(why) = read.unsettled {
             let why = why.to_string();
             self.notes.push(why.clone());
             self.unread.push(why.clone());
-            if let Some(current) = current { self.entries.insert(current, Err(why)); }
+            if let Some(current) = current {
+                self.entries.insert(current, Err(why));
+            }
         }
     }
 }
@@ -94,14 +154,40 @@ fn entry(item: &Item) -> Entry {
         let scalar = || field.value.scalar().unwrap_or_default().to_vec();
         match field.keyword().map(|key| key.folded()).as_deref() {
             Some(b"target_array") => out.targets.arrays.push(scalar()),
-            Some(b"targets") => out.targets.targets.extend(field.value.items().unwrap_or_default().iter().map(|target| target.value.scalar().unwrap_or_default().to_vec())),
+            Some(b"targets") => out.targets.targets.extend(
+                field
+                    .value
+                    .items()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|target| target.value.scalar().unwrap_or_default().to_vec()),
+            ),
             Some(b"state" | b"country") => out.targets.targets.push(scalar()),
-            Some(b"target_root_trigger") => out.targets.root_limit.extend(field.value.items().unwrap_or_default().iter().cloned()),
-            Some(b"target_trigger") => out.targets.target_limit.extend(field.value.items().unwrap_or_default().iter().cloned()),
-            Some(b"score") => out.score.extend(field.value.items().unwrap_or_default().iter().cloned()),
-            Some(b"targets_dynamic") => { if let Some(value) = crate::parser::read_bool(&scalar()) { out.targets.dynamic = value; } },
-            Some(b"target_non_existing") => { if let Some(value) = crate::parser::read_bool(&scalar()) { out.targets.non_existing = value; } },
-            Some(b"state_target") => out.targets.unported.push("state_target selection mode (140C1D730)".into()),
+            Some(b"target_root_trigger") => out
+                .targets
+                .root_limit
+                .extend(field.value.items().unwrap_or_default().iter().cloned()),
+            Some(b"target_trigger") => out
+                .targets
+                .target_limit
+                .extend(field.value.items().unwrap_or_default().iter().cloned()),
+            Some(b"score") => out
+                .score
+                .extend(field.value.items().unwrap_or_default().iter().cloned()),
+            Some(b"targets_dynamic") => {
+                if let Some(value) = crate::parser::read_bool(&scalar()) {
+                    out.targets.dynamic = value;
+                }
+            }
+            Some(b"target_non_existing") => {
+                if let Some(value) = crate::parser::read_bool(&scalar()) {
+                    out.targets.non_existing = value;
+                }
+            }
+            Some(b"state_target") => out
+                .targets
+                .unported
+                .push("state_target selection mode (140C1D730)".into()),
             _ => {}
         }
     }

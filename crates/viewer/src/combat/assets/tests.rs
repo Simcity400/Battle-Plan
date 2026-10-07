@@ -109,7 +109,8 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
     {
         let text = if name == b"landcombatview" {
             r#"instantTextBoxType = { name = "fixture_text" font = "fixture_font" }
-                buttonType = { name = "fixture_missing" shortcut = "FIXTURE_MISSING" }"#
+                buttonType = { name = "fixture_missing" shortcut = "FIXTURE_MISSING" }
+                buttonType = { name = "fixture_texture" shortcut = "FIXTURE_TEXTURE" }"#
         } else if name == b"navalcombatview" {
             r#"size = { width = 80 height = 50 }
                 containerWindowType = { name = header_container size = { width = 80 height = 50 }
@@ -133,6 +134,7 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         ("interface/fixture.gfx", br#"spriteTypes = {
             spriteType = { name = "GFX_fixture_substituted" textureFile = "gfx/icon.tga" }
             spriteType = { name = "GFX_ESCAPE" textureFile = "gfx/icon.tga" }
+            spriteType = { name = "GFX_FIXTURE_TEXTURE" textureFile = "gfx/missing.tga" }
             spriteType = { name = "GFX_navalcombat_air_icon_fixture_bomber" textureFile = "gfx/icon.tga" noOfFrames = 2 }
             spriteType = { name = "GFX_navalcombat_air_icon_fixture_fighter" textureFile = "gfx/icon.tga" noOfFrames = 2 }
         }
@@ -203,6 +205,14 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
             .filter(|warning| warning.contains("GFX_FIXTURE_MISSING"))
             .count(),
         1
+    );
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|warning| warning.contains("gfx/missing.tga"))
+            .count(),
+        1,
+        "{warnings:?}"
     );
     let map_assets =
         crate::map::counters::gui_assets(&windows, &interface.registry, &localisation, extra);
@@ -521,7 +531,7 @@ fn combat_resources_name_undefined_texture_reads() {
         ..native_gui::Assets::default()
     };
     gui.load(&layers, &assets, &mut Vec::new()).unwrap();
-    let warnings = sprite_warnings(&gui, &assets.sprites);
+    let warnings = sprite_warnings(&gui, &assets.sprites, true);
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].contains("1 undefined_read"), "{warnings:?}");
     std::fs::remove_dir_all(root).unwrap();
@@ -581,7 +591,7 @@ fn combat_resources_preserve_producer_dimensions_and_named_refusals() {
         (b"GFX_missing", "missing_texture"),
     ] {
         assert!(prepared_size(&gui, name, &gui.sprite(name).unwrap()).is_none());
-        let warnings = sprite_warnings(&gui, &[name.to_vec()].into());
+        let warnings = sprite_warnings(&gui, &[name.to_vec()].into(), true);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains(&format!("1 {kind}")), "{warnings:?}");
     }

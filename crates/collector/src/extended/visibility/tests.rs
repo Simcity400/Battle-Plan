@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn weather_suspension_failure_preserves_features_and_recovers_through_the_codec() {
+fn appended_feature_failures_preserve_features_and_recover_through_the_codec() {
     use replay::frame::{DecodedFrame, Frame, FrameDecoder, FrameEncoder, Metrics};
-    struct Features(Option<[u8; 2]>);
+    struct Features(Option<[u8; 2]>, Option<u8>);
     impl Memory for Features {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let mask = 0x1234_5678_u32.to_le_bytes();
@@ -12,6 +12,11 @@ fn weather_suspension_failure_preserves_features_and_recovers_through_the_codec(
             let vtable = (cweather_manager::VTABLE_RVA as u64).to_le_bytes();
             let bytes: &[u8] = if address == engine::dlc_feature_state::MASK_RVA {
                 &mask
+            } else if address == native::INSTANT_DECISIONS_RVA {
+                let Some(instant) = &self.1 else {
+                    return false;
+                };
+                std::slice::from_ref(instant)
             } else if address == native::HUMAN_AI_RVA {
                 &human
             } else if address == 0x1000 + engine::cgame_state::WEATHER_MANAGER {
@@ -36,8 +41,17 @@ fn weather_suspension_failure_preserves_features_and_recovers_through_the_codec(
     let mut captured = Captured::with_capacities(&Capacities::default());
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::new();
-    for (hour, flags) in [Some([3, 255]), None, Some([0, 0])].into_iter().enumerate() {
-        captured.capture(&Features(flags), 0, 0x1000, hour as i32, hour == 0);
+    for (hour, (flags, instant)) in [
+        (Some([3, 255]), Some(253)),
+        (None, Some(253)),
+        (Some([0, 0]), None),
+        (None, None),
+        (Some([0, 0]), Some(0)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        captured.capture(&Features(flags, instant), 0, 0x1000, hour as i32, hour == 0);
         assert_eq!(
             captured.weather_suspend_failure(),
             flags
@@ -68,7 +82,8 @@ fn weather_suspension_failure_preserves_features_and_recovers_through_the_codec(
             &[SimulationFeatureRow {
                 dlc_mask: 0x1234_5678,
                 human_ai: 7,
-                weather_suspend: replay::rows::Recorded::Value(flags)
+                weather_suspend: replay::rows::Recorded::Value(flags),
+                instant_decisions: replay::rows::Recorded::Value(instant)
             }]
         );
     }

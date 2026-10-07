@@ -81,9 +81,8 @@ pub fn state(frame: &DecodedFrame, scope: &RaidScope) -> Result<Option<u32>> {
 fn owner_tag(frame: &DecodedFrame, owner: u32) -> Result<&str> {
     // 140E68E30 calls 140BA56A0 even for owner zero; its *param_1 == 0 arm
     // selects reserved slot zero, then 1406DF830 supplies its original/own tag.
-    // That slot is not recorded, so its qualified key's absence is unknown.
     if owner == 0 {
-        return Err("raid target reserved owner original tag is not recorded".into());
+        return crate::country_names::reserved_zero_original_tag(frame);
     }
     let links = frame
         .complete::<tables::CountryLinks>()
@@ -120,15 +119,6 @@ fn owner_tag(frame: &DecodedFrame, owner: u32) -> Result<&str> {
         })?;
     crate::country_names::original_tag(country, row)
         .map_err(|reason| format!("raid target state owner {owner}'s {reason}"))
-        .and_then(|tag| {
-            if tag.is_empty() {
-                Err(format!(
-                    "raid target state owner {owner}'s original tag is empty"
-                ))
-            } else {
-                Ok(tag)
-            }
-        })
 }
 
 /// ResolveVictoryPointLocalization@140E68E30 tests key existence, not text

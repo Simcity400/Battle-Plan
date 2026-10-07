@@ -237,7 +237,9 @@ fn presentation_handoff_restores_storage_and_exact_source_leases() {
     let bytes = captured.allocated_bytes();
     let presentation_bytes = captured.division_presentation.allocated_bytes();
     assert!(presentation_bytes > 0);
-    let report = division_presentation::CaptureReport { ticks: [89, 97, 5] };
+    let report = division_presentation::CaptureReport {
+        ticks: [89, 97, 5, 101],
+    };
     captured.install_unit_inputs(Some(Arc::clone(&inputs)));
     captured.presentation_report = Some(report);
     let request = captured.take_presentation_request(&countries, 11, 0x1000, 0, true, None);
@@ -365,7 +367,7 @@ fn presentation_terminal_reports_scatter_once_without_live_retry() {
     let inputs = Arc::new(UnitInputs::empty_rows());
     let bytes = captured.allocated_bytes();
     let report = division_presentation::CaptureReport {
-        ticks: [113, 227, 5],
+        ticks: [113, 227, 5, 331],
     };
     for failure in [
         None,
