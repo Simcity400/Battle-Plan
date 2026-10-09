@@ -153,7 +153,7 @@ fn retained_census_and_side_entries_exceed_16384() {
 }
 
 #[test]
-fn retained_hq_wrappers_exceed_256() {
+fn absent_retained_hq_ignores_a_large_borrowed_range() {
     const COUNT: usize = 257;
     const DATA: usize = 0x8000;
     let mut heap = Heap::populated();
@@ -165,7 +165,7 @@ fn retained_hq_wrappers_exceed_256() {
         heap.u64(DATA + index * 8, MEMBER_A as u64);
     }
     let row = side::capture_details(&heap.memory(), BASE, owner).unwrap();
-    assert_eq!(row.hq_influences, vec![0; COUNT]);
+    assert!(row.hq_influences.is_empty());
 }
 
 #[test]

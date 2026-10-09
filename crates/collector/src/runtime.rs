@@ -720,7 +720,7 @@ fn run(
         )
     }?;
     crate::politics_changes::resize(
-        slots,
+        crate::country_scale::observe_politics_demand(&memory, base, slots).unwrap_or(slots),
         engine::politics_sites::lexical_key_demand(&memory, base).unwrap_or(0),
     );
     crate::relation_changes::presize(slots);
@@ -1803,6 +1803,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         status!({
             "game_score_enabled": shared.game_score_enabled,
             "fixed_layout": crate::fixed_layout::status(shared.fixed_layout.get()),
+            "naval_result_details": crate::extended::naval_result_details::status(),
             "native_tick_work": {
                 "elapsed_ns": shared.native_tick_ns.load(Ordering::Relaxed),
                 "calls": shared.native_tick_calls.load(Ordering::Relaxed),
@@ -2984,6 +2985,11 @@ fn spool_loop(
         crate::fuel_awards::collect();
         if fuel_demand_at.elapsed() >= RegistryWatch::INTEL_INTERVAL {
             fuel_demand_at = Instant::now();
+            if let Some(entries) =
+                crate::country_scale::observe_politics_demand(&live, shared.base, registry.slots)
+            {
+                crate::politics_changes::resize(entries, 0);
+            }
             crate::fuel_awards::presize(&live, shared.base);
             match crate::country_scale::observe_fuel_unit_demand(&live, shared.base) {
                 Ok(Some(demand)) => {
@@ -3072,7 +3078,8 @@ fn spool_loop(
             crate::operation_outcomes::resize(slots.max(1));
             // This census is RegistryWatch-throttled, including while idle.
             crate::politics_changes::resize(
-                slots,
+                crate::country_scale::observe_politics_demand(&live, shared.base, slots)
+                    .unwrap_or(slots),
                 engine::politics_sites::lexical_key_demand(&live, shared.base).unwrap_or(0),
             );
             crate::relation_changes::presize(slots);

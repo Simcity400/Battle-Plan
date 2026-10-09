@@ -8,6 +8,62 @@ use replay::{
 };
 
 #[test]
+fn missing_retained_details_report_incomplete_coverage_without_waiving_differences() {
+    use replay::rows::NavalCombatResultDetailsRow;
+    let (mut frame, mut save, ..) = super::super::tests::fixture();
+    save.naval_history.results.clear();
+    for id in [101, 102] {
+        let date = save::GameDate {
+            year: 1940,
+            month: 1,
+            day: 1,
+            hour: 1,
+        };
+        let mut sides = std::array::from_fn(|_| save::naval_history::ResultSide::default());
+        sides[0].details.leader = Some(77);
+        save.naval_history.results.insert(
+            id,
+            save::naval_history::NavalResult {
+                id,
+                province: 2,
+                result_date: date,
+                retire_date: date,
+                category: 0,
+                port_strike: false,
+                naval_strike: false,
+                sides,
+                admitted: Vec::new(),
+            },
+        );
+    }
+    let mut readable = NavalCombatResultDetailsRow {
+        result: 101,
+        ..Default::default()
+    };
+    readable.sides[0].leader = 77;
+    *frame.tables[TableId::NavalCombatResultDetails.index()] =
+        TableView::Complete(TableRows::NavalCombatResultDetails(vec![readable.clone()]));
+    let mut report = Report::default();
+    let error = results(&frame, &save, &mut report).unwrap_err();
+    assert!(error.to_string().contains("missing rows): [102]"));
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["NavalCombatResultDetails"], 1);
+    // Unknown coverage cannot suppress a mismatch in a readable row or an extra row.
+    readable.sides[0].leader = 78;
+    *frame.tables[TableId::NavalCombatResultDetails.index()] =
+        TableView::Complete(TableRows::NavalCombatResultDetails(vec![
+            readable,
+            NavalCombatResultDetailsRow {
+                result: 999,
+                ..Default::default()
+            },
+        ]));
+    let mut report = Report::default();
+    assert!(results(&frame, &save, &mut report).is_err());
+    assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+}
+
+#[test]
 fn border_marker_witnesses_compare_stored_country_state_and_event_strings() {
     use replay::rows::{LandBorderWarInputs, LandBorderWarSide, LandCombatDetailsRow};
     let (mut frame, mut save, ..) = super::super::tests::fixture();

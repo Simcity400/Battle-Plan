@@ -47,6 +47,8 @@ Size rows, arenas, logs and watches from live registries and content demand befo
 
 Observer overflow refuses the interval and requests off-thread growth even when population is unchanged. Drains/recycled frames accept prepared larger storage; callbacks never grow or retire it.
 
+Politics staging starts from native daily record and live roster demand with room for the bounded frame backlog. Off-thread sizing polls on the existing input-demand cadence even when country count is unchanged. Rejected records count toward each lane's full burst until its sealed handoff is consumed; failed sizing hints appear in `country_scale_demand.politics_records` and preserve capacity. Politics staging replacement still invalidates observation and retains old logs until detach.
+
 Observer demand comes from census and observed shortage, never a pooled vector's allocation headroom. Frames follow producer sizing without returning their capacity as demand. Offers with multiple arenas preserve pending growth in every dimension.
 
 [Equipment destruction](src/equipment_destruction.rs) stages larger storage in a separate worker slot and installs it only at an empty, writer-free boundary or drain. Retired vectors stay parked for off-thread release. A clean hourly boundary discards a refused interval and reopens observation; its drain remains unavailable, and the following fully observed interval can be complete. Queued provenance and return-credit proofs retain their independent lifetime checks. Escaped native calls prevent recovery and detach.
@@ -58,6 +60,8 @@ Guard every native read and preserve order, duplicate occurrences, identity, bou
 - Unscheduled data carries its prior sample. Failed operands remain absent rather than empty or zero, and known siblings survive.
 
 Refusals, unsupported forms, shortages and losses are named and counted, never silent. A coordination panic stops acquisition for the attachment and records losses. Checked allocation failure stops admission, abandons incomplete work and lets the original tick continue. [allocation.rs](src/allocation.rs) writes the fixed [terminal record](../replay/src/witness.rs), authoritative over status. Encoder baselines advance only after a complete spool record.
+
+[Retained naval result details](src/extended/naval_result_details.rs) omit only the affected result's detail row when its borrowed HQ inputs fail. The independent result census remains available; absent details are unknown. The capture restores its ship, plane, hit and influence arenas, counts refusals in collector status and keeps allocation failure terminal.
 
 Reuse needs proved writer coverage and receiver lifetime; loads, gaps, lost watches and failed publication revoke certificates. Prepared geometry still acquires fresh values and resumes changed controls from the acquired prefix. Mutation-certified reuse needs fresh-read verification and coordinated burn-in; mismatches disable it for the attachment. Preserve default verification in [Cargo.toml](Cargo.toml). Quiet traces prove only exercised paths; do not add ordinary production comparison windows or second captures.
 

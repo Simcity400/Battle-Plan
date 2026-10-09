@@ -1718,11 +1718,16 @@ fn results(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> 
     if actual.len() != rows.len() {
         return Err(invalid("duplicate retained naval result detail"));
     }
+    let expected: BTreeSet<_> = save.naval_history.results.keys().copied().collect();
+    let missing: Vec<_> = expected.difference(&actual).copied().collect();
     equal(
         r,
-        "NavalCombatResultDetails census",
-        actual,
-        save.naval_history.results.keys().copied().collect(),
+        "NavalCombatResultDetails unexpected results",
+        actual
+            .difference(&expected)
+            .copied()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::<u64>::new(),
     );
     for row in rows {
         let Some(saved) = save.naval_history.results.get(&row.result) else {
@@ -1792,6 +1797,12 @@ fn results(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> 
     }
     r.compared("NavalCombatResultDetails", rows.len());
     r.limitation("Retained result serializers 140CD7010/140CD7500/140CD6EE0 cover ordered ship and plane snapshots, cached identities/stats/strings, naval hits and first air-hit lists. Omitted positive-only killed counts prove only nonpositive. Invalid/absent leader references cannot validate raw identity. HQ leader/influence inputs and each second air-hit list are omitted by those serializers. These retained terminal results are independent of live combat retired-slot lists and country combat-log aggregates", "NavalCombatResultDetails");
+    if !missing.is_empty() {
+        return Err(invalid(format!(
+            "NavalCombatResultDetails: {} retained results have unknown details (missing rows): {missing:?}; readable rows were compared",
+            missing.len()
+        )));
+    }
     Ok(())
 }
 

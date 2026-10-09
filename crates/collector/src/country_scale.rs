@@ -67,6 +67,7 @@ static FUEL_UNIT_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
 static ADVISOR_MODIFIER_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
 static PRODUCTION_MODIFIER_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
 static LAND_EVENT_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
+static POLITICS_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
 
 pub(crate) fn demand_diagnostics() -> impl serde::Serialize {
     crate::status::status!({
@@ -77,6 +78,7 @@ pub(crate) fn demand_diagnostics() -> impl serde::Serialize {
         "advisor_modifiers": ADVISOR_MODIFIER_DEMAND_FAILURES.diagnostics(),
         "production_modifiers": PRODUCTION_MODIFIER_DEMAND_FAILURES.diagnostics(),
         "land_event_words": LAND_EVENT_DEMAND_FAILURES.diagnostics(),
+        "politics_records": POLITICS_DEMAND_FAILURES.diagnostics(),
     })
 }
 
@@ -449,6 +451,30 @@ pub(crate) fn demand_game_state(
         .and_then(|at| engine::cpdx_array::Array::read(memory, at, 8))
         .ok_or("input demand country array unreadable or invalid")?;
     Ok((countries.count >= 2).then_some(state))
+}
+
+/// Daily native observations plus the bounded frame backlog, independent of
+/// population growth. A failed hint preserves staging and names its refusal.
+pub(crate) fn observe_politics_demand(
+    memory: &impl Memory,
+    base: usize,
+    slots: usize,
+) -> Option<usize> {
+    POLITICS_DEMAND_FAILURES
+        .observe((|| {
+            let mut records = slots
+                .checked_mul(engine::politics_sites::DAILY_RECORDS)
+                .ok_or("politics staging record demand overflow")?;
+            if let Some(state) = demand_game_state(memory, base)? {
+                records = records.max(engine::politics_sites::daily_record_demand(
+                    memory, base, state,
+                )?);
+            }
+            records
+                .checked_mul(sampling::BUFFERS)
+                .ok_or("politics staging backlog demand overflow")
+        })())
+        .ok()
 }
 
 pub(crate) fn observe_advisor_modifiers(
@@ -868,6 +894,25 @@ impl Sizing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn politics_staging_demand_presizes_the_daily_backlog_without_a_loaded_world() {
+        let memory = engine::memory::SliceMemory {
+            base: cgame_state::SINGLETON_RVA,
+            bytes: &[0; 8],
+        };
+        for slots in [1_501, 5_001] {
+            assert_eq!(
+                observe_politics_demand(&memory, 0, slots),
+                Some(slots * 5 * sampling::BUFFERS)
+            );
+        }
+        let unreadable = engine::memory::SliceMemory {
+            base: 0,
+            bytes: &[],
+        };
+        assert_eq!(observe_politics_demand(&unreadable, 0, 5_001), None);
+    }
 
     #[test]
     fn politics_sizing_read_failures_are_named_counted_and_preserve_capacities() {

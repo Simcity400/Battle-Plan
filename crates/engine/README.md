@@ -60,6 +60,8 @@ Verify both [the pinned executable](src/build.rs) and the site's bytes before in
 - [Event feed](src/event_feed_sites.rs) reauthenticates action roles and reciprocal war links after native execution; world lifetime comes from the collector's reset/construction signal, not from these reads.
 - Cached rates and tooltip inputs retain native gates, stale values and source order. Their formula and lifetime evidence belongs in the corresponding reader; save serialization may omit those operands.
 
+[Retained naval result sides](src/cnaval_combat_result_side.rs) visit the borrowed HQ range only when the retained HQ commander resolves, as the native result window does. A known absent commander supplies no HQ; an unreadable registry or borrowed input stays unknown.
+
 ## Strategic-action operands
 
 [carmy/strategic_action.rs](src/carmy/strategic_action.rs) supplies the current ladder glyph and ETA rail operands with their native gates and effective modifier queries. These consumers retain their own acquisition and cadence; carried ETA cannot supply current glyph inputs. A query failure withholds that row's ladder glyph. The save omits the effective modifiers, while serialized route, target and strategic truth remain independently comparable.

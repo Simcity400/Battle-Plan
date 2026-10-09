@@ -18,6 +18,22 @@ use replay::{
     rows::{self, TableId, tables},
 };
 use std::collections::HashMap;
+use std::sync::{
+    OnceLock,
+    atomic::{AtomicU64, Ordering},
+};
+
+static REFUSED_ROWS: AtomicU64 = AtomicU64::new(0);
+static FIRST_REFUSAL: OnceLock<&'static str> = OnceLock::new();
+
+pub fn status() -> impl serde::Serialize {
+    crate::status::status!({
+        "reason": "naval result HQ inputs unreadable",
+        "refused_rows": REFUSED_ROWS.load(Ordering::Relaxed),
+        "first_detail_reason": FIRST_REFUSAL.get(),
+        "scope": "cumulative result detail rows refused since attach; their NavalResults identities remain, with unknown details",
+    })
+}
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::NavalCombatResultDetails];
@@ -76,6 +92,8 @@ pub struct Captured {
     commanders: Arena<commander::Row>,
     commander_timed_traits: Arena<engine::cunit_leader::TimedTrait>,
     commander_keys: HashMap<u64, usize>,
+    refused_rows: usize,
+    first_refusal: Option<&'static str>,
 }
 impl Captured {
     /// Allocation-free placeholder while a worker owns the capture buffers.
@@ -91,6 +109,8 @@ impl Captured {
             commanders: Arena::new(0),
             commander_timed_traits: Arena::new(0),
             commander_keys: HashMap::default(),
+            refused_rows: 0,
+            first_refusal: None,
         }
     }
 
@@ -110,6 +130,8 @@ impl Captured {
             commanders: Arena::new(c.commanders),
             commander_timed_traits: Arena::new(c.commander_timed_traits),
             commander_keys,
+            refused_rows: 0,
+            first_refusal: None,
         }
     }
     pub fn reset(&mut self) {
@@ -193,6 +215,8 @@ impl Captured {
     }
     fn pass(&mut self, memory: &impl Memory, base: usize, state: usize) -> Outcome {
         self.commander_keys.clear();
+        self.refused_rows = 0;
+        self.first_refusal = None;
         let mut pass = Pass {
             rows: &mut self.results.rows,
             ships: &mut self.ships.first,
@@ -210,6 +234,8 @@ impl Captured {
             len: 0,
             lengths: [0; 6],
             required_arenas: [0; 6],
+            refused_rows: &mut self.refused_rows,
+            first_refusal: &mut self.first_refusal,
         };
         let census = result::visit_sources(memory, base, state, |source| {
             pass.visit(memory, base, source)
@@ -259,6 +285,10 @@ impl Captured {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();
         self.results.outcome = self.pass(memory, base, state);
+        REFUSED_ROWS.fetch_add(self.refused_rows as u64, Ordering::Relaxed);
+        if let Some(reason) = self.first_refusal {
+            let _ = FIRST_REFUSAL.set(reason);
+        }
         [qpc().saturating_sub(started).max(0) as u64]
     }
     pub fn outcomes(&self) -> [Outcome; N] {
@@ -382,8 +412,16 @@ struct Pass<'a> {
     len: usize,
     lengths: [usize; 6],
     required_arenas: [usize; 6],
+    refused_rows: &'a mut usize,
+    first_refusal: &'a mut Option<&'static str>,
 }
 impl Pass<'_> {
+    fn refuse_hq(&mut self, reason: &'static str, lengths: [usize; 6], required: [usize; 6]) {
+        *self.refused_rows += 1;
+        self.first_refusal.get_or_insert(reason);
+        self.lengths = lengths;
+        self.required_arenas = required;
+    }
     fn commander(
         &mut self,
         memory: &impl Memory,
@@ -427,6 +465,8 @@ impl Pass<'_> {
         base: usize,
         source: result::Source,
     ) -> Result<(), &'static str> {
+        let original_lengths = self.lengths;
+        let original_required = self.required_arenas;
         ensure(
             self.rows,
             self.len
@@ -450,11 +490,16 @@ impl Pass<'_> {
                 planes: [self.lengths[1], 0],
                 ..Side::default()
             };
-            s.details = side::capture_details(memory, base, pointer)?;
-            s.commanders = [
-                self.commander(memory, base, s.details.leader)?,
-                self.commander(memory, base, s.details.hq_leader)?,
-            ];
+            // Mandatory HQ fields cannot represent a failed read. The absent
+            // row stays unknown; independent retained result rows survive.
+            s.details = match side::capture_details(memory, base, pointer) {
+                Ok(details) => details,
+                Err(reason) if reason.starts_with("naval result HQ") => {
+                    self.refuse_hq(reason, original_lengths, original_required);
+                    return Ok(());
+                }
+                Err(reason) => return Err(reason),
+            };
             let mut lengths = [self.lengths[4], self.lengths[5]];
             let mut required = [self.required_arenas[4], self.required_arenas[5]];
             let mut influences = influence::InfluenceBuffers {
@@ -466,7 +511,18 @@ impl Pass<'_> {
             let captured = side::capture_influences(memory, base, pointer, &mut influences);
             self.lengths[4..6].copy_from_slice(&lengths);
             self.required_arenas[4..6].copy_from_slice(&required);
-            s.hq_modifiers = captured?;
+            s.hq_modifiers = match captured {
+                Ok(span) => span,
+                Err(reason) if reason != "collector allocation failed" => {
+                    self.refuse_hq(reason, original_lengths, original_required);
+                    return Ok(());
+                }
+                Err(reason) => return Err(reason),
+            };
+            s.commanders = [
+                self.commander(memory, base, s.details.leader)?,
+                self.commander(memory, base, s.details.hq_leader)?,
+            ];
             side::visit_entries(memory, base, pointer, false, |_, entry| {
                 self.required_arenas[0] = self.required_arenas[0]
                     .checked_add(1)
@@ -596,6 +652,106 @@ mod tests {
     }
 
     #[test]
+    fn hq_fault_refuses_only_its_result_beside_good_rows() {
+        use engine::{cgame_state, creference_registry as registry, reference_bucket as bucket};
+        const BASE: usize = 0x1000_0000;
+        const STATE: usize = 0x1000;
+        const HQ: u64 = 0x1_0000_0001;
+        struct World(Vec<u8>);
+        impl Memory for World {
+            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+                if at == BASE + registry::LOW_ROOTS_RVA + 8 {
+                    out.copy_from_slice(&0x7000u64.to_le_bytes());
+                    return true;
+                }
+                engine::memory::SliceMemory {
+                    base: 0,
+                    bytes: &self.0,
+                }
+                .copy(at, out)
+            }
+        }
+        for count in [3, 5_000] {
+            for failure in [0, 1, 2] {
+                let mut world = World(vec![0; 0x20000 + count * 0x200]);
+                let put = |bytes: &mut [u8], at: usize, value: u64| {
+                    bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+                };
+                let header = STATE + cgame_state::NAVAL_COMBAT_RESULTS;
+                put(&mut world.0, header, 0x8000);
+                world.0[header + 8..header + 12].copy_from_slice(&(count as u32).to_le_bytes());
+                world.0[header + 12..header + 16].copy_from_slice(&(count as u32).to_le_bytes());
+                for index in 0..count {
+                    let at = 0x20000 + index * 0x200;
+                    put(&mut world.0, 0x8000 + index * 8, at as u64);
+                    put(&mut world.0, at, (BASE + result::VTABLE_RVA) as u64);
+                    put(&mut world.0, at + 8, ((index as u64 + 1) << 32) | 4713);
+                    for offset in [result::FIRST_SIDE, result::SECOND_SIDE] {
+                        put(&mut world.0, at + offset, (BASE + side::VTABLE_RVA) as u64);
+                    }
+                }
+                let hash = HQ.rotate_left(32).wrapping_mul(registry::HASH_MULTIPLIER);
+                let slot = ((hash >> 32) as u32 ^ hash as u32) & 7;
+                let b = 0x7100 + slot as usize * bucket::STRIDE;
+                for (at, value) in [
+                    (0x7008, 0x7100),
+                    (b + bucket::TYPE, HQ),
+                    (b + bucket::OBJECT, 0x6000),
+                ] {
+                    put(&mut world.0, at, value);
+                }
+                world.0[0x7010..0x7014].copy_from_slice(&1u32.to_le_bytes());
+                world.0[0x7014..0x7018].copy_from_slice(&7u32.to_le_bytes());
+                world.0[0x7018] = 5;
+                world.0[b + bucket::DISTANCE] = 1;
+                world.0[0x7100 + 13 * bucket::STRIDE + bucket::DISTANCE] = 255;
+                let bad = 0x20200 + result::FIRST_SIDE;
+                put(&mut world.0, bad + 0x58, HQ);
+                put(&mut world.0, bad + 0x60, 0x3000);
+                put(&mut world.0, bad + 0x68, 0x3018);
+                put(&mut world.0, 0x3000, 0x4000);
+                put(&mut world.0, 0x3010, 0x4000);
+                let freed = world.0.len() as u64 + 0x100;
+                let reason = match failure {
+                    0 => {
+                        put(&mut world.0, 0x3008, freed);
+                        "naval result HQ reference wrapper unreadable"
+                    }
+                    1 => {
+                        put(&mut world.0, 0x3008, u64::MAX - 15);
+                        "naval result HQ reference wrapper overflow"
+                    }
+                    _ => {
+                        put(&mut world.0, 0x3008, 0x5000);
+                        put(&mut world.0, 0x5040, 0x5800);
+                        put(&mut world.0, 0x5808, HQ);
+                        put(&mut world.0, 0x60a8, freed);
+                        "naval field unreadable"
+                    }
+                };
+                let mut captured = Captured::with_capacities(&capacities(1));
+                captured.results.outcome = captured.pass(&world, BASE, STATE);
+                assert_eq!(captured.results.outcome, Outcome::Rows { len: count - 1 });
+                assert_eq!(captured.refused_rows, 1);
+                assert_eq!(captured.first_refusal, Some(reason));
+                let [TableView::Complete(rows::TableRows::NavalCombatResultDetails(rows))] =
+                    captured.tables()
+                else {
+                    panic!("an HQ fault withheld readable result rows")
+                };
+                assert_eq!(rows.len(), count - 1);
+                assert_eq!(rows[0].result, (1 << 32) | 4713);
+                assert_eq!(rows[1].result, (3 << 32) | 4713);
+                assert!(!rows.iter().any(|row| row.result == (2 << 32) | 4713));
+                let mut encoded = Vec::new();
+                for row in &rows {
+                    replay::rows::RowCodec::encode_fields(row, &mut encoded).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
     fn failed_owned_payload_demand_cannot_size_the_recycled_pool() {
         let mut c = capacities(1);
         let mut captured = Captured::with_capacities(&c);
@@ -643,6 +799,8 @@ mod tests {
             len: 0,
             lengths: [0; 6],
             required_arenas: [0; 6],
+            refused_rows: &mut 0,
+            first_refusal: &mut None,
         };
         let memory = Missing(RefCell::default());
         assert_eq!(pass.commander(&memory, 0, 0).unwrap(), None);
@@ -704,6 +862,8 @@ mod tests {
             len: 0,
             lengths: [0; 6],
             required_arenas: [0; 6],
+            refused_rows: &mut captured.refused_rows,
+            first_refusal: &mut captured.first_refusal,
         };
         const COUNT: usize = 65_537;
         for index in 0..COUNT {
@@ -921,8 +1081,41 @@ mod tests {
                     &full.hits.first[..full.hits.len]
                 );
                 if let Some(ordinal) = fault {
-                    assert!(matches!(grown.outcomes()[0], Outcome::Unavailable { .. }));
-                    assert_eq!(*observed.reads.borrow(), trace[..=ordinal]);
+                    assert_eq!(&observed.reads.borrow()[..=ordinal], &trace[..=ordinal]);
+                    let hq_fault =
+                        [result::FIRST_SIDE, result::SECOND_SIDE]
+                            .into_iter()
+                            .any(|offset| {
+                                let side = 0x1000 + offset;
+                                let range = (side + 0x58, 24);
+                                trace[ordinal] == range
+                                    || (trace[ordinal] == (side, 8)
+                                        && trace.get(ordinal + 1) == Some(&range))
+                            });
+                    if hq_fault {
+                        assert_eq!(grown.outcomes(), [Outcome::Rows { len: 1 }]);
+                        assert_eq!(grown.refused_rows, 1);
+                        assert_eq!(
+                            grown.first_refusal,
+                            Some(if trace[ordinal].1 == 24 {
+                                "naval result HQ range unreadable"
+                            } else {
+                                "naval result side vtable mismatch"
+                            })
+                        );
+                        assert_eq!(
+                            (
+                                grown.ships.len,
+                                grown.planes.len,
+                                grown.air.len,
+                                grown.hits.len
+                            ),
+                            (2, 1, 6, 6)
+                        );
+                    } else {
+                        assert!(matches!(grown.outcomes()[0], Outcome::Unavailable { .. }));
+                        assert_eq!(*observed.reads.borrow(), trace[..=ordinal]);
+                    }
                 } else {
                     assert!(grown.results.rows[..2] == full.results.rows[..2]);
                     assert_eq!(grown.results.rows[1].sides[0].ships, [2, 2]);

@@ -1037,6 +1037,131 @@ pub fn blockade_cost(count_register: usize, loaded_define: i64) -> i64 {
         / 100_000
 }
 pub const BLOCKADE_COST_DEFINE_RVA: usize = 0x3319e30;
+
+/// Daily rate/modifier/blockade records (140B9A1D0/140B9A2D2/140B9AE45),
+/// applied PP (140B993A7) and applied CP (1406DADC2).
+pub const DAILY_RECORDS: usize = 5;
+
+/// Off-thread staging hint from live roster headers. Scripted bursts still
+/// grow independently from rejected demand; these counts certify no values.
+pub fn daily_record_demand(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+) -> Result<usize, &'static str> {
+    use crate::{cpdx_array::Array, nindustrial_organisation_corganisation as organisation};
+
+    let countries = ccountry::Reader::new(memory, base, state)?;
+    let headers = countries.arrays();
+    let array = |object: usize, offset: usize, stride: usize| {
+        let address = object
+            .checked_add(offset)
+            .ok_or("politics staging roster address overflow")?;
+        let header =
+            read::<[u8; 16]>(memory, address).ok_or("politics staging roster unreadable")?;
+        let array = Array::from_header(header, stride).ok_or("politics staging roster invalid")?;
+        if read::<[u8; 16]>(memory, address) != Some(header) {
+            return Err("politics staging roster changed");
+        }
+        Ok(array)
+    };
+    let mut records = 0usize;
+    for slot in 1..countries.count() {
+        let Some(country) = countries.at(slot)? else {
+            continue;
+        };
+        let owner = country_owner(memory, base, country.pointer)?;
+        // 140B990B0: one timed charge per status+08/count+14 entry.
+        // 1406EF9A0: one upkeep writer per active stride-58 ability.
+        let mut count = DAILY_RECORDS;
+        if let Some(status) = owner.politics {
+            count = count
+                .checked_add(array(status, 8, 8)?.count as usize)
+                .ok_or("politics staging record demand overflow")?;
+        }
+        count = count
+            .checked_add(
+                array(country.pointer, ccountry::ACTIVE_COMMAND_ABILITIES, 0x58)?.count as usize,
+            )
+            .ok_or("politics staging record demand overflow")?;
+        for (offset, vtable, backlink, roster) in [
+            // 140B9A1D0 invokes outgoing relation vslot90 once per occurrence.
+            (
+                ccountry::DIPLOMACY_STATUS,
+                crate::cdiplomacy_status::VTABLE_RVA,
+                crate::cdiplomacy_status::COUNTRY,
+                crate::cdiplomacy_status::OWNED_RELATIONS,
+            ),
+            // 140E4F830 walks organisations, then their stride-18 assignments.
+            (
+                ccountry::PRODUCTION_STATUS,
+                crate::cproduction_status::VTABLE_RVA,
+                crate::cproduction_status::COUNTRY,
+                crate::cproduction_status::ORGANISATIONS,
+            ),
+        ] {
+            let pointer = country
+                .pointer
+                .checked_add(offset)
+                .and_then(|address| read::<u64>(memory, address))
+                .filter(|pointer| *pointer != 0)
+                .ok_or("politics staging status unreadable or null")?
+                as usize;
+            if read::<u64>(memory, pointer) != base.checked_add(vtable).map(|p| p as u64)
+                || pointer
+                    .checked_add(backlink)
+                    .and_then(|address| read::<u64>(memory, address))
+                    != Some(country.pointer as u64)
+            {
+                return Err("politics staging status identity mismatch");
+            }
+            let roster = array(pointer, roster, 8)?;
+            let mut extra = roster.count as usize;
+            if offset == ccountry::PRODUCTION_STATUS {
+                extra = 0;
+                crate::cpdx_array::pointers(
+                    memory,
+                    roster,
+                    "politics staging organisation unreadable",
+                    |_, pointer| {
+                        if pointer == 0
+                            || read::<u64>(memory, pointer)
+                                != base.checked_add(organisation::VTABLE_RVA).map(|p| p as u64)
+                            || pointer
+                                .checked_add(organisation::OWNER)
+                                .and_then(|address| read::<u32>(memory, address))
+                                != Some(owner.country)
+                        {
+                            return Err("politics staging organisation identity mismatch");
+                        }
+                        // 140E4F830 can invoke both cost getters per assignment.
+                        extra = (array(
+                            pointer,
+                            organisation::PRODUCTION_LINES,
+                            crate::industrial_organisation_line_entry::STRIDE,
+                        )?
+                        .count as usize)
+                            .checked_mul(2)
+                            .and_then(|demand| extra.checked_add(demand))
+                            .ok_or("politics staging record demand overflow")?;
+                        Ok(())
+                    },
+                )?;
+            }
+            count = count
+                .checked_add(extra)
+                .ok_or("politics staging record demand overflow")?;
+        }
+        records = records
+            .checked_add(count)
+            .ok_or("politics staging record demand overflow")?;
+    }
+    if ccountry::Reader::new(memory, base, state)?.arrays() != headers {
+        return Err("politics staging country registry changed");
+    }
+    Ok(records)
+}
+
 /// Off-thread presizing from the live lexical dictionary. Newly authored or
 /// dynamic keys can grow beyond this witness: the collector counts a named
 /// identity shortage, preserves the known cause and grows its next staging.
@@ -1069,6 +1194,72 @@ pub fn lexical_key_demand(memory: &impl Memory, base: usize) -> Result<usize, &'
 #[cfg(test)]
 mod capture_tests {
     use super::*;
+
+    #[test]
+    fn politics_staging_demand_counts_daily_rosters_at_1500_and_5000_countries() {
+        use crate::{cpdx_array, nindustrial_organisation_corganisation as organisation};
+
+        for countries in [1_500, 5_000] {
+            let mut world = ccountry::synthetic::World::new(0x4000_0000, countries, 0x1700);
+            for slot in 1..=countries {
+                let country = world.object(slot);
+                let status = world.alloc(0x110);
+                world.u64(country + ccountry::POLITICAL_STATUS, status as u64);
+                world.u64(
+                    status,
+                    (world.module + cpolitical_status::VTABLE_RVA) as u64,
+                );
+                world.u64(status + cpolitical_status::COUNTRY, country as u64);
+                world.array(status + 8, country, 2);
+                world.array(country + ccountry::ACTIVE_COMMAND_ABILITIES, country, 3);
+                for (offset, vtable, backlink, roster, count) in [
+                    (
+                        ccountry::DIPLOMACY_STATUS,
+                        crate::cdiplomacy_status::VTABLE_RVA,
+                        crate::cdiplomacy_status::COUNTRY,
+                        crate::cdiplomacy_status::OWNED_RELATIONS,
+                        4,
+                    ),
+                    (
+                        ccountry::PRODUCTION_STATUS,
+                        crate::cproduction_status::VTABLE_RVA,
+                        crate::cproduction_status::COUNTRY,
+                        crate::cproduction_status::ORGANISATIONS,
+                        1,
+                    ),
+                ] {
+                    let pointer = world.alloc(0x300);
+                    world.u64(country + offset, pointer as u64);
+                    world.u64(pointer, (world.module + vtable) as u64);
+                    world.u64(pointer + backlink, country as u64);
+                    let data = if offset == ccountry::PRODUCTION_STATUS {
+                        let object = world.alloc(0x130);
+                        world.u64(object, (world.module + organisation::VTABLE_RVA) as u64);
+                        world.u32(object + organisation::OWNER, slot);
+                        world.array(object + organisation::PRODUCTION_LINES, country, 7);
+                        let data = world.alloc(8);
+                        world.u64(data, object as u64);
+                        data
+                    } else {
+                        country
+                    };
+                    world.array(pointer + roster, data, count);
+                    // Allocation headroom is not daily demand.
+                    world.u32(pointer + roster + cpdx_array::CAPACITY, 10_000);
+                }
+            }
+            assert_eq!(
+                daily_record_demand(&world.memory(), world.module, world.game_state()),
+                Ok(countries as usize * 28)
+            );
+            world.u64(world.object(countries) + ccountry::PRODUCTION_STATUS, 0);
+            assert_eq!(
+                daily_record_demand(&world.memory(), world.module, world.game_state()),
+                Err("politics staging status unreadable or null")
+            );
+        }
+    }
+
     #[test]
     fn every_site_is_unique_including_scoped_native_commands() {
         let mut functions = std::collections::BTreeSet::new();

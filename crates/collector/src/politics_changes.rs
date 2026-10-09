@@ -243,6 +243,8 @@ struct Lane {
     write: UnsafeCell<u64>,
     published: AtomicU64,
     consumed: AtomicU64,
+    rejected: AtomicU64,
+    consumed_rejected: AtomicU64,
     required_entries: AtomicUsize,
 }
 unsafe impl Sync for Lane {}
@@ -259,6 +261,8 @@ impl Lane {
             write: UnsafeCell::new(0),
             published: AtomicU64::new(0),
             consumed: AtomicU64::new(0),
+            rejected: AtomicU64::new(0),
+            consumed_rejected: AtomicU64::new(0),
             required_entries: AtomicUsize::new(0),
         })
     }
@@ -452,6 +456,12 @@ pub fn resize(entries: usize, keys: usize) {
     }
 }
 fn resize_checked(entries: usize, keys: usize) -> io::Result<()> {
+    // Match lane rounding so small roster changes do not retire identical rings.
+    let entries = entries
+        .max(log().map_or(0, |log| log.entries))
+        .max(1)
+        .checked_next_power_of_two()
+        .ok_or_else(allocation::oom)?;
     let keys = keys
         .max(REQUIRED_KEYS.load(Ordering::Relaxed))
         .max(log().map_or(0, |log| log.key_stride));
@@ -705,8 +715,17 @@ fn append_raw_to_lane(
 ) {
     // Only the thread that registered this lane accesses write.
     let cursor = unsafe { *lane.write.get() };
-    let demand = cursor.wrapping_sub(lane.consumed.load(Ordering::Acquire)) + 1;
+    let demand = cursor
+        .wrapping_sub(lane.consumed.load(Ordering::Acquire))
+        .saturating_add(
+            lane.rejected
+                .load(Ordering::Relaxed)
+                .wrapping_sub(lane.consumed_rejected.load(Ordering::Acquire)),
+        )
+        .saturating_add(1);
     if demand > lane.slots.len() as u64 {
+        // Rejected records still contribute to this sealed interval's demand.
+        lane.rejected.fetch_add(1, Ordering::Release);
         lane.required_entries.fetch_max(
             (demand as usize).max(lane.slots.len().saturating_mul(2)),
             Ordering::Relaxed,
@@ -759,6 +778,7 @@ fn append_raw_to_lane(
 #[derive(Clone, Copy, Default)]
 pub struct LaneCursor {
     cursor: u64,
+    rejected: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -785,6 +805,7 @@ fn handoff_from(log: &Log, cursors: &mut [LaneCursor]) -> Result<Handoff, &'stat
     }
     for (out, lane) in cursors.iter_mut().zip(&log.lanes[..count]) {
         out.cursor = lane.published.load(Ordering::Acquire);
+        out.rejected = lane.rejected.load(Ordering::Acquire);
     }
     Ok(Handoff {
         log: log as *const Log as usize,
@@ -838,6 +859,7 @@ fn drain_from(log: &Log, output: &mut [Event], bytes: &mut [u8]) -> Result<Drain
         .iter()
         .map(|l| LaneCursor {
             cursor: l.published.load(Ordering::Acquire),
+            rejected: l.rejected.load(Ordering::Acquire),
         })
         .collect();
     drain_until(
@@ -863,6 +885,8 @@ fn drain_until(
     {
         for (lane, end) in log.lanes.iter().zip(cursors) {
             lane.consumed.store(end.cursor, Ordering::Release);
+            lane.consumed_rejected
+                .store(end.rejected, Ordering::Release);
         }
         log.consumed.store(cursor, Ordering::Release);
         return Err("politics observation restarted");
@@ -926,8 +950,12 @@ fn drain_until(
         copied += 1;
         tails[n] += 1;
     }
-    for (lane, tail) in log.lanes.iter().zip(tails) {
+    for ((lane, tail), end) in log.lanes.iter().zip(tails).zip(cursors) {
         lane.consumed.store(tail, Ordering::Release);
+        if tail == end.cursor {
+            lane.consumed_rejected
+                .store(end.rejected, Ordering::Release);
+        }
     }
     log.consumed.store(first + copied as u64, Ordering::Release);
     if epoch != EPOCH.load(Ordering::Acquire) {
@@ -2737,6 +2765,11 @@ mod tests {
         resize_checked(entries.checked_add(1).unwrap(), 0).unwrap();
         assert!(log().unwrap().key_stride >= stride);
         assert!(EPOCH.load(Ordering::Acquire) > epoch);
+        let pointer = LOG.load(Ordering::Acquire);
+        resize_checked(entries + 2, 0).unwrap();
+        assert_eq!(LOG.load(Ordering::Acquire), pointer);
+        resize_checked(1, stride + 1).unwrap();
+        assert!(log().unwrap().entries > entries);
         let epoch = EPOCH.load(Ordering::Acquire);
         assert!(restore_epoch(u64::MAX).is_err());
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
@@ -2750,7 +2783,7 @@ mod tests {
             base: 0,
             bytes: &[],
         };
-        for _ in 0..5 {
+        for _ in 0..33 {
             append_lane(&log, 2, Event::default(), &memory);
         }
         let required: Vec<_> = log
@@ -2763,11 +2796,23 @@ mod tests {
             })
             .collect();
         let grown = Log::with_lane_requirements(16, 1, 4, &required).unwrap();
-        assert_eq!(required[2], 8);
+        assert_eq!(required[2], 33);
         assert_eq!(grown.lanes[0].slots.len(), 16);
         assert_eq!(grown.lanes[1].slots.len(), 4);
-        assert!(grown.lanes[2].slots.len() > 4);
+        assert!(grown.lanes[2].slots.len() >= 33);
         assert_eq!(grown.lanes[3].slots.len(), 4);
+        let mut output = [Event::default(); 33];
+        assert_eq!(
+            drain_from(&log, &mut output, &mut []),
+            Err("politics observation restarted")
+        );
+        append_lane(&log, 2, Event::default(), &memory);
+        assert_eq!(drain_from(&log, &mut output, &mut []).unwrap().copied, 1);
+        for _ in 0..33 {
+            append_lane(&grown, 2, Event::default(), &memory);
+        }
+        // Growth admits the whole burst without another refused interval.
+        assert_eq!(drain_from(&grown, &mut output, &mut []).unwrap().copied, 33);
     }
 
     #[test]
@@ -3037,7 +3082,16 @@ mod tests {
         };
         append_lane(&log, 0, Event::default(), &memory);
         append_lane(&log, 1, Event::default(), &memory);
-        let partial = [LaneCursor { cursor: 0 }, LaneCursor { cursor: 1 }];
+        let partial = [
+            LaneCursor {
+                cursor: 0,
+                rejected: 0,
+            },
+            LaneCursor {
+                cursor: 1,
+                rejected: 0,
+            },
+        ];
         assert_eq!(
             drain_until(
                 &log,
