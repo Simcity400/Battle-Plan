@@ -17,8 +17,6 @@ Read the [project README](README.md) and the README for each component you chang
 
 - Feel free to ask questions. It's better to just ask a question when making a decision where there isn't a clear answer than just making an assumption based on incomplete information. Especially when UX is in question.
 
-- If an action is denied, stop and report it; never work around it. Never print or share API keys.
-
 ## Builds and merging
 
 - Only the agent writing code builds; reviews read the diff. While iterating, including fix rounds, run `cargo fmt` plus clippy and the tests your change affects, for only the crates you changed. Never run whole test suites or workspace-wide builds: the wrapper refuses them unless `GATE=1`.
